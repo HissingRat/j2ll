@@ -1,0 +1,94 @@
+name: j2ll CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: j2ll-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-bench-release:
+    name: Test, Bench, and Release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Grant Gradle wrapper execute bit
+        shell: bash
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        run: .\gradlew.bat test
+
+      - name: Run obf-bench
+        run: .\gradlew.bat obfBench
+
+      - name: Upload j2ll CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: j2ll-ci-artifacts
+          path: |
+            build/libs/j2ll.jar
+            build/obf-bench/obf-bench-report.txt
+            build/obf-bench/out/**/frontend-skips.txt
+            build/obf-bench/out/**/obf-bench.jar
+          if-no-files-found: warn
+
+      - name: Move rolling release tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f j2ll-latest "$GITHUB_SHA"
+          git push origin refs/tags/j2ll-latest --force
+
+      - name: Prepare j2ll release assets
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path $PWD "build/release-assets"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+
+          Copy-Item "build/libs/j2ll.jar" (Join-Path $releaseDir "j2ll.jar") -Force
+
+      - name: Publish j2ll latest release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: j2ll-latest
+          name: j2ll latest
+          body: |
+            Automated rolling release for `${{ github.sha }}`.
+          prerelease: false
+          make_latest: true
+          overwrite_files: true
+          files: |
+            build/release-assets/j2ll.jar

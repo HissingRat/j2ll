@@ -1,0 +1,160 @@
+import java.util.concurrent.ConcurrentHashMap
+
+plugins {
+    id 'com.gradleup.shadow' version '8.3.6'
+    id 'java'
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_25
+}
+
+[compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
+[compileJava, compileTestJava]*.options*.release = 25
+
+if (!hasProperty('mainClass')) {
+    ext.mainClass = 'xyz.melodysky.Main'
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ['obfuscator/src/main/java']
+        resources.srcDirs = ['obfuscator/src/main/resources']
+    }
+    bench {
+        java.srcDirs = ['obfuscator/bench/src/main/java']
+        resources.srcDirs = ['obfuscator/bench/src/main/resources']
+    }
+    test {
+        java.srcDirs = ['obfuscator/src/test/java']
+        resources.srcDirs = ['obfuscator/src/test/resources']
+    }
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.ow2.asm:asm:9.8'
+    implementation 'org.ow2.asm:asm-tree:9.8'
+    implementation 'org.ow2.asm:asm-commons:9.8'
+    implementation 'org.fusesource.jansi:jansi:2.4.1'
+    implementation 'com.rfksystems:blake2b:2.0.0'
+
+    implementation 'com.google.code.gson:gson:2.13.1'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.4.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.4.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.4.2'
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    manifest {
+        attributes(
+                'Main-Class': getProperty('mainClass'),
+                'Enable-Native-Access': 'ALL-UNNAMED'
+        )
+    }
+}
+
+assemble.dependsOn(shadowJar)
+
+jar {
+    manifest {
+        attributes(
+                'Main-Class': getProperty('mainClass'),
+                'Enable-Native-Access': 'ALL-UNNAMED'
+        )
+    }
+}
+
+tasks.register('benchJar', Jar) {
+    archiveBaseName.set('obf-bench')
+    archiveClassifier.set('')
+    destinationDirectory.set(layout.buildDirectory.dir('bench-libs'))
+    from sourceSets.bench.output
+    manifest.attributes("Main-Class": "bench.ObfBenchMain")
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId project.group + ".nativeobfuscator"
+            artifactId project.name
+            version project.version
+            from components.java
+        }
+    }
+}
+
+ConcurrentHashMap<String, StringBuilder> testOutputs = new ConcurrentHashMap<>()
+
+test {
+    useJUnitPlatform()
+    environment 'JAVA_HOME', System.getProperty('java.home')
+
+    maxParallelForks = Math.max(Runtime.runtime.availableProcessors(), 32)
+
+    testLogging {
+        events = []
+    }
+
+    beforeTest { descriptor ->
+        if (System.getenv("CI"))
+            System.out.print("\u001b[1;33m")
+        testOutputs.put(descriptor.getName(), new StringBuilder())
+        System.out.print("Running test \"" + descriptor.getDisplayName() + "\" -> ")
+        System.out.flush()
+    }
+
+    afterTest { descriptor, result ->
+        if (System.getenv("CI")) {
+            if (result.getResultType() == TestResult.ResultType.SUCCESS)
+                System.out.print("\u001b[1;32m")
+            if (result.getResultType() == TestResult.ResultType.FAILURE)
+                System.out.print("\u001b[1;31m")
+            if (result.getResultType() == TestResult.ResultType.SKIPPED)
+                System.out.print("\u001b[1;34m")
+        }
+        System.out.print(result.getResultType().toString())
+        if (System.getenv("CI"))
+            System.out.print("\u001b[1;33m")
+        System.out.println(" in " + ((result.getEndTime()) - (result.getStartTime())) + "ms")
+        if (result.getResultType() == TestResult.ResultType.FAILURE) {
+            if (System.getenv("CI")) {
+                System.out.print("\u001b[1;31m")
+            }
+            System.out.println("Test fail log")
+            System.out.print(testOutputs.get(descriptor.getName()).toString())
+            testOutputs.remove(descriptor.getName())
+        }
+    }
+
+    onOutput { descriptor, event ->
+        if (!testOutputs.containsKey(descriptor.getName()))
+            testOutputs.put(descriptor.getName(), new StringBuilder())
+        testOutputs.get(descriptor.getName()).append("[")
+                .append(event.getDestination().toString().toUpperCase()).append("] ").append(event.getMessage())
+    }
+}
+
+tasks.register('obfBench', Exec) {
+    dependsOn(shadowJar, benchJar)
+
+    String shellExecutable = System.getProperty('os.name').toLowerCase().contains('windows') ? 'powershell' : 'pwsh'
+    commandLine shellExecutable,
+            '-ExecutionPolicy', 'Bypass',
+            '-File', file('scripts/run-obf-bench.ps1').absolutePath,
+            '-WorkspaceRoot', file("$buildDir/obf-bench").absolutePath,
+            '-BenchJarPath', tasks.named('benchJar').get().archiveFile.get().asFile.absolutePath,
+            '-SkipObfuscatorBuild'
+}
