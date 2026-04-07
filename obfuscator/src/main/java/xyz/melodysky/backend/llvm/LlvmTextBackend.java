@@ -339,6 +339,7 @@ public class LlvmTextBackend implements IrProgramBackend {
         String functionName = functionName(irClass, method);
         List<ParameterBinding> parameters = parameterBindings(irClass, method);
         Map<Integer, IrType> localSlotTypes = inferLocalSlotTypes(irClass, method, parameters);
+        int[] tempNameCounter = new int[]{0};
 
         builder.append("define ")
                 .append(llvmType(method.returnType()))
@@ -349,7 +350,7 @@ public class LlvmTextBackend implements IrProgramBackend {
                 .append(") {\n");
 
         builder.append("prologue:\n");
-        emitEntrySetup(builder, localSlotTypes, parameters);
+        emitEntrySetup(builder, localSlotTypes, parameters, tempNameCounter);
         builder.append("  br label %").append(method.entryBlock()).append('\n');
 
         for (IrBlock block : method.blocks()) {
@@ -374,7 +375,7 @@ public class LlvmTextBackend implements IrProgramBackend {
                     );
                     continue;
                 }
-                emitInstruction(builder, helperDeclarations, localSlotTypes, directCallTargets, emittedThunks, instruction);
+                emitInstruction(builder, helperDeclarations, localSlotTypes, directCallTargets, emittedThunks, instruction, tempNameCounter);
             }
             emitTerminator(builder, helperDeclarations, method.returnType(), block.terminator());
         }
@@ -422,7 +423,8 @@ public class LlvmTextBackend implements IrProgramBackend {
         builder.append("}\n");
     }
 
-    private void emitEntrySetup(StringBuilder builder, Map<Integer, IrType> localSlotTypes, List<ParameterBinding> parameters) {
+    private void emitEntrySetup(StringBuilder builder, Map<Integer, IrType> localSlotTypes, List<ParameterBinding> parameters,
+                                int[] tempNameCounter) {
         for (Map.Entry<Integer, IrType> entry : localSlotTypes.entrySet()) {
             builder.append("  ")
                     .append(localSlotPointer(entry.getKey()))
@@ -431,7 +433,7 @@ public class LlvmTextBackend implements IrProgramBackend {
                     .append('\n');
         }
         for (ParameterBinding parameter : parameters) {
-            emitLocalStore(builder, parameter.localSlot(), parameter.type(), parameter.llvmName(), localSlotTypes);
+            emitLocalStore(builder, parameter.localSlot(), parameter.type(), parameter.llvmName(), localSlotTypes, tempNameCounter);
         }
     }
 
@@ -439,11 +441,19 @@ public class LlvmTextBackend implements IrProgramBackend {
                                  Map<Integer, IrType> localSlotTypes,
                                  Map<MethodKey, DirectCallTarget> directCallTargets,
                                  Set<DirectCallTarget> emittedThunks,
-                                 IrInstruction instruction) {
+                                 IrInstruction instruction,
+                                 int[] tempNameCounter) {
         switch (instruction) {
             case IrInstruction.Const constant -> emitConst(builder, constant);
             case IrInstruction.LoadLocal loadLocal -> emitLocalLoad(builder, loadLocal, localSlotTypes);
-            case IrInstruction.StoreLocal storeLocal -> emitLocalStore(builder, storeLocal.slot(), storeLocal.value().type(), llvmOperand(storeLocal.value()), localSlotTypes);
+            case IrInstruction.StoreLocal storeLocal -> emitLocalStore(
+                    builder,
+                    storeLocal.slot(),
+                    storeLocal.value().type(),
+                    llvmOperand(storeLocal.value()),
+                    localSlotTypes,
+                    tempNameCounter
+            );
             case IrInstruction.Binary binary -> builder.append("  ")
                     .append(llvmValue(binary.result()))
                     .append(" = ")
@@ -1170,7 +1180,8 @@ public class LlvmTextBackend implements IrProgramBackend {
                 .append('\n');
     }
 
-    private void emitLocalStore(StringBuilder builder, int slot, IrType valueType, String valueOperand, Map<Integer, IrType> localSlotTypes) {
+    private void emitLocalStore(StringBuilder builder, int slot, IrType valueType, String valueOperand,
+                                Map<Integer, IrType> localSlotTypes, int[] tempNameCounter) {
         IrType storageType = localSlotTypes.getOrDefault(slot, localStorageType(valueType));
         String storageLlvmType = llvmType(storageType);
         String valueLlvmType = llvmType(valueType);
@@ -1185,7 +1196,7 @@ public class LlvmTextBackend implements IrProgramBackend {
             return;
         }
 
-        String castName = "%" + sanitizeSymbol("local_store_" + slot + "_" + Integer.toUnsignedString(valueOperand.hashCode()));
+        String castName = nextTempName("local_store_" + slot, tempNameCounter);
         builder.append("  ")
                 .append(castName)
                 .append(" = ")
@@ -1204,6 +1215,10 @@ public class LlvmTextBackend implements IrProgramBackend {
                 .append(", ptr ")
                 .append(localSlotPointer(slot))
                 .append('\n');
+    }
+
+    private String nextTempName(String base, int[] tempNameCounter) {
+        return "%" + sanitizeSymbol(base + "_" + tempNameCounter[0]++);
     }
 
     private IrType localStorageType(IrType type) {
