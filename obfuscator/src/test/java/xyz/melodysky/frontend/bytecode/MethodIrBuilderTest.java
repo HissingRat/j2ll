@@ -396,6 +396,43 @@ public class MethodIrBuilderTest {
     }
 
     @Test
+    public void testBuildsAltLambdaMetafactoryInvokeDynamicFlow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "factory", "()Lsample/SerializableFunction;", null, null);
+        methodNode.maxLocals = 0;
+        methodNode.instructions.add(new InvokeDynamicInsnNode(
+                "apply",
+                "()Lsample/SerializableFunction;",
+                new Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        "java/lang/invoke/LambdaMetafactory",
+                        "altMetafactory",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false
+                ),
+                Type.getMethodType("(Ljava/lang/Object;)Ljava/lang/Object;"),
+                new Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        "sample/Helpers",
+                        "box",
+                        "(Ljava/lang/Integer;)Ljava/lang/Integer;",
+                        false
+                ),
+                Type.getMethodType("(Ljava/lang/Integer;)Ljava/lang/Integer;"),
+                Integer.valueOf(1 | 4),
+                Integer.valueOf(0)
+        ));
+        methodNode.instructions.add(new InsnNode(Opcodes.ARETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build("sample/Factory", methodNode);
+
+        IrInstruction.CallHelper helper = findFirstInstruction(irMethod, IrInstruction.CallHelper.class);
+        assertTrue(helper.helperName().startsWith("ir_rt_lambda__"));
+        assertTrue(helper.helperName().contains("616c744d657461666163746f7279"));
+        assertTrue(helper.helperName().contains("02616c744d657461666163746f727902350202"));
+        assertEquals(IrType.reference("sample/SerializableFunction"), helper.result().type());
+    }
+
+    @Test
     public void testBuildsTypeSwitchInvokeDynamicFlow() {
         MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "match", "(Lsample/Expr;I)I", null, null);
         methodNode.maxLocals = 2;
@@ -673,6 +710,84 @@ public class MethodIrBuilderTest {
         methodNode.instructions.add(new InsnNode(Opcodes.POP));
         methodNode.instructions.add(new InsnNode(Opcodes.POP));
         methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.RETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().get(0).terminator() instanceof IrTerminator.ReturnVoid);
+    }
+
+    @Test
+    public void testBuildsDup2X2Flow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "shuffle5", "()V", null, null);
+        methodNode.maxLocals = 0;
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_1));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_2));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_3));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_4));
+        methodNode.instructions.add(new InsnNode(Opcodes.DUP2_X2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.RETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().get(0).terminator() instanceof IrTerminator.ReturnVoid);
+    }
+
+    @Test
+    public void testBuildsDup2X2WithWideInsertTargetFlow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "shuffle6", "()V", null, null);
+        methodNode.maxLocals = 0;
+        methodNode.instructions.add(new LdcInsnNode(7L));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_1));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_2));
+        methodNode.instructions.add(new InsnNode(Opcodes.DUP2_X2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.RETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().get(0).terminator() instanceof IrTerminator.ReturnVoid);
+    }
+
+    @Test
+    public void testBuildsDup2X2WithWideTopFlow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "shuffle7", "()V", null, null);
+        methodNode.maxLocals = 0;
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_1));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_2));
+        methodNode.instructions.add(new LdcInsnNode(42L));
+        methodNode.instructions.add(new InsnNode(Opcodes.DUP2_X2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
+        methodNode.instructions.add(new InsnNode(Opcodes.RETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().get(0).terminator() instanceof IrTerminator.ReturnVoid);
+    }
+
+    @Test
+    public void testBuildsDup2X2WithTwoWideValuesFlow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "shuffle8", "()V", null, null);
+        methodNode.maxLocals = 0;
+        methodNode.instructions.add(new LdcInsnNode(1L));
+        methodNode.instructions.add(new LdcInsnNode(2L));
+        methodNode.instructions.add(new InsnNode(Opcodes.DUP2_X2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
+        methodNode.instructions.add(new InsnNode(Opcodes.POP2));
         methodNode.instructions.add(new InsnNode(Opcodes.RETURN));
 
         IrMethod irMethod = new MethodIrBuilder().build(methodNode);
@@ -996,6 +1111,39 @@ public class MethodIrBuilderTest {
                 .filter(IrInstruction.CallHelper.class::isInstance)
                 .map(IrInstruction.CallHelper.class::cast)
                 .anyMatch(helper -> helper.helperName().equals("ir_rt_array_load__" + helperToken("int[]"))));
+    }
+
+    @Test
+    public void testBuildsMergedNullAndNestedReferenceArrayLoadFlow() {
+        LabelNode elseLabel = new LabelNode();
+        LabelNode joinLabel = new LabelNode();
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "mergedArray", "([[Ljava/lang/String;Z)I", null, null);
+        methodNode.maxLocals = 2;
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.IFEQ, elseLabel));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.GOTO, joinLabel));
+        methodNode.instructions.add(elseLabel);
+        methodNode.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        methodNode.instructions.add(joinLabel);
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_0));
+        methodNode.instructions.add(new InsnNode(Opcodes.AALOAD));
+        methodNode.instructions.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        methodNode.instructions.add(new InsnNode(Opcodes.IRETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(IrInstruction.CallHelper.class::isInstance)
+                .map(IrInstruction.CallHelper.class::cast)
+                .anyMatch(helper -> helper.helperName().equals("ir_rt_array_load__" + helperToken("java/lang/String[][]"))));
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(IrInstruction.CallHelper.class::isInstance)
+                .map(IrInstruction.CallHelper.class::cast)
+                .anyMatch(helper -> helper.helperName().equals("ir_rt_array_length")));
+        new IrMethodValidator().validate(irMethod);
     }
 
     @Test
@@ -1441,6 +1589,120 @@ public class MethodIrBuilderTest {
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction instanceof IrInstruction.CallHelperVoid helper
                         && "ir_rt_throw".equals(helper.helperName())));
+    }
+
+    @Test
+    public void testBuildsReferenceLoadAfterBranchLocalSlotReuse() {
+        LabelNode loadOriginal = new LabelNode();
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "reuseObject", "(Ljava/lang/Object;)Ljava/lang/Object;", null, null);
+        methodNode.maxLocals = 1;
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.IFNULL, loadOriginal));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_5));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ISTORE, 0));
+        methodNode.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        methodNode.instructions.add(new InsnNode(Opcodes.ARETURN));
+        methodNode.instructions.add(loadOriginal);
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new InsnNode(Opcodes.ARETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction instanceof IrInstruction.StoreLocal storeLocal
+                        && storeLocal.slot() == 1
+                        && storeLocal.value().type() == IrType.INT));
+        assertTrue(findBlock(irMethod, "block0").instructions().stream()
+                .anyMatch(instruction -> instruction instanceof IrInstruction.LoadLocal loadLocal
+                        && loadLocal.slot() == 0
+                        && !loadLocal.result().type().isPrimitive()));
+    }
+
+    @Test
+    public void testBuildsIntLoadAfterBranchLocalSlotReuse() {
+        LabelNode loadFlag = new LabelNode();
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "reuseInt", "(Ljava/lang/Object;Z)I", null, null);
+        methodNode.maxLocals = 2;
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.IFNONNULL, loadFlag));
+        methodNode.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ASTORE, 1));
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_0));
+        methodNode.instructions.add(new InsnNode(Opcodes.IRETURN));
+        methodNode.instructions.add(loadFlag);
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        methodNode.instructions.add(new InsnNode(Opcodes.IRETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction instanceof IrInstruction.StoreLocal storeLocal
+                        && storeLocal.slot() == 2
+                        && !storeLocal.value().type().isPrimitive()));
+        assertTrue(findBlock(irMethod, "block0").instructions().stream()
+                .anyMatch(instruction -> instruction instanceof IrInstruction.LoadLocal loadLocal
+                        && loadLocal.slot() == 1
+                        && loadLocal.result().type() == IrType.BOOLEAN));
+    }
+
+    @Test
+    public void testBuildsLongLoadAfterBranchLocalSlotReuse() {
+        LabelNode loadLong = new LabelNode();
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "reuseLong", "(Ljava/lang/String;)J", null, null);
+        methodNode.maxLocals = 3;
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.IFNULL, loadLong));
+        methodNode.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ASTORE, 1));
+        methodNode.instructions.add(new LdcInsnNode(2L));
+        methodNode.instructions.add(new InsnNode(Opcodes.LRETURN));
+        methodNode.instructions.add(loadLong);
+        methodNode.instructions.add(new InsnNode(Opcodes.LCONST_1));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.LSTORE, 1));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.LLOAD, 1));
+        methodNode.instructions.add(new InsnNode(Opcodes.LRETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction instanceof IrInstruction.StoreLocal storeLocal
+                        && storeLocal.slot() == 1
+                        && !storeLocal.value().type().isPrimitive()));
+        assertTrue(findBlock(irMethod, "block0").instructions().stream()
+                .anyMatch(instruction -> instruction instanceof IrInstruction.LoadLocal loadLocal
+                        && loadLocal.slot() == 3
+                        && loadLocal.result().type() == IrType.LONG));
+    }
+
+    @Test
+    public void testBuildsFloatLoadAfterBranchLocalSlotReuse() {
+        LabelNode loadFloat = new LabelNode();
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "reuseFloat", "(F)F", null, null);
+        methodNode.maxLocals = 1;
+        methodNode.instructions.add(new InsnNode(Opcodes.ICONST_0));
+        methodNode.instructions.add(new JumpInsnNode(Opcodes.IFNE, loadFloat));
+        methodNode.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ASTORE, 0));
+        methodNode.instructions.add(new InsnNode(Opcodes.FCONST_1));
+        methodNode.instructions.add(new InsnNode(Opcodes.FRETURN));
+        methodNode.instructions.add(loadFloat);
+        methodNode.instructions.add(new VarInsnNode(Opcodes.FLOAD, 0));
+        methodNode.instructions.add(new InsnNode(Opcodes.FRETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction instanceof IrInstruction.StoreLocal storeLocal
+                        && storeLocal.slot() == 1
+                        && !storeLocal.value().type().isPrimitive()));
+        assertTrue(findBlock(irMethod, "block0").instructions().stream()
+                .anyMatch(instruction -> instruction instanceof IrInstruction.LoadLocal loadLocal
+                        && loadLocal.slot() == 0
+                        && loadLocal.result().type() == IrType.FLOAT));
     }
 
     @Test

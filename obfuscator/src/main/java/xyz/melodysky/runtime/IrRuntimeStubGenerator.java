@@ -1285,7 +1285,8 @@ public class IrRuntimeStubGenerator {
         appendFindClassLookup(out, "lookupClass", "java/lang/invoke/MethodHandles$Lookup", 8);
         appendFindClassLookup(out, "callSiteClass", "java/lang/invoke/CallSite", 8);
         appendFindClassLookup(out, "lambdaMetafactoryClass", "java/lang/invoke/LambdaMetafactory", 8);
-        out.append("        if (callerClass == NULL || targetClass == NULL || classClass == NULL || methodTypeClass == NULL || methodHandlesClass == NULL || lookupClass == NULL || callSiteClass == NULL || lambdaMetafactoryClass == NULL) return NULL;\n");
+        appendFindClassLookup(out, "integerClass", "java/lang/Integer", 8);
+        out.append("        if (callerClass == NULL || targetClass == NULL || classClass == NULL || methodTypeClass == NULL || methodHandlesClass == NULL || lookupClass == NULL || callSiteClass == NULL || lambdaMetafactoryClass == NULL || integerClass == NULL) return NULL;\n");
         appendGetMethodIdLookup(out, "getClassLoader", "classClass", false, "getClassLoader", "()Ljava/lang/ClassLoader;", 8);
         appendGetMethodIdLookup(out, "fromMethodDescriptorString", "methodTypeClass", true, "fromMethodDescriptorString", "(Ljava/lang/String;Ljava/lang/ClassLoader;)Ljava/lang/invoke/MethodType;", 8);
         appendGetMethodIdLookup(out, "lookup", "methodHandlesClass", true, "lookup", "()Ljava/lang/invoke/MethodHandles$Lookup;", 8);
@@ -1296,8 +1297,10 @@ public class IrRuntimeStubGenerator {
         appendGetMethodIdLookup(out, "findVirtual", "lookupClass", false, "findVirtual", "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;", 8);
         appendGetMethodIdLookup(out, "findSpecial", "lookupClass", false, "findSpecial", "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;", 8);
         appendGetMethodIdLookup(out, "metafactory", "lambdaMetafactoryClass", true, "metafactory", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;", 8);
+        appendGetMethodIdLookup(out, "altMetafactory", "lambdaMetafactoryClass", true, "altMetafactory", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;", 8);
+        appendGetMethodIdLookup(out, "integerValueOf", "integerClass", true, "valueOf", "(I)Ljava/lang/Integer;", 8);
         appendGetMethodIdLookup(out, "getTarget", "callSiteClass", false, "getTarget", "()Ljava/lang/invoke/MethodHandle;", 8);
-        out.append("        if (getClassLoader == NULL || fromMethodDescriptorString == NULL || lookup == NULL || publicLookup == NULL || privateLookupIn == NULL || findConstructor == NULL || findStatic == NULL || findVirtual == NULL || findSpecial == NULL || metafactory == NULL || getTarget == NULL) return NULL;\n");
+        out.append("        if (getClassLoader == NULL || fromMethodDescriptorString == NULL || lookup == NULL || publicLookup == NULL || privateLookupIn == NULL || findConstructor == NULL || findStatic == NULL || findVirtual == NULL || findSpecial == NULL || metafactory == NULL || altMetafactory == NULL || integerValueOf == NULL || getTarget == NULL) return NULL;\n");
         out.append("        jobject classLoader = (*env)->CallObjectMethod(env, callerClass, getClassLoader);\n");
         out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
         out.append("        jstring implDescriptor = ").append(runtimeNames.newStringUtfObf()).append("(env, lambda_impl_descriptor, lambda_impl_descriptor_len, lambda_impl_descriptor_seed);\n");
@@ -1353,7 +1356,64 @@ public class IrRuntimeStubGenerator {
         out.append("        if (instantiatedMethodType == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
         out.append("        jstring samName = ").append(runtimeNames.newStringUtfObf()).append("(env, lambda_sam_name, lambda_sam_name_len, lambda_sam_name_seed);\n");
         out.append("        if (samName == NULL) return NULL;\n");
-        out.append("        jobject callSite = (*env)->CallStaticObjectMethod(env, lambdaMetafactoryClass, metafactory, callerLookup, samName, factoryType, samMethodType, implHandle, instantiatedMethodType);\n");
+        if ("altMetafactory".equals(lambdaBootstrapMethod(helper))) {
+            List<String> markerInterfaces = lambdaMarkerInterfaces(helper);
+            List<String> bridgeDescriptors = lambdaBridgeDescriptors(helper);
+            int bootstrapArgCount = 4;
+            if ((lambdaAltFlags(helper) & 2) != 0) {
+                bootstrapArgCount += 1 + markerInterfaces.size();
+            }
+            if ((lambdaAltFlags(helper) & 4) != 0) {
+                bootstrapArgCount += 1 + bridgeDescriptors.size();
+            }
+            out.append("        jobjectArray bootstrapArgs = (*env)->NewObjectArray(env, ").append(bootstrapArgCount).append(", objectClass, NULL);\n");
+            out.append("        if (bootstrapArgs == NULL) return NULL;\n");
+            out.append("        jobject lambdaFlags = (*env)->CallStaticObjectMethod(env, integerClass, integerValueOf, ").append(lambdaAltFlags(helper)).append(");\n");
+            out.append("        if (lambdaFlags == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
+            out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, 0, samMethodType);\n");
+            out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, 1, implHandle);\n");
+            out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, 2, instantiatedMethodType);\n");
+            out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, 3, lambdaFlags);\n");
+            out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
+            int bootstrapArgIndex = 4;
+            if ((lambdaAltFlags(helper) & 2) != 0) {
+                out.append("        jobject markerCount = (*env)->CallStaticObjectMethod(env, integerClass, integerValueOf, ").append(markerInterfaces.size()).append(");\n");
+                out.append("        if (markerCount == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
+                out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, ").append(bootstrapArgIndex++).append(", markerCount);\n");
+                out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
+                for (String markerInterface : markerInterfaces) {
+                    String variableName = "marker_interface_" + bootstrapArgIndex;
+                    appendEncodedCString(out, variableName, markerInterface, 8);
+                    out.append("        jclass ").append(variableName).append("_class = ").append(runtimeNames.findClassObf())
+                            .append("(env, ").append(variableName).append(", ").append(variableName).append("_len, ").append(variableName).append("_seed);\n");
+                    out.append("        if (").append(variableName).append("_class == NULL) return NULL;\n");
+                    out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, ").append(bootstrapArgIndex++).append(", ").append(variableName).append("_class);\n");
+                    out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
+                }
+            }
+            if ((lambdaAltFlags(helper) & 4) != 0) {
+                out.append("        jobject bridgeCount = (*env)->CallStaticObjectMethod(env, integerClass, integerValueOf, ").append(bridgeDescriptors.size()).append(");\n");
+                out.append("        if (bridgeCount == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
+                out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, ").append(bootstrapArgIndex++).append(", bridgeCount);\n");
+                out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
+                for (String bridgeDescriptor : bridgeDescriptors) {
+                    String variableName = "bridge_descriptor_" + bootstrapArgIndex;
+                    appendEncodedCString(out, variableName, bridgeDescriptor, 8);
+                    out.append("        jstring ").append(variableName).append("_string = ").append(runtimeNames.newStringUtfObf())
+                            .append("(env, ").append(variableName).append(", ").append(variableName).append("_len, ").append(variableName).append("_seed);\n");
+                    out.append("        if (").append(variableName).append("_string == NULL) return NULL;\n");
+                    out.append("        jobject ").append(variableName).append("_type = (*env)->CallStaticObjectMethod(env, methodTypeClass, fromMethodDescriptorString, ")
+                            .append(variableName).append("_string, classLoader);\n");
+                    out.append("        (*env)->DeleteLocalRef(env, ").append(variableName).append("_string);\n");
+                    out.append("        if (").append(variableName).append("_type == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
+                    out.append("        (*env)->SetObjectArrayElement(env, bootstrapArgs, ").append(bootstrapArgIndex++).append(", ").append(variableName).append("_type);\n");
+                    out.append("        if ((*env)->ExceptionCheck(env)) return NULL;\n");
+                }
+            }
+            out.append("        jobject callSite = (*env)->CallStaticObjectMethod(env, lambdaMetafactoryClass, altMetafactory, callerLookup, samName, factoryType, bootstrapArgs);\n");
+        } else {
+            out.append("        jobject callSite = (*env)->CallStaticObjectMethod(env, lambdaMetafactoryClass, metafactory, callerLookup, samName, factoryType, samMethodType, implHandle, instantiatedMethodType);\n");
+        }
         out.append("        (*env)->DeleteLocalRef(env, samName);\n");
         out.append("        if (callSite == NULL || (*env)->ExceptionCheck(env)) return NULL;\n");
         out.append("        jobject lambdaFactory = (*env)->CallObjectMethod(env, callSite, getTarget);\n");
@@ -1992,8 +2052,34 @@ public class IrRuntimeStubGenerator {
     }
 
     private String lambdaInvokeKind(Helper helper) {
-        String[] payload = lambdaPayloadPieces(helper);
-        return payload.length >= 4 ? payload[3] : "virtual";
+        String[] payload = lambdaInvokePayloadPieces(helper);
+        return payload[0];
+    }
+
+    private String lambdaBootstrapMethod(Helper helper) {
+        String[] payload = lambdaInvokePayloadPieces(helper);
+        return payload.length >= 2 ? payload[1] : "metafactory";
+    }
+
+    private int lambdaAltFlags(Helper helper) {
+        String[] payload = lambdaInvokePayloadPieces(helper);
+        return payload.length >= 3 && !payload[2].isEmpty() ? Integer.parseInt(payload[2]) : 0;
+    }
+
+    private List<String> lambdaMarkerInterfaces(Helper helper) {
+        String[] payload = lambdaInvokePayloadPieces(helper);
+        if (payload.length < 4 || payload[3].isEmpty()) {
+            return List.of();
+        }
+        return List.of(payload[3].split("\u0003", -1));
+    }
+
+    private List<String> lambdaBridgeDescriptors(Helper helper) {
+        String[] payload = lambdaInvokePayloadPieces(helper);
+        if (payload.length < 5 || payload[4].isEmpty()) {
+            return List.of();
+        }
+        return List.of(payload[4].split("\u0003", -1));
     }
 
     private List<String> recordComponentLabels(Helper helper) {
@@ -2030,6 +2116,14 @@ public class IrRuntimeStubGenerator {
             throw new IllegalArgumentException("lambda helper payload is malformed");
         }
         return pieces;
+    }
+
+    private String[] lambdaInvokePayloadPieces(Helper helper) {
+        String[] payload = lambdaPayloadPieces(helper);
+        if (payload.length < 4 || payload[3].isEmpty()) {
+            return new String[]{"virtual"};
+        }
+        return payload[3].split("\u0002", -1);
     }
 
     private void appendRecordBoxedComponent(StringBuilder out, String componentType, String fieldId, String sourceObject,

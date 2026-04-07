@@ -17,6 +17,11 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.analysis.Analyzer;
+import org.objectweb.asm.tree.analysis.AnalyzerException;
+import org.objectweb.asm.tree.analysis.BasicInterpreter;
+import org.objectweb.asm.tree.analysis.BasicValue;
+import org.objectweb.asm.tree.analysis.Frame;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.IincInsnNode;
@@ -43,9 +48,14 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 public class MethodIrBuilder {
+
+    private static final int LAMBDA_METAFACTORY_FLAG_SERIALIZABLE = 1;
+    private static final int LAMBDA_METAFACTORY_FLAG_MARKERS = 1 << 1;
+    private static final int LAMBDA_METAFACTORY_FLAG_BRIDGES = 1 << 2;
 
     private final IrMethodValidator validator = new IrMethodValidator();
 
@@ -61,6 +71,8 @@ public class MethodIrBuilder {
 
         LinkedHashSet<AbstractInsnNode> blockStarts = collectBlockStarts(methodNode, entryInstruction);
         IdentityHashMap<AbstractInsnNode, String> blockLabels = assignBlockLabels(blockStarts, entryInstruction);
+        Frame<BasicValue>[] localFrames = analyzeLocalFrames(ownerInternalName, methodNode);
+        IdentityHashMap<AbstractInsnNode, Integer> instructionIndices = indexInstructions(methodNode);
 
         ArrayList<IrBlock> blocks = new ArrayList<>();
         Deque<IrValue> stack = new ArrayDeque<>();
@@ -70,8 +82,8 @@ public class MethodIrBuilder {
         Map<String, List<IrType>> incomingStackTypesByBlock = new HashMap<>();
         Map<String, List<Integer>> incomingStackSlotsByBlock = new HashMap<>();
         Set<String> emittedBlocks = new LinkedHashSet<>();
-        Map<Integer, IrType> localTypes = initializeLocalTypes(ownerInternalName, methodNode);
-        Map<Integer, Integer> localStorageSlots = initializeLocalStorageSlots(localTypes);
+        Map<Integer, IrType> initialLocalTypes = initializeLocalTypes(ownerInternalName, methodNode);
+        Map<Integer, Map<LocalStorageKind, Integer>> localStorageSlots = initializeLocalStorageSlots(initialLocalTypes);
         int nextStorageSlot = methodNode.maxLocals;
         Map<String, IrType> handlerEntryTypesByBlock = collectExceptionHandlerEntryTypes(methodNode, blockLabels);
         incomingStackTypesByBlock.put("entry", List.of());
@@ -145,15 +157,16 @@ public class MethodIrBuilder {
 
             switch (instruction) {
                 case VarInsnNode varInsn -> {
+                    Frame<BasicValue> localFrame = requireFrame(methodNode, localFrames, instructionIndices, varInsn);
                     switch (varInsn.getOpcode()) {
                         case Opcodes.ILOAD -> {
-                            IrType localType = requireLocalType(methodNode, localTypes, varInsn.var);
+                            IrType localType = requireLocalType(methodNode, localFrame, varInsn.var);
                             if (!isIntLike(localType)) {
                                 throw new UnsupportedBytecodeException("Local slot " + varInsn.var + " is not int-like in "
                                         + methodNode.name + methodNode.desc);
                             }
                             IrValue raw = new IrValue(nextValueId++, localType, "local");
-                            currentInstructions.add(new IrInstruction.LoadLocal(raw, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var)));
+                            currentInstructions.add(new IrInstruction.LoadLocal(raw, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var, localType)));
                             if (localType == IrType.INT) {
                                 stack.push(raw);
                             } else {
@@ -163,7 +176,7 @@ public class MethodIrBuilder {
                             }
                         }
                         case Opcodes.LLOAD, Opcodes.FLOAD, Opcodes.DLOAD -> {
-                            IrType localType = requireLocalType(methodNode, localTypes, varInsn.var);
+                            IrType localType = requireLocalType(methodNode, localFrame, varInsn.var);
                             IrType expectedType = switch (varInsn.getOpcode()) {
                                 case Opcodes.LLOAD -> IrType.LONG;
                                 case Opcodes.FLOAD -> IrType.FLOAT;
@@ -175,27 +188,26 @@ public class MethodIrBuilder {
                                         + expectedType.displayName() + " in " + methodNode.name + methodNode.desc);
                             }
                             IrValue value = new IrValue(nextValueId++, localType, "local");
-                            currentInstructions.add(new IrInstruction.LoadLocal(value, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var)));
+                            currentInstructions.add(new IrInstruction.LoadLocal(value, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var, localType)));
                             stack.push(value);
                         }
                         case Opcodes.ALOAD -> {
-                            IrType localType = requireLocalType(methodNode, localTypes, varInsn.var);
+                            IrType localType = requireLocalType(methodNode, localFrame, varInsn.var);
                             if (localType.isPrimitive() || localType == IrType.VOID) {
                                 throw new UnsupportedBytecodeException("Local slot " + varInsn.var + " is not reference-like in "
                                         + methodNode.name + methodNode.desc);
                             }
                             IrValue value = new IrValue(nextValueId++, localType, "local");
-                            currentInstructions.add(new IrInstruction.LoadLocal(value, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var)));
+                            currentInstructions.add(new IrInstruction.LoadLocal(value, requireLocalStorageSlot(methodNode, localStorageSlots, varInsn.var, localType)));
                             stack.push(value);
                         }
                         case Opcodes.ISTORE -> {
                             IrValue value = popIntLike(stack, methodNode);
-                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, localTypes, varInsn.var, value.type(), nextStorageSlot);
+                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, varInsn.var, value.type(), nextStorageSlot);
                             if (storageSlot == nextStorageSlot) {
                                 nextStorageSlot++;
                             }
                             currentInstructions.add(new IrInstruction.StoreLocal(storageSlot, value));
-                            localTypes.put(varInsn.var, value.type());
                         }
                         case Opcodes.LSTORE, Opcodes.FSTORE, Opcodes.DSTORE -> {
                             IrType expectedType = switch (varInsn.getOpcode()) {
@@ -205,21 +217,19 @@ public class MethodIrBuilder {
                                 default -> throw new IllegalStateException("Unexpected numeric store opcode " + varInsn.getOpcode());
                             };
                             IrValue value = popValueOfExpectedType(stack, methodNode, expectedType, "store local");
-                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, localTypes, varInsn.var, value.type(), nextStorageSlot);
+                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, varInsn.var, value.type(), nextStorageSlot);
                             if (storageSlot == nextStorageSlot) {
                                 nextStorageSlot++;
                             }
                             currentInstructions.add(new IrInstruction.StoreLocal(storageSlot, value));
-                            localTypes.put(varInsn.var, value.type());
                         }
                         case Opcodes.ASTORE -> {
                             IrValue value = popReferenceLike(stack, methodNode);
-                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, localTypes, varInsn.var, value.type(), nextStorageSlot);
+                            int storageSlot = allocateStorageSlotForStore(localStorageSlots, varInsn.var, value.type(), nextStorageSlot);
                             if (storageSlot == nextStorageSlot) {
                                 nextStorageSlot++;
                             }
                             currentInstructions.add(new IrInstruction.StoreLocal(storageSlot, value));
-                            localTypes.put(varInsn.var, value.type());
                         }
                         default -> throw unsupported(methodNode, varInsn, "only ILOAD/LLOAD/FLOAD/DLOAD/ALOAD and ISTORE/LSTORE/FSTORE/DSTORE/ASTORE are supported in the current slice");
                     }
@@ -433,12 +443,13 @@ public class MethodIrBuilder {
                     }
                 }
                 case IincInsnNode iincInsn -> {
-                    IrType localType = requireLocalType(methodNode, localTypes, iincInsn.var);
+                    Frame<BasicValue> localFrame = requireFrame(methodNode, localFrames, instructionIndices, iincInsn);
+                    IrType localType = requireLocalType(methodNode, localFrame, iincInsn.var);
                     if (localType != IrType.INT) {
                         throw unsupported(methodNode, iincInsn, "iinc currently requires an int local");
                     }
                     IrValue loaded = new IrValue(nextValueId++, IrType.INT, "local");
-                    int storageSlot = requireLocalStorageSlot(methodNode, localStorageSlots, iincInsn.var);
+                    int storageSlot = requireLocalStorageSlot(methodNode, localStorageSlots, iincInsn.var, localType);
                     currentInstructions.add(new IrInstruction.LoadLocal(loaded, storageSlot));
                     IrValue delta = emitConst(currentInstructions, iincInsn.incr, nextValueId++);
                     IrValue updated = new IrValue(nextValueId++, IrType.INT, "tmp");
@@ -492,59 +503,78 @@ public class MethodIrBuilder {
                         case Opcodes.DUP_X1 -> duplicateTopOfStackAndInsertBelowOne(methodNode, stack);
                         case Opcodes.DUP_X2 -> duplicateTopOfStackAndInsertBelowTwo(methodNode, stack);
                         case Opcodes.DUP2_X1 -> duplicateTopTwoCategorySlotsAndInsertBelowOne(methodNode, stack);
+                        case Opcodes.DUP2_X2 -> duplicateTopTwoCategorySlotsAndInsertBelowTwo(methodNode, stack);
                         case Opcodes.ICONST_M1, Opcodes.ICONST_0, Opcodes.ICONST_1, Opcodes.ICONST_2,
                                 Opcodes.ICONST_3, Opcodes.ICONST_4, Opcodes.ICONST_5 ->
                                 stack.push(emitConst(currentInstructions, opcode - Opcodes.ICONST_0, nextValueId++));
                         case Opcodes.IALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.INT, IrType.INT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.INT, IrType.INT, nextValueId);
                         }
                         case Opcodes.BALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.BYTE, IrType.INT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.BYTE, IrType.INT, nextValueId);
                         }
                         case Opcodes.CALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.CHAR, IrType.INT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.CHAR, IrType.INT, nextValueId);
                         }
                         case Opcodes.SALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.SHORT, IrType.INT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.SHORT, IrType.INT, nextValueId);
                         }
                         case Opcodes.LALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.LONG, IrType.LONG, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.LONG, IrType.LONG, nextValueId);
                         }
                         case Opcodes.FALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.FLOAT, IrType.FLOAT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.FLOAT, IrType.FLOAT, nextValueId);
                         }
                         case Opcodes.DALOAD -> {
-                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, IrType.DOUBLE, IrType.DOUBLE, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayLoad(methodNode, currentInstructions, stack, instructionFrame, IrType.DOUBLE, IrType.DOUBLE, nextValueId);
                         }
                         case Opcodes.AALOAD -> {
-                            nextValueId = handleReferenceArrayLoad(methodNode, currentInstructions, stack, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleReferenceArrayLoad(methodNode, currentInstructions, stack, instructionFrame, nextValueId);
                         }
                         case Opcodes.IASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.INT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.INT, nextValueId);
                         }
                         case Opcodes.BASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.BYTE, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.BYTE, nextValueId);
                         }
                         case Opcodes.CASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.CHAR, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.CHAR, nextValueId);
                         }
                         case Opcodes.SASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.SHORT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.SHORT, nextValueId);
                         }
                         case Opcodes.LASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.LONG, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.LONG, nextValueId);
                         }
                         case Opcodes.FASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.FLOAT, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.FLOAT, nextValueId);
                         }
                         case Opcodes.DASTORE -> {
-                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, IrType.DOUBLE, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleArrayStore(methodNode, currentInstructions, stack, instructionFrame, IrType.DOUBLE, nextValueId);
                         }
                         case Opcodes.AASTORE -> {
-                            nextValueId = handleReferenceArrayStore(methodNode, currentInstructions, stack, nextValueId);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            nextValueId = handleReferenceArrayStore(methodNode, currentInstructions, stack, instructionFrame, nextValueId);
                         }
                         case Opcodes.ARRAYLENGTH -> {
-                            IrValue array = popArray(stack, methodNode);
+                            Frame<BasicValue> instructionFrame = requireFrame(methodNode, localFrames, instructionIndices, instruction);
+                            IrValue array = popReferenceLike(stack, methodNode);
+                            resolveArrayOperandType(methodNode, array, instructionFrame, 0);
                             IrValue result = new IrValue(nextValueId++, IrType.INT, "len");
                             currentInstructions.add(new IrInstruction.CallHelper(
                                     result,
@@ -1456,7 +1486,7 @@ public class MethodIrBuilder {
             return handleStringConcatInvokeDynamic(methodNode, currentInstructions, stack, indyInsn, nextValueId);
         }
         if ("java/lang/invoke/LambdaMetafactory".equals(bootstrap.getOwner())
-                && "metafactory".equals(bootstrap.getName())) {
+                && ("metafactory".equals(bootstrap.getName()) || "altMetafactory".equals(bootstrap.getName()))) {
             return handleLambdaMetafactoryInvokeDynamic(ownerInternalName, methodNode, currentInstructions, stack, indyInsn, nextValueId);
         }
         if ("java/lang/runtime/SwitchBootstraps".equals(bootstrap.getOwner())
@@ -1545,14 +1575,70 @@ public class MethodIrBuilder {
             captureArguments.add(0, coercedValue.value());
         }
 
+        LambdaBootstrapMetadata bootstrapMetadata = lambdaBootstrapMetadata(methodNode, indyInsn);
         IrValue result = new IrValue(nextValueId, interfaceType, "lambda");
         currentInstructions.add(new IrInstruction.CallHelper(
                 result,
-                lambdaHelperName(ownerInternalName, interfaceType, indyInsn.name, samMethodType, implMethod, instantiatedMethodType, captureTypes),
+                lambdaHelperName(ownerInternalName, interfaceType, indyInsn.name, samMethodType, implMethod, instantiatedMethodType, captureTypes, bootstrapMetadata),
                 List.copyOf(captureArguments)
         ));
         stack.push(result);
         return nextValueId + 1;
+    }
+
+    private LambdaBootstrapMetadata lambdaBootstrapMetadata(MethodNode methodNode, InvokeDynamicInsnNode indyInsn) {
+        String bootstrapMethodName = indyInsn.bsm.getName();
+        if ("metafactory".equals(bootstrapMethodName)) {
+            return new LambdaBootstrapMetadata("metafactory", 0, List.of(), List.of());
+        }
+        if (!"altMetafactory".equals(bootstrapMethodName)) {
+            throw unsupported(methodNode, indyInsn, "unsupported lambda metafactory bootstrap " + bootstrapMethodName);
+        }
+        if (!(indyInsn.bsmArgs.length >= 4 && indyInsn.bsmArgs[3] instanceof Integer flags)) {
+            throw unsupported(methodNode, indyInsn, "altMetafactory is missing bootstrap flags");
+        }
+        int cursor = 4;
+        ArrayList<IrType> markerInterfaces = new ArrayList<>();
+        if ((flags & LAMBDA_METAFACTORY_FLAG_MARKERS) != 0) {
+            if (!(cursor < indyInsn.bsmArgs.length && indyInsn.bsmArgs[cursor] instanceof Integer markerCount)) {
+                throw unsupported(methodNode, indyInsn, "altMetafactory markers are missing interface count");
+            }
+            cursor++;
+            for (int index = 0; index < markerCount; index++) {
+                if (!(cursor < indyInsn.bsmArgs.length && indyInsn.bsmArgs[cursor] instanceof Type markerType)) {
+                    throw unsupported(methodNode, indyInsn, "altMetafactory marker interface is missing type descriptor");
+                }
+                IrType markerInterface = lowerType(markerType);
+                if (markerInterface.isPrimitive() || markerInterface == IrType.VOID || markerInterface.kind() == IrType.Kind.ARRAY) {
+                    throw unsupported(methodNode, indyInsn, "altMetafactory marker interfaces must be object types");
+                }
+                markerInterfaces.add(markerInterface);
+                cursor++;
+            }
+        }
+        ArrayList<Type> bridgeMethodTypes = new ArrayList<>();
+        if ((flags & LAMBDA_METAFACTORY_FLAG_BRIDGES) != 0) {
+            if (!(cursor < indyInsn.bsmArgs.length && indyInsn.bsmArgs[cursor] instanceof Integer bridgeCount)) {
+                throw unsupported(methodNode, indyInsn, "altMetafactory bridges are missing method type count");
+            }
+            cursor++;
+            for (int index = 0; index < bridgeCount; index++) {
+                if (!(cursor < indyInsn.bsmArgs.length && indyInsn.bsmArgs[cursor] instanceof Type bridgeType)) {
+                    throw unsupported(methodNode, indyInsn, "altMetafactory bridge descriptor is missing method type");
+                }
+                bridgeMethodTypes.add(bridgeType);
+                cursor++;
+            }
+        }
+        if (cursor != indyInsn.bsmArgs.length) {
+            throw unsupported(methodNode, indyInsn, "altMetafactory bootstrap has unexpected trailing arguments");
+        }
+        return new LambdaBootstrapMetadata(
+                "altMetafactory",
+                flags,
+                List.copyOf(markerInterfaces),
+                List.copyOf(bridgeMethodTypes)
+        );
     }
 
     private int handleSwitchInvokeDynamic(MethodNode methodNode, List<IrInstruction> currentInstructions,
@@ -1848,24 +1934,91 @@ public class MethodIrBuilder {
         return value;
     }
 
-    private IrType requireLocalType(MethodNode methodNode, Map<Integer, IrType> localTypes, int slot) {
-        IrType type = localTypes.get(slot);
-        if (type == null) {
-            throw new UnsupportedBytecodeException("Local slot " + slot + " has unknown type in " + methodNode.name + methodNode.desc);
+    private Frame<BasicValue>[] analyzeLocalFrames(String ownerInternalName, MethodNode methodNode) {
+        try {
+            String owner = ownerInternalName == null || ownerInternalName.isBlank() ? "java/lang/Object" : ownerInternalName;
+            return new Analyzer<>(new ExactTypeInterpreter()).analyzeAndComputeMaxs(owner, methodNode);
+        } catch (AnalyzerException exception) {
+            throw new UnsupportedBytecodeException("Failed to analyze locals in " + methodNode.name
+                    + methodNode.desc + ": " + exception.getMessage());
         }
-        return type;
     }
 
-    private Map<Integer, Integer> initializeLocalStorageSlots(Map<Integer, IrType> localTypes) {
-        HashMap<Integer, Integer> storageSlots = new HashMap<>();
-        for (Integer slot : localTypes.keySet()) {
-            storageSlots.put(slot, slot);
+    private IdentityHashMap<AbstractInsnNode, Integer> indexInstructions(MethodNode methodNode) {
+        IdentityHashMap<AbstractInsnNode, Integer> instructionIndices = new IdentityHashMap<>();
+        int index = 0;
+        for (AbstractInsnNode instruction = methodNode.instructions.getFirst();
+             instruction != null;
+             instruction = instruction.getNext()) {
+            instructionIndices.put(instruction, index++);
+        }
+        return instructionIndices;
+    }
+
+    private Frame<BasicValue> requireFrame(MethodNode methodNode, Frame<BasicValue>[] localFrames,
+                                           IdentityHashMap<AbstractInsnNode, Integer> instructionIndices,
+                                           AbstractInsnNode instruction) {
+        Integer index = instructionIndices.get(instruction);
+        if (index == null || index < 0 || index >= localFrames.length) {
+            throw new UnsupportedBytecodeException("Missing frame index for " + methodNode.name + methodNode.desc);
+        }
+        Frame<BasicValue> frame = localFrames[index];
+        if (frame == null) {
+            throw new UnsupportedBytecodeException("Missing local frame at " + opcodeName(instruction.getOpcode())
+                    + " in " + methodNode.name + methodNode.desc);
+        }
+        return frame;
+    }
+
+    private IrType requireLocalType(MethodNode methodNode, Frame<BasicValue> localFrame, int slot) {
+        if (slot < 0 || slot >= localFrame.getLocals()) {
+            throw new UnsupportedBytecodeException("Local slot " + slot + " has unknown type in " + methodNode.name + methodNode.desc);
+        }
+        BasicValue value = localFrame.getLocal(slot);
+        if (value == null || value == BasicValue.UNINITIALIZED_VALUE || value.getType() == null) {
+            throw new UnsupportedBytecodeException("Local slot " + slot + " has unknown type in " + methodNode.name + methodNode.desc);
+        }
+        return lowerFrameType(value.getType());
+    }
+
+    private IrType requireArrayStackType(MethodNode methodNode, Frame<BasicValue> frame, int stackDepthFromTop) {
+        int stackIndex = frame.getStackSize() - 1 - stackDepthFromTop;
+        if (stackIndex < 0 || stackIndex >= frame.getStackSize()) {
+            throw new UnsupportedBytecodeException("Missing operand stack frame for " + methodNode.name + methodNode.desc);
+        }
+        BasicValue value = frame.getStack(stackIndex);
+        if (value == null || value == BasicValue.UNINITIALIZED_VALUE || value.getType() == null) {
+            throw new UnsupportedBytecodeException("Missing operand stack frame for " + methodNode.name + methodNode.desc);
+        }
+        IrType stackType = lowerFrameType(value.getType());
+        if (stackType.kind() != IrType.Kind.ARRAY) {
+            throw new UnsupportedBytecodeException("Expected array on operand stack in " + methodNode.name
+                    + methodNode.desc + " but found " + stackType.displayName());
+        }
+        return stackType;
+    }
+
+    private IrType resolveArrayOperandType(MethodNode methodNode, IrValue value, Frame<BasicValue> frame, int stackDepthFromTop) {
+        if (value.type().kind() == IrType.Kind.ARRAY) {
+            return value.type();
+        }
+        return requireArrayStackType(methodNode, frame, stackDepthFromTop);
+    }
+
+    private Map<Integer, Map<LocalStorageKind, Integer>> initializeLocalStorageSlots(Map<Integer, IrType> localTypes) {
+        HashMap<Integer, Map<LocalStorageKind, Integer>> storageSlots = new HashMap<>();
+        for (Map.Entry<Integer, IrType> entry : localTypes.entrySet()) {
+            HashMap<LocalStorageKind, Integer> kinds = new HashMap<>();
+            kinds.put(localStorageKind(entry.getValue()), entry.getKey());
+            storageSlots.put(entry.getKey(), kinds);
         }
         return storageSlots;
     }
 
-    private int requireLocalStorageSlot(MethodNode methodNode, Map<Integer, Integer> localStorageSlots, int bytecodeSlot) {
-        Integer storageSlot = localStorageSlots.get(bytecodeSlot);
+    private int requireLocalStorageSlot(MethodNode methodNode, Map<Integer, Map<LocalStorageKind, Integer>> localStorageSlots,
+                                        int bytecodeSlot, IrType localType) {
+        Map<LocalStorageKind, Integer> slotsByKind = localStorageSlots.get(bytecodeSlot);
+        Integer storageSlot = slotsByKind == null ? null : slotsByKind.get(localStorageKind(localType));
         if (storageSlot == null) {
             throw new UnsupportedBytecodeException("Local slot " + bytecodeSlot + " has no storage mapping in "
                     + methodNode.name + methodNode.desc);
@@ -1873,24 +2026,35 @@ public class MethodIrBuilder {
         return storageSlot;
     }
 
-    private int allocateStorageSlotForStore(Map<Integer, Integer> localStorageSlots, Map<Integer, IrType> localTypes,
+    private int allocateStorageSlotForStore(Map<Integer, Map<LocalStorageKind, Integer>> localStorageSlots,
                                             int bytecodeSlot, IrType newType, int nextStorageSlot) {
-        Integer currentStorageSlot = localStorageSlots.get(bytecodeSlot);
-        IrType previousType = localTypes.get(bytecodeSlot);
-        if (currentStorageSlot == null || previousType == null) {
-            localStorageSlots.put(bytecodeSlot, bytecodeSlot);
-            return bytecodeSlot;
+        Map<LocalStorageKind, Integer> slotsByKind = localStorageSlots.computeIfAbsent(bytecodeSlot, ignored -> new HashMap<>());
+        LocalStorageKind storageKind = localStorageKind(newType);
+        Integer existingSlot = slotsByKind.get(storageKind);
+        if (existingSlot != null) {
+            return existingSlot;
         }
-        if (llvmStorageCompatible(previousType, newType)) {
-            return currentStorageSlot;
-        }
-        localStorageSlots.put(bytecodeSlot, nextStorageSlot);
-        return nextStorageSlot;
+        int storageSlot = slotsByKind.isEmpty() ? bytecodeSlot : nextStorageSlot;
+        slotsByKind.put(storageKind, storageSlot);
+        return storageSlot;
     }
 
-    private boolean llvmStorageCompatible(IrType left, IrType right) {
-        return left.equals(right)
-                || (!left.isPrimitive() && left != IrType.VOID && !right.isPrimitive() && right != IrType.VOID);
+    private LocalStorageKind localStorageKind(IrType type) {
+        return switch (type.kind()) {
+            case BOOLEAN, BYTE, SHORT, CHAR, INT -> LocalStorageKind.INT;
+            case LONG -> LocalStorageKind.LONG;
+            case FLOAT -> LocalStorageKind.FLOAT;
+            case DOUBLE -> LocalStorageKind.DOUBLE;
+            case REFERENCE, ARRAY -> LocalStorageKind.REFERENCE;
+            case VOID -> throw new IllegalArgumentException("void locals are not supported");
+        };
+    }
+
+    private IrType lowerFrameType(Type type) {
+        if (type.equals(ExactTypeInterpreter.NULL_TYPE)) {
+            return IrType.reference("java/lang/Object");
+        }
+        return lowerType(type);
     }
 
     private void duplicateTopOfStack(MethodNode methodNode, Deque<IrValue> stack) {
@@ -2000,6 +2164,69 @@ public class MethodIrBuilder {
         }
         stack.push(second);
         stack.push(top);
+        stack.push(third);
+        stack.push(second);
+        stack.push(top);
+    }
+
+    private void duplicateTopTwoCategorySlotsAndInsertBelowTwo(MethodNode methodNode, Deque<IrValue> stack) {
+        if (stack.size() < 2) {
+            throw new UnsupportedBytecodeException("Operand stack underflow in " + methodNode.name + methodNode.desc);
+        }
+        IrValue top = stack.pop();
+        if (top.type().isWide()) {
+            if (stack.isEmpty()) {
+                throw new UnsupportedBytecodeException("Operand stack underflow in " + methodNode.name + methodNode.desc);
+            }
+            IrValue second = stack.pop();
+            if (second.type().isWide()) {
+                stack.push(top);
+                stack.push(second);
+                stack.push(top);
+                return;
+            }
+            if (stack.isEmpty()) {
+                throw new UnsupportedBytecodeException("Operand stack underflow in " + methodNode.name + methodNode.desc);
+            }
+            IrValue third = stack.pop();
+            if (third.type().isWide()) {
+                throw new UnsupportedBytecodeException("DUP2_X2 requires category-1 values below a category-2 top value in "
+                        + methodNode.name + methodNode.desc);
+            }
+            stack.push(top);
+            stack.push(third);
+            stack.push(second);
+            stack.push(top);
+            return;
+        }
+        IrValue second = stack.pop();
+        if (second.type().isWide()) {
+            throw new UnsupportedBytecodeException("DUP2_X2 requires the top two values to be category-1 or a single category-2 value in "
+                    + methodNode.name + methodNode.desc);
+        }
+        if (stack.isEmpty()) {
+            throw new UnsupportedBytecodeException("Operand stack underflow in " + methodNode.name + methodNode.desc);
+        }
+        IrValue third = stack.pop();
+        if (third.type().isWide()) {
+            stack.push(second);
+            stack.push(top);
+            stack.push(third);
+            stack.push(second);
+            stack.push(top);
+            return;
+        }
+        if (stack.isEmpty()) {
+            throw new UnsupportedBytecodeException("Operand stack underflow in " + methodNode.name + methodNode.desc);
+        }
+        IrValue fourth = stack.pop();
+        if (fourth.type().isWide()) {
+            throw new UnsupportedBytecodeException("DUP2_X2 does not support category-2 fourth values in "
+                    + methodNode.name + methodNode.desc);
+        }
+        stack.push(second);
+        stack.push(top);
+        stack.push(fourth);
         stack.push(third);
         stack.push(second);
         stack.push(top);
@@ -2138,20 +2365,22 @@ public class MethodIrBuilder {
     }
 
     private int handleArrayLoad(MethodNode methodNode, List<IrInstruction> currentInstructions, Deque<IrValue> stack,
+                                Frame<BasicValue> instructionFrame,
                                 IrType expectedElementType, IrType resultType, int nextValueId) {
         CoercedValue indexValue = popPromotedInt(currentInstructions, stack, methodNode, nextValueId);
         IrValue index = indexValue.value();
         nextValueId = indexValue.nextValueId();
-        IrValue array = popArray(stack, methodNode);
-        IrType elementType = arrayElementType(array.type());
+        IrValue array = popReferenceLike(stack, methodNode);
+        IrType arrayType = resolveArrayOperandType(methodNode, array, instructionFrame, 1);
+        IrType elementType = arrayElementType(arrayType);
         if (!matchesArrayOpcodeElementType(expectedElementType, elementType)) {
             throw new UnsupportedBytecodeException("Expected " + expectedElementType.displayName() + "[] for array load in "
-                    + methodNode.name + methodNode.desc + " but found " + array.type().displayName());
+                    + methodNode.name + methodNode.desc + " but found " + arrayType.displayName());
         }
         IrValue result = new IrValue(nextValueId, resultType, "elem");
         currentInstructions.add(new IrInstruction.CallHelper(
                 result,
-                arrayLoadHelperName(array.type()),
+                arrayLoadHelperName(arrayType),
                 List.of(array, index)
         ));
         stack.push(result);
@@ -2159,12 +2388,13 @@ public class MethodIrBuilder {
     }
 
     private int handleReferenceArrayLoad(MethodNode methodNode, List<IrInstruction> currentInstructions, Deque<IrValue> stack,
-                                         int nextValueId) {
+                                         Frame<BasicValue> instructionFrame, int nextValueId) {
         CoercedValue indexValue = popPromotedInt(currentInstructions, stack, methodNode, nextValueId);
         IrValue index = indexValue.value();
         nextValueId = indexValue.nextValueId();
-        IrValue array = popArray(stack, methodNode);
-        IrType elementType = arrayElementType(array.type());
+        IrValue array = popReferenceLike(stack, methodNode);
+        IrType arrayType = resolveArrayOperandType(methodNode, array, instructionFrame, 1);
+        IrType elementType = arrayElementType(arrayType);
         if (elementType.isPrimitive()) {
             throw new UnsupportedBytecodeException("AALOAD requires reference-like element type in "
                     + methodNode.name + methodNode.desc + " but found " + elementType.displayName());
@@ -2172,7 +2402,7 @@ public class MethodIrBuilder {
         IrValue result = new IrValue(nextValueId, elementType, "elem");
         currentInstructions.add(new IrInstruction.CallHelper(
                 result,
-                arrayLoadHelperName(array.type()),
+                arrayLoadHelperName(arrayType),
                 List.of(array, index)
         ));
         stack.push(result);
@@ -2180,6 +2410,7 @@ public class MethodIrBuilder {
     }
 
     private int handleArrayStore(MethodNode methodNode, List<IrInstruction> currentInstructions, Deque<IrValue> stack,
+                                 Frame<BasicValue> instructionFrame,
                                  IrType expectedElementType, int nextValueId) {
         IrValue value = expectedElementType == IrType.BOOLEAN
                 || expectedElementType == IrType.BYTE
@@ -2195,33 +2426,35 @@ public class MethodIrBuilder {
         CoercedValue indexValue = popPromotedInt(currentInstructions, stack, methodNode, nextValueId);
         IrValue index = indexValue.value();
         nextValueId = indexValue.nextValueId();
-        IrValue array = popArray(stack, methodNode);
-        IrType elementType = arrayElementType(array.type());
+        IrValue array = popReferenceLike(stack, methodNode);
+        IrType arrayType = resolveArrayOperandType(methodNode, array, instructionFrame, 2);
+        IrType elementType = arrayElementType(arrayType);
         if (!matchesArrayOpcodeElementType(expectedElementType, elementType)) {
             throw new UnsupportedBytecodeException("Expected " + expectedElementType.displayName() + "[] for array store in "
-                    + methodNode.name + methodNode.desc + " but found " + array.type().displayName());
+                    + methodNode.name + methodNode.desc + " but found " + arrayType.displayName());
         }
         currentInstructions.add(new IrInstruction.CallHelperVoid(
-                arrayStoreHelperName(array.type()),
+                arrayStoreHelperName(arrayType),
                 List.of(array, index, value)
         ));
         return nextValueId;
     }
 
     private int handleReferenceArrayStore(MethodNode methodNode, List<IrInstruction> currentInstructions, Deque<IrValue> stack,
-                                          int nextValueId) {
+                                          Frame<BasicValue> instructionFrame, int nextValueId) {
         IrValue value = popReferenceLike(stack, methodNode);
         CoercedValue indexValue = popPromotedInt(currentInstructions, stack, methodNode, nextValueId);
         IrValue index = indexValue.value();
         nextValueId = indexValue.nextValueId();
-        IrValue array = popArray(stack, methodNode);
-        IrType elementType = arrayElementType(array.type());
+        IrValue array = popReferenceLike(stack, methodNode);
+        IrType arrayType = resolveArrayOperandType(methodNode, array, instructionFrame, 2);
+        IrType elementType = arrayElementType(arrayType);
         if (elementType.isPrimitive()) {
             throw new UnsupportedBytecodeException("AASTORE requires reference-like element type in "
                     + methodNode.name + methodNode.desc + " but found " + elementType.displayName());
         }
         currentInstructions.add(new IrInstruction.CallHelperVoid(
-                arrayStoreHelperName(array.type()),
+                arrayStoreHelperName(arrayType),
                 List.of(array, index, value)
         ));
         return nextValueId;
@@ -2379,7 +2612,8 @@ public class MethodIrBuilder {
                                     Type samMethodType,
                                     Handle implMethod,
                                     Type instantiatedMethodType,
-                                    List<IrType> captureTypes) {
+                                    List<IrType> captureTypes,
+                                    LambdaBootstrapMetadata bootstrapMetadata) {
         String callerOwner = ownerInternalName == null || ownerInternalName.isBlank()
                 ? implMethod.getOwner()
                 : ownerInternalName;
@@ -2392,11 +2626,31 @@ public class MethodIrBuilder {
         builder.append("__").append(encodeHexUtf8(implMethod.getName()));
         builder.append("__").append(encodeHexUtf8(implMethod.getDesc()));
         builder.append("__").append(encodeHexUtf8(instantiatedMethodType.getDescriptor()));
-        builder.append("__").append(encodeHexUtf8(lambdaInvokeKindToken(implMethod)));
+        builder.append("__").append(encodeHexUtf8(lambdaInvokePayloadToken(implMethod, bootstrapMetadata)));
         for (IrType captureType : captureTypes) {
             builder.append("__").append(encodeHexUtf8(captureType.displayName()));
         }
         return builder.toString();
+    }
+
+    private String lambdaInvokePayloadToken(Handle implMethod, LambdaBootstrapMetadata bootstrapMetadata) {
+        String invokeKind = lambdaInvokeKindToken(implMethod);
+        if (bootstrapMetadata == null || "metafactory".equals(bootstrapMetadata.bootstrapMethodName())) {
+            return invokeKind;
+        }
+        String markers = String.join(
+                "\u0003",
+                bootstrapMetadata.markerInterfaces().stream().map(IrType::displayName).toList()
+        );
+        String bridges = String.join(
+                "\u0003",
+                bootstrapMetadata.bridgeMethodTypes().stream().map(Type::getDescriptor).toList()
+        );
+        return invokeKind
+                + "\u0002" + bootstrapMetadata.bootstrapMethodName()
+                + "\u0002" + bootstrapMetadata.flags()
+                + "\u0002" + markers
+                + "\u0002" + bridges;
     }
 
     private String lambdaInvokeKindToken(Handle implMethod) {
@@ -2408,6 +2662,12 @@ public class MethodIrBuilder {
             case Opcodes.H_NEWINVOKESPECIAL -> "constructor";
             default -> throw new IllegalArgumentException("Unsupported lambda implementation handle tag: " + implMethod.getTag());
         };
+    }
+
+    private record LambdaBootstrapMetadata(String bootstrapMethodName,
+                                           int flags,
+                                           List<IrType> markerInterfaces,
+                                           List<Type> bridgeMethodTypes) {
     }
 
     private String instanceOfHelperName(IrType targetType) {
@@ -2570,6 +2830,108 @@ public class MethodIrBuilder {
     private record CoercedValue(IrValue value, int nextValueId) {
     }
 
+    private enum LocalStorageKind {
+        INT,
+        LONG,
+        FLOAT,
+        DOUBLE,
+        REFERENCE
+    }
+
+    private static final class ExactTypeInterpreter extends BasicInterpreter {
+        private static final Type NULL_TYPE = Type.getObjectType("null");
+
+        private ExactTypeInterpreter() {
+            super(Opcodes.ASM9);
+        }
+
+        @Override
+        public BasicValue newValue(Type type) {
+            if (type == null) {
+                return BasicValue.UNINITIALIZED_VALUE;
+            }
+            if (type == Type.VOID_TYPE) {
+                return null;
+            }
+            return new BasicValue(type);
+        }
+
+        @Override
+        public BasicValue unaryOperation(AbstractInsnNode insn, BasicValue value) throws AnalyzerException {
+            return switch (insn.getOpcode()) {
+                case Opcodes.ANEWARRAY -> {
+                    TypeInsnNode typeInsn = (TypeInsnNode) insn;
+                    yield newValue(Type.getType("[" + referenceType(typeInsn.desc).getDescriptor()));
+                }
+                case Opcodes.CHECKCAST -> {
+                    TypeInsnNode typeInsn = (TypeInsnNode) insn;
+                    yield newValue(referenceType(typeInsn.desc));
+                }
+                default -> super.unaryOperation(insn, value);
+            };
+        }
+
+        @Override
+        public BasicValue binaryOperation(AbstractInsnNode insn, BasicValue value1, BasicValue value2) throws AnalyzerException {
+            if (insn.getOpcode() == Opcodes.AALOAD) {
+                Type arrayType = value1 == null ? null : value1.getType();
+                if (arrayType != null && arrayType.getSort() == Type.ARRAY) {
+                    return newValue(aaloadResultType(arrayType));
+                }
+            }
+            return super.binaryOperation(insn, value1, value2);
+        }
+
+        @Override
+        public BasicValue merge(BasicValue value1, BasicValue value2) {
+            if (Objects.equals(value1, value2)) {
+                return value1;
+            }
+            if (value1 == null) {
+                return value2;
+            }
+            if (value2 == null) {
+                return value1;
+            }
+            Type type1 = value1.getType();
+            Type type2 = value2.getType();
+            if (type1 == null) {
+                return value2;
+            }
+            if (type2 == null) {
+                return value1;
+            }
+            if (type1.equals(NULL_TYPE) && isReference(type2)) {
+                return value2;
+            }
+            if (type2.equals(NULL_TYPE) && isReference(type1)) {
+                return value1;
+            }
+            if (isReference(type1) && isReference(type2)) {
+                return newValue(Type.getObjectType("java/lang/Object"));
+            }
+            return BasicValue.UNINITIALIZED_VALUE;
+        }
+
+        private static boolean isReference(Type type) {
+            return type.getSort() == Type.OBJECT || type.getSort() == Type.ARRAY;
+        }
+
+        private static Type aaloadResultType(Type arrayType) {
+            String descriptor = arrayType.getDescriptor();
+            if (!descriptor.startsWith("[")) {
+                return arrayType;
+            }
+            return Type.getType(descriptor.substring(1));
+        }
+
+        private static Type referenceType(String descriptorOrInternalName) {
+            return descriptorOrInternalName.startsWith("[")
+                    ? Type.getType(descriptorOrInternalName)
+                    : Type.getObjectType(descriptorOrInternalName);
+        }
+    }
+
     private String opcodeName(int opcode) {
         return switch (opcode) {
             case -1 -> "pseudo";
@@ -2594,7 +2956,11 @@ public class MethodIrBuilder {
             case Opcodes.DSTORE -> "DSTORE";
             case Opcodes.ASTORE -> "ASTORE";
             case Opcodes.DUP -> "DUP";
+            case Opcodes.DUP2 -> "DUP2";
             case Opcodes.DUP_X1 -> "DUP_X1";
+            case Opcodes.DUP_X2 -> "DUP_X2";
+            case Opcodes.DUP2_X1 -> "DUP2_X1";
+            case Opcodes.DUP2_X2 -> "DUP2_X2";
             case Opcodes.POP -> "POP";
             case Opcodes.POP2 -> "POP2";
             case Opcodes.GETSTATIC -> "GETSTATIC";
