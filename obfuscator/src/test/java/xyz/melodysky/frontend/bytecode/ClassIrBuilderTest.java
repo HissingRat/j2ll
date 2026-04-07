@@ -143,7 +143,7 @@ public class ClassIrBuilderTest {
     }
 
     @Test
-    public void testBuildsMethodsWithLibraryOnlyTryCatch() {
+    public void testBuildsMethodsWithTypedTryCatchAroundLibraryInvoke() {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.name = "sample/Example";
 
@@ -781,7 +781,7 @@ public class ClassIrBuilderTest {
     }
 
     @Test
-    public void testSkipsPrivateInstanceMethodReferenceTargetsWithUnsupportedTryCatch() {
+    public void testBuildsPrivateInstanceMethodReferenceTargetsWithTypedTryCatchAroundInvokeInterface() {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.name = "sample/Example";
         classNode.interfaces.add("java/lang/Runnable");

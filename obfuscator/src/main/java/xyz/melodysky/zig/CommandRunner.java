@@ -1,9 +1,13 @@
 package xyz.melodysky.zig;
 
+import xyz.melodysky.process.SubprocessRegistry;
+
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 final class CommandRunner {
 
@@ -57,32 +61,109 @@ final class CommandRunner {
         }
 
         Process process = builder.start();
+        boolean completed = false;
+        boolean mirrorToConsole = context == null;
         StringBuilder output = new StringBuilder();
         OutputState outputState = new OutputState();
-        boolean mirrorToConsole = context == null;
-
-        if (logFile != null && outputHandler != null) {
-            outputHandler.onCommandStart(logFile, String.join(" ", command), mirrorToConsole, context);
-        }
-
-        try (InputStreamReader input = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
-            char[] buffer = new char[4096];
-            int read;
-            while ((read = input.read(buffer)) != -1) {
-                String chunk = new String(buffer, 0, read);
-                output.append(chunk);
+        AtomicReference<Throwable> outputFailureRef = new AtomicReference<>();
+        Thread outputReader = new Thread(() -> {
+            try (InputStreamReader input = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+                char[] buffer = new char[4096];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    String chunk = new String(buffer, 0, read);
+                    synchronized (output) {
+                        output.append(chunk);
+                    }
+                    if (logFile != null && outputHandler != null) {
+                        synchronized (outputState) {
+                            streamOutput(logFile, chunk, context, outputState, mirrorToConsole, outputHandler);
+                        }
+                    }
+                }
                 if (logFile != null && outputHandler != null) {
-                    streamOutput(logFile, chunk, context, outputState, mirrorToConsole, outputHandler);
+                    synchronized (outputState) {
+                        if (!outputState.buffer.isEmpty()) {
+                            flushOutput(logFile, context, outputState, false, mirrorToConsole, outputHandler);
+                        }
+                    }
+                }
+            } catch (Throwable throwable) {
+                outputFailureRef.set(throwable);
+            }
+        }, "zig-command-output");
+        outputReader.setDaemon(true);
+        outputReader.start();
+
+        SubprocessRegistry.Registration registration = SubprocessRegistry.register(process);
+        try {
+            if (logFile != null && outputHandler != null) {
+                outputHandler.onCommandStart(logFile, String.join(" ", command), mirrorToConsole, context);
+            }
+
+            while (true) {
+                throwIfCancellationRequested();
+                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+                    break;
                 }
             }
-        }
 
-        if (logFile != null && outputHandler != null && !outputState.buffer.isEmpty()) {
-            flushOutput(logFile, context, outputState, false, mirrorToConsole, outputHandler);
-        }
+            joinOutputReader(outputReader);
+            rethrowOutputFailure(outputFailureRef.get());
 
-        int exitCode = process.waitFor();
-        return new Result(exitCode, output.toString());
+            int exitCode = process.exitValue();
+            completed = true;
+            registration.close();
+            synchronized (output) {
+                return new Result(exitCode, output.toString());
+            }
+        } finally {
+            if (!completed) {
+                SubprocessRegistry.destroyProcessTree(process);
+                registration.close();
+            }
+            joinOutputReaderQuietly(outputReader);
+        }
+    }
+
+    private void throwIfCancellationRequested() throws InterruptedException {
+        if (SubprocessRegistry.isShutdownRequested() || Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("Command cancelled");
+        }
+    }
+
+    private void joinOutputReader(Thread outputReader) throws InterruptedException {
+        while (outputReader.isAlive()) {
+            throwIfCancellationRequested();
+            outputReader.join(100L);
+        }
+    }
+
+    private void joinOutputReaderQuietly(Thread outputReader) {
+        boolean interrupted = false;
+        while (outputReader.isAlive()) {
+            try {
+                outputReader.join(100L);
+            } catch (InterruptedException exception) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void rethrowOutputFailure(Throwable throwable) throws Exception {
+        if (throwable == null) {
+            return;
+        }
+        if (throwable instanceof Exception exception) {
+            throw exception;
+        }
+        if (throwable instanceof Error error) {
+            throw error;
+        }
+        throw new RuntimeException(throwable);
     }
 
     private <T> void streamOutput(Path logFile, String chunk, T context, OutputState outputState,

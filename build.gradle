@@ -44,6 +44,7 @@ repositories {
 
 dependencies {
     implementation 'org.ow2.asm:asm:9.8'
+    implementation 'org.ow2.asm:asm-analysis:9.8'
     implementation 'org.ow2.asm:asm-tree:9.8'
     implementation 'org.ow2.asm:asm-commons:9.8'
     implementation 'org.fusesource.jansi:jansi:2.4.1'

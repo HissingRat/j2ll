@@ -4,10 +4,12 @@ import org.fusesource.jansi.AnsiConsole;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public final class ConsoleProgressDisplay {
 
     private static volatile boolean ansiConsoleInitialized = false;
+    private static final int FALLBACK_MAX_WIDTH = 96;
 
     private final boolean ansiCapable;
     private List<String> lines = List.of();
@@ -19,15 +21,13 @@ public final class ConsoleProgressDisplay {
     }
 
     public synchronized void updateLines(List<String> nextLines) {
-        List<String> sanitized = nextLines.stream()
-                .map(line -> line.replace("\r", "").replace("\n", ""))
-                .toList();
+        List<String> sanitized = sanitizeLines(nextLines);
         if (!ansiCapable) {
             renderFallbackLine(sanitized);
             return;
         }
         clearInternal();
-        lines = sanitized;
+        lines = truncateLinesToWidth(sanitized, ansiConsoleWidth());
         renderInternal();
         System.out.flush();
     }
@@ -43,9 +43,7 @@ public final class ConsoleProgressDisplay {
     }
 
     public synchronized void completeLines(List<String> nextLines) {
-        List<String> sanitized = nextLines.stream()
-                .map(line -> line.replace("\r", "").replace("\n", ""))
-                .toList();
+        List<String> sanitized = sanitizeLines(nextLines);
         if (!ansiCapable) {
             clearFallbackLine();
             int width = fallbackConsoleWidth();
@@ -57,7 +55,7 @@ public final class ConsoleProgressDisplay {
             return;
         }
         clearInternal();
-        lines = sanitized;
+        lines = truncateLinesToWidth(sanitized, ansiConsoleWidth());
         renderInternal();
         System.out.print(System.lineSeparator());
         lines = List.of();
@@ -108,7 +106,7 @@ public final class ConsoleProgressDisplay {
     }
 
     private void renderFallbackLine(List<String> sanitizedLines) {
-        String summary = truncateToWidth(String.join(" | ", sanitizedLines), fallbackConsoleWidth());
+        String summary = summarizeFallbackLines(sanitizedLines, fallbackConsoleWidth());
         int visibleLength = summary.length();
         int padding = Math.max(0, fallbackPrintedWidth - visibleLength);
         System.out.print("\r" + summary + " ".repeat(padding));
@@ -125,30 +123,38 @@ public final class ConsoleProgressDisplay {
     }
 
     private boolean detectAnsiCapableConsole() {
-        if (System.console() == null || System.console().writer() == null) {
+        return isAnsiCapableConsole(
+                System.console() != null && System.console().writer() != null,
+                System.getProperty("os.name", ""),
+                System.getenv(),
+                ansiConsoleInitialized
+        );
+    }
+
+    static boolean isAnsiCapableConsole(boolean hasConsole, String osName, Map<String, String> env, boolean ansiInitialized) {
+        if (!hasConsole) {
             return false;
         }
-        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        if (!osName.contains("win")) {
+        String normalizedOsName = osName == null ? "" : osName.toLowerCase(Locale.ROOT);
+        if (!normalizedOsName.contains("win")) {
             return true;
         }
-
-        if (ansiConsoleInitialized) {
+        if (ansiInitialized) {
             return true;
         }
-        if (hasNonBlankEnv("WT_SESSION") || hasNonBlankEnv("ANSICON")) {
+        if (hasNonBlankEnv(env, "WT_SESSION") || hasNonBlankEnv(env, "ANSICON")) {
             return true;
         }
-        String conEmuAnsi = System.getenv("ConEmuANSI");
+        String conEmuAnsi = env.get("ConEmuANSI");
         if (conEmuAnsi != null && "ON".equalsIgnoreCase(conEmuAnsi.trim())) {
             return true;
         }
-        String term = System.getenv("TERM");
+        String term = env.get("TERM");
         return term != null && term.toLowerCase(Locale.ROOT).contains("xterm");
     }
 
-    private boolean hasNonBlankEnv(String name) {
-        String value = System.getenv(name);
+    private static boolean hasNonBlankEnv(Map<String, String> env, String name) {
+        String value = env.get(name);
         return value != null && !value.isBlank();
     }
 
@@ -166,6 +172,14 @@ public final class ConsoleProgressDisplay {
     }
 
     private int fallbackConsoleWidth() {
+        return boundedConsoleWidth(FALLBACK_MAX_WIDTH);
+    }
+
+    private int ansiConsoleWidth() {
+        return boundedConsoleWidth(240);
+    }
+
+    private int boundedConsoleWidth(int maxWidth) {
         int width = 120;
         try {
             int jansiWidth = AnsiConsole.getTerminalWidth();
@@ -174,7 +188,43 @@ public final class ConsoleProgressDisplay {
             }
         } catch (Throwable ignored) {
         }
-        return Math.max(40, width - 1);
+        return Math.max(40, Math.min(maxWidth, width - 1));
+    }
+
+    private String summarizeFallbackLines(List<String> sanitizedLines, int width) {
+        if (sanitizedLines.isEmpty()) {
+            return "";
+        }
+        if (sanitizedLines.size() == 1) {
+            return truncateToWidth(sanitizedLines.getFirst(), width);
+        }
+        int separatorWidth = 3 * (sanitizedLines.size() - 1);
+        int perLineWidth = Math.max(12, (width - separatorWidth) / sanitizedLines.size());
+        String summary = sanitizedLines.stream()
+                .map(line -> truncateToWidth(line, perLineWidth))
+                .reduce((left, right) -> left + " | " + right)
+                .orElse("");
+        return truncateToWidth(summary, width);
+    }
+
+    String summarizeFallbackLinesForTest(List<String> sanitizedLines, int width) {
+        return summarizeFallbackLines(sanitizedLines, width);
+    }
+
+    List<String> truncateLinesToWidthForTest(List<String> sanitizedLines, int width) {
+        return truncateLinesToWidth(sanitizedLines, width);
+    }
+
+    private List<String> sanitizeLines(List<String> nextLines) {
+        return nextLines.stream()
+                .map(line -> line.replace("\r", "").replace("\n", ""))
+                .toList();
+    }
+
+    private List<String> truncateLinesToWidth(List<String> nextLines, int width) {
+        return nextLines.stream()
+                .map(line -> truncateToWidth(line, width))
+                .toList();
     }
 
     private String truncateToWidth(String text, int width) {

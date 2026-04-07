@@ -23,6 +23,7 @@ public class IrRuntimeStubGeneratorTest {
                 declare ptr @"ir_rt_lambda__java_s_util_s_function_s_Function__apply__284c6a6176612f6c616e672f4f626a6563743b294c6a6176612f6c616e672f4f626a6563743b__sample_s_CallSite__sample_s_Helpers__up__284c6a6176612f6c616e672f537472696e673b294c6a6176612f6c616e672f537472696e673b__284c6a6176612f6c616e672f537472696e673b294c6a6176612f6c616e672f537472696e673b__static"()
                 declare ptr @"ir_rt_lambda__java_s_lang_s_Runnable__run__282956__sample_s_Factory__sample_s_Worker__tick__282956__282956__special__sample_s_Worker"(ptr)
                 declare ptr @"ir_rt_lambda__java_s_util_s_function_s_Supplier__get__28294c6a6176612f6c616e672f4f626a6563743b__sample_s_Factory__sample_s_Widget___init___282956__28294c73616d706c652f5769646765743b__constructor"()
+                declare ptr @"ir_rt_lambda__sample_s_SerializableFunction__apply__284c6a6176612f6c616e672f4f626a6563743b294c6a6176612f6c616e672f4f626a6563743b__sample_s_Factory__sample_s_Helpers__box__284c6a6176612f6c616e672f496e74656765723b294c6a6176612f6c616e672f496e74656765723b__284c6a6176612f6c616e672f496e74656765723b294c6a6176612f6c616e672f496e74656765723b__73746174696302616c744d657461666163746f727902350202"()
                 declare i1 @"ir_rt_instanceof__sample_s_Thing"(ptr)
                 declare i32 @"ir_rt_type_switch__sample_s_Value__sample_s_Add"(ptr, i32)
                 declare i32 @"ir_rt_type_switch__enum:sample_s_Mode:LEFT"(ptr, i32)
@@ -84,10 +85,14 @@ public class IrRuntimeStubGeneratorTest {
         assertTrue(stubs.contains("0x6c, 0x65, 0x66, 0x74, 0x3d"));
         assertTrue(stubs.contains("0x6e, 0x61, 0x6d, 0x65, 0x3d"));
         assertTrue(stubs.contains("jmethodID metafactory = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, lambdaMetafactoryClass, 1"));
+        assertTrue(stubs.contains("jmethodID altMetafactory = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, lambdaMetafactoryClass, 1"));
+        assertTrue(stubs.contains("jmethodID integerValueOf = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, integerClass, 1"));
         assertTrue(stubs.contains("jmethodID findConstructor = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, lookupClass, 0"));
         assertTrue(stubs.contains("jmethodID findStatic = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, lookupClass, 0"));
         assertTrue(stubs.contains("jmethodID findSpecial = " + JniMangler.opaqueSymbol("runtime-internal|get-method-id-obf", 24) + "(env, lookupClass, 0"));
         assertTrue(stubs.contains("CallObjectMethod(env, callerLookup, findConstructor, targetClass, implMethodType)"));
+        assertTrue(stubs.contains("jobjectArray bootstrapArgs = (*env)->NewObjectArray(env, 5, objectClass, NULL);"));
+        assertTrue(stubs.contains("CallStaticObjectMethod(env, lambdaMetafactoryClass, altMetafactory, callerLookup, samName, factoryType, bootstrapArgs)"));
         assertTrue(stubs.contains("cachedLambdaFactory = (*env)->NewGlobalRef(env, lambdaFactory);"));
         assertTrue(stubs.contains("return (uint8_t)((*env)->IsInstanceOf(env, value, targetClass) ? 1 : 0);"));
         assertTrue(stubs.contains("if ((*env)->IsInstanceOf(env, value, caseClass)) return 1;"));

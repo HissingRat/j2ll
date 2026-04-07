@@ -1,5 +1,6 @@
 package xyz.melodysky;
 
+import sun.misc.Signal;
 import xyz.melodysky.console.ConsoleProgressDisplay;
 import xyz.melodysky.config.Config;
 import xyz.melodysky.filter.ClassMethodFilter;
@@ -9,6 +10,7 @@ import xyz.melodysky.packaging.NativeMethodClassRewriter;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.pipeline.IrPipelineCompiler;
+import xyz.melodysky.process.SubprocessRegistry;
 import xyz.melodysky.ir.pass.ConstantSplittingPass;
 import xyz.melodysky.ir.pass.CfgCleanupPass;
 import xyz.melodysky.ir.pass.CfgPerturbationPass;
@@ -29,22 +31,33 @@ import java.util.Set;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.concurrent.CancellationException;
 
 public class Main {
 
     private static final String VERSION = "3.5.4r";
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
         System.setProperty("java.net.useSystemProxies", "true");
+        installCancellationSignalHandlers(Thread.currentThread());
+        int exitCode;
         try {
             CliOptions options = parseArgs(args);
             Config config = options.configPath() == null
                     ? Config.loadOrCreateDefault()
                     : Config.load(options.configPath());
-            System.exit(config == null ? 0 : run(config, options.debug()));
+            exitCode = config == null ? 0 : run(config, options.debug());
         } catch (Exception exception) {
-            throw new IOException("Failed to run j2ll", exception);
+            if (isCancellation(exception)) {
+                restoreInterruptStatusIfNeeded(exception);
+                System.out.println();
+                System.out.println("Build cancelled by user.");
+                exitCode = 130;
+            } else {
+                throw new RuntimeException("Failed to run j2ll", exception);
+            }
         }
+        System.exit(exitCode);
     }
 
     private static int run(Config config, boolean debug) throws Exception {
@@ -328,6 +341,44 @@ public class Main {
             return normalized;
         }
         return "..." + normalized.substring(normalized.length() - 69);
+    }
+
+    static void installCancellationSignalHandlers(Thread mainThread) {
+        installCancellationSignalHandler("INT", mainThread);
+        installCancellationSignalHandler("TERM", mainThread);
+    }
+
+    private static void installCancellationSignalHandler(String signalName, Thread mainThread) {
+        try {
+            Signal.handle(new Signal(signalName), ignored -> {
+                SubprocessRegistry.requestShutdownNow();
+                if (mainThread != null) {
+                    mainThread.interrupt();
+                }
+            });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static boolean isCancellation(Throwable throwable) {
+        if (SubprocessRegistry.isShutdownRequested()) {
+            return true;
+        }
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current instanceof InterruptedException || current instanceof CancellationException) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void restoreInterruptStatusIfNeeded(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private static CliOptions parseArgs(String[] args) {
