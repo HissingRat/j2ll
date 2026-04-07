@@ -6,12 +6,10 @@ import xyz.melodysky.ir.model.IrClassRef;
 import xyz.melodysky.ir.model.IrMethod;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TryCatchBlockNode;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,18 +45,7 @@ public class ClassIrBuilder {
                         methodNode.desc,
                         "annotation classes are not native-lowered yet"
                 ));
-                continue;
             }
-
-            if (hasUnsupportedTryCatchBlocks(classNode, methodNode)) {
-                skippedMethodsByKey.put(methodKey(methodNode.name, methodNode.desc), new SkippedMethod(
-                        methodNode.name,
-                        methodNode.desc,
-                        "methods with unsupported try/catch patterns are not native-lowered yet"
-                ));
-                continue;
-            }
-
         }
 
         boolean changed;
@@ -115,61 +102,6 @@ public class ClassIrBuilder {
 
     private boolean isAnnotationClass(ClassNode classNode) {
         return (classNode.access & Opcodes.ACC_ANNOTATION) != 0;
-    }
-
-    private boolean hasTryCatchBlocks(MethodNode methodNode) {
-        return methodNode.tryCatchBlocks != null && !methodNode.tryCatchBlocks.isEmpty();
-    }
-
-    private boolean hasUnsupportedTryCatchBlocks(ClassNode classNode, MethodNode methodNode) {
-        if (!hasTryCatchBlocks(methodNode)) {
-            return false;
-        }
-        for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
-            for (AbstractInsnNode instruction = tryCatchBlock.start;
-                 instruction != null && instruction != tryCatchBlock.end;
-                 instruction = instruction.getNext()) {
-                if (instruction instanceof MethodInsnNode) {
-                    continue;
-                }
-                if (instruction instanceof InvokeDynamicInsnNode) {
-                    continue;
-                }
-                if (instruction.getOpcode() == Opcodes.ATHROW) {
-                    continue;
-                }
-            }
-        }
-        return false;
-    }
-
-    private String firstCoveringHandlerType(MethodNode methodNode,
-                                            AbstractInsnNode instruction) {
-        if (methodNode.tryCatchBlocks == null) {
-            return null;
-        }
-        for (TryCatchBlockNode tryCatchBlock : methodNode.tryCatchBlocks) {
-            if (!coversInstruction(tryCatchBlock, instruction)) {
-                continue;
-            }
-            return tryCatchBlock.type == null ? "java/lang/Throwable" : tryCatchBlock.type;
-        }
-        return null;
-    }
-
-    private boolean firstCoveringHandlerIsBroad(MethodNode methodNode,
-                                                AbstractInsnNode instruction) {
-        String handlerType = firstCoveringHandlerType(methodNode, instruction);
-        return handlerType == null || "java/lang/Throwable".equals(handlerType);
-    }
-
-    private boolean coversInstruction(TryCatchBlockNode tryCatchBlock, AbstractInsnNode instruction) {
-        for (AbstractInsnNode current = tryCatchBlock.start; current != null && current != tryCatchBlock.end; current = current.getNext()) {
-            if (current == instruction) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private Map<String, Set<String>> collectSameClassCallees(ClassNode classNode) {

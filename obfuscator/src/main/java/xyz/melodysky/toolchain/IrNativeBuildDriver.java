@@ -1,6 +1,7 @@
 package xyz.melodysky.toolchain;
 
 import xyz.melodysky.config.BuildTarget;
+import xyz.melodysky.process.SubprocessRegistry;
 
 import java.io.InputStream;
 import java.io.IOException;
@@ -12,9 +13,12 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class IrNativeBuildDriver {
 
@@ -279,14 +283,14 @@ public class IrNativeBuildDriver {
             for (CompileUnit unit : compileUnits) {
                 tasks.add(() -> new CompileOutcome(unit, run(unit.command())));
             }
-            java.util.concurrent.ExecutorCompletionService<CompileOutcome> completionService =
-                    new java.util.concurrent.ExecutorCompletionService<>(executor);
+            ExecutorCompletionService<CompileOutcome> completionService =
+                    new ExecutorCompletionService<>(executor);
             for (Callable<CompileOutcome> task : tasks) {
                 completionService.submit(task);
             }
             ArrayList<CompileOutcome> outcomes = new ArrayList<>(compileUnits.size());
             for (int completed = 1; completed <= compileUnits.size(); completed++) {
-                Future<CompileOutcome> future = completionService.take();
+                Future<CompileOutcome> future = waitForCompletedCompile(completionService);
                 outcomes.add(future.get());
                 progressListener.onCompileProgress(target, completed, compileUnits.size(),
                         outcomes.getLast().unit().label());
@@ -323,12 +327,86 @@ public class IrNativeBuildDriver {
         builder.redirectErrorStream(true);
 
         Process process = builder.start();
-        String output;
-        try (var input = process.getInputStream()) {
-            output = readProcessOutput(input);
-        }
+        boolean completed = false;
+        AtomicReference<String> outputRef = new AtomicReference<>("");
+        AtomicReference<IOException> outputFailureRef = new AtomicReference<>();
+        Thread outputReader = new Thread(() -> {
+            try (var input = process.getInputStream()) {
+                outputRef.set(readProcessOutput(input));
+            } catch (IOException exception) {
+                outputFailureRef.set(exception);
+            }
+        }, "ir-native-build-output");
+        outputReader.setDaemon(true);
+        outputReader.start();
+        SubprocessRegistry.Registration registration = SubprocessRegistry.register(process);
+        try {
+            while (true) {
+                throwIfCancellationRequested();
+                if (process.waitFor(100L, TimeUnit.MILLISECONDS)) {
+                    break;
+                }
+            }
 
-        return new CommandResult(process.waitFor(), output);
+            String output = awaitCollectedOutput(outputReader, outputRef, outputFailureRef);
+            int exitCode = process.exitValue();
+            completed = true;
+            registration.close();
+            return new CommandResult(exitCode, output);
+        } finally {
+            if (!completed) {
+                SubprocessRegistry.destroyProcessTree(process);
+                registration.close();
+            }
+            joinOutputReaderQuietly(outputReader);
+        }
+    }
+
+    private Future<CompileOutcome> waitForCompletedCompile(ExecutorCompletionService<CompileOutcome> completionService)
+            throws Exception {
+        while (true) {
+            throwIfCancellationRequested();
+            Future<CompileOutcome> completedFuture = completionService.poll(100L, TimeUnit.MILLISECONDS);
+            if (completedFuture != null) {
+                return completedFuture;
+            }
+        }
+    }
+
+    private void throwIfCancellationRequested() throws InterruptedException {
+        if (SubprocessRegistry.isShutdownRequested() || Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("Native build cancelled");
+        }
+    }
+
+    private String awaitCollectedOutput(Thread outputReader, AtomicReference<String> outputRef,
+                                        AtomicReference<IOException> outputFailureRef) throws Exception {
+        while (outputReader.isAlive()) {
+            throwIfCancellationRequested();
+            outputReader.join(100L);
+        }
+        IOException outputFailure = outputFailureRef.get();
+        if (outputFailure != null) {
+            throw outputFailure;
+        }
+        return outputRef.get();
+    }
+
+    private void joinOutputReaderQuietly(Thread outputReader) {
+        if (outputReader == null) {
+            return;
+        }
+        boolean interrupted = false;
+        while (outputReader.isAlive()) {
+            try {
+                outputReader.join(100L);
+            } catch (InterruptedException exception) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private String readProcessOutput(InputStream input) throws IOException {
