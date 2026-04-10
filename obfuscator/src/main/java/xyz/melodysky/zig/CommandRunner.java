@@ -51,6 +51,7 @@ final class CommandRunner {
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workspaceDirectory.toFile());
         builder.redirectErrorStream(true);
+        ZigWorkspaceEnvironment.configure(builder.environment(), command, workspaceDirectory, windows);
 
         if (javaHome != null && !javaHome.isBlank()) {
             builder.environment().put("JAVA_HOME", javaHome);

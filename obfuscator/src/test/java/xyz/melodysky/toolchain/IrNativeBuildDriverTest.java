@@ -2,13 +2,16 @@ package xyz.melodysky.toolchain;
 
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.config.BuildTarget;
+import xyz.melodysky.zig.ZigWorkspaceEnvironment;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -120,6 +123,53 @@ public class IrNativeBuildDriverTest {
         assertFalse(isProcessAlive(childPid), "expected child compiler process to be terminated");
     }
 
+    @Test
+    public void testUsesWorkspaceScopedZigCacheEnvironment() throws Exception {
+        Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
+        Map<String, String> environment = new HashMap<>();
+
+        ZigWorkspaceEnvironment.configure(environment, List.of("zig", "cc", "--version"), workspace, isWindows());
+
+        assertEquals(workspace.resolve("zig-cache").resolve("global").toAbsolutePath().toString(),
+                environment.get("ZIG_GLOBAL_CACHE_DIR"));
+        assertEquals(workspace.resolve("zig-cache").resolve("local").toAbsolutePath().toString(),
+                environment.get("ZIG_LOCAL_CACHE_DIR"));
+        assertEquals(workspace.resolve("zig-cache").resolve("tmp").toAbsolutePath().toString(),
+                environment.get("TMPDIR"));
+    }
+
+    @Test
+    public void testCleanupIntermediatesRemovesZigCacheAndNativeObj() throws Exception {
+        Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
+        Path zigCacheFile = ZigWorkspaceEnvironment.cacheRoot(workspace).resolve("global").resolve("cache.bin");
+        Path nativeObjFile = workspace.resolve("native-obj").resolve("windowsX64").resolve("module.obj");
+        Files.createDirectories(zigCacheFile.getParent());
+        Files.createDirectories(nativeObjFile.getParent());
+        Files.writeString(zigCacheFile, "cache", StandardCharsets.UTF_8);
+        Files.writeString(nativeObjFile, "object", StandardCharsets.UTF_8);
+
+        new IrNativeBuildDriver(workspace).cleanupIntermediates();
+
+        assertTrue(Files.notExists(ZigWorkspaceEnvironment.cacheRoot(workspace)));
+        assertTrue(Files.notExists(workspace.resolve("native-obj")));
+    }
+
+    @Test
+    public void testDebugBuildKeepsIntermediates() throws Exception {
+        Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
+        Path zigCacheFile = ZigWorkspaceEnvironment.cacheRoot(workspace).resolve("global").resolve("cache.bin");
+        Path nativeObjFile = workspace.resolve("native-obj").resolve("windowsX64").resolve("module.obj");
+        Files.createDirectories(zigCacheFile.getParent());
+        Files.createDirectories(nativeObjFile.getParent());
+        Files.writeString(zigCacheFile, "cache", StandardCharsets.UTF_8);
+        Files.writeString(nativeObjFile, "object", StandardCharsets.UTF_8);
+
+        new IrNativeBuildDriver(workspace, true).cleanupIntermediatesIfNeeded();
+
+        assertTrue(Files.exists(zigCacheFile));
+        assertTrue(Files.exists(nativeObjFile));
+    }
+
     private List<String> createSleepingJavaCommand(Path workspace, String className, Path pidFile) throws Exception {
         Path sourceFile = workspace.resolve(className + ".java");
         Files.writeString(sourceFile, """
@@ -169,5 +219,9 @@ public class IrNativeBuildDriverTest {
 
     private boolean isProcessAlive(long pid) {
         return ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 }

@@ -2,6 +2,7 @@ package xyz.melodysky.toolchain;
 
 import xyz.melodysky.config.BuildTarget;
 import xyz.melodysky.process.SubprocessRegistry;
+import xyz.melodysky.zig.ZigWorkspaceEnvironment;
 
 import java.io.InputStream;
 import java.io.IOException;
@@ -25,6 +26,7 @@ public class IrNativeBuildDriver {
     private static final int MAX_CAPTURE_BYTES = 1_048_576;
 
     private final Path workspaceDirectory;
+    private final boolean preserveIntermediates;
     private static final ProgressListener NO_PROGRESS = new ProgressListener() {};
 
     public interface ProgressListener {
@@ -35,7 +37,12 @@ public class IrNativeBuildDriver {
     }
 
     public IrNativeBuildDriver(Path workspaceDirectory) {
+        this(workspaceDirectory, false);
+    }
+
+    public IrNativeBuildDriver(Path workspaceDirectory, boolean preserveIntermediates) {
         this.workspaceDirectory = workspaceDirectory;
+        this.preserveIntermediates = preserveIntermediates;
     }
 
     public BuildResult build(String zigCommand, Path llvmFile, Path runtimeStubFile, List<BuildTarget> targets) throws Exception {
@@ -58,11 +65,15 @@ public class IrNativeBuildDriver {
         Files.createDirectories(logsDirectory);
 
         ArrayList<BuildArtifact> artifacts = new ArrayList<>();
-        for (BuildTarget target : targets) {
-            Path libraryFile = outputDirectory.resolve(outputFileName(target));
-            Path logFile = logsDirectory.resolve("zig-build-" + target.getConfigKey() + ".log");
-            BuildTiming timing = buildTarget(zigCommand, llvmModuleFiles, runtimeSourceFiles, libraryFile, target, logFile, progressListener);
-            artifacts.add(new BuildArtifact(target, libraryFile, logFile, timing));
+        try {
+            for (BuildTarget target : targets) {
+                Path libraryFile = outputDirectory.resolve(outputFileName(target));
+                Path logFile = logsDirectory.resolve("zig-build-" + target.getConfigKey() + ".log");
+                BuildTiming timing = buildTarget(zigCommand, llvmModuleFiles, runtimeSourceFiles, libraryFile, target, logFile, progressListener);
+                artifacts.add(new BuildArtifact(target, libraryFile, logFile, timing));
+            }
+        } finally {
+            cleanupIntermediatesIfNeeded();
         }
 
         return new BuildResult(outputDirectory, List.copyOf(artifacts));
@@ -325,6 +336,12 @@ public class IrNativeBuildDriver {
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workspaceDirectory.toFile());
         builder.redirectErrorStream(true);
+        ZigWorkspaceEnvironment.configure(
+                builder.environment(),
+                command,
+                workspaceDirectory,
+                System.getProperty("os.name", "").toLowerCase().contains("win")
+        );
 
         Process process = builder.start();
         boolean completed = false;
@@ -467,6 +484,30 @@ public class IrNativeBuildDriver {
 
     private long nanosToMillis(long nanos) {
         return Math.max(0L, nanos / 1_000_000L);
+    }
+
+    private void deleteWorkspacePathQuietly(Path rootDirectory) {
+        if (rootDirectory == null || Files.notExists(rootDirectory)) {
+            return;
+        }
+        try (var stream = Files.walk(rootDirectory)) {
+            List<Path> paths = stream.sorted(Comparator.reverseOrder()).toList();
+            for (Path path : paths) {
+                Files.deleteIfExists(path);
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    void cleanupIntermediates() {
+        deleteWorkspacePathQuietly(ZigWorkspaceEnvironment.cacheRoot(workspaceDirectory));
+        deleteWorkspacePathQuietly(workspaceDirectory.resolve("native-obj"));
+    }
+
+    void cleanupIntermediatesIfNeeded() {
+        if (!preserveIntermediates) {
+            cleanupIntermediates();
+        }
     }
 
     public record BuildArtifact(BuildTarget target, Path libraryFile, Path logFile, BuildTiming timing) {

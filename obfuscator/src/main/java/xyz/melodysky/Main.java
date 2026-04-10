@@ -104,7 +104,7 @@ public class Main {
                 runtimeSourceSet.monolithicText(),
                 StandardCharsets.UTF_8
         );
-        Path runtimeModulesDirectory = buildDirectory.resolve("runtime-modules");
+        Path runtimeModulesDirectory = result.outputArtifacts().runtimeDirectory();
         Files.createDirectories(runtimeModulesDirectory);
         ArrayList<Path> runtimeSourceFiles = new ArrayList<>(runtimeSourceSet.sourceFiles().size());
         for (IrRuntimeStubGenerator.RuntimeFragment fragment : runtimeSourceSet.sourceFiles()) {
@@ -115,7 +115,7 @@ public class Main {
         ZigManager zigManager = new ZigManager(ZigManager.resolveApplicationDirectory(Main.class), buildDirectory);
         String zigCommand = zigManager.ensureZigCommand();
         NativeBuildConsoleProgress nativeBuildProgress = new NativeBuildConsoleProgress(progressDisplay);
-        IrNativeBuildDriver.BuildResult nativeBuild = new IrNativeBuildDriver(buildDirectory).build(
+        IrNativeBuildDriver.BuildResult nativeBuild = new IrNativeBuildDriver(buildDirectory, debug).build(
                 zigCommand,
                 result.outputArtifacts().llvmModuleFiles(),
                 List.copyOf(runtimeSourceFiles),
@@ -151,7 +151,7 @@ public class Main {
                         + artifact.timing().runtimeSourceCount());
             }
             System.out.println("IR repacked jar: " + formatIrOutputHint(repackResult.outputJar()));
-            if (Files.size(result.outputArtifacts().frontendSkipsFile()) > 0) {
+            if (result.outputArtifacts().frontendSkipsFile() != null) {
                 System.out.println("Frontend skips: " + formatIrOutputHint(result.outputArtifacts().frontendSkipsFile()));
             }
         } else {

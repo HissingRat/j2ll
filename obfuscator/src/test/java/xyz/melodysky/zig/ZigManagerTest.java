@@ -17,8 +17,10 @@ import java.security.Signature;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -81,6 +83,35 @@ public class ZigManagerTest {
         runCommandThroughRunner(workspace, logFile, command);
 
         assertEquals("step 1\nstep 2\n", Files.readString(logFile).replace("\r\n", "\n"));
+    }
+
+    @Test
+    public void testZigCommandsUseWorkspaceScopedCacheDirectories() throws Exception {
+        Path workspace = Files.createTempDirectory("zig-manager-test-");
+        Map<String, String> environment = new HashMap<>();
+
+        ZigWorkspaceEnvironment.configure(environment, List.of("zig", "env"), workspace, isWindows());
+
+        assertEquals(workspace.resolve("zig-cache").resolve("global").toAbsolutePath().toString(),
+                environment.get("ZIG_GLOBAL_CACHE_DIR"));
+        assertEquals(workspace.resolve("zig-cache").resolve("local").toAbsolutePath().toString(),
+                environment.get("ZIG_LOCAL_CACHE_DIR"));
+        assertEquals(workspace.resolve("zig-cache").resolve("tmp").toAbsolutePath().toString(),
+                environment.get("TMPDIR"));
+        assertTrue(Files.isDirectory(workspace.resolve("zig-cache").resolve("global")));
+        assertTrue(Files.isDirectory(workspace.resolve("zig-cache").resolve("local")));
+        assertTrue(Files.isDirectory(workspace.resolve("zig-cache").resolve("tmp")));
+    }
+
+    @Test
+    public void testNonZigCommandsDoNotReceiveZigCacheOverrides() throws Exception {
+        Path workspace = Files.createTempDirectory("zig-manager-test-");
+        Map<String, String> environment = new HashMap<>();
+
+        ZigWorkspaceEnvironment.configure(environment, List.of("tar", "--version"), workspace, isWindows());
+
+        assertEquals(Map.of(), environment);
+        assertTrue(Files.notExists(workspace.resolve("zig-cache")));
     }
 
     @Test

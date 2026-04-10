@@ -122,16 +122,21 @@ public class IrPipelineCompiler {
         BuildResult result = compile(jarPath, classMethodFilter, progressListener);
         Files.createDirectories(outputDirectory);
 
-        Path llvmPath = outputDirectory.resolve("program.ll");
-        Path skipsPath = outputDirectory.resolve("frontend-skips.txt");
         Path runtimeDirectory = outputDirectory.resolve("runtime");
         Path llvmModulesDirectory = outputDirectory.resolve("llvm-modules");
         Files.createDirectories(runtimeDirectory);
         Files.createDirectories(llvmModulesDirectory);
+        Path llvmPath = llvmModulesDirectory.resolve("program.ll");
+        Path skipsPath = outputDirectory.resolve("frontend-skips.txt");
         Path runtimeStubPath = runtimeDirectory.resolve("ir_runtime_stubs.c");
 
         Files.writeString(llvmPath, result.llvmText(), StandardCharsets.UTF_8);
-        Files.writeString(skipsPath, renderSkips(result.frontendResult()), StandardCharsets.UTF_8);
+        Path writtenSkipsPath = null;
+        String renderedSkips = renderSkips(result.frontendResult());
+        if (!renderedSkips.isBlank()) {
+            Files.writeString(skipsPath, renderedSkips, StandardCharsets.UTF_8);
+            writtenSkipsPath = skipsPath;
+        }
         Files.writeString(runtimeStubPath, runtimeStubGenerator.generate(result.llvmText()), StandardCharsets.UTF_8);
         ArrayList<Path> llvmModuleFiles = new ArrayList<>(result.llvmModules().size());
         for (LlvmTextBackend.ModuleFragment fragment : result.llvmModules()) {
@@ -145,7 +150,8 @@ public class IrPipelineCompiler {
                 result.transformedProgram(),
                 result.llvmText(),
                 result.llvmModules(),
-                new OutputArtifacts(outputDirectory, llvmPath, skipsPath, runtimeStubPath, List.copyOf(llvmModuleFiles))
+                new OutputArtifacts(outputDirectory, llvmPath, writtenSkipsPath, runtimeStubPath, runtimeDirectory,
+                        List.copyOf(llvmModuleFiles))
         );
     }
 
@@ -191,7 +197,7 @@ public class IrPipelineCompiler {
     }
 
     public record OutputArtifacts(Path outputDirectory, Path llvmFile, Path frontendSkipsFile, Path runtimeStubFile,
-                                  List<Path> llvmModuleFiles) {
+                                  Path runtimeDirectory, List<Path> llvmModuleFiles) {
     }
 
     private static int defaultLlvmShardCount() {
