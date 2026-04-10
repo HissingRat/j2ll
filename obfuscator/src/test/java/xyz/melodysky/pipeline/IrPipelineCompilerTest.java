@@ -46,17 +46,20 @@ public class IrPipelineCompilerTest {
             IrPipelineCompiler.BuildResult result = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
 
             assertTrue(Files.exists(result.outputArtifacts().llvmFile()));
-            assertTrue(Files.exists(result.outputArtifacts().frontendSkipsFile()));
+            assertEquals(outputDirectory.resolve("llvm-modules").resolve("program.ll"), result.outputArtifacts().llvmFile());
+            assertEquals(outputDirectory.resolve("runtime"), result.outputArtifacts().runtimeDirectory());
+            assertTrue(result.outputArtifacts().frontendSkipsFile() == null);
             assertTrue(Files.exists(result.outputArtifacts().runtimeStubFile()));
+            assertEquals(result.outputArtifacts().runtimeDirectory().resolve("ir_runtime_stubs.c"),
+                    result.outputArtifacts().runtimeStubFile());
             assertTrue(result.outputArtifacts().llvmModuleFiles().size() >= 2);
             for (Path moduleFile : result.outputArtifacts().llvmModuleFiles()) {
                 assertTrue(Files.exists(moduleFile));
             }
             String llvm = Files.readString(result.outputArtifacts().llvmFile());
-            String skips = Files.readString(result.outputArtifacts().frontendSkipsFile());
             String runtimeStubs = Files.readString(result.outputArtifacts().runtimeStubFile());
             assertTrue(llvm.contains("; class sample/MathOps"));
-            assertTrue(skips.isEmpty());
+            assertTrue(Files.notExists(outputDirectory.resolve("frontend-skips.txt")));
             assertTrue(!runtimeStubs.isBlank());
         } finally {
             Files.deleteIfExists(jarPath);
