@@ -96,13 +96,16 @@ public class IrNativeBuildDriver {
         command.add("-target");
         command.add(target.getZigTarget());
         command.add("-g0");
+        command.addAll(createPathSanitizingFlags());
         if (requiresPic(target)) {
             command.add("-fPIC");
         }
+        command.add("-x");
+        command.add("ir");
         command.add("-c");
-        command.add(llvmModuleFile.toAbsolutePath().toString());
+        command.add("-");
         command.add("-o");
-        command.add(outputFile.toAbsolutePath().toString());
+        command.add(commandPath(outputFile));
         return List.copyOf(command);
     }
 
@@ -114,17 +117,20 @@ public class IrNativeBuildDriver {
         command.add("-target");
         command.add(target.getZigTarget());
         command.add("-g0");
+        command.addAll(createPathSanitizingFlags());
         if (requiresPic(target)) {
             command.add("-fPIC");
         }
+        command.add("-x");
+        command.add("c");
         command.add("-c");
         command.add("-I");
-        command.add(jniHeadersDirectory.toAbsolutePath().toString());
+        command.add(commandPath(jniHeadersDirectory));
         command.add("-I");
-        command.add(jniHeadersDirectory.resolve(target.getJniHeaderSubdir()).toAbsolutePath().toString());
-        command.add(runtimeStubFile.toAbsolutePath().toString());
+        command.add(commandPath(jniHeadersDirectory.resolve(target.getJniHeaderSubdir())));
+        command.add("-");
         command.add("-o");
-        command.add(outputFile.toAbsolutePath().toString());
+        command.add(commandPath(outputFile));
         return List.copyOf(command);
     }
 
@@ -142,13 +148,14 @@ public class IrNativeBuildDriver {
         command.add("-target");
         command.add(target.getZigTarget());
         command.add("-g0");
+        command.addAll(createPathSanitizingFlags());
         command.add("-shared");
         command.add("-s");
         for (Path objectFile : objectFiles) {
-            command.add(objectFile.toAbsolutePath().toString());
+            command.add(commandPath(objectFile));
         }
         command.add("-o");
-        command.add(outputFile.toAbsolutePath().toString());
+        command.add(commandPath(outputFile));
         return List.copyOf(command);
     }
 
@@ -206,7 +213,8 @@ public class IrNativeBuildDriver {
             compileUnits.add(new CompileUnit(
                     "llvm[" + llvmModuleFile.getFileName() + "]",
                     objectFile,
-                    createLlvmObjectCompileCommand(zigCommand, llvmModuleFile, objectFile, target)
+                    createLlvmObjectCompileCommand(zigCommand, llvmModuleFile, objectFile, target),
+                    llvmModuleFile
             ));
             llvmCompileUnitCount++;
         }
@@ -218,7 +226,8 @@ public class IrNativeBuildDriver {
             compileUnits.add(new CompileUnit(
                     "runtime[" + runtimeSourceFile.getFileName() + "]",
                     runtimeObjectFile,
-                    createRuntimeObjectCompileCommand(zigCommand, runtimeSourceFile, runtimeObjectFile, target)
+                    createRuntimeObjectCompileCommand(zigCommand, runtimeSourceFile, runtimeObjectFile, target),
+                    runtimeSourceFile
             ));
             runtimeCompileUnitCount++;
         }
@@ -292,7 +301,7 @@ public class IrNativeBuildDriver {
         try {
             ArrayList<Callable<CompileOutcome>> tasks = new ArrayList<>(compileUnits.size());
             for (CompileUnit unit : compileUnits) {
-                tasks.add(() -> new CompileOutcome(unit, run(unit.command())));
+                tasks.add(() -> new CompileOutcome(unit, runCompileUnit(unit)));
             }
             ExecutorCompletionService<CompileOutcome> completionService =
                     new ExecutorCompletionService<>(executor);
@@ -332,7 +341,16 @@ public class IrNativeBuildDriver {
         }
     }
 
+    private CommandResult runCompileUnit(CompileUnit unit) throws Exception {
+        String sourceText = Files.readString(unit.sourceFile(), StandardCharsets.UTF_8);
+        return run(unit.command(), sourceText);
+    }
+
     private CommandResult run(List<String> command) throws Exception {
+        return run(command, (String) null);
+    }
+
+    private CommandResult run(List<String> command, String stdinText) throws Exception {
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workspaceDirectory.toFile());
         builder.redirectErrorStream(true);
@@ -347,6 +365,7 @@ public class IrNativeBuildDriver {
         boolean completed = false;
         AtomicReference<String> outputRef = new AtomicReference<>("");
         AtomicReference<IOException> outputFailureRef = new AtomicReference<>();
+        AtomicReference<IOException> inputFailureRef = new AtomicReference<>();
         Thread outputReader = new Thread(() -> {
             try (var input = process.getInputStream()) {
                 outputRef.set(readProcessOutput(input));
@@ -356,6 +375,17 @@ public class IrNativeBuildDriver {
         }, "ir-native-build-output");
         outputReader.setDaemon(true);
         outputReader.start();
+        Thread inputWriter = new Thread(() -> {
+            try (var output = process.getOutputStream()) {
+                if (stdinText != null) {
+                    output.write(stdinText.getBytes(StandardCharsets.UTF_8));
+                }
+            } catch (IOException exception) {
+                inputFailureRef.set(exception);
+            }
+        }, "ir-native-build-input");
+        inputWriter.setDaemon(true);
+        inputWriter.start();
         SubprocessRegistry.Registration registration = SubprocessRegistry.register(process);
         try {
             while (true) {
@@ -365,7 +395,12 @@ public class IrNativeBuildDriver {
                 }
             }
 
+            joinInputWriter(inputWriter);
             String output = awaitCollectedOutput(outputReader, outputRef, outputFailureRef);
+            IOException inputFailure = inputFailureRef.get();
+            if (inputFailure != null) {
+                throw inputFailure;
+            }
             int exitCode = process.exitValue();
             completed = true;
             registration.close();
@@ -375,6 +410,7 @@ public class IrNativeBuildDriver {
                 SubprocessRegistry.destroyProcessTree(process);
                 registration.close();
             }
+            joinThreadQuietly(inputWriter);
             joinOutputReaderQuietly(outputReader);
         }
     }
@@ -410,13 +446,24 @@ public class IrNativeBuildDriver {
     }
 
     private void joinOutputReaderQuietly(Thread outputReader) {
-        if (outputReader == null) {
+        joinThreadQuietly(outputReader);
+    }
+
+    private void joinInputWriter(Thread inputWriter) throws InterruptedException {
+        while (inputWriter.isAlive()) {
+            throwIfCancellationRequested();
+            inputWriter.join(100L);
+        }
+    }
+
+    private void joinThreadQuietly(Thread thread) {
+        if (thread == null) {
             return;
         }
         boolean interrupted = false;
-        while (outputReader.isAlive()) {
+        while (thread.isAlive()) {
             try {
-                outputReader.join(100L);
+                thread.join(100L);
             } catch (InterruptedException exception) {
                 interrupted = true;
             }
@@ -460,6 +507,27 @@ public class IrNativeBuildDriver {
             return part;
         }
         return "\"" + part.replace("\"", "\\\"") + "\"";
+    }
+
+    private List<String> createPathSanitizingFlags() {
+        String workspacePath = workspaceDirectory.toAbsolutePath().normalize().toString().replace('\\', '/');
+        return List.of(
+                "-ffile-prefix-map=" + workspacePath + "=.",
+                "-fdebug-prefix-map=" + workspacePath + "=.",
+                "-fmacro-prefix-map=" + workspacePath + "=."
+        );
+    }
+
+    private String commandPath(Path path) {
+        Path absolutePath = path.toAbsolutePath().normalize();
+        Path workspacePath = workspaceDirectory.toAbsolutePath().normalize();
+        try {
+            if (absolutePath.startsWith(workspacePath)) {
+                return workspacePath.relativize(absolutePath).toString().replace('\\', '/');
+            }
+        } catch (Exception ignored) {
+        }
+        return absolutePath.toString();
     }
 
     private String moduleObjectName(int index, Path llvmModuleFile, BuildTarget target) {
@@ -519,7 +587,7 @@ public class IrNativeBuildDriver {
     public record BuildTiming(int llvmShardCount, int runtimeSourceCount, long compileMillis, long linkMillis, long totalMillis) {
     }
 
-    private record CompileUnit(String label, Path objectFile, List<String> command) {
+    private record CompileUnit(String label, Path objectFile, List<String> command, Path sourceFile) {
     }
 
     private record CompileOutcome(CompileUnit unit, CommandResult result) {
