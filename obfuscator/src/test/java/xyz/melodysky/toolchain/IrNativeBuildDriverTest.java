@@ -38,9 +38,10 @@ public class IrNativeBuildDriverTest {
         assertEquals("-target", command.get(2));
         assertEquals("x86_64-windows", command.get(3));
         assertEquals("-g0", command.get(4));
-        assertEquals("-shared", command.get(5));
-        assertTrue(command.contains(Path.of("build", "ir", "program.ll").toAbsolutePath().toString()));
-        assertTrue(command.contains(Path.of("build", "ir", "runtime", "ir_runtime_stubs.c").toAbsolutePath().toString()));
+        assertTrue(command.contains("-ffile-prefix-map=" + Path.of("build", "ir").toAbsolutePath().normalize().toString().replace('\\', '/') + "=."));
+        assertEquals("-shared", command.get(8));
+        assertTrue(command.contains("program.ll"));
+        assertTrue(command.contains("runtime/ir_runtime_stubs.c"));
     }
 
     @Test
@@ -54,8 +55,9 @@ public class IrNativeBuildDriverTest {
                 BuildTarget.WINDOWS_X64
         );
 
-        assertEquals(List.of("zig", "cc", "-target", "x86_64-windows", "-g0", "-c"), command.subList(0, 6));
-        assertTrue(command.contains(Path.of("build", "ir", "llvm-modules", "common.ll").toAbsolutePath().toString()));
+        assertEquals(List.of("zig", "cc", "-target", "x86_64-windows", "-g0"), command.subList(0, 5));
+        assertTrue(command.contains("-ffile-prefix-map=" + Path.of("build", "ir").toAbsolutePath().normalize().toString().replace('\\', '/') + "=."));
+        assertTrue(command.containsAll(List.of("-x", "ir", "-c", "-")));
     }
 
     @Test
@@ -72,9 +74,26 @@ public class IrNativeBuildDriverTest {
                 BuildTarget.WINDOWS_X64
         );
 
-        assertEquals(List.of("zig", "cc", "-target", "x86_64-windows", "-g0", "-shared", "-s"), command.subList(0, 7));
-        assertTrue(command.contains(Path.of("build", "ir", "native-obj", "windowsX64", "00-common.obj").toAbsolutePath().toString()));
-        assertTrue(command.contains(Path.of("build", "ir", "native-obj", "windowsX64", "runtime.obj").toAbsolutePath().toString()));
+        assertEquals(List.of("zig", "cc", "-target", "x86_64-windows", "-g0"), command.subList(0, 5));
+        assertTrue(command.contains("-ffile-prefix-map=" + Path.of("build", "ir").toAbsolutePath().normalize().toString().replace('\\', '/') + "=."));
+        assertTrue(command.contains("native-obj/windowsX64/00-common.obj"));
+        assertTrue(command.contains("native-obj/windowsX64/runtime.obj"));
+    }
+
+    @Test
+    public void testCreatesRuntimeObjectCompileCommandWithoutSourcePathArgument() {
+        IrNativeBuildDriver driver = new IrNativeBuildDriver(Path.of("build", "ir"));
+
+        List<String> command = driver.createRuntimeObjectCompileCommand(
+                "zig",
+                Path.of("build", "ir", "runtime", "helper-00.c"),
+                Path.of("build", "ir", "native-obj", "windowsX64", "runtime-00-helper-00.obj"),
+                BuildTarget.WINDOWS_X64
+        );
+
+        assertTrue(command.containsAll(List.of("-x", "c", "-c", "-")));
+        assertTrue(!command.contains("runtime/helper-00.c"));
+        assertTrue(command.contains("native-obj/windowsX64/runtime-00-helper-00.obj"));
     }
 
     @Test
