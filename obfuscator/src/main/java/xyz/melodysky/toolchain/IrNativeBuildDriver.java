@@ -100,10 +100,8 @@ public class IrNativeBuildDriver {
         if (requiresPic(target)) {
             command.add("-fPIC");
         }
-        command.add("-x");
-        command.add("ir");
         command.add("-c");
-        command.add("-");
+        command.add(commandPath(llvmModuleFile));
         command.add("-o");
         command.add(commandPath(outputFile));
         return List.copyOf(command);
@@ -128,7 +126,7 @@ public class IrNativeBuildDriver {
         command.add(commandPath(jniHeadersDirectory));
         command.add("-I");
         command.add(commandPath(jniHeadersDirectory.resolve(target.getJniHeaderSubdir())));
-        command.add("-");
+        command.add(commandPath(runtimeStubFile));
         command.add("-o");
         command.add(commandPath(outputFile));
         return List.copyOf(command);
@@ -213,38 +211,23 @@ public class IrNativeBuildDriver {
             compileUnits.add(new CompileUnit(
                     "llvm[" + llvmModuleFile.getFileName() + "]",
                     objectFile,
-                    createLlvmObjectCompileCommand(zigCommand, llvmModuleFile, objectFile, target),
-                    llvmModuleFile
+                    createLlvmObjectCompileCommand(zigCommand, llvmModuleFile, objectFile, target)
             ));
             llvmCompileUnitCount++;
         }
-
-        int runtimeCompileUnitCount = 0;
-        for (int index = 0; index < runtimeSourceFiles.size(); index++) {
-            Path runtimeSourceFile = runtimeSourceFiles.get(index);
-            Path runtimeObjectFile = objectDirectory.resolve(runtimeObjectName(index, runtimeSourceFile, target));
-            compileUnits.add(new CompileUnit(
-                    "runtime[" + runtimeSourceFile.getFileName() + "]",
-                    runtimeObjectFile,
-                    createRuntimeObjectCompileCommand(zigCommand, runtimeSourceFile, runtimeObjectFile, target),
-                    runtimeSourceFile
-            ));
-            runtimeCompileUnitCount++;
-        }
+        int runtimeCompileUnitCount = runtimeSourceFiles.size();
 
         progressListener.onTargetStart(target, compileUnits.size());
         long compileStartNanos = System.nanoTime();
         CompileBatchResult compileBatchResult = runParallelCompiles(compileUnits, target, progressListener);
         long compileEndNanos = System.nanoTime();
-        List<String> linkCommand = createLinkCommand(
-                zigCommand,
-                compileUnits.stream().map(CompileUnit::objectFile).toList(),
-                outputFile,
-                target
-        );
+        List<String> linkCommand = createZigBuildCommand(zigCommand, target, outputFile, runtimeSourceFiles);
         progressListener.onLinkStart(target);
         long linkStartNanos = System.nanoTime();
-        CommandResult linkResult = run(linkCommand);
+        CommandResult linkResult = runInWorkingDirectory(
+                linkCommand,
+                workspaceDirectory.resolve("zig-build").resolve(target.getConfigKey())
+        );
         long linkEndNanos = System.nanoTime();
         BuildTiming timing = new BuildTiming(
                 llvmCompileUnitCount,
@@ -342,17 +325,24 @@ public class IrNativeBuildDriver {
     }
 
     private CommandResult runCompileUnit(CompileUnit unit) throws Exception {
-        String sourceText = Files.readString(unit.sourceFile(), StandardCharsets.UTF_8);
-        return run(unit.command(), sourceText);
+        return run(unit.command());
     }
 
     private CommandResult run(List<String> command) throws Exception {
-        return run(command, (String) null);
+        return runInWorkingDirectory(command, workspaceDirectory);
+    }
+
+    private CommandResult runInWorkingDirectory(List<String> command, Path workingDirectory) throws Exception {
+        return run(command, workingDirectory, null);
     }
 
     private CommandResult run(List<String> command, String stdinText) throws Exception {
+        return run(command, workspaceDirectory, stdinText);
+    }
+
+    private CommandResult run(List<String> command, Path workingDirectory, String stdinText) throws Exception {
         ProcessBuilder builder = new ProcessBuilder(command);
-        builder.directory(workspaceDirectory.toFile());
+        builder.directory(workingDirectory.toFile());
         builder.redirectErrorStream(true);
         ZigWorkspaceEnvironment.configure(
                 builder.environment(),
@@ -397,13 +387,13 @@ public class IrNativeBuildDriver {
 
             joinInputWriter(inputWriter);
             String output = awaitCollectedOutput(outputReader, outputRef, outputFailureRef);
-            IOException inputFailure = inputFailureRef.get();
-            if (inputFailure != null) {
-                throw inputFailure;
-            }
             int exitCode = process.exitValue();
             completed = true;
             registration.close();
+            IOException inputFailure = inputFailureRef.get();
+            if (inputFailure != null && exitCode != 0) {
+                output = output + System.lineSeparator() + "[stdin write failed: " + inputFailure.getMessage() + "]";
+            }
             return new CommandResult(exitCode, output);
         } finally {
             if (!completed) {
@@ -530,6 +520,149 @@ public class IrNativeBuildDriver {
         return absolutePath.toString();
     }
 
+    private List<String> createZigBuildCommand(String zigCommand, BuildTarget target, Path outputFile,
+                                               List<Path> runtimeSourceFiles) throws IOException {
+        Path buildProjectDirectory = prepareZigBuildProject(target, outputFile, runtimeSourceFiles);
+        Path cacheRoot = ZigWorkspaceEnvironment.cacheRoot(workspaceDirectory);
+        ArrayList<String> command = new ArrayList<>();
+        command.add(zigCommand);
+        command.add("build");
+        command.add("--prefix");
+        command.add(outputFile.toAbsolutePath().getParent().toString());
+        command.add("--cache-dir");
+        command.add(buildProjectDirectory.resolve(".zig-cache").toString());
+        command.add("--global-cache-dir");
+        command.add(cacheRoot.resolve("global").toString());
+        return List.copyOf(command);
+    }
+
+    private Path prepareZigBuildProject(BuildTarget target, Path outputFile,
+                                        List<Path> runtimeSourceFiles) throws IOException {
+        Path buildProjectDirectory = workspaceDirectory.resolve("zig-build").resolve(target.getConfigKey());
+        Files.createDirectories(buildProjectDirectory);
+        Path buildFile = buildProjectDirectory.resolve("build.zig");
+        Files.writeString(
+                buildFile,
+                createZigBuildFileText(target, outputFile, buildProjectDirectory, runtimeSourceFiles),
+                StandardCharsets.UTF_8
+        );
+        return buildProjectDirectory;
+    }
+
+    private String createZigBuildFileText(BuildTarget target, Path outputFile, Path buildProjectDirectory,
+                                          List<Path> runtimeSourceFiles) {
+        Path jniHeadersDirectory = ensureBundledJniHeaders(target);
+        List<Path> objectFiles = listTargetObjectFiles(target);
+        String runtimeFiles = runtimeSourceFiles.stream()
+                .map(path -> quoteZigString(path.getFileName().toString()))
+                .reduce((left, right) -> left + ", " + right)
+                .orElse("");
+        String objectFileLines = objectFiles.stream()
+                .map(path -> "    mod.addObjectFile(b.path(" + quoteZigString(relativeTo(buildProjectDirectory, path)) + "));")
+                .reduce((left, right) -> left + System.lineSeparator() + right)
+                .orElse("");
+        String includeDir = quoteZigString(relativeTo(buildProjectDirectory, jniHeadersDirectory));
+        String includePlatformDir = quoteZigString(relativeTo(buildProjectDirectory, jniHeadersDirectory.resolve(target.getJniHeaderSubdir())));
+        String outputName = quoteZigString(outputFile.getFileName().toString());
+        String arch = quoteZigEnum(zigCpuArch(target));
+        String os = quoteZigEnum(zigOsTag(target));
+        String pathFlags = createPathSanitizingFlags().stream()
+                .map(this::quoteZigString)
+                .reduce((left, right) -> left + ", " + right)
+                .orElse("");
+        return """
+                const std = @import("std");
+
+                pub fn build(b: *std.Build) void {
+                    const target = b.resolveTargetQuery(.{ .cpu_arch = %s, .os_tag = %s });
+                    const mod = b.createModule(.{
+                        .target = target,
+                        .optimize = .ReleaseSafe,
+                        .strip = true,
+                        .link_libc = true,
+                    });
+                    const lib = b.addLibrary(.{
+                        .linkage = .dynamic,
+                        .name = "irnative",
+                        .root_module = mod,
+                    });
+                    if (target.result.os.tag == .macos) {
+                        lib.discard_local_symbols = true;
+                    }
+
+                    mod.addIncludePath(b.path(%s));
+                    mod.addIncludePath(b.path(%s));
+                    mod.addCSourceFiles(.{
+                        .root = b.path(%s),
+                        .files = &.{ %s },
+                        .language = .c,
+                        .flags = &.{ "-g0", "-ffile-compilation-dir=.", "-fdebug-compilation-dir=.", %s },
+                    });
+                %s
+
+                    const artifact = b.addInstallArtifact(lib, .{
+                        .dest_dir = .{ .override = .prefix },
+                        .dest_sub_path = %s,
+                    });
+                    b.getInstallStep().dependOn(&artifact.step);
+                }
+                """.formatted(
+                arch,
+                os,
+                includeDir,
+                includePlatformDir,
+                quoteZigString(relativeTo(buildProjectDirectory, workspaceDirectory.resolve("runtime"))),
+                runtimeFiles,
+                pathFlags,
+                objectFileLines.isBlank() ? "" : System.lineSeparator() + objectFileLines,
+                outputName
+        );
+    }
+
+    private List<Path> listTargetObjectFiles(BuildTarget target) {
+        Path objectDirectory = workspaceDirectory.resolve("native-obj").resolve(target.getConfigKey());
+        if (Files.notExists(objectDirectory)) {
+            return List.of();
+        }
+        try (var stream = Files.list(objectDirectory)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .sorted()
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to enumerate native objects in " + objectDirectory, exception);
+        }
+    }
+
+    private String relativeTo(Path root, Path child) {
+        return root.toAbsolutePath().normalize().relativize(child.toAbsolutePath().normalize())
+                .toString()
+                .replace('\\', '/');
+    }
+
+    private String quoteZigString(String value) {
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private String quoteZigEnum(String value) {
+        return "." + value;
+    }
+
+    private String zigCpuArch(BuildTarget target) {
+        return switch (target) {
+            case WINDOWS_X64, LINUX_X64, MACOS_X64 -> "x86_64";
+            case WINDOWS_ARM64, LINUX_ARM64, MACOS_ARM64 -> "aarch64";
+        };
+    }
+
+    private String zigOsTag(BuildTarget target) {
+        return switch (target) {
+            case WINDOWS_X64, WINDOWS_ARM64 -> "windows";
+            case LINUX_X64, LINUX_ARM64 -> "linux";
+            case MACOS_X64, MACOS_ARM64 -> "macos";
+        };
+    }
+
     private String moduleObjectName(int index, Path llvmModuleFile, BuildTarget target) {
         return String.format("%02d-%s%s", index, baseName(llvmModuleFile.getFileName().toString()), objectFileExtension(target));
     }
@@ -570,6 +703,7 @@ public class IrNativeBuildDriver {
     void cleanupIntermediates() {
         deleteWorkspacePathQuietly(ZigWorkspaceEnvironment.cacheRoot(workspaceDirectory));
         deleteWorkspacePathQuietly(workspaceDirectory.resolve("native-obj"));
+        deleteWorkspacePathQuietly(workspaceDirectory.resolve("zig-build"));
     }
 
     void cleanupIntermediatesIfNeeded() {
@@ -587,7 +721,7 @@ public class IrNativeBuildDriver {
     public record BuildTiming(int llvmShardCount, int runtimeSourceCount, long compileMillis, long linkMillis, long totalMillis) {
     }
 
-    private record CompileUnit(String label, Path objectFile, List<String> command, Path sourceFile) {
+    private record CompileUnit(String label, Path objectFile, List<String> command) {
     }
 
     private record CompileOutcome(CompileUnit unit, CommandResult result) {

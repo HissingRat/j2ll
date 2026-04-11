@@ -57,7 +57,7 @@ public class IrNativeBuildDriverTest {
 
         assertEquals(List.of("zig", "cc", "-target", "x86_64-windows", "-g0"), command.subList(0, 5));
         assertTrue(command.contains("-ffile-prefix-map=" + Path.of("build", "ir").toAbsolutePath().normalize().toString().replace('\\', '/') + "=."));
-        assertTrue(command.containsAll(List.of("-x", "ir", "-c", "-")));
+        assertTrue(command.contains("llvm-modules/common.ll"));
     }
 
     @Test
@@ -81,18 +81,19 @@ public class IrNativeBuildDriverTest {
     }
 
     @Test
-    public void testCreatesRuntimeObjectCompileCommandWithoutSourcePathArgument() {
+    public void testCreatesRuntimeObjectCompileCommandWithSanitizedSourceFileName() {
         IrNativeBuildDriver driver = new IrNativeBuildDriver(Path.of("build", "ir"));
 
         List<String> command = driver.createRuntimeObjectCompileCommand(
                 "zig",
-                Path.of("build", "ir", "runtime", "helper-00.c"),
+                Path.of("build", "ir", "rt00.c"),
                 Path.of("build", "ir", "native-obj", "windowsX64", "runtime-00-helper-00.obj"),
                 BuildTarget.WINDOWS_X64
         );
 
-        assertTrue(command.containsAll(List.of("-x", "c", "-c", "-")));
-        assertTrue(!command.contains("runtime/helper-00.c"));
+        assertTrue(command.containsAll(List.of("-x", "c", "-c")));
+        assertTrue(command.contains("rt00.c"));
+        assertFalse(command.contains("runtime/helper-00.c"));
         assertTrue(command.contains("native-obj/windowsX64/runtime-00-helper-00.obj"));
     }
 
@@ -187,6 +188,44 @@ public class IrNativeBuildDriverTest {
 
         assertTrue(Files.exists(zigCacheFile));
         assertTrue(Files.exists(nativeObjFile));
+    }
+
+    @Test
+    public void testPrepareZigBuildProjectUsesStripAndRelativeRuntimeSources() throws Exception {
+        Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
+        Path runtimeDirectory = workspace.resolve("runtime");
+        Path nativeObjDirectory = workspace.resolve("native-obj").resolve("windowsX64");
+        Files.createDirectories(runtimeDirectory);
+        Files.createDirectories(nativeObjDirectory);
+        Path commonFile = runtimeDirectory.resolve("common.c");
+        Path helperFile = runtimeDirectory.resolve("helper-00.c");
+        Files.writeString(commonFile, "int common(void){return 1;}", StandardCharsets.UTF_8);
+        Files.writeString(helperFile, "int helper(void){return 2;}", StandardCharsets.UTF_8);
+        Files.writeString(runtimeDirectory.resolve("ir_runtime_stubs.c"), "int duplicate(void){return 3;}", StandardCharsets.UTF_8);
+        Files.writeString(nativeObjDirectory.resolve("00-common.obj"), "obj", StandardCharsets.UTF_8);
+
+        IrNativeBuildDriver driver = new IrNativeBuildDriver(workspace);
+        Method prepareMethod = IrNativeBuildDriver.class.getDeclaredMethod(
+                "prepareZigBuildProject",
+                BuildTarget.class,
+                Path.class,
+                List.class
+        );
+        prepareMethod.setAccessible(true);
+        Path projectDirectory = (Path) prepareMethod.invoke(
+                driver,
+                BuildTarget.WINDOWS_X64,
+                workspace.resolve("native").resolve("x64-windows.dll"),
+                List.of(commonFile, helperFile)
+        );
+
+        String buildText = Files.readString(projectDirectory.resolve("build.zig"), StandardCharsets.UTF_8);
+        assertTrue(buildText.contains(".strip = true"));
+        assertTrue(buildText.contains("\"common.c\""));
+        assertTrue(buildText.contains("\"helper-00.c\""));
+        assertFalse(buildText.contains("\"ir_runtime_stubs.c\""));
+        assertTrue(buildText.contains(".root = b.path(\"../../runtime\")") || buildText.contains(".root = b.path(\"../runtime\")") || buildText.contains(".root = b.path(\"runtime\")"));
+        assertTrue(buildText.contains("mod.addObjectFile"));
     }
 
     private List<String> createSleepingJavaCommand(Path workspace, String className, Path pidFile) throws Exception {
