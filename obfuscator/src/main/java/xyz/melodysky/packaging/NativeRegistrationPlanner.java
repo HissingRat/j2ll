@@ -28,19 +28,19 @@ public class NativeRegistrationPlanner {
         this.nativeMethodClassRewriter = nativeMethodClassRewriter;
     }
 
-    public NativeRegistrationPlan plan(Path inputJar, IrProgram program) throws IOException {
-        LinkedHashMap<String, Set<NativeMethodClassRewriter.MethodKey>> requestedMethods = requestedMethods(program);
+    public NativeRegistrationPlan plan(Path inputJar, List<RequestedClass> requestedClasses) throws IOException {
+        LinkedHashMap<String, Set<NativeMethodClassRewriter.MethodKey>> requestedMethods = requestedMethods(requestedClasses);
         ArrayList<NativeRegistrationPlan.ClassRegistration> classes = new ArrayList<>();
 
         try (JarFile jarFile = new JarFile(inputJar.toFile())) {
             int classIndex = 0;
-            for (IrClass irClass : program.classes()) {
-                Set<NativeMethodClassRewriter.MethodKey> requested = requestedMethods.get(irClass.reference().internalName());
+            for (RequestedClass requestedClass : requestedClasses) {
+                Set<NativeMethodClassRewriter.MethodKey> requested = requestedMethods.get(requestedClass.internalName());
                 if (requested == null || requested.isEmpty()) {
                     continue;
                 }
 
-                String entryName = irClass.reference().internalName() + ".class";
+                String entryName = requestedClass.internalName() + ".class";
                 if (jarFile.getEntry(entryName) == null) {
                     continue;
                 }
@@ -55,22 +55,22 @@ public class NativeRegistrationPlanner {
                 }
 
                 ArrayList<NativeRegistrationPlan.MethodRegistration> methods = new ArrayList<>();
-                for (IrMethod method : irClass.methods()) {
+                for (RequestedMethod method : requestedClass.methods()) {
                     NativeMethodClassRewriter.MethodKey methodKey =
-                            new NativeMethodClassRewriter.MethodKey(method.name(), IrDescriptors.methodDescriptor(method));
+                            new NativeMethodClassRewriter.MethodKey(method.name(), method.descriptor());
                     if (!rewritable.contains(methodKey)) {
                         continue;
                     }
                     methods.add(new NativeRegistrationPlan.MethodRegistration(
                             method.name(),
                             methodKey.descriptor(),
-                            JniMangler.nativeBridgeName(irClass, method)
+                            method.bridgeSymbol()
                     ));
                 }
                 if (!methods.isEmpty()) {
                     classes.add(new NativeRegistrationPlan.ClassRegistration(
                             classIndex++,
-                            irClass.reference().internalName(),
+                            requestedClass.internalName(),
                             List.copyOf(methods)
                     ));
                 }
@@ -80,20 +80,47 @@ public class NativeRegistrationPlanner {
         return classes.isEmpty() ? NativeRegistrationPlan.empty() : new NativeRegistrationPlan(List.copyOf(classes));
     }
 
-    private LinkedHashMap<String, Set<NativeMethodClassRewriter.MethodKey>> requestedMethods(IrProgram program) {
+    private LinkedHashMap<String, Set<NativeMethodClassRewriter.MethodKey>> requestedMethods(List<RequestedClass> requestedClasses) {
         LinkedHashMap<String, Set<NativeMethodClassRewriter.MethodKey>> methodsByClass = new LinkedHashMap<>();
-        for (IrClass irClass : program.classes()) {
+        for (RequestedClass requestedClass : requestedClasses) {
             LinkedHashSet<NativeMethodClassRewriter.MethodKey> methods = new LinkedHashSet<>();
-            for (IrMethod method : irClass.methods()) {
-                if (method.name().startsWith("<")) {
-                    continue;
-                }
-                methods.add(new NativeMethodClassRewriter.MethodKey(method.name(), IrDescriptors.methodDescriptor(method)));
+            for (RequestedMethod method : requestedClass.methods()) {
+                methods.add(new NativeMethodClassRewriter.MethodKey(method.name(), method.descriptor()));
             }
             if (!methods.isEmpty()) {
-                methodsByClass.put(irClass.reference().internalName(), Set.copyOf(methods));
+                methodsByClass.put(requestedClass.internalName(), Set.copyOf(methods));
             }
         }
         return methodsByClass;
+    }
+
+    public record RequestedClass(String internalName, List<RequestedMethod> methods) {
+        public RequestedClass {
+            methods = List.copyOf(methods);
+        }
+
+        public static List<RequestedClass> fromProgram(IrProgram program) {
+            ArrayList<RequestedClass> classes = new ArrayList<>();
+            for (IrClass irClass : program.classes()) {
+                ArrayList<RequestedMethod> methods = new ArrayList<>();
+                for (IrMethod method : irClass.methods()) {
+                    if (method.name().startsWith("<")) {
+                        continue;
+                    }
+                    methods.add(new RequestedMethod(
+                            method.name(),
+                            IrDescriptors.methodDescriptor(method),
+                            JniMangler.nativeBridgeName(irClass, method)
+                    ));
+                }
+                if (!methods.isEmpty()) {
+                    classes.add(new RequestedClass(irClass.reference().internalName(), methods));
+                }
+            }
+            return List.copyOf(classes);
+        }
+    }
+
+    public record RequestedMethod(String name, String descriptor, String bridgeSymbol) {
     }
 }

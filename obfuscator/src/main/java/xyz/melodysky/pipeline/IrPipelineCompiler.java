@@ -10,6 +10,7 @@ import xyz.melodysky.ir.model.IrProgram;
 import xyz.melodysky.ir.pass.CfgCleanupPass;
 import xyz.melodysky.ir.pass.IrMethodPass;
 import xyz.melodysky.ir.pass.IrMethodPassPipeline;
+import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.runtime.IrRuntimeStubGenerator;
 
 import java.io.IOException;
@@ -109,16 +110,16 @@ public class IrPipelineCompiler {
         return new BuildResult(frontendResult, transformedProgram, moduleSet.monolithicText(), moduleSet.shardModules(), null);
     }
 
-    public BuildResult compileToDirectory(Path jarPath, Path outputDirectory) throws IOException {
+    public DirectoryBuildResult compileToDirectory(Path jarPath, Path outputDirectory) throws IOException {
         return compileToDirectory(jarPath, outputDirectory, ClassMethodFilter.allowAll());
     }
 
-    public BuildResult compileToDirectory(Path jarPath, Path outputDirectory, ClassMethodFilter classMethodFilter) throws IOException {
+    public DirectoryBuildResult compileToDirectory(Path jarPath, Path outputDirectory, ClassMethodFilter classMethodFilter) throws IOException {
         return compileToDirectory(jarPath, outputDirectory, classMethodFilter, NO_PROGRESS);
     }
 
-    public BuildResult compileToDirectory(Path jarPath, Path outputDirectory, ClassMethodFilter classMethodFilter,
-                                          ProgressListener progressListener) throws IOException {
+    public DirectoryBuildResult compileToDirectory(Path jarPath, Path outputDirectory, ClassMethodFilter classMethodFilter,
+                                                   ProgressListener progressListener) throws IOException {
         BuildResult result = compile(jarPath, classMethodFilter, progressListener);
         Files.createDirectories(outputDirectory);
 
@@ -130,14 +131,15 @@ public class IrPipelineCompiler {
         Path skipsPath = outputDirectory.resolve("frontend-skips.txt");
         Path runtimeStubPath = runtimeDirectory.resolve("ir_runtime_stubs.c");
 
-        Files.writeString(llvmPath, result.llvmText(), StandardCharsets.UTF_8);
+        String llvmText = result.llvmText();
+        Files.writeString(llvmPath, llvmText, StandardCharsets.UTF_8);
         Path writtenSkipsPath = null;
         String renderedSkips = renderSkips(result.frontendResult());
         if (!renderedSkips.isBlank()) {
             Files.writeString(skipsPath, renderedSkips, StandardCharsets.UTF_8);
             writtenSkipsPath = skipsPath;
         }
-        Files.writeString(runtimeStubPath, runtimeStubGenerator.generate(result.llvmText()), StandardCharsets.UTF_8);
+        Files.writeString(runtimeStubPath, runtimeStubGenerator.generate(llvmText), StandardCharsets.UTF_8);
         ArrayList<Path> llvmModuleFiles = new ArrayList<>(result.llvmModules().size());
         for (LlvmTextBackend.ModuleFragment fragment : result.llvmModules()) {
             Path moduleFile = llvmModulesDirectory.resolve(fragment.fileName());
@@ -145,11 +147,8 @@ public class IrPipelineCompiler {
             llvmModuleFiles.add(moduleFile);
         }
 
-        return new BuildResult(
-                result.frontendResult(),
-                result.transformedProgram(),
-                result.llvmText(),
-                result.llvmModules(),
+        return new DirectoryBuildResult(
+                NativeRegistrationPlanner.RequestedClass.fromProgram(result.transformedProgram()),
                 new OutputArtifacts(outputDirectory, llvmPath, writtenSkipsPath, runtimeStubPath, runtimeDirectory,
                         List.copyOf(llvmModuleFiles))
         );
@@ -192,6 +191,12 @@ public class IrPipelineCompiler {
             IrProgram transformedProgram,
             String llvmText,
             List<LlvmTextBackend.ModuleFragment> llvmModules,
+            OutputArtifacts outputArtifacts
+    ) {
+    }
+
+    public record DirectoryBuildResult(
+            List<NativeRegistrationPlanner.RequestedClass> requestedClasses,
             OutputArtifacts outputArtifacts
     ) {
     }

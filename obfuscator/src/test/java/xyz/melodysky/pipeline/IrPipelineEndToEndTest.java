@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -46,13 +47,13 @@ public class IrPipelineEndToEndTest {
         try {
             IrJarRepacker repacker = new IrJarRepacker();
             String nativeDir = repacker.planNativeDir(inputJar, "native0");
-            IrPipelineCompiler.BuildResult pipelineResult = new IrPipelineCompiler().compileToDirectory(inputJar, workspace);
+            IrPipelineCompiler.DirectoryBuildResult pipelineResult = new IrPipelineCompiler().compileToDirectory(inputJar, workspace);
             NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner()
-                    .plan(inputJar, pipelineResult.transformedProgram());
+                    .plan(inputJar, pipelineResult.requestedClasses());
             Files.writeString(
                     pipelineResult.outputArtifacts().runtimeStubFile(),
                     new IrRuntimeStubGenerator().generate(
-                            pipelineResult.llvmText(),
+                            Files.readString(pipelineResult.outputArtifacts().llvmFile(), StandardCharsets.UTF_8),
                             registrationPlan,
                             nativeDir + "/Loader"
                     )

@@ -28,6 +28,7 @@ public class Config {
     public String libraryName;
     public String embeddedLibraryDirectory = "native0";
     public StringObfuscationConfig stringObfuscation = new StringObfuscationConfig();
+    public Integer maxShardMB;
 
     public static class TargetConfig {
         public boolean windowsX64 = true;
@@ -132,6 +133,10 @@ public class Config {
         return targets;
     }
 
+    public Integer getMaxShardBytes() {
+        return maxShardMB == null ? null : Math.multiplyExact(maxShardMB, 1024 * 1024);
+    }
+
     private void validate(Path source) {
         if (jarFile == null || jarFile.isBlank()) {
             throw new IllegalArgumentException("Missing 'jarFile' in config: " + source.toAbsolutePath());
@@ -144,6 +149,14 @@ public class Config {
         }
         if (stringObfuscation == null) {
             stringObfuscation = new StringObfuscationConfig();
+        }
+        if (maxShardMB != null && maxShardMB <= 0) {
+            throw new IllegalArgumentException("Config.maxShardMB must be positive when set: " + source.toAbsolutePath());
+        }
+        try {
+            getMaxShardBytes();
+        } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException("Config.maxShardMB is too large: " + source.toAbsolutePath(), exception);
         }
         if (getEnabledTargets().isEmpty()) {
             throw new IllegalArgumentException("At least one target must be enabled in config.target: " + source.toAbsolutePath());

@@ -36,7 +36,7 @@ public class IrNativeBuildDriverIntegrationTest {
         Path jarPath = createFixtureJar();
         Path outputDirectory = Files.createTempDirectory("ir-native-build-");
         try {
-            IrPipelineCompiler.BuildResult pipelineResult = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
+            IrPipelineCompiler.DirectoryBuildResult pipelineResult = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
             IrNativeBuildDriver.BuildResult nativeBuild = new IrNativeBuildDriver(outputDirectory).build(
                     "zig",
                     pipelineResult.outputArtifacts().llvmModuleFiles(),
