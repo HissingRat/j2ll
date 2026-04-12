@@ -1,6 +1,7 @@
 package xyz.melodysky;
 
 import sun.misc.Signal;
+import xyz.melodysky.backend.llvm.LlvmTextBackend;
 import xyz.melodysky.console.ConsoleProgressDisplay;
 import xyz.melodysky.config.Config;
 import xyz.melodysky.filter.ClassMethodFilter;
@@ -82,22 +83,28 @@ public class Main {
         String nativeDir = jarRepacker.planNativeDir(config.getJarFilePath(), config.embeddedLibraryDirectory);
         ConsoleProgressDisplay progressDisplay = new ConsoleProgressDisplay();
         PipelineConsoleProgress pipelineProgress = new PipelineConsoleProgress(progressDisplay);
-        IrPipelineCompiler.BuildResult result = new IrPipelineCompiler(
+        Integer maxShardBytes = config.getMaxShardBytes();
+        LlvmTextBackend llvmBackend = maxShardBytes != null
+                ? LlvmTextBackend.withMaxShardBytes(maxShardBytes)
+                : new LlvmTextBackend();
+        IrRuntimeStubGenerator runtimeStubGenerator = new IrRuntimeStubGenerator();
+        IrPipelineCompiler.DirectoryBuildResult result = new IrPipelineCompiler(
                 new xyz.melodysky.frontend.jar.JarIrBuilder(),
                 methodPasses,
-                new xyz.melodysky.backend.llvm.LlvmTextBackend(),
-                new IrRuntimeStubGenerator()
+                llvmBackend,
+                runtimeStubGenerator
         )
                 .compileToDirectory(config.getJarFilePath(), buildDirectory, classMethodFilter, pipelineProgress);
         pipelineProgress.finish();
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner()
-                .plan(config.getJarFilePath(), result.transformedProgram());
-        IrRuntimeStubGenerator runtimeStubGenerator = new IrRuntimeStubGenerator();
+                .plan(config.getJarFilePath(), result.requestedClasses());
+        String llvmText = Files.readString(result.outputArtifacts().llvmFile(), StandardCharsets.UTF_8);
         IrRuntimeStubGenerator.RuntimeSourceSet runtimeSourceSet = runtimeStubGenerator.generateSourceSet(
-                result.llvmText(),
+                llvmText,
                 registrationPlan,
                 nativeDir + "/Loader",
-                Math.max(1, result.outputArtifacts().llvmModuleFiles().size() - 1)
+                Math.max(1, result.outputArtifacts().llvmModuleFiles().size() - 1),
+                maxShardBytes
         );
         Files.writeString(
                 result.outputArtifacts().runtimeStubFile(),
@@ -115,7 +122,10 @@ public class Main {
         ZigManager zigManager = new ZigManager(ZigManager.resolveApplicationDirectory(Main.class), buildDirectory);
         String zigCommand = zigManager.ensureZigCommand();
         NativeBuildConsoleProgress nativeBuildProgress = new NativeBuildConsoleProgress(progressDisplay);
-        IrNativeBuildDriver.BuildResult nativeBuild = new IrNativeBuildDriver(buildDirectory, debug).build(
+        IrNativeBuildDriver.BuildResult nativeBuild = new IrNativeBuildDriver(
+                buildDirectory,
+                debug
+        ).build(
                 zigCommand,
                 result.outputArtifacts().llvmModuleFiles(),
                 List.copyOf(runtimeSourceFiles),
@@ -296,6 +306,7 @@ public class Main {
         public void onLinkStart(xyz.melodysky.config.BuildTarget target) {
             targetName = target.getConfigKey();
             stage = "linking";
+            compileLabel = "zig build " + target.getConfigKey();
             render();
         }
 

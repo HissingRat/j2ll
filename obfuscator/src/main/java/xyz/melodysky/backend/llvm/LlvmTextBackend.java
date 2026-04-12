@@ -31,6 +31,7 @@ public class LlvmTextBackend implements IrProgramBackend {
     private static final int DEFAULT_MIN_SHARD_BYTES = 4 * 1024 * 1024;
 
     private final int minShardBytes;
+    private final Integer maxShardBytes;
     private static final EmissionProgressListener NO_PROGRESS = new EmissionProgressListener() {};
 
     public interface EmissionProgressListener {
@@ -39,11 +40,20 @@ public class LlvmTextBackend implements IrProgramBackend {
     }
 
     public LlvmTextBackend() {
-        this(DEFAULT_MIN_SHARD_BYTES);
+        this(DEFAULT_MIN_SHARD_BYTES, null);
     }
 
     LlvmTextBackend(int minShardBytes) {
+        this(minShardBytes, null);
+    }
+
+    LlvmTextBackend(int minShardBytes, Integer maxShardBytes) {
         this.minShardBytes = Math.max(1, minShardBytes);
+        this.maxShardBytes = maxShardBytes == null ? null : Math.max(1, maxShardBytes);
+    }
+
+    public static LlvmTextBackend withMaxShardBytes(int maxShardBytes) {
+        return new LlvmTextBackend(DEFAULT_MIN_SHARD_BYTES, maxShardBytes);
     }
 
     @Override
@@ -175,9 +185,16 @@ public class LlvmTextBackend implements IrProgramBackend {
             }
         }
 
-        int maxShardCount = Math.max(1, Math.min(shardUnits.size(), Math.max(1, requestedShardCount)));
-        int targetShardCount = (int) Math.max(1L, Math.min(maxShardCount, totalBytes / minShardBytes));
-        targetShardCount = Math.max(1, Math.min(maxShardCount, targetShardCount));
+        int maxShardCount = maxShardBytes != null
+                ? Math.max(1, shardUnits.size())
+                : Math.max(1, Math.min(shardUnits.size(), Math.max(1, requestedShardCount)));
+        int targetShardCount;
+        if (maxShardBytes != null) {
+            targetShardCount = (int) Math.max(1L, Math.min(maxShardCount, ceilDiv(totalBytes, maxShardBytes)));
+        } else {
+            targetShardCount = (int) Math.max(1L, Math.min(maxShardCount, totalBytes / minShardBytes));
+            targetShardCount = Math.max(1, Math.min(maxShardCount, targetShardCount));
+        }
 
         ArrayList<ShardBucket> buckets = new ArrayList<>(targetShardCount);
         for (int index = 0; index < targetShardCount; index++) {
@@ -186,7 +203,7 @@ public class LlvmTextBackend implements IrProgramBackend {
 
         shardUnits.sort((left, right) -> Integer.compare(right.estimatedBytes(), left.estimatedBytes()));
         for (ClassShardUnit unit : shardUnits) {
-            ShardBucket bucket = smallestBucket(buckets);
+            ShardBucket bucket = smallestBucket(buckets, unit.estimatedBytes(), maxShardBytes);
             bucket.units().add(unit);
             bucket.estimatedBytes += unit.estimatedBytes();
         }
@@ -200,7 +217,8 @@ public class LlvmTextBackend implements IrProgramBackend {
 
     private List<ClassShardUnit> splitClassIntoUnits(IrClass irClass, Map<MethodKey, DirectCallTarget> directCallTargets) {
         int classBytes = estimateClassShardBytes(irClass, directCallTargets);
-        if (classBytes <= minShardBytes || irClass.methods().size() <= 1) {
+        int shardThresholdBytes = shardThresholdBytes();
+        if (classBytes <= shardThresholdBytes || irClass.methods().size() <= 1) {
             return List.of(new ClassShardUnit(irClass.reference(), List.copyOf(irClass.methods()), classBytes));
         }
 
@@ -212,7 +230,7 @@ public class LlvmTextBackend implements IrProgramBackend {
             totalMethodBytes += estimatedBytes;
         }
 
-        int sliceCount = (int) Math.max(1L, Math.min(irClass.methods().size(), totalMethodBytes / minShardBytes));
+        int sliceCount = (int) Math.max(1L, Math.min(irClass.methods().size(), ceilDiv(totalMethodBytes, shardThresholdBytes)));
         sliceCount = Math.max(2, sliceCount);
         ArrayList<ShardMethodBucket> buckets = new ArrayList<>(sliceCount);
         for (int index = 0; index < sliceCount; index++) {
@@ -221,7 +239,7 @@ public class LlvmTextBackend implements IrProgramBackend {
 
         methodWeights.sort((left, right) -> Integer.compare(right.estimatedBytes(), left.estimatedBytes()));
         for (MethodWeight methodWeight : methodWeights) {
-            ShardMethodBucket bucket = smallestMethodBucket(buckets);
+            ShardMethodBucket bucket = smallestMethodBucket(buckets, methodWeight.estimatedBytes(), maxShardBytes);
             bucket.methods().add(methodWeight.method());
             bucket.estimatedBytes += methodWeight.estimatedBytes();
         }
@@ -272,6 +290,19 @@ public class LlvmTextBackend implements IrProgramBackend {
         return Math.max(1, builder.length());
     }
 
+    private ShardBucket smallestBucket(List<ShardBucket> buckets, int candidateBytes, Integer maxBytes) {
+        ShardBucket smallest = null;
+        for (ShardBucket current : buckets) {
+            if (maxBytes != null && current.estimatedBytes() + candidateBytes > maxBytes) {
+                continue;
+            }
+            if (smallest == null || current.estimatedBytes() < smallest.estimatedBytes()) {
+                smallest = current;
+            }
+        }
+        return smallest != null ? smallest : smallestBucket(buckets);
+    }
+
     private ShardBucket smallestBucket(List<ShardBucket> buckets) {
         ShardBucket smallest = buckets.getFirst();
         for (int index = 1; index < buckets.size(); index++) {
@@ -283,6 +314,19 @@ public class LlvmTextBackend implements IrProgramBackend {
         return smallest;
     }
 
+    private ShardMethodBucket smallestMethodBucket(List<ShardMethodBucket> buckets, int candidateBytes, Integer maxBytes) {
+        ShardMethodBucket smallest = null;
+        for (ShardMethodBucket current : buckets) {
+            if (maxBytes != null && current.estimatedBytes() + candidateBytes > maxBytes) {
+                continue;
+            }
+            if (smallest == null || current.estimatedBytes() < smallest.estimatedBytes()) {
+                smallest = current;
+            }
+        }
+        return smallest != null ? smallest : smallestMethodBucket(buckets);
+    }
+
     private ShardMethodBucket smallestMethodBucket(List<ShardMethodBucket> buckets) {
         ShardMethodBucket smallest = buckets.getFirst();
         for (int index = 1; index < buckets.size(); index++) {
@@ -292,6 +336,14 @@ public class LlvmTextBackend implements IrProgramBackend {
             }
         }
         return smallest;
+    }
+
+    private int shardThresholdBytes() {
+        return maxShardBytes != null ? maxShardBytes : minShardBytes;
+    }
+
+    private long ceilDiv(long numerator, long denominator) {
+        return Math.max(1L, (numerator + denominator - 1L) / denominator);
     }
 
     private void emitClassUnit(StringBuilder builder, Map<String, String> helperDeclarations,

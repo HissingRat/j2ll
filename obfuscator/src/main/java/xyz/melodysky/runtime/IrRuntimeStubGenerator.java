@@ -28,11 +28,23 @@ public class IrRuntimeStubGenerator {
 
     public RuntimeSourceSet generateSourceSet(String llvmText, NativeRegistrationPlan registrationPlan,
                                               String loaderInternalName, int requestedHelperShardCount) {
+        return generateSourceSet(llvmText, registrationPlan, loaderInternalName, requestedHelperShardCount, null);
+    }
+
+    public RuntimeSourceSet generateSourceSet(String llvmText, NativeRegistrationPlan registrationPlan,
+                                              String loaderInternalName, int requestedHelperShardCount,
+                                              Integer maxShardBytes) {
         runtimeNames = RuntimeNames.create();
         List<HelperSpec> helpers = collectHelpers(llvmText);
 
         String monolithicText = renderMonolithicSource(helpers, registrationPlan, loaderInternalName);
-        List<RuntimeFragment> fragments = renderShardedSources(helpers, registrationPlan, loaderInternalName, requestedHelperShardCount);
+        List<RuntimeFragment> fragments = renderShardedSources(
+                helpers,
+                registrationPlan,
+                loaderInternalName,
+                requestedHelperShardCount,
+                maxShardBytes
+        );
         return new RuntimeSourceSet(monolithicText, fragments);
     }
 
@@ -77,7 +89,8 @@ public class IrRuntimeStubGenerator {
     }
 
     private List<RuntimeFragment> renderShardedSources(List<HelperSpec> helpers, NativeRegistrationPlan registrationPlan,
-                                                       String loaderInternalName, int requestedHelperShardCount) {
+                                                       String loaderInternalName, int requestedHelperShardCount,
+                                                       Integer maxShardBytes) {
         ArrayList<RuntimeFragment> fragments = new ArrayList<>();
 
         StringBuilder common = new StringBuilder();
@@ -96,13 +109,23 @@ public class IrRuntimeStubGenerator {
         }
 
         ArrayList<HelperWithSource> renderedHelpers = new ArrayList<>(helpers.size());
+        long totalHelperBytes = 0L;
         for (HelperSpec helper : helpers) {
             String source = renderSingleHelper(helper);
-            renderedHelpers.add(new HelperWithSource(helper, source, source.length()));
+            int estimatedBytes = source.length();
+            renderedHelpers.add(new HelperWithSource(helper, source, estimatedBytes));
+            totalHelperBytes += estimatedBytes;
+        }
+        if (maxShardBytes != null && maxShardBytes > 0) {
+            helperShardCount = Math.max(helperShardCount, (int) Math.min(helpers.size(), ceilDiv(totalHelperBytes, maxShardBytes)));
+            buckets.clear();
+            for (int index = 0; index < helperShardCount; index++) {
+                buckets.add(new HelperBucket(new ArrayList<>(), 0));
+            }
         }
         renderedHelpers.sort((left, right) -> Integer.compare(right.estimatedBytes(), left.estimatedBytes()));
         for (HelperWithSource renderedHelper : renderedHelpers) {
-            HelperBucket bucket = smallestHelperBucket(buckets);
+            HelperBucket bucket = smallestHelperBucket(buckets, renderedHelper.estimatedBytes(), maxShardBytes);
             bucket.helpers().add(renderedHelper);
             bucket.estimatedBytes += renderedHelper.estimatedBytes();
         }
@@ -125,6 +148,19 @@ public class IrRuntimeStubGenerator {
         return List.copyOf(fragments);
     }
 
+    private HelperBucket smallestHelperBucket(List<HelperBucket> buckets, int candidateBytes, Integer maxBytes) {
+        HelperBucket smallest = null;
+        for (HelperBucket current : buckets) {
+            if (maxBytes != null && current.estimatedBytes() + candidateBytes > maxBytes) {
+                continue;
+            }
+            if (smallest == null || current.estimatedBytes() < smallest.estimatedBytes()) {
+                smallest = current;
+            }
+        }
+        return smallest != null ? smallest : smallestHelperBucket(buckets);
+    }
+
     private HelperBucket smallestHelperBucket(List<HelperBucket> buckets) {
         HelperBucket smallest = buckets.getFirst();
         for (int index = 1; index < buckets.size(); index++) {
@@ -134,6 +170,10 @@ public class IrRuntimeStubGenerator {
             }
         }
         return smallest;
+    }
+
+    private long ceilDiv(long numerator, long denominator) {
+        return Math.max(1L, (numerator + denominator - 1L) / denominator);
     }
 
     private void appendRuntimeIncludes(StringBuilder out) {

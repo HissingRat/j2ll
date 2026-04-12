@@ -739,6 +739,26 @@ public class LlvmTextBackendTest {
         assertTrue(shardMentions > 1, "expected a huge single class to be split across multiple shards");
     }
 
+    @Test
+    public void testMaxShardBytesCanForceAdditionalLlvmShards() {
+        IrClassRef classRef = new IrClassRef("sample/CappedClass");
+        List<IrMethod> methods = java.util.stream.IntStream.range(0, 6)
+                .mapToObj(index -> hugeMethod("cap" + index))
+                .toList();
+
+        LlvmTextBackend.ModuleSet moduleSet = new LlvmTextBackend(16 * 1024 * 1024, 8 * 1024).emitModuleSet(
+                new IrProgram(List.of(new IrClass(classRef, methods))),
+                1
+        );
+
+        long shardMentions = moduleSet.shardModules().stream()
+                .filter(fragment -> fragment.fileName().startsWith("shard-"))
+                .filter(fragment -> fragment.llvmText().contains("; class " + classRef.internalName()))
+                .count();
+
+        assertTrue(shardMentions > 1, "expected maxShardBytes to force more than one LLVM shard");
+    }
+
     private IrMethod hugeMethod(String name) {
         java.util.ArrayList<IrInstruction> instructions = new java.util.ArrayList<>();
         IrValue lastValue = null;

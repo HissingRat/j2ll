@@ -9,6 +9,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +79,35 @@ public class IrNativeBuildDriverTest {
         assertTrue(command.contains("-ffile-prefix-map=" + Path.of("build", "ir").toAbsolutePath().normalize().toString().replace('\\', '/') + "=."));
         assertTrue(command.contains("native-obj/windowsX64/00-common.obj"));
         assertTrue(command.contains("native-obj/windowsX64/runtime.obj"));
+    }
+
+    @Test
+    public void testCreateZigBuildCommandUsesAbsolutePaths() throws Exception {
+        Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
+        IrNativeBuildDriver driver = new IrNativeBuildDriver(workspace);
+        Method method = IrNativeBuildDriver.class.getDeclaredMethod(
+                "createZigBuildCommand",
+                String.class,
+                Path.class,
+                Path.class,
+                BuildTarget.class
+        );
+        method.setAccessible(true);
+
+        Path outputDirectory = workspace.resolve("native");
+        Path buildProjectDirectory = workspace.resolve("zig-build");
+        @SuppressWarnings("unchecked")
+        List<String> command = (List<String>) method.invoke(
+                driver,
+                "zig",
+                outputDirectory,
+                buildProjectDirectory,
+                BuildTarget.WINDOWS_X64
+        );
+
+        assertEquals(outputDirectory.toAbsolutePath().normalize().toString(), command.get(4));
+        assertEquals(buildProjectDirectory.toAbsolutePath().normalize().resolve(".zig-cache").toString(), command.get(6));
+        assertEquals(ZigWorkspaceEnvironment.cacheRoot(workspace).resolve("global").toAbsolutePath().normalize().toString(), command.get(8));
     }
 
     @Test
@@ -195,27 +225,44 @@ public class IrNativeBuildDriverTest {
         Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
         Path runtimeDirectory = workspace.resolve("runtime");
         Path nativeObjDirectory = workspace.resolve("native-obj").resolve("windowsX64");
+        Path linuxObjDirectory = workspace.resolve("native-obj").resolve("linuxX64");
         Files.createDirectories(runtimeDirectory);
         Files.createDirectories(nativeObjDirectory);
+        Files.createDirectories(linuxObjDirectory);
         Path commonFile = runtimeDirectory.resolve("common.c");
         Path helperFile = runtimeDirectory.resolve("helper-00.c");
         Files.writeString(commonFile, "int common(void){return 1;}", StandardCharsets.UTF_8);
         Files.writeString(helperFile, "int helper(void){return 2;}", StandardCharsets.UTF_8);
         Files.writeString(runtimeDirectory.resolve("ir_runtime_stubs.c"), "int duplicate(void){return 3;}", StandardCharsets.UTF_8);
-        Files.writeString(nativeObjDirectory.resolve("00-common.obj"), "obj", StandardCharsets.UTF_8);
+        Path windowsObj = nativeObjDirectory.resolve("00-common.obj");
+        Path linuxObj = linuxObjDirectory.resolve("00-common.o");
+        Files.writeString(windowsObj, "obj", StandardCharsets.UTF_8);
+        Files.writeString(linuxObj, "obj", StandardCharsets.UTF_8);
 
         IrNativeBuildDriver driver = new IrNativeBuildDriver(workspace);
+        Object windowsState = createTargetBuildState(
+                BuildTarget.WINDOWS_X64,
+                workspace.resolve("native").resolve("x64-windows.dll"),
+                workspace.resolve("logs").resolve("zig-build-windowsX64.log"),
+                windowsObj
+        );
+        Object linuxState = createTargetBuildState(
+                BuildTarget.LINUX_X64,
+                workspace.resolve("native").resolve("x64-linux.so"),
+                workspace.resolve("logs").resolve("zig-build-linuxX64.log"),
+                linuxObj
+        );
         Method prepareMethod = IrNativeBuildDriver.class.getDeclaredMethod(
                 "prepareZigBuildProject",
-                BuildTarget.class,
                 Path.class,
+                List.class,
                 List.class
         );
         prepareMethod.setAccessible(true);
         Path projectDirectory = (Path) prepareMethod.invoke(
                 driver,
-                BuildTarget.WINDOWS_X64,
-                workspace.resolve("native").resolve("x64-windows.dll"),
+                workspace.resolve("native"),
+                List.of(windowsState, linuxState),
                 List.of(commonFile, helperFile)
         );
 
@@ -224,8 +271,50 @@ public class IrNativeBuildDriverTest {
         assertTrue(buildText.contains("\"common.c\""));
         assertTrue(buildText.contains("\"helper-00.c\""));
         assertFalse(buildText.contains("\"ir_runtime_stubs.c\""));
-        assertTrue(buildText.contains(".root = b.path(\"../../runtime\")") || buildText.contains(".root = b.path(\"../runtime\")") || buildText.contains(".root = b.path(\"runtime\")"));
-        assertTrue(buildText.contains("mod.addObjectFile"));
+        assertTrue(buildText.contains("const target_windowsX64"));
+        assertTrue(buildText.contains("const target_linuxX64"));
+        assertTrue(buildText.contains("artifact_windowsX64"));
+        assertTrue(buildText.contains("artifact_linuxX64"));
+        assertTrue(buildText.contains("const step_windowsX64 = b.step(\"windowsX64\""));
+        assertTrue(buildText.contains("const step_linuxX64 = b.step(\"linuxX64\""));
+        assertTrue(buildText.contains("mod_windowsX64.addObjectFile"));
+        assertTrue(buildText.contains("mod_linuxX64.addObjectFile"));
+        assertTrue(buildText.contains(".implib_dir = .disabled"));
+    }
+
+    private Object createTargetBuildState(BuildTarget target, Path libraryFile, Path logFile, Path objectFile) throws Exception {
+        Class<?> compileUnitClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$CompileUnit");
+        var compileUnitConstructor = compileUnitClass.getDeclaredConstructor(String.class, Path.class, List.class);
+        compileUnitConstructor.setAccessible(true);
+        Object compileUnit = compileUnitConstructor.newInstance("llvm[" + objectFile.getFileName() + "]", objectFile, List.of("zig", "cc"));
+
+        Class<?> compileBatchClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$CompileBatchResult");
+        var compileBatchConstructor = compileBatchClass.getDeclaredConstructor(LinkedHashMap.class, compileUnitClass);
+        compileBatchConstructor.setAccessible(true);
+        Object compileBatch = compileBatchConstructor.newInstance(new LinkedHashMap<>(), null);
+
+        Class<?> targetBuildStateClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$TargetBuildState");
+        var targetBuildStateConstructor = targetBuildStateClass.getDeclaredConstructor(
+                BuildTarget.class,
+                Path.class,
+                Path.class,
+                List.class,
+                compileBatchClass,
+                int.class,
+                int.class,
+                long.class
+        );
+        targetBuildStateConstructor.setAccessible(true);
+        return targetBuildStateConstructor.newInstance(
+                target,
+                libraryFile,
+                logFile,
+                List.of(compileUnit),
+                compileBatch,
+                1,
+                2,
+                10L
+        );
     }
 
     private List<String> createSleepingJavaCommand(Path workspace, String className, Path pidFile) throws Exception {

@@ -43,7 +43,7 @@ public class IrPipelineCompilerTest {
         Path jarPath = createFixtureJar();
         Path outputDirectory = Files.createTempDirectory("ir-pipeline-out-");
         try {
-            IrPipelineCompiler.BuildResult result = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
+            IrPipelineCompiler.DirectoryBuildResult result = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
 
             assertTrue(Files.exists(result.outputArtifacts().llvmFile()));
             assertEquals(outputDirectory.resolve("llvm-modules").resolve("program.ll"), result.outputArtifacts().llvmFile());

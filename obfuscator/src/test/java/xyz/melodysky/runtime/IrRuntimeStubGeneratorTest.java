@@ -149,4 +149,28 @@ public class IrRuntimeStubGeneratorTest {
         assertTrue(stubs.contains("static const " + JniMangler.opaqueSymbol("runtime|register-entry", 20) + " entries[] = {"));
         assertTrue(stubs.contains("JNINativeMethod* methods = (JNINativeMethod*)calloc((size_t)method_count, sizeof(JNINativeMethod));"));
     }
+
+    @Test
+    public void testMaxShardBytesCanForceAdditionalHelperShards() {
+        String llvm = """
+                declare i32 @"ir_rt_call__static__sample_s_MathOps__mix0__int__int__int"(i32, i32)
+                declare i32 @"ir_rt_call__static__sample_s_MathOps__mix1__int__int__int"(i32, i32)
+                declare i32 @"ir_rt_call__static__sample_s_MathOps__mix2__int__int__int"(i32, i32)
+                declare i32 @"ir_rt_call__static__sample_s_MathOps__mix3__int__int__int"(i32, i32)
+                """;
+
+        IrRuntimeStubGenerator.RuntimeSourceSet sourceSet = new IrRuntimeStubGenerator().generateSourceSet(
+                llvm,
+                NativeRegistrationPlan.empty(),
+                "native0/Loader",
+                1,
+                512
+        );
+
+        long helperShardCount = sourceSet.sourceFiles().stream()
+                .filter(fragment -> fragment.fileName().startsWith("helper-"))
+                .count();
+
+        assertTrue(helperShardCount > 1, "expected maxShardBytes to force more than one helper shard");
+    }
 }
