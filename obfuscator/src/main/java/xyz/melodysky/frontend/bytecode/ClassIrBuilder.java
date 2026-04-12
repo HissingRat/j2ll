@@ -1,22 +1,17 @@
 package xyz.melodysky.frontend.bytecode;
 
-import xyz.melodysky.filter.ClassMethodFilter;
-import xyz.melodysky.ir.model.IrClass;
-import xyz.melodysky.ir.model.IrClassRef;
-import xyz.melodysky.ir.model.IrMethod;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import xyz.melodysky.filter.ClassMethodFilter;
+import xyz.melodysky.ir.model.IrClass;
+import xyz.melodysky.ir.model.IrClassRef;
+import xyz.melodysky.ir.model.IrMethod;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class ClassIrBuilder {
 

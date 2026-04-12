@@ -4,10 +4,8 @@ import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class StringObfuscationPass implements IrMethodPass {
