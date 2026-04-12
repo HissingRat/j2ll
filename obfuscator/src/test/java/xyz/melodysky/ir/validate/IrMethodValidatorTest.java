@@ -1,18 +1,11 @@
 package xyz.melodysky.ir.validate;
 
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.ir.model.*;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class IrMethodValidatorTest {
 

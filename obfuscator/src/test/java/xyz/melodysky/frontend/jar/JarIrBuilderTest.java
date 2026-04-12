@@ -1,15 +1,11 @@
 package xyz.melodysky.frontend.jar;
 
-import xyz.melodysky.filter.ClassMethodFilter;
-import xyz.melodysky.filter.ClassMethodList;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.InsnNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.*;
+import xyz.melodysky.filter.ClassMethodFilter;
+import xyz.melodysky.filter.ClassMethodList;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -17,9 +13,7 @@ import java.nio.file.Path;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class JarIrBuilderTest {
 

@@ -1,40 +1,19 @@
 package xyz.melodysky.frontend.bytecode;
 
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrBinaryOpcode;
-import xyz.melodysky.ir.model.IrCompareOpcode;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.validate.IrMethodValidator;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.FieldInsnNode;
-import org.objectweb.asm.tree.IntInsnNode;
-import org.objectweb.asm.tree.InsnNode;
-import org.objectweb.asm.tree.InvokeDynamicInsnNode;
-import org.objectweb.asm.tree.JumpInsnNode;
-import org.objectweb.asm.tree.LabelNode;
-import org.objectweb.asm.tree.LdcInsnNode;
-import org.objectweb.asm.tree.LookupSwitchInsnNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.MultiANewArrayInsnNode;
-import org.objectweb.asm.tree.TryCatchBlockNode;
-import org.objectweb.asm.tree.TypeInsnNode;
-import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.*;
+import xyz.melodysky.ir.model.*;
+import xyz.melodysky.ir.validate.IrMethodValidator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class MethodIrBuilderTest {
 

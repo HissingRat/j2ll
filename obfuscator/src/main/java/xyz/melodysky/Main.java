@@ -2,35 +2,25 @@ package xyz.melodysky;
 
 import sun.misc.Signal;
 import xyz.melodysky.backend.llvm.LlvmTextBackend;
-import xyz.melodysky.console.ConsoleProgressDisplay;
 import xyz.melodysky.config.Config;
+import xyz.melodysky.console.ConsoleProgressDisplay;
 import xyz.melodysky.filter.ClassMethodFilter;
 import xyz.melodysky.filter.ClassMethodList;
+import xyz.melodysky.ir.pass.*;
 import xyz.melodysky.packaging.IrJarRepacker;
-import xyz.melodysky.packaging.NativeMethodClassRewriter;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.pipeline.IrPipelineCompiler;
 import xyz.melodysky.process.SubprocessRegistry;
-import xyz.melodysky.ir.pass.ConstantSplittingPass;
-import xyz.melodysky.ir.pass.CfgCleanupPass;
-import xyz.melodysky.ir.pass.CfgPerturbationPass;
-import xyz.melodysky.ir.pass.IrMethodPass;
-import xyz.melodysky.ir.pass.StringObfuscationPass;
 import xyz.melodysky.runtime.IrRuntimeStubGenerator;
 import xyz.melodysky.toolchain.IrNativeBuildDriver;
 import xyz.melodysky.zig.ZigManager;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
 

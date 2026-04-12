@@ -9,11 +9,7 @@ import xyz.melodysky.ir.util.IrDescriptors;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.jar.JarFile;
 
 public class NativeRegistrationPlanner {

@@ -1,8 +1,8 @@
 package xyz.melodysky.packaging;
 
 import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Handle;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;

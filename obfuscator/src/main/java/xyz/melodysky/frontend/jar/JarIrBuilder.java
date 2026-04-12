@@ -1,13 +1,12 @@
 package xyz.melodysky.frontend.jar;
 
-import xyz.melodysky.frontend.bytecode.ClassIrBuilder;
-import xyz.melodysky.filter.ClassMethodFilter;
-import xyz.melodysky.ir.model.IrClass;
-import xyz.melodysky.ir.model.IrProgram;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.MethodNode;
+import xyz.melodysky.filter.ClassMethodFilter;
+import xyz.melodysky.frontend.bytecode.ClassIrBuilder;
+import xyz.melodysky.ir.model.IrClass;
+import xyz.melodysky.ir.model.IrProgram;
 
 import java.io.IOException;
 import java.io.InputStream;

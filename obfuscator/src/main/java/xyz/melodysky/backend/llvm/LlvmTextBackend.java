@@ -1,29 +1,11 @@
 package xyz.melodysky.backend.llvm;
 
 import xyz.melodysky.backend.IrProgramBackend;
-import xyz.melodysky.ir.model.IrBinaryOpcode;
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrClass;
-import xyz.melodysky.ir.model.IrClassRef;
-import xyz.melodysky.ir.model.IrCompareOpcode;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrMethodRef;
-import xyz.melodysky.ir.model.IrProgram;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.model.*;
 import xyz.melodysky.ir.util.IrDescriptors;
 import xyz.melodysky.ir.validate.IrProgramValidator;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class LlvmTextBackend implements IrProgramBackend {
 

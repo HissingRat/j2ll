@@ -1,13 +1,7 @@
 package xyz.melodysky.ir.pass;
 
-import xyz.melodysky.ir.model.IrBinaryOpcode;
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.ir.model.*;
 
 import java.util.List;
 import java.util.Random;

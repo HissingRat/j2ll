@@ -1,12 +1,6 @@
 package xyz.melodysky.ir.pass;
 
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrCompareOpcode;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.model.*;
 
 import java.security.SecureRandom;
 import java.util.ArrayList;

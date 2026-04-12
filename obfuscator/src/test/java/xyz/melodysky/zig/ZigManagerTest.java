@@ -1,8 +1,8 @@
 package xyz.melodysky.zig;
 
-import xyz.melodysky.config.BuildTarget;
 import com.rfksystems.blake2b.security.Blake2b512Digest;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.config.BuildTarget;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -14,17 +14,9 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.Signature;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class ZigManagerTest {
 

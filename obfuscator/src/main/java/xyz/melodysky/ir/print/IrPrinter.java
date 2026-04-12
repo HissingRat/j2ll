@@ -1,13 +1,6 @@
 package xyz.melodysky.ir.print;
 
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrClass;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrProgram;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.model.*;
 
 import java.util.StringJoiner;
 

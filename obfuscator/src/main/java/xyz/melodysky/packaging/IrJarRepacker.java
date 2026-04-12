@@ -4,22 +4,14 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.toolchain.IrNativeBuildDriver;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.jar.Attributes;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
-import java.util.jar.JarOutputStream;
-import java.util.jar.Manifest;
+import java.util.*;
+import java.util.jar.*;
 
 public class IrJarRepacker {
 

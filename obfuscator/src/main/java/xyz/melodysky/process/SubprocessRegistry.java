@@ -1,13 +1,9 @@
 package xyz.melodysky.process;
 
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Locale;
-import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public final class SubprocessRegistry {
 

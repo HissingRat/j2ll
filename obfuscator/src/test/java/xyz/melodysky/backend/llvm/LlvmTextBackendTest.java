@@ -1,19 +1,7 @@
 package xyz.melodysky.backend.llvm;
 
-import xyz.melodysky.ir.model.IrBlock;
-import xyz.melodysky.ir.model.IrBinaryOpcode;
-import xyz.melodysky.ir.model.IrClass;
-import xyz.melodysky.ir.model.IrClassRef;
-import xyz.melodysky.ir.model.IrCompareOpcode;
-import xyz.melodysky.ir.model.IrFieldRef;
-import xyz.melodysky.ir.model.IrInstruction;
-import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrMethodRef;
-import xyz.melodysky.ir.model.IrProgram;
-import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.ir.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
