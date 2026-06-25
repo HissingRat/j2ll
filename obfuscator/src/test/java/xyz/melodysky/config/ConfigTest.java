@@ -77,7 +77,7 @@ public class ConfigTest {
     public void testResolvePlatformDefaultsToHotspot() {
         Config config = new Config();
 
-        assertFalse(config.stringObfuscation.enabled);
+        assertTrue(config.stringObfuscation.enabled);
         assertFalse(config.stringObfuscation.cacheStrings);
         assertNull(config.maxShardMB);
         assertNull(config.getMaxShardBytes());

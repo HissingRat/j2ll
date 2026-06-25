@@ -2,7 +2,7 @@ package xyz.melodysky.pipeline;
 
 import xyz.melodysky.backend.llvm.LlvmTextBackend;
 import xyz.melodysky.filter.ClassMethodFilter;
-import xyz.melodysky.frontend.bytecode.ClassIrBuilder;
+import xyz.melodysky.frontend.jar.FrontendSkipReport;
 import xyz.melodysky.frontend.jar.JarIrBuilder;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrMethod;
@@ -129,15 +129,19 @@ public class IrPipelineCompiler {
         Files.createDirectories(llvmModulesDirectory);
         Path llvmPath = llvmModulesDirectory.resolve("program.ll");
         Path skipsPath = outputDirectory.resolve("frontend-skips.txt");
+        Path skipsJsonPath = outputDirectory.resolve("frontend-skips.json");
         Path runtimeStubPath = runtimeDirectory.resolve("ir_runtime_stubs.c");
 
         String llvmText = result.llvmText();
         Files.writeString(llvmPath, llvmText, StandardCharsets.UTF_8);
         Path writtenSkipsPath = null;
-        String renderedSkips = renderSkips(result.frontendResult());
-        if (!renderedSkips.isBlank()) {
-            Files.writeString(skipsPath, renderedSkips, StandardCharsets.UTF_8);
+        Path writtenSkipsJsonPath = null;
+        FrontendSkipReport skipReport = FrontendSkipReport.from(result.frontendResult());
+        if (!skipReport.isEmpty()) {
+            Files.writeString(skipsPath, skipReport.toText(), StandardCharsets.UTF_8);
+            Files.writeString(skipsJsonPath, skipReport.toJson(), StandardCharsets.UTF_8);
             writtenSkipsPath = skipsPath;
+            writtenSkipsJsonPath = skipsJsonPath;
         }
         Files.writeString(runtimeStubPath, runtimeStubGenerator.generate(llvmText), StandardCharsets.UTF_8);
         ArrayList<Path> llvmModuleFiles = new ArrayList<>(result.llvmModules().size());
@@ -150,7 +154,7 @@ public class IrPipelineCompiler {
         return new DirectoryBuildResult(
                 NativeRegistrationPlanner.RequestedClass.fromProgram(result.transformedProgram()),
                 new OutputArtifacts(outputDirectory, llvmPath, writtenSkipsPath, runtimeStubPath, runtimeDirectory,
-                        List.copyOf(llvmModuleFiles))
+                        List.copyOf(llvmModuleFiles), writtenSkipsJsonPath)
         );
     }
 
@@ -165,25 +169,6 @@ public class IrPipelineCompiler {
             classes.add(new IrClass(irClass.reference(), methods));
         }
         return new IrProgram(classes);
-    }
-
-    private String renderSkips(JarIrBuilder.BuildResult frontendResult) {
-        StringBuilder builder = new StringBuilder();
-        for (JarIrBuilder.ClassBuildResult classResult : frontendResult.classResults()) {
-            if (classResult.skippedMethods().isEmpty()) {
-                continue;
-            }
-            builder.append(classResult.className()).append('\n');
-            for (ClassIrBuilder.SkippedMethod skippedMethod : classResult.skippedMethods()) {
-                builder.append("  - ")
-                        .append(skippedMethod.name())
-                        .append(skippedMethod.descriptor())
-                        .append(" :: ")
-                        .append(skippedMethod.reason())
-                        .append('\n');
-            }
-        }
-        return builder.toString();
     }
 
     public record BuildResult(
@@ -202,7 +187,7 @@ public class IrPipelineCompiler {
     }
 
     public record OutputArtifacts(Path outputDirectory, Path llvmFile, Path frontendSkipsFile, Path runtimeStubFile,
-                                  Path runtimeDirectory, List<Path> llvmModuleFiles) {
+                                  Path runtimeDirectory, List<Path> llvmModuleFiles, Path frontendSkipsJsonFile) {
     }
 
     private static int defaultLlvmShardCount() {

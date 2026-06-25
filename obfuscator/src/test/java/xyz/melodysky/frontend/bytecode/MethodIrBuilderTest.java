@@ -233,6 +233,34 @@ public class MethodIrBuilderTest {
     }
 
     @Test
+    public void testBuildsStringConcatInvokeDynamicWithConstantsFlow() {
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "join", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
+        methodNode.maxLocals = 1;
+        methodNode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        methodNode.instructions.add(new InvokeDynamicInsnNode(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                new Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false
+                ),
+                "\u0002=\u0001",
+                "name"
+        ));
+        methodNode.instructions.add(new InsnNode(Opcodes.ARETURN));
+
+        IrMethod irMethod = new MethodIrBuilder().build(methodNode);
+
+        IrInstruction.CallHelper helper = findFirstInstruction(irMethod, IrInstruction.CallHelper.class);
+        assertTrue(helper.helperName().contains("6e616d653d"));
+        assertEquals(1, helper.arguments().size());
+        assertEquals(IrType.reference("java/lang/String"), helper.result().type());
+    }
+
+    @Test
     public void testBuildsLambdaMetafactoryInvokeDynamicFlow() {
         MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "factory", "()Ljava/util/function/Function;", null, null);
         methodNode.maxLocals = 0;
