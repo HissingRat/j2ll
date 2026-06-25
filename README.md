@@ -58,11 +58,16 @@ Run it as:
 java -jar j2ll.jar
 java -jar j2ll.jar --config /path/to/Config.json
 java -jar j2ll.jar --debug --config /path/to/Config.json
+java -jar j2ll.jar --analyze --config /path/to/Config.json
 ```
 
 If `Config.json` does not exist, the tool will create a template in the current directory.
 
 `--debug` keeps native build intermediates and prints extra IR/native timing information.
+
+`--analyze` runs the frontend analysis only. It writes `analysis-report.json`
+and any frontend skip reports into the timestamped workspace without building
+native libraries or repacking the input jar.
 
 #### Config file format
 ```json
@@ -190,11 +195,16 @@ Important files and directories:
 - LLVM shard modules: `<workspace>/llvm-modules/*.ll`
 - Runtime C sources: `<workspace>/runtime/*.c`
 - Frontend skip report: `<workspace>/frontend-skips.txt` when skips are present
+- Structured frontend skip report: `<workspace>/frontend-skips.json` when skips are present
 
 Notes:
-- `frontend-skips.txt` is not generated when the frontend skip count is `0`.
+- `frontend-skips.txt` and `frontend-skips.json` are not generated when the frontend skip count is `0`.
 - Annotation classes are intentionally skipped by the frontend today and are not native-lowered.
 - Record-synthesized `equals`, `hashCode`, and `toString` are intentionally kept as bytecode so their JVM `ObjectMethods` semantics remain exact in large whole-jar workloads.
+
+`frontend-skips.json` contains the total skip count, counts grouped by reason category,
+and one entry per skipped method with class name, method name, descriptor, raw reason,
+and category.
 
 Intermediate native build directories:
 - `native-obj/`

@@ -40,7 +40,7 @@ public class Config {
     }
 
     public static class StringObfuscationConfig {
-        public boolean enabled;
+        public boolean enabled = true;
         public boolean cacheStrings;
     }
 

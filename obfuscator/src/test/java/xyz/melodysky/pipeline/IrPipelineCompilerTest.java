@@ -2,6 +2,7 @@ package xyz.melodysky.pipeline;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 
@@ -45,6 +46,7 @@ public class IrPipelineCompilerTest {
             assertEquals(outputDirectory.resolve("llvm-modules").resolve("program.ll"), result.outputArtifacts().llvmFile());
             assertEquals(outputDirectory.resolve("runtime"), result.outputArtifacts().runtimeDirectory());
             assertTrue(result.outputArtifacts().frontendSkipsFile() == null);
+            assertTrue(result.outputArtifacts().frontendSkipsJsonFile() == null);
             assertTrue(Files.exists(result.outputArtifacts().runtimeStubFile()));
             assertEquals(result.outputArtifacts().runtimeDirectory().resolve("ir_runtime_stubs.c"),
                     result.outputArtifacts().runtimeStubFile());
@@ -63,10 +65,40 @@ public class IrPipelineCompilerTest {
         }
     }
 
+    @Test
+    public void testWritesStructuredFrontendSkipReport() throws Exception {
+        Path jarPath = createSkippedFixtureJar();
+        Path outputDirectory = Files.createTempDirectory("ir-pipeline-skips-");
+        try {
+            IrPipelineCompiler.DirectoryBuildResult result = new IrPipelineCompiler().compileToDirectory(jarPath, outputDirectory);
+
+            assertEquals(outputDirectory.resolve("frontend-skips.txt"), result.outputArtifacts().frontendSkipsFile());
+            assertEquals(outputDirectory.resolve("frontend-skips.json"), result.outputArtifacts().frontendSkipsJsonFile());
+            assertTrue(Files.exists(result.outputArtifacts().frontendSkipsFile()));
+            assertTrue(Files.exists(result.outputArtifacts().frontendSkipsJsonFile()));
+            String json = Files.readString(result.outputArtifacts().frontendSkipsJsonFile());
+            assertTrue(json.contains("\"totalSkips\": 1"));
+            assertTrue(json.contains("\"className\": \"sample/Skipped\""));
+            assertTrue(json.contains("\"methodName\": \"dynamic\""));
+            assertTrue(json.contains("\"category\": \"invokedynamic\""));
+        } finally {
+            Files.deleteIfExists(jarPath);
+            deleteRecursively(outputDirectory);
+        }
+    }
+
     private Path createFixtureJar() throws IOException {
         Path jarPath = Files.createTempFile("ir-pipeline-", ".jar");
         try (JarOutputStream outputStream = new JarOutputStream(Files.newOutputStream(jarPath))) {
             writeClassEntry(outputStream, buildMathOpsClass());
+        }
+        return jarPath;
+    }
+
+    private Path createSkippedFixtureJar() throws IOException {
+        Path jarPath = Files.createTempFile("ir-pipeline-skips-", ".jar");
+        try (JarOutputStream outputStream = new JarOutputStream(Files.newOutputStream(jarPath))) {
+            writeClassEntry(outputStream, buildSkippedClass());
         }
         return jarPath;
     }
@@ -102,6 +134,31 @@ public class IrPipelineCompilerTest {
 
         classNode.methods.add(add);
         classNode.methods.add(callMix);
+        return classNode;
+    }
+
+    private ClassNode buildSkippedClass() {
+        ClassNode classNode = new ClassNode(Opcodes.ASM9);
+        classNode.version = Opcodes.V21;
+        classNode.access = Opcodes.ACC_PUBLIC;
+        classNode.name = "sample/Skipped";
+        classNode.superName = "java/lang/Object";
+
+        MethodNode dynamic = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "dynamic", "()Ljava/lang/String;", null, null);
+        dynamic.maxLocals = 0;
+        dynamic.instructions.add(new InvokeDynamicInsnNode(
+                "dynamic",
+                "()Ljava/lang/String;",
+                new Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        "sample/Bootstrap",
+                        "bootstrap",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
+                        false
+                )
+        ));
+        dynamic.instructions.add(new InsnNode(Opcodes.ARETURN));
+        classNode.methods.add(dynamic);
         return classNode;
     }
 

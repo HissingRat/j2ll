@@ -18,24 +18,43 @@ public class ClassMethodFilter {
     }
 
     public boolean shouldProcess(ClassNode classNode) {
-        if (hasInList(blackList, classNode.name)) {
+        if (matchesBlackListClass(classNode.name)) {
             return false;
         }
-        if (whiteList != null && !hasInList(whiteList, classNode.name)) {
+        if (whiteList != null && !matchesWhiteListClass(classNode.name)) {
             return false;
         }
         return true;
     }
 
     public boolean shouldProcess(ClassNode classNode, MethodNode methodNode) {
-        String methodName = classNode.name + '#' + methodNode.name + '!' + methodNode.desc;
-        if (hasInList(blackList, methodName)) {
+        if (matchesBlackListMethod(classNode.name, methodNode.name, methodNode.desc)) {
             return false;
         }
-        if (whiteList != null && !hasInList(whiteList, methodName)) {
+        if (whiteList != null && !matchesWhiteListMethod(classNode.name, methodNode.name, methodNode.desc)) {
             return false;
         }
         return true;
+    }
+
+    public boolean matchesBlackListClass(String className) {
+        return hasInList(blackList, className);
+    }
+
+    public boolean matchesWhiteListClass(String className) {
+        return hasInList(whiteList, className);
+    }
+
+    public boolean matchesBlackListMethod(String className, String methodName, String descriptor) {
+        return hasInList(blackList, methodKey(className, methodName, descriptor));
+    }
+
+    public boolean matchesWhiteListMethod(String className, String methodName, String descriptor) {
+        return hasInList(whiteList, methodKey(className, methodName, descriptor));
+    }
+
+    private String methodKey(String className, String methodName, String descriptor) {
+        return className + '#' + methodName + '!' + descriptor;
     }
 
     private boolean hasInList(ClassMethodList list, String name) {

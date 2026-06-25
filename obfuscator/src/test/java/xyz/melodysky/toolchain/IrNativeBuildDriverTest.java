@@ -81,21 +81,12 @@ public class IrNativeBuildDriverTest {
     @Test
     public void testCreateZigBuildCommandUsesAbsolutePaths() throws Exception {
         Path workspace = Files.createTempDirectory("ir-native-build-driver-test-");
-        IrNativeBuildDriver driver = new IrNativeBuildDriver(workspace);
-        Method method = IrNativeBuildDriver.class.getDeclaredMethod(
-                "createZigBuildCommand",
-                String.class,
-                Path.class,
-                Path.class,
-                BuildTarget.class
-        );
-        method.setAccessible(true);
+        NativeBuildWorkspacePaths paths = new NativeBuildWorkspacePaths(workspace);
+        NativeBuildCommandFactory commandFactory = new NativeBuildCommandFactory(paths);
 
         Path outputDirectory = workspace.resolve("native");
         Path buildProjectDirectory = workspace.resolve("zig-build");
-        @SuppressWarnings("unchecked")
-        List<String> command = (List<String>) method.invoke(
-                driver,
+        List<String> command = commandFactory.createZigBuildCommand(
                 "zig",
                 outputDirectory,
                 buildProjectDirectory,
@@ -236,28 +227,21 @@ public class IrNativeBuildDriverTest {
         Files.writeString(windowsObj, "obj", StandardCharsets.UTF_8);
         Files.writeString(linuxObj, "obj", StandardCharsets.UTF_8);
 
-        IrNativeBuildDriver driver = new IrNativeBuildDriver(workspace);
-        Object windowsState = createTargetBuildState(
+        NativeBuildWorkspacePaths paths = new NativeBuildWorkspacePaths(workspace);
+        ZigBuildProjectWriter buildProjectWriter = new ZigBuildProjectWriter(paths);
+        NativeTargetBuildState windowsState = createTargetBuildState(
                 BuildTarget.WINDOWS_X64,
                 workspace.resolve("native").resolve("x64-windows.dll"),
                 workspace.resolve("logs").resolve("zig-build-windowsX64.log"),
                 windowsObj
         );
-        Object linuxState = createTargetBuildState(
+        NativeTargetBuildState linuxState = createTargetBuildState(
                 BuildTarget.LINUX_X64,
                 workspace.resolve("native").resolve("x64-linux.so"),
                 workspace.resolve("logs").resolve("zig-build-linuxX64.log"),
                 linuxObj
         );
-        Method prepareMethod = IrNativeBuildDriver.class.getDeclaredMethod(
-                "prepareZigBuildProject",
-                Path.class,
-                List.class,
-                List.class
-        );
-        prepareMethod.setAccessible(true);
-        Path projectDirectory = (Path) prepareMethod.invoke(
-                driver,
+        Path projectDirectory = buildProjectWriter.prepare(
                 workspace.resolve("native"),
                 List.of(windowsState, linuxState),
                 List.of(commonFile, helperFile)
@@ -279,30 +263,10 @@ public class IrNativeBuildDriverTest {
         assertTrue(buildText.contains(".implib_dir = .disabled"));
     }
 
-    private Object createTargetBuildState(BuildTarget target, Path libraryFile, Path logFile, Path objectFile) throws Exception {
-        Class<?> compileUnitClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$CompileUnit");
-        var compileUnitConstructor = compileUnitClass.getDeclaredConstructor(String.class, Path.class, List.class);
-        compileUnitConstructor.setAccessible(true);
-        Object compileUnit = compileUnitConstructor.newInstance("llvm[" + objectFile.getFileName() + "]", objectFile, List.of("zig", "cc"));
-
-        Class<?> compileBatchClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$CompileBatchResult");
-        var compileBatchConstructor = compileBatchClass.getDeclaredConstructor(LinkedHashMap.class, compileUnitClass);
-        compileBatchConstructor.setAccessible(true);
-        Object compileBatch = compileBatchConstructor.newInstance(new LinkedHashMap<>(), null);
-
-        Class<?> targetBuildStateClass = Class.forName("xyz.melodysky.toolchain.IrNativeBuildDriver$TargetBuildState");
-        var targetBuildStateConstructor = targetBuildStateClass.getDeclaredConstructor(
-                BuildTarget.class,
-                Path.class,
-                Path.class,
-                List.class,
-                compileBatchClass,
-                int.class,
-                int.class,
-                long.class
-        );
-        targetBuildStateConstructor.setAccessible(true);
-        return targetBuildStateConstructor.newInstance(
+    private NativeTargetBuildState createTargetBuildState(BuildTarget target, Path libraryFile, Path logFile, Path objectFile) {
+        NativeCompileUnit compileUnit = new NativeCompileUnit("llvm[" + objectFile.getFileName() + "]", objectFile, List.of("zig", "cc"));
+        NativeCompileBatchResult compileBatch = new NativeCompileBatchResult(new LinkedHashMap<>(), null);
+        return new NativeTargetBuildState(
                 target,
                 libraryFile,
                 logFile,
