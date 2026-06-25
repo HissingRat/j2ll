@@ -1,0 +1,117 @@
+# 05 Bytecode To SSA
+
+本阶段把 stack-based JVM bytecode lower 成三地址 SSA IR。它消费 CFG、frame facts、hierarchy 和 runtime analysis facts。
+
+## 输入
+
+- `ParsedMethod`
+- `BytecodeCfg`
+- frame facts
+- `ClassHierarchy`
+- `RuntimeAnalysisResult`
+- `DevirtualizationPlan`
+
+## 输出
+
+- `IrMethod`
+- `IrClass`
+- `IrProgram`
+- lowering diagnostics
+- unsupported feature diagnostics
+
+## 推荐包
+
+```text
+xyz.melodysky.ir.ssa
+```
+
+推荐类型：
+
+- `BytecodeToSsaLowerer`
+- `SsaConstructionContext`
+- `StackState`
+- `LocalState`
+- `ValueFactory`
+- `FrameFacts`
+- `FrameFactsBuilder`
+- `InstructionLowerer`
+- `OpcodeLoweringRegistry`
+
+## 拆分方向
+
+以旧 `MethodIrBuilder` 的行为为 reference，在新 source tree 中重建这些职责：
+
+- CFG 相关：已属于 `frontend.cfg`。
+- ASM frame 分析：迁到 `FrameFactsBuilder`。
+- operand stack 操作：迁到 `StackState`。
+- locals 类型与 slot：迁到 `LocalState`。
+- opcode lowering：按领域拆到独立 lowerer。
+- IR validation：保留在 `ir.validate`，在 stage 结束后运行。
+
+可拆分 lowerer：
+
+- locals
+- constants
+- arithmetic
+- field
+- invoke
+- invokedynamic
+- array
+- type
+- switch
+- exception
+- monitor
+
+## SSA 模型
+
+推荐直接设计 block parameter 或 phi 指令表达 stack/local merge，不再把 stack merge 编码成 synthetic local。这样后续 devirtualization、escape analysis 和 scalar replacement 会更自然。
+
+validator 至少要检查：
+
+- use-before-def
+- dominance
+- value type
+- terminator
+- phi/block parameter arity
+- exceptional edge input
+
+## Invoke lowering
+
+invoke lowering 应消费 runtime analysis facts：
+
+- `STATIC` / `SPECIAL`：可直接 lower。
+- `VIRTUAL` / `INTERFACE` 单目标：按 `DevirtualizationPlan` lower 成 direct call 或 direct helper。
+- 多目标但目标集合完整：保留 runtime dispatch helper 或 method table helper。
+- unknown、external 或 skipped target：生成 JVM helper fallback plan；包含该 call site 的 method 记录为 `halfLowered`，并由 packaging 按 `fallbackMode` 存储 fallback bytecode target。
+
+class initialization、null check、access check、exception behavior 必须在 lowering 或 runtime helper 中有明确归属。不能因为 devirtualized 就丢失 JVM 可见语义。
+
+lowering 阶段只描述 fallback 需求，不决定 fallback bytecode 放在 JAR 还是 native artifact。schema version 1 的实际存储策略是 `nativeEmbeddedClassBlob`，由 packaging 阶段执行。
+
+## 新增 lowering 的推荐路径
+
+1. 在 guide 或 `AGENTS.md` 中确认 opcode 属于哪个 lowerer。
+2. 新增最小 bytecode test，先复现 unsupported 行为或目标行为。
+3. 实现 lowerer。
+4. 增加 IR validator 覆盖，如果引入新 IR shape。
+5. 增加 LLVM backend test，如果 IR 需要新的 backend emission。
+6. 增加 pipeline/e2e test，如果功能跨过 frontend、runtime helper 或 packaging。
+
+新增 Java 语义支持时还要回答：
+
+- 是否影响 verifier/frame facts？
+- 是否影响 exceptional control flow？
+- 是否需要 class hierarchy 或 call graph facts？
+- 是否需要 runtime helper？
+- 是否改变 frontend skip/fallback 行为？
+
+## 测试
+
+- opcode 和 method-level lowering。
+- branch join。
+- loop。
+- exception handler。
+- stack merge。
+- local merge。
+- invoke/devirtualization。
+- unsupported feature diagnostic。
