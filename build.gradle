@@ -19,21 +19,21 @@ java {
 [compileJava, compileTestJava]*.options*.release = 25
 
 if (!hasProperty('mainClass')) {
-    ext.mainClass = 'xyz.melodysky.Main'
+    ext.mainClass = 'xyz.melodysky.cli.J2llCli'
 }
 
 sourceSets {
     main {
-        java.srcDirs = ['obfuscator/src/main/java']
-        resources.srcDirs = ['obfuscator/src/main/resources']
+        java.srcDirs = ['src/main/java']
+        resources.srcDirs = ['src/main/resources']
     }
     bench {
         java.srcDirs = ['obfuscator/bench/src/main/java']
         resources.srcDirs = ['obfuscator/bench/src/main/resources']
     }
     test {
-        java.srcDirs = ['obfuscator/src/test/java']
-        resources.srcDirs = ['obfuscator/src/test/resources']
+        java.srcDirs = ['src/test/java']
+        resources.srcDirs = ['src/test/resources']
     }
 }
 

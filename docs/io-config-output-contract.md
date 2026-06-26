@@ -178,18 +178,16 @@ World model validation matrix:
 
 | Value | Minimum required inputs | Main consequence |
 | --- | --- | --- |
-| `CLOSED_WORLD` | input JAR, complete `classPath`, JDK metadata from `javaHome` or `runtimeImage`, and no enabled dynamic-loading escape hatch | Allows aggressive devirtualization, method table hiding and closed-world reachability. Missing class metadata is a preflight error. |
+| `CLOSED_WORLD` | input JAR, complete `classPath`, JDK metadata from `javaHome` or `runtimeImage`, and no enabled dynamic-loading escape hatch | Historical wire name for a complete JVM classpath analysis assumption. Allows aggressive devirtualization and method table hiding while the output still runs on the JVM. Missing class metadata is a preflight error. |
 | `PARTIAL_WORLD` | input JAR; optional `classPath` and JDK metadata | Recommended default. Missing external metadata is allowed but produces conservative external nodes and fallback-friendly analysis. |
 | `JDK_EXTERNAL_WORLD` | input JAR plus enough JDK identity metadata to classify JDK classes | Application classes are analyzed; JDK methods mostly use intrinsics, runtime helpers or JVM helper fallback. |
-| `UNKNOWN_DYNAMIC_WORLD` | input JAR only | Reflection, custom classloaders and generated classes are assumed possible. Analysis must stay conservative and avoid closed-world protection decisions. |
+| `UNKNOWN_DYNAMIC_WORLD` | input JAR only | Reflection, custom classloaders and generated classes are assumed possible. Analysis must stay conservative and avoid protection decisions that require a complete classpath. |
 
 `javaSupportTier`
 
-Maximum Java support tier requested by the config. Required. Allowed values are `TIER_0` through `TIER_6`; see `docs/java-support-tiers.md`.
+Maximum Java support tier requested by the config. Required. Allowed values are `TIER_0` through `TIER_5`; see `docs/java-support-tiers.md`.
 
 This field is a feature gate and diagnostics policy, not a marketing claim. If a method requires a feature above the configured tier, it is reported as `frontendSkipped` with a tier reason. If a feature is inside the configured tier but not implemented yet, the method may become `frontendSkipped`, `halfLowered` through JVM helper fallback, or `failed` depending on whether j2ll can preserve runnable semantics.
-
-The long-term roadmap targets broad support up through `TIER_5` while keeping `TIER_6` as the GraalVM-like closed-world/native-image direction.
 
 `fallbackMode`
 
@@ -200,7 +198,7 @@ JVM helper fallback body storage strategy. Required. Schema version 1 supports:
 Intentionally not supported in schema version 1:
 
 - `generatedClass`: do not emit a plain generated fallback class containing original method bodies in the output JAR.
-- `nativeSnippetInterpreter`: reserved future research direction. This would translate bytecode operations into native snippets or a native bytecode interpreter, similar in spirit to opcode-template systems. It is not planned for near-term implementation and selecting it in schema version 1 is a config error.
+- No other fallback modes are defined. Unknown fallback modes are config errors.
 
 `outputDirectory`
 
@@ -287,6 +285,59 @@ Optional logical native library base name. If `null`, j2ll generates a determini
 `embeddedLibraryDirectory`
 
 Package path inside the output jar where selected target dynamic libraries are stored. Default recommendation is `native0`. The path must be a relative JAR path and must not start with `/`.
+
+### Managed Zig Toolchain
+
+Schema version 1 不暴露 native toolchain 配置。j2ll 固定使用 Zig `0.15.2` 作为唯一 native build driver。
+
+Toolchain home：
+
+```text
+<j2ll-home>/
+  j2ll.jar
+  <zig-archive>
+  zig/
+    zig
+    zig.exe
+    lib/
+```
+
+`<j2ll-home>` 是可执行 `j2ll.jar` 所在目录。生产运行时，Zig 解压目录固定为 `<j2ll-home>/zig`，Zig executable 固定为 `<j2ll-home>/zig/zig` 或 `<j2ll-home>/zig/zig.exe`。
+
+Resolution order：
+
+1. 检查 `<j2ll-home>/zig/zig(.exe)` 是否存在。
+2. 执行 `zig version`；只有输出等于 `0.15.2` 才可复用。
+3. 如果 managed Zig 缺失或版本不匹配，先在 `<j2ll-home>` 查找当前 host 对应的 Zig `0.15.2` 压缩包。
+4. 如果本地压缩包存在，直接解压，并将官方 archive 根目录内容规范化为 `<j2ll-home>/zig/zig(.exe)` + `<j2ll-home>/zig/lib` 布局。
+5. 如果本地压缩包不存在，再从 `https://ziglang.org/download/0.15.2/` 下载对应压缩包，保存到 `<j2ll-home>`，再按同样规则解压/规范化。
+6. 解压完成后再次执行 `zig version`，不等于 `0.15.2` 则 preflight error。
+
+Expected archive names：
+
+| Host | Archive |
+| --- | --- |
+| Windows x86_64 | `zig-x86_64-windows-0.15.2.zip` |
+| Windows AArch64 | `zig-aarch64-windows-0.15.2.zip` |
+| Linux x86_64 | `zig-x86_64-linux-0.15.2.tar.xz` |
+| Linux AArch64 | `zig-aarch64-linux-0.15.2.tar.xz` |
+| macOS x86_64 | `zig-x86_64-macos-0.15.2.tar.xz` |
+| macOS AArch64 | `zig-aarch64-macos-0.15.2.tar.xz` |
+
+Managed Zig rules：
+
+- `zig/` 是 j2ll 管理目录；版本不匹配时可被重新安装。
+- managed Zig 目录内必须直接包含 `zig` 或 `zig.exe` 可执行文件。
+- 下载前必须优先使用 `<j2ll-home>` 下已存在的对应压缩包。
+- 下载来源固定为 Zig 官方 download path，不使用 `latest`。
+- archive extraction 必须防 zip-slip / path traversal，不能写出 `<j2ll-home>/zig`。
+- archive checksum / signature policy 应由 hardcoded Zig `0.15.2` artifact metadata 驱动；校验失败必须 preflight error。
+- 当前实现必须至少保留 checksum/signature verifier interface 和明确的 boundary diagnostic/report policy；在 hardcoded artifact checksum metadata 未完整落地前，不得把校验状态描述为完整强校验。
+- Zig compiles/links all buildable selected target dynamic libraries. Schema v1 records every selected target in preflight/report; non-host targets may be marked skipped with a stable reason until their cross-target SDK/toolchain capability is implemented.
+- Per-class `.ll`, Zig-managed `.o`, JNI wrapper C, runtime helper C and fallback blob carrier sources are all Zig toolchain inputs.
+- j2ll generates one `build.zig` workspace per build. The Java side invokes managed `zig build` once for the selected target matrix; it must not issue ad-hoc per-target `zig cc`, host `cc`, `clang`, `llc` or platform linker commands.
+- j2ll must not silently fall back to host `cc`, platform linker, external `clang` or external `llc` outside the managed `ZigToolchain` capability contract.
+- If Zig cannot compile/link a required `.ll` / `.o` / C input for a buildable selected target, preflight/build fails with a diagnostic that names the missing toolchain capability and the affected target. A non-host selected target that is explicitly marked `NON_HOST_TARGET_PREFLIGHT_ONLY` is a reported skip, not a fake success.
 
 `signaturePolicy`
 
@@ -544,6 +595,21 @@ Location fields are nullable only when the diagnostic is not tied to a method or
       "compilerFlags": ["synthetic"],
       "nativeSymbol": "j2ll_pkg_Foo_run_8f3a21c0d4e5f607",
       "registrationOwner": "pkg/Foo",
+      "nativeImplementationPath": "LLVM_NATIVE_PATH",
+      "helperBackedSites": [
+        {
+          "helper": "j2ll_rt_string_builder_append_ref",
+          "reasonCode": "HELPER_BACKED_LOWERING"
+        },
+        {
+          "helper": "field:pkg/Foo#counter!I",
+          "reasonCode": "FIELD_HELPER"
+        },
+        {
+          "helper": "direct:pkg/Foo#callee!(I)I",
+          "reasonCode": "DIRECT_LLVM_CALL"
+        }
+      ],
       "fallbackSites": [
         {
           "instructionOffset": 12,
@@ -567,6 +633,10 @@ Location fields are nullable only when the diagnostic is not tied to a method or
 ```
 
 `accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip.
+`nativeImplementationPath` records whether the registered native body is `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH`, or `null` when no executable native body was produced for that requested method.
+`helperBackedSites` must include helper-backed metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic lowering sites when the operation is preserved by a runtime helper rather than direct native IR. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/monitor/exception/call/stub decisions: `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Dynamic reflection strings, parameterized reflection metadata outside the current static subset, unsupported MethodHandle chains, unsupported Unsafe raw memory APIs, unsupported ConstantDynamic bootstraps and remaining finally holes must appear in diagnostics/fallback sites with stable reason codes rather than being silently skipped. In schema v1, `Unsafe.objectFieldOffset`/`staticFieldOffset` reports describe deterministic metadata tokens, not native object layout offsets.
+
+Runtime metadata dumps are stable sidecars when enabled by intermediates/debug dumps. They may include a `reflectionReachability` section with resolved class/method/field targets and reflection fallback sites. The dump is an observability artifact; lowering status remains governed by `reports/lowering-report.json`.
 
 `reports/packaging-report.json` minimum shape:
 
@@ -596,6 +666,52 @@ Location fields are nullable only when the diagnostic is not tied to a method or
       "jarPath": "native0/x64-linux.so",
       "sha256": "..."
     }
+  ],
+  "zigToolchain": {
+    "managed": true,
+    "version": "0.15.2",
+    "executable": "<j2ll-home>/zig/zig",
+    "buildZig": "native/zig-workspace/build.zig",
+    "manifest": "native/zig-workspace/j2ll-build-manifest.json",
+    "verificationPolicy": "checksumSignatureInterfacePresent:notYetHardcoded",
+    "buildCommand": ["<j2ll-home>/zig/zig", "build", "--prefix", "..."],
+    "selectedTargets": ["linux-x64", "macos-arm64"],
+    "buildableTargets": ["macos-arm64"],
+    "skippedTargets": [
+      {
+        "target": "linux-x64",
+        "zigTarget": "x86_64-linux",
+        "output": "native/linux-x64/x64-linux.so",
+        "status": "skipped",
+        "currentHost": false,
+        "buildable": false,
+        "reasonCode": "NON_HOST_TARGET_PREFLIGHT_ONLY",
+        "reason": "selected target linux-x64 is recorded in the build plan, but this slice only builds the current host target",
+        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
+        "platformSdkRequirement": "Zig Linux libc/linker support for selected target"
+      }
+    ],
+    "failedTargets": []
+  },
+  "fallbackBlobs": [
+    {
+      "originalMethodId": "run__8f3a21c0d4e5f607",
+      "originalMethodKey": "pkg/Foo#run!()V",
+      "helperClassName": "j2ll/generated/fallback/pkg_Foo/Fallback$run__8f3a21c0d4e5f607",
+      "sha256": "...",
+      "originalSha256": "...",
+      "encodedSha256": "...",
+      "encodingVersion": "fallbackBlobEncodingV1",
+      "originalSize": 1234,
+      "encodedSize": 900,
+      "compressionAlgorithm": "j2ll-rle-byte-pairs-v1",
+      "encryptionAlgorithm": "xor-sha256-key-stream-v1",
+      "requiredJavaVersion": "8",
+      "storageTarget": "nativeEmbeddedClassBlob",
+      "definitionMechanism": "DefineClass",
+      "definitionMechanismReasonCode": "FALLBACK_DEFINE_CLASS",
+      "classloaderReusePolicy": "lazyPerClassLoaderReuse"
+    }
   ]
 }
 ```
@@ -608,24 +724,21 @@ Location fields are nullable only when the diagnostic is not tied to a method or
   "seed": "derived-or-configured-seed",
   "passes": [
     {
-      "name": "stringEncryption",
-      "layer": "SSA_IR",
-      "status": "ran",
-      "intensity": "normal",
-      "methods": [
-        {
-          "class": "pkg/Foo",
-          "method": "run",
-          "descriptor": "()V",
-          "status": "ran"
-        }
-      ]
+      "passName": "STRING_ENCRYPTION",
+      "layer": "IR",
+      "status": "RAN",
+      "reasonCode": "OK",
+      "affectedMethods": [
+        "pkg/Foo#run!()V"
+      ],
+      "affectedSymbols": [],
+      "seed": "1234"
     }
   ]
 }
 ```
 
-Pass `status` values are `ran`, `disabled`, `notImplementedIgnored`, `skippedForMethod` and `failed`.
+Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Disabled pass and per-method inapplicability both use `SKIPPED` with a stable `reasonCode` such as `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `NO_PRIMITIVE_CONSTANTS`, `PROTECTION_CFG_SHAPE_NOT_SUPPORTED`, `PROTECTION_STUB_BACKED_METHOD` or `PROTECTION_MONITOR_SENSITIVE_SKIP`. Configured but unimplemented pass warnings also appear in diagnostics and must not silently change a method lowering status.
 
 `reports/symbol-audit.json` minimum shape:
 
@@ -763,6 +876,7 @@ Runtime helper 是随 native library 一起编译进去的 j2ll 小运行时。�
 
 - null check、array bounds check、checkcast、instanceof。
 - object/array allocation、class initialization、static field access guard。
+- tokenized field get/put helper, allocation helper, String helper and helper-backed call dispatch.
 - exception create/throw/catch bridge。
 - monitor enter/exit 和 synchronized 相关状态维护。
 - string/constant decrypt helper、protection dispatch helper、method table helper。
@@ -772,7 +886,9 @@ Runtime helper 是随 native library 一起编译进去的 j2ll 小运行时。�
 
 - 调用方仍然是 native-lowered method。
 - helper 可以用 LLVM/C 实现，也可以通过 JNI 调 JVM API。
+- Java reference values in helper ABI are JVM objects/JNI references. Helpers must allocate Java-visible objects through JVM/JNI APIs, not native heap or native stack storage. Current allocation helpers use class identity tokens and JNI APIs such as `AllocObject`, `NewIntArray` and `NewObjectArray`; token metadata is sidecar/report data, not a native object layout.
 - helper ABI 必须由 backend declaration、runtime stub generator 和 tests 共同约束。
+- lowering report 的 `helperBackedSites` 记录这些 helper-backed lowered call/operation，用来和 `halfLowered` 的 JVM fallback sites 区分。
 
 ### JVM Helper Fallback
 
@@ -799,7 +915,7 @@ JVM helper fallback 是 native-lowered method 在某个 operation 或 call site 
 
 - fallback class bytes 不以明文 `.class` entry 形式写入 output JAR。
 - fallback class bytes 被压缩、加密或至少不可直接作为 Java class resource 读取，并嵌入每个 selected target dynamic library。
-- native library 包含 fallback blob manifest，记录 original method id、fallback helper class name、SHA-256、加密/压缩算法和 required Java version。
+- native library 包含 fallback blob manifest，记录 original method id、fallback helper class name、original SHA-256、encoded SHA-256、encoding version、加密/压缩算法和 required Java version。
 - runtime helper 按 classloader 懒加载 fallback helper；同一 classloader 内重复调用必须复用已定义 helper。
 - helper definition 可以使用 JNI `DefineClass`、`MethodHandles.Lookup#defineHiddenClass` 或后续等价机制，具体机制必须记录在 packaging report。
 - 如果当前目标 JDK 不支持所选 helper definition 机制，preflight 必须报错或选择已实现的兼容机制；不能退回明文 generated class。
@@ -810,7 +926,7 @@ World model 是分析阶段对“程序类世界是否完整”的假设。它�
 
 常见模型：
 
-- `CLOSED_WORLD`：输入 JAR、`classPath` 和 JDK metadata 覆盖所有运行时可见 classes。可以做更激进 devirtualization 和 method table rewriting。
+- `CLOSED_WORLD`：历史 wire name，表示输入 JAR、`classPath` 和 JDK metadata 覆盖分析需要的 JVM classes。可以做更激进 devirtualization 和 method table rewriting，但输出仍是 JVM-hosted JAR。
 - `PARTIAL_WORLD`：应用 class 大体已知，但外部库或运行时可能不完整。分析必须对 external type 保守。
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 主要作为外部 runtime/library 处理。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader、runtime generated class 改变类型世界。只能做非常保守的 dispatch 优化。
@@ -834,7 +950,7 @@ loader/native registration 需要解决三件事：
 - Extracted libraries must be verified against SHA-256 metadata before `System.load`.
 - Native registration tables are grouped per owner class.
 - Interface method native helpers are registered against generated helper classes, not against the interface method itself.
-- `<init>` and `<clinit>` body helpers are registered as generated native helper methods, not as native constructors or native class initializers.
+- `<init>` and `<clinit>` body helpers are registered as generated private static native helper methods on the owner class, not as native constructors or native class initializers.
 - Loader state is per classloader and thread-safe. It must avoid duplicate extraction/load/registration and must handle concurrent first use.
 - Extraction paths must not be user-controlled relative paths; temp files should use restrictive permissions where the platform supports them.
 - Only loader/bootstrap JNI wrapper symbols and optional `JNI_OnLoad` are exported. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
@@ -917,6 +1033,7 @@ intermediates/classes/<safe-internal-class-name>__<class-hash-prefix>/
   llvm/
     class.ll
     protected.class.ll
+    class.o
   c/
     class.c
   reports/
@@ -926,7 +1043,7 @@ intermediates/classes/<safe-internal-class-name>__<class-hash-prefix>/
 
 Rules:
 
-- IR, LLVM IR and class-specific C files should be emitted per original class.
+- IR, LLVM IR, Zig-produced object files and class-specific C files should be emitted per original class.
 - `<class-hash-prefix>` is the first 16 hex characters of SHA-256 over the original internal class name. If two class artifact directories collide, extend both prefixes to 24 hex characters, then 32, and continue in 8-hex increments.
 - `<safe-internal-class-name>` preserves `/` as path separators and escapes each segment for filesystem safety.
 - Segment escaping keeps ASCII letters, digits, `_`, `$`, `-` and `.`. Any other UTF-16 code unit is escaped as `_uXXXX_`.
@@ -934,6 +1051,7 @@ Rules:
 - `class-index.json` is mandatory and records original internal class name, full SHA-256, chosen directory, source JAR entry and any escaping/collision extension.
 - Do not emit one monolithic program IR/LLVM/C file first and then split it as the primary artifact model.
 - Do not emit shard LLVM/C artifacts in the documented intermediate contract. If a future toolchain optimization needs temporary compiler units, those files must stay in toolchain temp space and must not replace per-class artifacts.
+- `.o` files are build artifacts managed by Zig from class-aligned `.ll` / C inputs or accepted as explicit Zig toolchain inputs. They are not a replacement for the documented per-class `.ll` contract.
 - `method-id` must be deterministic and collision-resistant for overloaded methods. Required shape:
 
 ```text

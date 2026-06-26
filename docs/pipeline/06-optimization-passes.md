@@ -54,6 +54,15 @@ xyz.melodysky.ir.pass.protection
 - call indirection
 - method table hiding plan
 
+当前 v1 已实现并默认启用的 IR protection 子集：
+
+- `StringEncryptionPass`：加密 `j2ll_rt_string_constant|string:<literal>` carrier，输出 encrypted native constant carrier。
+- `BasicBlockSplittingPass`：对安全单 block method 插入 deterministic opaque predicate + fake branch。
+- `PrimitiveConstantEncryptionPass`：对安全 method 的 `CONST_INT` / `CONST_LONG` 生成 deterministic XOR decode sequence。
+- `BlockNameObfuscationPass`：按 seed 稳定重命名 block。
+
+尚未实现的 pass 继续 warning + ignore；单 method 不适用只跳过该 pass 并写入 protection report，不改变 lowering status。
+
 ## 顺序建议
 
 第一版可读顺序：
@@ -92,6 +101,8 @@ canonicalize
 - protection pass 必须声明是否保持 SSA、是否改变 CFG、是否需要 runtime helper、是否可能按 method 跳过 pass。
 - config 启用了尚未实现的 protection pass 时 warning + ignore；pass 对某个 method 不适用时 warning + skip that pass。
 - protection pass 必须支持固定 seed，以便复现和测试。
+- `<init>` / `<clinit>` body-helper shape、monitor/JMM/exception/call/field/helper-sensitive method 默认保守跳过 CFG/constant protection，不让保护 pass 破坏 JVM-visible helper semantics。
+- 每次 protection pass 后必须运行 IR validator；失败时该 pass 记录 `FAILED`，不能让 backend 修补非法 IR。
 
 ## 测试
 

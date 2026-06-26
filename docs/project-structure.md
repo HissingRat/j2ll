@@ -2,6 +2,8 @@
 
 本文档定义 rewrite 后 j2ll 的项目结构、包边界、关键类职责，以及哪些通用逻辑应该抽成独立工具类。它和 `docs/pipeline/README.md` 的关系是：pipeline guide 说明每个编译阶段怎么工作；本文说明这些阶段在代码里怎么组织。
 
+全篇结构都以 JVM-hosted 输出 JAR 为前提。这里的 `runtime`、`native`、`toolchain` 指 JVM/JNI helper、JNI 动态库构建、loader/registration 和 fallback glue，不表示脱离 JVM 运行的 Java runtime。
+
 ## Source Tree
 
 新主线只写入：
@@ -42,12 +44,14 @@ xyz.melodysky.cli
 xyz.melodysky.config
 xyz.melodysky.pipeline
 xyz.melodysky.diagnostic
+xyz.melodysky.report
 xyz.melodysky.dump
 xyz.melodysky.jvm
 xyz.melodysky.frontend.classfile
 xyz.melodysky.frontend.cfg
 xyz.melodysky.analysis.hierarchy
 xyz.melodysky.analysis.callgraph
+xyz.melodysky.analysis.reflection
 xyz.melodysky.analysis.runtime
 xyz.melodysky.ir.model
 xyz.melodysky.ir.ssa
@@ -60,6 +64,9 @@ xyz.melodysky.backend.llvm.model
 xyz.melodysky.backend.llvm.pass
 xyz.melodysky.backend.llvm.protection
 xyz.melodysky.runtime
+xyz.melodysky.runtime.metadata
+xyz.melodysky.runtime.jni
+xyz.melodysky.runtime.unsafe
 xyz.melodysky.packaging
 xyz.melodysky.toolchain
 xyz.melodysky.toolchain.symbols
@@ -174,6 +181,24 @@ xyz.melodysky.toolchain.symbols
 
 - stable sorting 放在 `DiagnosticBag`。
 - JSON/text formatting 放在 `DiagnosticFormatter`，不要放在 stage builder。
+
+## report
+
+用户可见报告、resolved config 和 sidecar JSON writer。
+
+推荐类：
+
+- `ReportJsonWriter`：`diagnostics.json`、`lowering-report.json` 的稳定 JSON writer。
+- `PackagingReportWriter`：`packaging-report.json` 的稳定 JSON writer。
+- `FrontendSkipReportWriter`：`frontend-skip-report.json` 的稳定 JSON writer。
+- `ResolvedConfigReportWriter`：`config.resolved.json` writer。
+- `SymbolAuditReportWriter`：`symbol-audit.json` writer。
+
+边界：
+
+- `report` 只负责把已有 stage facts 序列化为合同 JSON，不重新分析 bytecode、IR 或 LLVM。
+- 字段顺序、wire name 和 nullable 字段策略必须由 golden tests 覆盖。
+- report writer 不决定 lowering/rewrite/protection 策略；策略仍归各 stage 所有。
 
 ## dump
 
@@ -345,6 +370,22 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 - runtime analysis 不 lower IR。
 - runtime analysis 不直接改 call instruction，只输出 facts/plan。
 
+## analysis.reflection
+
+静态 reflection 解析，消费 `ParsedProgram` 和 `RuntimeMetadataIndex`，输出可达 class/member 和 fallback facts。
+
+推荐类：
+
+- `StaticReflectionResolver`：识别 class literal、常量 `Class.forName`、常量 `getDeclaredMethod` / `getDeclaredField` / `getDeclaredConstructor`、`Method.invoke` 和 `Constructor.newInstance`。
+- `ReflectionPlan`：resolved class/method/field/constructor target、metadata reachability、fallback site。
+- `ReflectionFallbackSite`：动态字符串、动态参数数组、未解析 member 的 reason code。
+
+边界：
+
+- 不执行 Java 代码，不扫描任意 classpath。
+- 只在常量形态或安全 over-approx 下加入 reachability；动态 reflection 必须给 fallback reason。
+- Bytecode lowering 仍单独负责 helper-backed IR emission。
+
 ## ir.model
 
 中间表示的数据模型，尽量 immutable。
@@ -359,6 +400,9 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 - `IrTerminator`
 - `IrValue`
 - `IrType`
+- `IrExceptionEdge`
+- `IrExceptionSite`
+- `IrExceptionSiteKind`
 - `IrFunctionType`
 - `IrMetadata`
 - `IrSourceMap`
@@ -368,6 +412,8 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 - model 不做复杂构建逻辑。
 - model 构造函数只做局部合法性检查。
 - 跨 block、dominance、type consistency 交给 validator。
+- block parameters 表达 SSA merge，terminator target arguments 表达 predecessor incoming values。
+- exception edge、implicit exception site、monitor/JMM marker 必须是显式 IR 形态，backend 不从 opcode 文本反推 JVM 语义。
 
 ## ir.ssa
 
@@ -384,6 +430,8 @@ bytecode stack 到三地址 SSA 的 lowering。
 - `ValueFactory`：稳定 value id/name 分配。
 - `BlockParameterPlanner`：block parameter/phi 输入规划。
 - `PhiPlacement`：phi/block parameter 放置。
+- `ExceptionEdgePlanner`：handler exception parameter 和 exceptional edge metadata 规划。
+- `MemorySemanticsLowerer`：volatile/final/monitor/thread happens-before marker lowering。
 - `InstructionLowerer`：opcode lowerer 接口。
 - `OpcodeLoweringRegistry`：opcode 到 lowerer。
 
@@ -401,6 +449,7 @@ bytecode stack 到三地址 SSA 的 lowering。
 - `SwitchInstructionLowerer`
 - `ExceptionInstructionLowerer`
 - `MonitorInstructionLowerer`
+- `MemoryModelInstructionLowerer`
 - `ClassInitLowerer`
 
 应抽工具：
@@ -551,6 +600,7 @@ LLVM IR lowering、LLVM module model、LLVM text emission。
 - backend 不做 devirtualization decision。
 - backend 不修 CFG。
 - backend 不猜 JVM 语义。
+- backend 可以把已有 Java semantic marker lower 成固定 helper call 或 conservative fence，但不能自己发明 marker。
 
 ## backend.llvm.model
 
@@ -559,6 +609,7 @@ LLVM IR lowering、LLVM module model、LLVM text emission。
 推荐类：
 
 - `LlvmModule`
+- `LlvmDeclaration`
 - `LlvmFunction`
 - `LlvmBasicBlock`
 - `LlvmInstruction`
@@ -622,27 +673,41 @@ LLVM module model 级保护/混淆。
 
 ## runtime
 
-runtime helper catalog、JNI ABI 和 stub 生成。
+JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 stub 生成。该包不实现独立 VM；Java-visible object、array、Class、String、Throwable、Thread、monitor 和 GC 语义都必须通过 JVM/JNI helper 维护。
 
 推荐类：
 
 - `RuntimeHelperCatalog`：所有 helper 的注册表。
+- `RuntimeHelperDeclarationEmitter`：从 catalog 生成 LLVM/runtime declaration text。
 - `RuntimeHelperSignature`：helper name、args、return、exception behavior。
-- `RuntimeStubGenerator`：C runtime stub 生成。
-- `RuntimeAbi`：Java/JNI/native ABI 约定。
-- `JniTypeMapper`：IR/JVM type 到 JNI type。
-- `JniNameMangler`：JNI symbol。
-- `RuntimeMetadataEmitter`：reflection/class metadata 等。
+- `RuntimeStubGenerator`：JVM/JNI helper C stub 生成。
+- `RuntimeAbi`：Java/JNI/native helper ABI 约定；reference value 必须表示 JVM object / JNI reference。
+- `FieldIdentityToken`：为 field owner/name/descriptor 生成 deterministic token/suffix，避免把 raw field name 拼进 exported/native helper symbol；报告和 native sidecar 仍可记录原 field identity。
+- `ClassIdentityToken` / `MethodIdentityToken`：为 allocation helper 和 dispatch helper 生成 deterministic token/suffix，避免把 raw class/method identity 拼进 exported/native helper symbol；报告和 native sidecar 仍可记录原 identity。
+- `RuntimeHelperCatalog` 中的 div/rem ArithmeticException helper、field helper、`int[]`/`byte[]`/reference array helper、allocation helper、String helper 和 dispatch helper 必须共享同一签名来源；LLVM declaration、runtime header/C skeleton 和 JNI wrapper C 不能各自手写不一致 ABI。
 - `FallbackMode`：runtime 侧理解的 fallback storage mode。
 - `FallbackHelperCatalog`：JVM helper fallback targets 和 helper definition metadata。
 - `NativeEmbeddedFallbackBlob`：嵌入 native library 的 fallback class bytes metadata。
 - `FallbackClassDefiner`：按 classloader 定义 hidden/generated fallback helper class。
+
+子包：
+
+- `runtime.metadata`：`RuntimeMetadataIndex`、class/method/field/annotation/signature/record/nest/inner/class-init metadata、validator 和 stable dump writer。
+- `runtime.jni`：`JniTypeMapper`、`JniMethodDescriptor`、`JniReferencePolicy`、`JniLocalFramePlan`、pending exception policy。
+- `runtime.unsafe`：`UnsafePolicy` / `UnsafePlan`，声明 supported Unsafe/VarHandle subset、helper kind、volatile/CAS JMM facts 和 unsupported fallback reason。Unsafe offset values in supported JVM-hosted paths are deterministic metadata tokens resolved by JNI helpers, never raw Java object memory addresses.
 
 应抽工具：
 
 - JNI descriptor 到 C type：`JniTypeMapper`。
 - JNI symbol escaping：`JniNameMangler`。
 - helper name schema：`RuntimeHelperNames`。
+
+边界：
+
+- `runtime` 不分配或管理 Java-visible object lifetime。
+- `runtime` 不替代 JVM classloader、monitor、exception、reflection 或 GC。
+- `runtime` 不把 `jobject` / `jarray` / `jstring` 当作 native object layout；field、array、String/reference pass-through 和 pending exception 都必须通过 JNI API 或 JVM helper。
+- `runtime` helper 可以使用 native 临时内存，但返回给 Java 的 reference 必须来自 JVM/JNI API。
 
 ## packaging
 
@@ -658,6 +723,8 @@ JAR rewrite、loader、native registration。
 - `ClassInitializerStubRewriter`
 - `InterfaceMethodStubRewriter`
 - `FallbackBlobPlanner`
+- `FallbackBlobCodec`
+- `FallbackHelperClassFactory`
 - `NativeEmbeddedFallbackBlobWriter`
 - `FallbackBodyExtractor`
 - `LoaderClassGenerator`
@@ -680,7 +747,7 @@ JAR rewrite、loader、native registration。
 
 - packaging 不 lower bytecode。
 - packaging 不生成 LLVM。
-- packaging 只消费 compiler output 和 runtime/native metadata。
+- packaging 只消费 compiler output、JVM/JNI helper metadata 和 native artifact metadata。
 - packaging 必须保证 output jar 中 `embeddedLibraryDirectory` 下存在所有 selected target 动态库。
 - packaging 必须保留 manifest、services、module-info 和非 class resources，除非有明确 policy。
 - packaging 使用 generated loader + `RegisterNatives`，不导出每个 Java method 的 JNI name symbol。
@@ -689,17 +756,30 @@ JAR rewrite、loader、native registration。
 
 ## toolchain
 
-native build orchestration。
+Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 native build driver 是 managed Zig `0.15.2`；`.ll`、Zig-managed `.o`、JNI wrapper C、runtime helper C 和 fallback blob carrier sources 都通过 generated `build.zig` workspace 进入同一个 build/link 管线。直接调用 host `cc`、`clang`、`llc` 或 platform linker 属于旧 vertical slice 的历史实现，不再作为主线 fallback 或扩展点。
 
 推荐类：
 
 - `NativeBuildPlanner`
+- `NativeBuildTargetPreflight`
 - `NativeBuildWorkspace`
 - `ZigToolchain`
 - `ZigInstaller`
+- `ManagedZigLocator`
+- `ZigArchiveResolver`
+- `ZigDownloader`
+- `ZigArchiveExtractor`
 - `ZigBuildWriter`
+- `ZigNativeLibraryBuilder`
+- `ZigBuildInvoker`
+- `ZigArtifactCollector`
+- `ZigSourceSet`
+- `ZigInputSet`
+- `ZigTargetMatrix`
+- `ZigBuildArtifact`
 - `ProcessRunner`
 - `TargetTriple`
+- `ToolchainDiagnostics`
 - `BuildTarget`
 - `NativeArtifactLayout`
 - `IntermediateArtifactLayout`
@@ -709,8 +789,24 @@ native build orchestration。
 
 - process output capture：`ProcessRunner`。
 - target naming：`TargetTriple`。
+- selected/buildable/skipped target capability facts：`NativeBuildTargetPreflight`，并通过 `ToolchainDiagnostics.ZIG_TARGET_PREFLIGHT` 写入 diagnostics/report。
 - workspace paths：`NativeBuildWorkspace`。
 - per-class intermediate paths and collision-safe class directory names：`IntermediateArtifactLayout` / `ClassArtifactPath`。
+- managed Zig home resolution：`ManagedZigLocator`，固定从可执行 `j2ll.jar` 同级目录解析 `<j2ll-home>/zig/zig(.exe)`。
+- Zig archive name/URL resolution：`ZigArchiveResolver`，固定 Zig `0.15.2` 和 `https://ziglang.org/download/0.15.2/`。
+- Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
+- Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected target 和 skipped reason。
+- Zig build invocation：`ZigBuildInvoker`，Java 侧只执行 managed `<j2ll-home>/zig/zig(.exe) build ...`。
+
+边界：
+
+- toolchain 只负责通过 Zig 生成和链接 JVM-hosted 动态库。
+- schema v1 不提供 toolchain config；Zig version、download URL、install directory 都是固定契约。
+- managed Zig layout 必须规范化为 `<j2ll-home>/zig/zig(.exe)` 和 `<j2ll-home>/zig/lib`。
+- archive extraction 必须防 path traversal；checksum/signature 校验失败必须 preflight error。
+- toolchain 接收 per-class LLVM `.ll` 和已生成 `.o` 作为输入，但 linking/export/strip/symbol audit 仍由 Zig build plan 统一编排。
+- 外部 `cc` / `clang` / `llc` / platform linker 不暴露为 public toolchain contract；实现不能在 `ZigNativeLibraryBuilder` / `HostNativeLibraryBuilder` 中新增这些直接命令。
+- toolchain 只生成供 JVM loader 加载的动态库，不生成可直接运行的 executable 或独立 Java runtime artifact。
 
 ## toolchain.symbols
 

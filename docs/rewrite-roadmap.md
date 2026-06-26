@@ -4,6 +4,16 @@
 
 ## 总目标
 
+产品目标：j2ll 是 JVM-hosted JAR 混淆 / native lowering 工具。输出产物仍然是可运行 JAR，并在有 JVM 的环境中通过 generated loader、embedded native library、JNI / `RegisterNatives` 和 runtime helper 执行被 lower 的方法。
+
+主线原则：
+
+- 本文档只定义 JVM-hosted JAR 混淆 / native lowering；不定义任何脱离 JVM 的运行模式。
+- Java object、array、Class、String、Throwable 等 Java-visible 值都属于 JVM heap，由 JVM GC 管理。
+- Native-lowered code 中的 reference value 是 JNI handle / JVM object reference，不是长期可保存的 raw object address。
+- `new`、array allocation、`Unsafe.allocateInstance`、reflection construction、lambda object creation 等必须通过 JVM/JNI helper 产生 Java object。
+- Native temporary storage 可以使用 native stack/heap，但不能作为 Java-visible object 返回或保存。
+
 新的主干管线应当稳定表达为：
 
 ```text
@@ -87,10 +97,10 @@ rewrite 前必须先备份旧代码。推荐顺序：
 
 ## 健壮性加强方向
 
-“比肩 GraalVM”不只是多做几个 analysis pass，而是要把 compiler discipline 建起来。当前路线需要补强这些层：
+当前路线需要补强这些层，让 JVM-hosted lowering 像成熟 compiler pipeline 一样可验证、可回退、可观测：
 
 - 字节码语义模型：明确 JVM stack map frame、category-1/category-2 value、monitor、exception、class init、array store check、null check、numeric conversion、invokedynamic 等语义。
-- Classpath/world model：区分 closed world、partial world、JDK external world、unknown dynamic loading，并让每个分析知道自己的精度边界。
+- Classpath/world model：区分完整 classpath、partial world、JDK external world、unknown dynamic loading，并让每个分析知道自己的精度边界；这里的 world model 只服务 JVM-hosted analysis / obfuscation。
 - 分层 fallback：当 hierarchy、RTA、points-to 或 devirtualization 不确定时，回退到 JVM/JNI/runtime helper，而不是猜测。
 - Stage validator：parse、CFG、hierarchy、call graph、SSA、optimization、LLVM emission 前后都要有可测试的不变量。
 - Canonical IR：在优化前把 IR 规整到少数稳定形态，降低 pass 和 backend 复杂度。
@@ -175,6 +185,14 @@ xyz.melodysky.packaging
 xyz.melodysky.toolchain
   NativeBuildPlanner
   IntermediateArtifactLayout
+  ZigToolchain
+  ManagedZigLocator
+  ZigArchiveResolver
+  ZigDownloader
+  ZigArchiveExtractor
+  ZigBuildWriter
+  ZigLlvmInput
+  ZigObjectInput
 
 xyz.melodysky.toolchain.symbols
   SymbolVisibilityPlanner
@@ -354,6 +372,13 @@ xyz.melodysky.toolchain.symbols
 - backend 单测覆盖 primitive/reference type、control flow、invoke、helper declaration、per-class module emission。
 - e2e 测试覆盖至少一个 virtual call 被 devirtualize 的样例，以及保守回退样例。
 
+当前实现状态：
+
+- 已有 per-class `LlvmModule` / `.ll` emission，默认 Java method function 为 `internal hidden`。
+- Host-only `LLVM_NATIVE_PATH` 已接实真实 native lowering：ordinary static/instance primitive/reference-handle method 从 Bytecode -> SSA IR -> per-class LLVM module / `.ll` -> hidden linkable LLVM function -> JNI wrapper -> `RegisterNatives` -> output JAR child JVM E2E。
+- 当前 `LLVM_NATIVE_PATH` 覆盖 static int add、long arithmetic、double arithmetic、boolean compare branch、void no-op、if/else return、nested if、block-parameter/phi merge、static/instance/volatile field helper path、monitor/synchronized helper path、explicit throw bridge、static reflection method/constructor/field helper path、Unsafe statically resolved `Field` token 的 `objectFieldOffset` / `getInt` / `putInt` / monitor-backed `compareAndSwapInt` / `allocateInstance` JNI helper path、typed-int VarHandle helper path、null receiver NPE ownership、String/reference field pass-through、div/rem ArithmeticException helper、`byte[]` / `short[]` / `char[]` / `int[]` / `long[]` / `float[]` / `double[]` / reference array helper subset、System.arraycopy primitive/object/overlap/异常 helper、selected primitive/reference array allocation helpers、ordinary-method object construction helper subset、`checkcast` / `instanceof` helper subset、String `length` / `equals` / `isEmpty` / `charAt` / `startsWith` / `endsWith` / `substring(int,int)` helpers、显式 StringBuilder append chain、StringConcatFactory `makeConcat` / common `makeConcatWithConstants`、LambdaMetafactory common `metafactory` helper path、LDC MethodHandle + `invokeExact` direct path、Math `abs/min/max` int/long/float/double helper subset、Integer/Long/Boolean/Double boxing-unboxing、Objects.requireNonNull/equals、same-class selected static/private-special caller -> selected callee direct LLVM call，以及 no-arg `int` virtual/interface dispatch helper。`String.substring(int)` fallback fixture、full constructor/object semantics、complex finally/exception state merge、dynamic or parameterized reflection、更宽的 typed field accessor matrix、raw memory Unsafe/VarHandle、hidden-class fallback definition、arbitrary reference/object-heavy path、complex MethodHandle/altMetafactory/virtual/interface dispatch 仍走 `TEMPLATE_JNI_PATH` / helper / fallback。
+- 为了 C wrapper 跨 object 链接，native build artifact 使用 `external hidden` LLVM function；默认 debug dump 仍保持 `internal hidden`。symbol audit 必须确认 LLVM implementation symbol 不导出。
+
 ### Phase 8：Protection / Obfuscation 分层落地
 
 目标：
@@ -373,17 +398,26 @@ xyz.melodysky.toolchain.symbols
 - symbol audit 能验证 Java method internal symbol 不导出。
 - protection report 能说明 pass 是否运行、跳过或尚未实现。
 
+当前 v1 状态：
+
+- 已接实 IR `StringEncryptionPass`、`PrimitiveConstantEncryptionPass`、`BasicBlockSplittingPass` / fake branch 和 `BlockNameObfuscationPass`，并在 all-on JVM-hosted E2E 中验证不破坏现有 native lowering vertical slice。
+- LLVM name obfuscation 已改为共享 `LlvmNameMangler`，planner、LLVM module lowering、Zig workspace `.ll` 和 JNI wrapper C 使用同一 deterministic `j2ll_f_<sha256>` symbol；symbol audit 仍只允许 loader/bootstrap exports。
+- `reports/protection-report.json` 已有 golden test；未实现 pass 继续 warning + ignore，单 method pass inapplicability 记录 reason code 而不改变 lowering status。
+
 ### Phase 9：Native Build / Link / Symbol Audit
 
 目标：
 
-- 为 selected target 生成动态库。
+- 通过 managed Zig `0.15.2` 为 selected target 生成动态库。
 - 只导出 loader/bootstrap JNI wrapper 和必要 C ABI wrapper。
 - 内部 Java method/native helper symbols 默认 hidden/internal。
 
 建议迁移：
 
-- 建立 `toolchain.NativeBuildPlanner`、target naming 和 workspace layout。
+- 建立 `toolchain.NativeBuildPlanner`、target naming、workspace layout 和 managed `ZigToolchain` capability/preflight。
+- `ZigToolchain` 固定解析可执行 `j2ll.jar` 同级的 `zig/zig(.exe)`；缺失或版本不匹配时，先查找同目录 Zig `0.15.2` archive，找不到再从 Zig 官方 download path 下载；解压后将官方目录内容规范化到 `zig/`。
+- `ZigBuildWriter` 生成统一 build plan，接收 per-class `.ll`、Zig-managed `.o`、JNI wrapper C、runtime helper C 和 fallback blob carrier sources。
+- `.ll` 到 target object、`.o` link、动态库命名、target triple、export list、strip/remove-PDB policy 都必须通过 Zig toolchain 编排。
 - 建立 `toolchain.symbols` 的 export list、strip plan 和 platform policy。
 - 让 symbol audit 成为成功输出的必经 validator。
 
@@ -392,6 +426,11 @@ xyz.melodysky.toolchain.symbols
 - 每个 selected target 在 `native/<target>/` 产出固定名称动态库。
 - Windows release artifact 不打包 PDB。
 - `reports/symbol-audit.json` 记录 allowlist、actual exports 和 audit result。
+
+当前实现状态：
+
+- 已接实当前 host target 的 managed Zig `build.zig` dynamic-library build vertical slice。它现在通过 j2ll 生成的 Zig workspace 同时编排 JNI wrapper C、runtime/fallback carrier C 和 per-class LLVM `.ll` input：`LLVM_NATIVE_PATH` 覆盖 ordinary static/instance primitive/reference-handle methods、field helper-backed `int`/`long`/reference access、Unsafe statically resolved int field token helper、typed-int VarHandle helper、monitor/synchronized helper、explicit throw bridge、static reflection helper、volatile fence markers、div/rem ArithmeticException helper、broad primitive/reference array helpers、selected primitive/reference/object allocation helpers、type check helpers、String helper subset、StringConcatFactory common paths、LambdaMetafactory common helper、LDC MethodHandle direct path、Math int/long helper subset、same-class selected static/private-special direct call 和 narrow no-arg `int` virtual/interface dispatch helper；`TEMPLATE_JNI_PATH` 覆盖 String content path、`int[]` copy path、exception bridge smoke、generic straight-line/simple-branch constructor/class-initializer body helper、encoded native-embedded fallback smoke path，以及当前更广泛 reference/object-heavy semantics。
+- selected target matrix 的 build plan、`build.zig`、artifact layout、target preflight 和 packaging report 已稳定；当前 host target 真实构建，非当前 host target 进入 `selectedTargets` / `skippedTargets` 和 `ZIG_TARGET_PREFLIGHT` diagnostics。真实交叉编译、strip/PDB 细节和 SDK 能力仍由后续 managed Zig capability/preflight 决定。后续 Phase 9 工作应继续在这个 Zig 管线下扩 target coverage、export policy 和 symbol audit。
 
 ### Phase 10：Packaging / Loader / Native Registration
 
@@ -415,6 +454,13 @@ xyz.melodysky.toolchain.symbols
 - output JAR 在配置的 `embeddedLibraryDirectory` 下包含 selected target 动态库。
 - loader 可选择、校验、加载动态库并执行 `RegisterNatives`。
 - packaging report 能列出 generated loaders、rewritten classes、registration summary 和 fallback blob metadata。
+
+当前实现状态：
+
+- 当前 host E2E 已能在 child JVM 中运行 output JAR，并通过 generated loader、SHA-256 校验、`System.load`、`JNI_OnLoad` 和 `RegisterNatives` 绑定 native methods；embedded dynamic library 来自 managed Zig `build.zig` workspace。
+- report 已记录 generated loader、rewritten methods、embedded library path/SHA、registered native methods、registration groups、exported symbols，以及每个 lowered method 的 `nativeImplementationPath`。
+- 当前真实 E2E 覆盖 `LLVM_NATIVE_PATH` 的 static primitive scalar add/long/double/boolean compare/void no-op/if-else/nested-if/phi merge、static/instance/volatile field helper path、monitor/synchronized helper path、explicit throw bridge、static reflection helper path、Unsafe statically resolved int field token helper path、typed-int VarHandle helper path、LDC MethodHandle direct path、null receiver NPE ownership、String/reference field pass-through、div/rem ArithmeticException helper、broad primitive/reference array helpers、selected primitive/reference array allocation helpers、ordinary-method object construction helper subset、`checkcast` / `instanceof` helper subset、String `length` / `equals` helper、StringConcatFactory `makeConcat` / `makeConcatWithConstants`、LambdaMetafactory common helper、Math int/long helper subset、direct static/private-special callee call 和 no-arg `int` virtual/interface dispatch helper；template/helper path 覆盖 multi-class/multi-method registration、String content `jstring`、primitive `int[]` copy/new-array、`ThrowNew` exception bridge smoke、generic straight-line/simple-branch constructor/class-initializer body helper 和 encoded `nativeEmbeddedClassBlob` lazy `DefineClass` fallback smoke path。
+- Interface method declaration stubs、full object/reference LLVM semantics、constructor/class-initializer shapes beyond the straight-line/simple-branch helper subset、complex finally/exception state merge、dynamic or parameterized reflection、hidden-class fallback definition、complex virtual/interface dispatch helper implementation 和非当前 host target 的真实交叉编译/SDK capability 仍是后续扩展项。
 
 ### Phase 11：Config / Reports / Artifact Contract 固化
 
@@ -445,7 +491,7 @@ xyz.melodysky.toolchain.symbols
 
 - `MethodIrBuilder` 过大，职责交织，后续 opcode 支持会越来越难读。
 - 没有独立 class hierarchy / call graph，virtual/interface call 只能走保守 runtime helper 路径。
-- 当前 IR 接近三地址形式，但没有显式 SSA construction 文档和 phi/block parameter 模型。
+- SSA block parameter 模型已进入主线；后续风险转为扩展 dominance 校验、exception/finally 完整路径和更完整 frame type lattice。
 - 前端 skip、runtime helper、LLVM emission 之间存在隐式耦合，新增 lowering 时容易漏测 runtime/backend 行为。
 - method rewrite、native registration、fallback blob 和 JAR repackaging 若不集中在 packaging 阶段，会重新变成跨阶段隐式耦合。
 

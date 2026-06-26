@@ -1,0 +1,205 @@
+package xyz.melodysky.runtime;
+
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+public final class RuntimeHelperCatalog {
+    private final Map<RuntimeHelperKind, RuntimeHelper> helpers;
+
+    public RuntimeHelperCatalog(List<RuntimeHelper> helpers) {
+        HashMap<RuntimeHelperKind, RuntimeHelper> byKind = new HashMap<>();
+        Set<String> symbols = new HashSet<>();
+        for (RuntimeHelper helper : helpers) {
+            if (byKind.putIfAbsent(helper.kind(), helper) != null) {
+                throw new IllegalArgumentException("duplicate runtime helper kind " + helper.kind());
+            }
+            if (!symbols.add(helper.llvmSymbol())) {
+                throw new IllegalArgumentException("duplicate runtime helper symbol " + helper.llvmSymbol());
+            }
+        }
+        this.helpers = Map.copyOf(byKind);
+    }
+
+    public static RuntimeHelperCatalog defaultCatalog() {
+        return new RuntimeHelperCatalog(List.of(
+                new RuntimeHelper(RuntimeHelperKind.NULL_CHECK, "nullCheck", "j2ll_rt_null_check", "jobject", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_BOUNDS_CHECK, "arrayBoundsCheck", "j2ll_rt_array_bounds_check", "void", List.of("jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.THROW, "throwException", "j2ll_rt_throw", "void", List.of("jthrowable")),
+                new RuntimeHelper(RuntimeHelperKind.RETHROW, "rethrowException", "j2ll_rt_rethrow", "void", List.of("jthrowable")),
+                new RuntimeHelper(RuntimeHelperKind.PENDING_EXCEPTION, "pendingException", "j2ll_rt_pending_exception", "jthrowable", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.CLEAR_EXCEPTION, "clearException", "j2ll_rt_clear_exception", "void", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.CATCH_DISPATCH, "catchDispatch", "j2ll_rt_catch_dispatch", "jobject", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CREATE_NULL_POINTER_EXCEPTION, "createNullPointerException", "j2ll_rt_create_null_pointer_exception", "jthrowable", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.CREATE_ARRAY_INDEX_OUT_OF_BOUNDS_EXCEPTION, "createArrayIndexOutOfBoundsException", "j2ll_rt_create_array_index_out_of_bounds_exception", "jthrowable", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.CREATE_ARRAY_STORE_EXCEPTION, "createArrayStoreException", "j2ll_rt_create_array_store_exception", "jthrowable", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.CREATE_CLASS_CAST_EXCEPTION, "createClassCastException", "j2ll_rt_create_class_cast_exception", "jthrowable", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.CREATE_ARITHMETIC_EXCEPTION, "createArithmeticException", "j2ll_rt_create_arithmetic_exception", "jthrowable", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.DIV_I32, "divI32", "j2ll_rt_div_i32", "i32", List.of("i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.REM_I32, "remI32", "j2ll_rt_rem_i32", "i32", List.of("i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.DIV_I64, "divI64", "j2ll_rt_div_i64", "i64", List.of("i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.REM_I64, "remI64", "j2ll_rt_rem_i64", "i64", List.of("i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_INIT, "classInit", "j2ll_rt_class_init", "void", List.of("jclass")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_INIT_GUARD, "classInitGuard", "j2ll_rt_class_init_guard", "void", List.of("jclass")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_INIT_BEGIN, "classInitBegin", "j2ll_rt_class_init_begin", "void", List.of("jclass")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_INIT_END, "classInitEnd", "j2ll_rt_class_init_end", "void", List.of("jclass")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_INIT_FAILED, "classInitFailed", "j2ll_rt_class_init_failed", "void", List.of("jclass", "jthrowable")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_OBJECT, "classObject", "j2ll_rt_class_object", "jclass", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.EXCEPTION_BRIDGE, "exceptionBridge", "j2ll_rt_exception_bridge", "void", List.of("jthrowable")),
+                new RuntimeHelper(RuntimeHelperKind.MONITOR_ENTER, "monitorEnter", "j2ll_rt_monitor_enter", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.MONITOR_EXIT, "monitorExit", "j2ll_rt_monitor_exit", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.MONITOR_EXIT_ON_EXCEPTION, "monitorExitOnException", "j2ll_rt_monitor_exit_on_exception", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.THREAD_START_HAPPENS_BEFORE, "threadStartHappensBefore", "j2ll_rt_thread_start_happens_before", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.THREAD_JOIN_HAPPENS_BEFORE, "threadJoinHappensBefore", "j2ll_rt_thread_join_happens_before", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_STATIC_I32, "fieldGetStaticI32", "j2ll_rt_field_get_static_i32", "i32", List.of("jclass", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_STATIC_I32, "fieldPutStaticI32", "j2ll_rt_field_put_static_i32", "void", List.of("jclass", "i64", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_FIELD_I32, "fieldGetFieldI32", "j2ll_rt_field_get_field_i32", "i32", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_FIELD_I32, "fieldPutFieldI32", "j2ll_rt_field_put_field_i32", "void", List.of("jobject", "i64", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_STATIC_I64, "fieldGetStaticI64", "j2ll_rt_field_get_static_i64", "i64", List.of("jclass", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_STATIC_I64, "fieldPutStaticI64", "j2ll_rt_field_put_static_i64", "void", List.of("jclass", "i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_FIELD_I64, "fieldGetFieldI64", "j2ll_rt_field_get_field_i64", "i64", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_FIELD_I64, "fieldPutFieldI64", "j2ll_rt_field_put_field_i64", "void", List.of("jobject", "i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_STATIC_REF, "fieldGetStaticRef", "j2ll_rt_field_get_static_ref", "jobject", List.of("jclass", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_STATIC_REF, "fieldPutStaticRef", "j2ll_rt_field_put_static_ref", "void", List.of("jclass", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_GET_FIELD_REF, "fieldGetFieldRef", "j2ll_rt_field_get_field_ref", "jobject", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FIELD_PUT_FIELD_REF, "fieldPutFieldRef", "j2ll_rt_field_put_field_ref", "void", List.of("jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_STATIC_I32, "callStaticI32", "j2ll_rt_call_static_i32", "i32", List.of("jclass", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_SPECIAL_I32, "callSpecialI32", "j2ll_rt_call_special_i32", "i32", List.of("jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_CONSTRUCTOR_VOID, "callConstructorVoid", "j2ll_rt_call_constructor_void", "void", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_CONSTRUCTOR_VOID_I32_I32, "callConstructorVoidI32I32", "j2ll_rt_call_constructor_void_i32_i32", "void", List.of("jobject", "i64", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_VIRTUAL_I32, "callVirtualI32", "j2ll_rt_call_virtual_i32", "i32", List.of("jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_INTERFACE_I32, "callInterfaceI32", "j2ll_rt_call_interface_i32", "i32", List.of("jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_STATIC_REF, "callStaticRef", "j2ll_rt_call_static_ref", "jobject", List.of("jclass", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CALL_VIRTUAL_REF, "callVirtualRef", "j2ll_rt_call_virtual_ref", "jobject", List.of("jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.I2B, "i2b", "j2ll_rt_i2b", "i32", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.I2C, "i2c", "j2ll_rt_i2c", "i32", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.I2S, "i2s", "j2ll_rt_i2s", "i32", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.F2I, "f2i", "j2ll_rt_f2i", "i32", List.of("float")),
+                new RuntimeHelper(RuntimeHelperKind.F2L, "f2l", "j2ll_rt_f2l", "i64", List.of("float")),
+                new RuntimeHelper(RuntimeHelperKind.D2I, "d2i", "j2ll_rt_d2i", "i32", List.of("double")),
+                new RuntimeHelper(RuntimeHelperKind.D2L, "d2l", "j2ll_rt_d2l", "i64", List.of("double")),
+                new RuntimeHelper(RuntimeHelperKind.LCMP, "lcmp", "j2ll_rt_lcmp", "i32", List.of("i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.FCMPL, "fcmpl", "j2ll_rt_fcmpl", "i32", List.of("float", "float")),
+                new RuntimeHelper(RuntimeHelperKind.FCMPG, "fcmpg", "j2ll_rt_fcmpg", "i32", List.of("float", "float")),
+                new RuntimeHelper(RuntimeHelperKind.DCMPL, "dcmpl", "j2ll_rt_dcmpl", "i32", List.of("double", "double")),
+                new RuntimeHelper(RuntimeHelperKind.DCMPG, "dcmpg", "j2ll_rt_dcmpg", "i32", List.of("double", "double")),
+                new RuntimeHelper(RuntimeHelperKind.OBJECT_GET_CLASS, "objectGetClass", "j2ll_rt_object_get_class", "jobject", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.OBJECT_HASH_CODE, "objectHashCode", "j2ll_rt_object_hash_code", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.OBJECT_EQUALS, "objectEquals", "j2ll_rt_object_equals", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_LENGTH, "stringLength", "j2ll_rt_string_length", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_IS_EMPTY, "stringIsEmpty", "j2ll_rt_string_is_empty", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_CHAR_AT, "stringCharAt", "j2ll_rt_string_char_at", "i32", List.of("jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_EQUALS, "stringEquals", "j2ll_rt_string_equals", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_STARTS_WITH, "stringStartsWith", "j2ll_rt_string_starts_with", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_ENDS_WITH, "stringEndsWith", "j2ll_rt_string_ends_with", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_SUBSTRING, "stringSubstring", "j2ll_rt_string_substring", "jobject", List.of("jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_SUBSTRING_RANGE, "stringSubstringRange", "j2ll_rt_string_substring_range", "jobject", List.of("jobject", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_CONSTANT, "stringConstant", "j2ll_rt_string_constant", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_NEW, "stringBuilderNew", "j2ll_rt_string_builder_new", "jobject", List.of()),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_INIT, "stringBuilderInit", "j2ll_rt_string_builder_init", "void", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_APPEND_REF, "stringBuilderAppendRef", "j2ll_rt_string_builder_append_ref", "jobject", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_APPEND_I32, "stringBuilderAppendI32", "j2ll_rt_string_builder_append_i32", "jobject", List.of("jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_APPEND_I64, "stringBuilderAppendI64", "j2ll_rt_string_builder_append_i64", "jobject", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_APPEND_F32, "stringBuilderAppendF32", "j2ll_rt_string_builder_append_f32", "jobject", List.of("jobject", "float")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_APPEND_F64, "stringBuilderAppendF64", "j2ll_rt_string_builder_append_f64", "jobject", List.of("jobject", "double")),
+                new RuntimeHelper(RuntimeHelperKind.STRING_BUILDER_TO_STRING, "stringBuilderToString", "j2ll_rt_string_builder_to_string", "jobject", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.SYSTEM_ARRAYCOPY, "systemArraycopy", "j2ll_rt_system_arraycopy", "void", List.of("jarray", "i32", "jarray", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ALLOC_OBJECT, "allocObject", "j2ll_rt_alloc_object", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_BYTE_ARRAY, "newByteArray", "j2ll_rt_new_byte_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_SHORT_ARRAY, "newShortArray", "j2ll_rt_new_short_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_CHAR_ARRAY, "newCharArray", "j2ll_rt_new_char_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_INT_ARRAY, "newIntArray", "j2ll_rt_new_int_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_LONG_ARRAY, "newLongArray", "j2ll_rt_new_long_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_FLOAT_ARRAY, "newFloatArray", "j2ll_rt_new_float_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_DOUBLE_ARRAY, "newDoubleArray", "j2ll_rt_new_double_array", "jarray", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.NEW_OBJECT_ARRAY, "newObjectArray", "j2ll_rt_new_object_array", "jarray", List.of("i64", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LENGTH_I32, "arrayLengthI32", "j2ll_rt_array_length_i32", "i32", List.of("jarray")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_I8, "arrayLoadI8", "j2ll_rt_array_load_i8", "i32", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_I8, "arrayStoreI8", "j2ll_rt_array_store_i8", "void", List.of("jarray", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_I16, "arrayLoadI16", "j2ll_rt_array_load_i16", "i32", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_I16, "arrayStoreI16", "j2ll_rt_array_store_i16", "void", List.of("jarray", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_U16, "arrayLoadU16", "j2ll_rt_array_load_u16", "i32", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_U16, "arrayStoreU16", "j2ll_rt_array_store_u16", "void", List.of("jarray", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_I32, "arrayLoadI32", "j2ll_rt_array_load_i32", "i32", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_I32, "arrayStoreI32", "j2ll_rt_array_store_i32", "void", List.of("jarray", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_I64, "arrayLoadI64", "j2ll_rt_array_load_i64", "i64", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_I64, "arrayStoreI64", "j2ll_rt_array_store_i64", "void", List.of("jarray", "i32", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_F32, "arrayLoadF32", "j2ll_rt_array_load_f32", "float", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_F32, "arrayStoreF32", "j2ll_rt_array_store_f32", "void", List.of("jarray", "i32", "float")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_F64, "arrayLoadF64", "j2ll_rt_array_load_f64", "double", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_F64, "arrayStoreF64", "j2ll_rt_array_store_f64", "void", List.of("jarray", "i32", "double")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_LOAD_REF, "arrayLoadRef", "j2ll_rt_array_load_ref", "jobject", List.of("jarray", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.ARRAY_STORE_REF, "arrayStoreRef", "j2ll_rt_array_store_ref", "void", List.of("jarray", "i32", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CHECKCAST, "checkcast", "j2ll_rt_checkcast", "jobject", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.INSTANCEOF, "instanceof", "j2ll_rt_instanceof", "i32", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_ABS_I32, "mathAbsI32", "j2ll_rt_math_abs_i32", "i32", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_ABS_I64, "mathAbsI64", "j2ll_rt_math_abs_i64", "i64", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_ABS_F32, "mathAbsF32", "j2ll_rt_math_abs_f32", "float", List.of("float")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_ABS_F64, "mathAbsF64", "j2ll_rt_math_abs_f64", "double", List.of("double")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MIN_I32, "mathMinI32", "j2ll_rt_math_min_i32", "i32", List.of("i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MIN_I64, "mathMinI64", "j2ll_rt_math_min_i64", "i64", List.of("i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MIN_F32, "mathMinF32", "j2ll_rt_math_min_f32", "float", List.of("float", "float")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MIN_F64, "mathMinF64", "j2ll_rt_math_min_f64", "double", List.of("double", "double")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MAX_I32, "mathMaxI32", "j2ll_rt_math_max_i32", "i32", List.of("i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MAX_I64, "mathMaxI64", "j2ll_rt_math_max_i64", "i64", List.of("i64", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MAX_F32, "mathMaxF32", "j2ll_rt_math_max_f32", "float", List.of("float", "float")),
+                new RuntimeHelper(RuntimeHelperKind.MATH_MAX_F64, "mathMaxF64", "j2ll_rt_math_max_f64", "double", List.of("double", "double")),
+                new RuntimeHelper(RuntimeHelperKind.INTEGER_VALUE_OF, "integerValueOf", "j2ll_rt_integer_value_of", "jobject", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.INTEGER_INT_VALUE, "integerIntValue", "j2ll_rt_integer_int_value", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.LONG_VALUE_OF, "longValueOf", "j2ll_rt_long_value_of", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.LONG_LONG_VALUE, "longLongValue", "j2ll_rt_long_long_value", "i64", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.BOOLEAN_VALUE_OF, "booleanValueOf", "j2ll_rt_boolean_value_of", "jobject", List.of("i32")),
+                new RuntimeHelper(RuntimeHelperKind.BOOLEAN_BOOLEAN_VALUE, "booleanBooleanValue", "j2ll_rt_boolean_boolean_value", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.DOUBLE_VALUE_OF, "doubleValueOf", "j2ll_rt_double_value_of", "jobject", List.of("double")),
+                new RuntimeHelper(RuntimeHelperKind.DOUBLE_DOUBLE_VALUE, "doubleDoubleValue", "j2ll_rt_double_double_value", "double", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.OBJECTS_REQUIRE_NON_NULL, "objectsRequireNonNull", "j2ll_rt_objects_require_non_null", "jobject", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.OBJECTS_EQUALS, "objectsEquals", "j2ll_rt_objects_equals", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.LAMBDA_NEW, "lambdaNew", "j2ll_rt_lambda_new", "jobject", List.of("i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CLASS_FOR_NAME_STATIC, "classForNameStatic", "j2ll_rt_class_for_name_static", "jclass", List.of("i64", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.GET_DECLARED_METHOD, "getDeclaredMethod", "j2ll_rt_get_declared_method", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.GET_DECLARED_FIELD, "getDeclaredField", "j2ll_rt_get_declared_field", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.GET_DECLARED_CONSTRUCTOR, "getDeclaredConstructor", "j2ll_rt_get_declared_constructor", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_INVOKE, "reflectInvoke", "j2ll_rt_reflect_invoke", "jobject", List.of("jobject", "jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_NEW_INSTANCE, "reflectNewInstance", "j2ll_rt_reflect_new_instance", "jobject", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_FIELD_GET, "reflectFieldGet", "j2ll_rt_reflect_field_get", "jobject", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_FIELD_SET, "reflectFieldSet", "j2ll_rt_reflect_field_set", "void", List.of("jobject", "jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_FIELD_GET_INT, "reflectFieldGetInt", "j2ll_rt_reflect_field_get_int", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.REFLECT_FIELD_SET_INT, "reflectFieldSetInt", "j2ll_rt_reflect_field_set_int", "void", List.of("jobject", "jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.METHOD_HANDLE_INVOKE_EXACT, "methodHandleInvokeExact", "j2ll_rt_method_handle_invoke_exact", "jobject", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.CONSTANT_DYNAMIC, "constantDynamic", "j2ll_rt_constant_dynamic", "jobject", List.of("i64")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_OBJECT_FIELD_OFFSET, "unsafeObjectFieldOffset", "j2ll_rt_unsafe_object_field_offset", "i64", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_STATIC_FIELD_OFFSET, "unsafeStaticFieldOffset", "j2ll_rt_unsafe_static_field_offset", "i64", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_ARRAY_BASE_OFFSET, "unsafeArrayBaseOffset", "j2ll_rt_unsafe_array_base_offset", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_ARRAY_INDEX_SCALE, "unsafeArrayIndexScale", "j2ll_rt_unsafe_array_index_scale", "i32", List.of("jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_GET_INT, "unsafeGetInt", "j2ll_rt_unsafe_get_int", "i32", List.of("jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_PUT_INT, "unsafePutInt", "j2ll_rt_unsafe_put_int", "void", List.of("jobject", "i64", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_COMPARE_AND_SWAP_INT, "unsafeCompareAndSwapInt", "j2ll_rt_unsafe_compare_and_swap_int", "i32", List.of("jobject", "i64", "i32", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_GET, "unsafeGet", "j2ll_rt_unsafe_get", "jobject", List.of("jobject", "jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_PUT, "unsafePut", "j2ll_rt_unsafe_put", "void", List.of("jobject", "jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_GET_VOLATILE, "unsafeGetVolatile", "j2ll_rt_unsafe_get_volatile", "jobject", List.of("jobject", "jobject", "i64")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_PUT_VOLATILE, "unsafePutVolatile", "j2ll_rt_unsafe_put_volatile", "void", List.of("jobject", "jobject", "i64", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_COMPARE_AND_SWAP, "unsafeCompareAndSwap", "j2ll_rt_unsafe_compare_and_swap", "i32", List.of("jobject", "jobject", "i64", "jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.UNSAFE_ALLOCATE_INSTANCE, "unsafeAllocateInstance", "j2ll_rt_unsafe_allocate_instance", "jobject", List.of("jclass")),
+                new RuntimeHelper(RuntimeHelperKind.VAR_HANDLE_GET_INT, "varHandleGetInt", "j2ll_rt_var_handle_get_int", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.VAR_HANDLE_SET_INT, "varHandleSetInt", "j2ll_rt_var_handle_set_int", "void", List.of("jobject", "jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.VAR_HANDLE_GET_VOLATILE_INT, "varHandleGetVolatileInt", "j2ll_rt_var_handle_get_volatile_int", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.VAR_HANDLE_SET_VOLATILE_INT, "varHandleSetVolatileInt", "j2ll_rt_var_handle_set_volatile_int", "void", List.of("jobject", "jobject", "i32")),
+                new RuntimeHelper(RuntimeHelperKind.VAR_HANDLE_COMPARE_AND_SET_INT, "varHandleCompareAndSetInt", "j2ll_rt_var_handle_compare_and_set_int", "i32", List.of("jobject", "jobject", "i32", "i32"))));
+    }
+
+    public Optional<RuntimeHelper> helper(RuntimeHelperKind kind) {
+        return Optional.ofNullable(helpers.get(kind));
+    }
+
+    public List<RuntimeHelper> helpers() {
+        return helpers.values().stream()
+                .sorted(Comparator
+                        .comparing(RuntimeHelper::category)
+                        .thenComparing(helper -> helper.kind().name()))
+                .toList();
+    }
+}

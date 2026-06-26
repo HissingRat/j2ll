@@ -1,6 +1,6 @@
 # Java Support Tiers
 
-本文档定义 rewrite 后 j2ll 对 Java / JVM 特性的预期支持等级。它不是一次性交付承诺，而是功能路线和测试矩阵的分层依据。新增 Java 特性时，应先确认它属于哪个 tier，再补对应 stage 和 tier 测试。
+本文档定义 rewrite 后 j2ll 对 Java / JVM 特性的预期支持等级。所有 tier 都以 JVM-hosted 输出 JAR 为前提：GC、class loading、thread scheduling、monitor、object identity 和 Java object lifetime 均由 JVM 负责。它不是一次性交付承诺，而是功能路线和测试矩阵的分层依据。新增 Java 特性时，应先确认它属于哪个 tier，再补对应 stage 和 tier 测试。
 
 ## Tier 0: Classfile / JVM Core 基座
 
@@ -102,13 +102,11 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 - synchronized：`monitorenter` / `monitorexit`、异常退出释放 monitor。
 - Thread：先支持 JVM-hosted thread 互操作，不自建完整线程 runtime。
 - Java Memory Model：volatile、final field publication、monitor happens-before 的保守实现。
-- GC：第一阶段交给 JVM GC，通过 JNI handle / runtime helper 管对象生命周期。
-- safepoint/deopt 预留：先设计 IR 位置，不急着实现完整 deopt。
+- GC：由 JVM GC 管理；native-lowered code 通过 JNI reference / runtime helper 持有和传递 Java object。
+- runtime guard 预留：激进优化需要 guard/fallback 表达能力时，应保持可回退到 JVM 语义。
 
 暂不要求：
 
-- 自研 GC。
-- 自研 thread scheduler。
 - 完整 deoptimization。
 - 完整 Java Memory Model 优化。
 
@@ -121,9 +119,16 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 - 多线程 counter / wait-notify smoke test。
 - JNI local/global reference lifetime test。
 
+当前 clean-room 主线状态：
+
+- typed catch、handler exception parameter、显式 `athrow`、implicit exception site metadata 已进入 SSA；显式 `athrow` 已有 env-backed LLVM/JNI `Throw` bridge E2E，复杂 finally/exception state merge 仍保守。
+- catch-all/finally 复杂形状仍保守 `frontendSkipped`，避免漏掉异常路径语义。
+- `monitorenter` / `monitorexit`、`ACC_SYNCHRONIZED` method、识别出的 synchronized exceptional cleanup、volatile read/write、final field publication、monitor happens-before、Thread.start/join happens-before 已有 IR marker 和 LLVM helper/fence golden tests；synchronized block/method 已通过 JNI `MonitorEnter` / `MonitorExit` helper path 的 child JVM E2E。
+- class initialization active-use skeleton 已覆盖 `getstatic` / `putstatic` / `invokestatic` / `new` guard，以及 `<clinit>` begin/end/failed helper；完整 recursive init runtime 和 classloader 并发仍是后续 runtime 工作。
+
 ## Tier 4: JDK Runtime Interop
 
-目标：常见 Java Library 可用，但不急着把整个 JDK 编译进 native。
+目标：常见 Java Library 可用，通过 JVM-hosted helper、intrinsic 和 fallback 互操作。
 
 功能范围：
 
@@ -135,13 +140,13 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 
 暂不要求：
 
-- 编译整个 JDK runtime。
-- 自有 class library。
 - 完整 classloader/module system。
 
 测试要求：
 
-- `String` / `StringBuilder` parity。
+- 当前 clean-room 主线已覆盖 `JdkIntrinsicRegistry` policy lookup、String/StringBuilder helper lowering、System.arraycopy helper、Math/boxing/Objects helper lowering、unsupported JDK fallback report、runtime helper declaration 和 stub generator。
+- 当前 host E2E 覆盖 `String.length/equals/isEmpty/charAt/startsWith/endsWith/substring(int,int)`、显式 `StringBuilder` append chain、StringConcatFactory `makeConcat` / common `makeConcatWithConstants`、LambdaMetafactory common `metafactory` helper、LDC MethodHandle direct `invokeExact`、System.arraycopy primitive/object/overlap/异常、Integer/Long/Boolean/Double boxing-unboxing、Objects.requireNonNull/equals 和 Math int/long/float/double abs/min/max。
+- `String.substring(int)` 仍保留为 nativeEmbeddedClassBlob fallback smoke fixture；`altMetafactory` runtime class semantics、复杂 MethodHandle chain 和复杂 lambda capture 仍走 helper/fallback 边界。
 - `ArrayList` / `HashMap` common operation parity。
 - `System.arraycopy` primitive/object array test。
 - `Math` intrinsic test。
@@ -149,7 +154,7 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 
 ## Tier 5: 静态高级特性
 
-目标：写死在代码里的动态特性可以通过 closed-world 分析或 metadata 提前处理。
+目标：写死在代码里的动态特性可以通过静态 classpath 分析或 runtime metadata 提前处理。
 
 功能范围：
 
@@ -158,7 +163,7 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 - JNI：native declaration、`RegisterNatives`、JNI call helper、reference lifetime。
 - invokedynamic 扩展：MethodHandle chain、constant dynamic subset。
 - Unsafe subset：array base offset、field offset、CAS、`allocateInstance` 需要强边界。
-- serialization / service loader 可作为后续 closed-world metadata。
+- serialization / service loader 可作为后续静态 metadata 能力。
 
 暂不要求：
 
@@ -173,40 +178,17 @@ bridge、synthetic、enum-generated 和 record-generated methods 默认按普通
 - reflective constructor/method invoke parity。
 - JNI primitive/object argument ABI test。
 - MethodHandle `invokeExact` common shape test。
-- Unsafe CAS / field offset guarded test。
+- Unsafe CAS / field offset guarded test；offset must be asserted as a metadata token, not a native object layout offset.
 - unsupported dynamic reflection diagnostic test。
 
-## Tier 6: GraalVM-like Closed World Runtime
+当前 clean-room 主线状态：
 
-目标：远期 native-image 方向。该 tier 不应阻塞 Tier 0-5 的 JVM-hosted/runtime-helper 路线。
-
-功能范围：
-
-- 编译 JDK runtime subset。
-- 自有 object model。
-- 自有 GC。
-- 自有 thread / monitor / safepoint runtime。
-- closed-world reflection metadata。
-- class initialization analysis。
-- whole-program points-to / escape analysis。
-- aggressive devirtualization + guarded fallback。
-- Unsafe / MethodHandle / reflection 的大子集。
-
-暂不要求：
-
-- 兼容所有动态 Java 行为。
-- 兼容任意 agent / instrumentation / dynamic class loading。
-- 在早期版本提供生产可用的完整 native-image runtime。
-
-测试要求：
-
-- closed-world reachability corpus。
-- JDK subset bootstrap tests。
-- GC stress tests。
-- multithread stress tests。
-- devirtualization correctness test。
-- reflection metadata completeness test。
-- large real-world jar corpus test。
+- Runtime metadata index/dump 已覆盖 Signature、runtime visible/invisible annotations、record components、nest/inner metadata、bridge/synthetic/record-generated flags、class object handle 和 class init state handle。
+- Static reflection resolver 已支持 class literal、常量 `Class.forName`、常量 `getDeclaredMethod` / `getDeclaredField` / `getDeclaredConstructor`、`Method.invoke` / `Constructor.newInstance` reachability；动态字符串/参数数组保留 fallback reason。
+- Reflection first parity 已通过 child JVM E2E 覆盖常量 `Class.forName`、no-arg `getDeclaredMethod` / `getDeclaredField` / `getDeclaredConstructor`、`Method.invoke`、`Constructor.newInstance`、`Field.get` / `Field.set` 和 `Field.getInt` / `Field.setInt` helper path；带参数 metadata、动态 reflection 和更宽的 typed field accessor matrix 仍明确 fallback。
+- JNI 第一层已覆盖 descriptor -> JNI C type、static/instance implicit ABI、RegisterNatives table、JNI_OnLoad/bootstrap wrapper plan、reference lifetime/local frame/pending exception policy 和 exported-symbol allowlist。
+- MethodHandle/invokedynamic 已覆盖 altMetafactory common flags、LDC MethodHandle + `invokeExact` direct target、ConstantDynamic `nullConstant` skeleton；复杂 chain/unsupported bootstrap 仍 `halfLowered`。
+- Unsafe/VarHandle bounded subset 已 helper-backed：field/array offsets、get/put、volatile get/put、CAS、`allocateInstance`、VarHandle get/set/volatile/CAS；当前真实 child JVM E2E 覆盖 statically resolved `Field` 的 `objectFieldOffset` token、`getInt` / `putInt`、monitor-backed `compareAndSwapInt` 和 JNI `AllocObject`-backed `allocateInstance`。Unsupported raw memory API 和更宽 VarHandle/typed accessor matrix 走 `halfLowered` fallback。
 
 ## 使用方式
 

@@ -14,7 +14,7 @@ SSA IR protection passes
 - 每个 pass 都有开关、强度参数和可固定随机 seed。
 - 每个 pass 声明输入 IR 形态、输出 IR 形态、是否保持 SSA、是否改变 CFG、是否需要 runtime helper。
 - 不做脆弱的 LLVM `.ll` 文本后处理。LLVM IR 混淆必须基于 LLVM module model。
-- 对外只导出 JNI / C ABI wrapper；Java method 对应的 LLVM function 默认 internal/hidden。
+- 对外只导出 loader/bootstrap 需要的 JNI / C ABI wrapper；Java method 对应的 LLVM function 在跨 object link 时可使用 `external hidden`，但不得进入 dynamic export list。
 
 ## Layer 1: SSA IR Protection
 
@@ -55,6 +55,7 @@ canonicalize
 - 必须保留 exception edge 语义。
 - synchronized/monitor 区域内谨慎启用，第一版可禁用。
 - try/catch/finally 复杂方法第一版允许跳过该 protection pass 并 warning，不强行 flatten。
+- 当前 IR protection pipeline 对含 `MONITOR_ENTER` / `MONITOR_EXIT` / monitor happens-before marker 的 method 默认跳过并发出 `PROTECTION_MONITOR_SENSITIVE_SKIP` warning，避免改写 monitor-sensitive region。
 
 测试：
 
@@ -84,6 +85,8 @@ canonicalize
 - fake branch 不改变 observable behavior。
 - optimizer 不应在保护 pipeline 内立刻移除全部 fake branch。
 
+当前 v1 已实现一个保守子集：`BasicBlockSplittingPass` 对无 exception edge、无 block parameter、无 monitor/JMM/call/field/helper-sensitive opcode 的单 block method 插入 deterministic opaque predicate 和 fake branch。`<init>` / `<clinit>` body helper shape 只记录 `PROTECTION_STUB_BACKED_METHOD` skip，不改写 body-helper CFG。
+
 ### 基本块拆分
 
 目标：把大 block 拆成多个小 block，扰乱线性阅读和 pattern matching。
@@ -102,6 +105,8 @@ canonicalize
 
 - split 后 use/def、dominance、terminator 合法。
 - runtime parity。
+
+当前 v1 的 basic-block splitting 与 fake branch 使用同一 pass/report 入口，运行后立即通过 IR validator。block name obfuscation 可能在后续 pass 中重命名 fake block，所以测试和报告以 CFG shape 与 pass status 为准，不依赖临时 block 名。
 
 ### 常量加密
 
@@ -122,6 +127,8 @@ canonicalize
 
 - primitive constant parity。
 - edge cases：`MIN_VALUE`、`MAX_VALUE`、`NaN`、`Infinity`。
+
+当前 v1 已接实 `CONST_INT` / `CONST_LONG` 的 deterministic XOR split/decode sequence，并在 LLVM planner/backend 中支持 `XOR_I32` / `XOR_I64` 继续进入 `LLVM_NATIVE_PATH`。浮点常量 bit-level encoding 仍是后续项；exception、monitor/JMM、field/call/helper-sensitive method 只跳过该 pass 并写入 reason code。
 
 ### 字符串加密
 
@@ -145,6 +152,8 @@ canonicalize
 - ASCII / UTF-16 / surrogate pair parity。
 - repeated literal cache policy。
 - final binary string audit，确认明文不出现。
+
+当前 v1 已接实 StringConcatFactory constant carrier 的 deterministic native-side string encryption：SSA 中的 `j2ll_rt_string_constant|string:<literal>` 被改写为 `j2ll_rt_string_constant|enc:v1:<token>:<keyHex>:<cipherHex>`，JNI helper C 生成 encrypted table，在 native side 解密后通过 `NewStringUTF` 创建 JVM `String`。该 path 不把 `String` 当作 native char pointer 长期保存；普通 `CONST_STRING` / generic constructor helper 中的明文字符串仍属于后续扩展边界。
 
 ### 方法内联/拆分
 
@@ -256,6 +265,8 @@ IrProgram
 - model 只表达需要生成的 LLVM subset，不追求完整 LLVM parser。
 - model 必须支持 stable ordering。
 - text emitter 只负责把 model 打印成 `.ll`。
+
+当前 v1 的 LLVM name obfuscation 通过共享 `LlvmNameMangler` 接入 planner、per-class LLVM lowering、Zig workspace `.ll` 和 JNI wrapper C。启用 `protection.llvm.nameObfuscation` 时，Java method implementation symbol 变成 deterministic `j2ll_f_<sha256>`，C wrapper 只调用该 hidden linkable symbol；不再通过后置 `.ll` 文本替换重命名。
 
 ### LLVM 级混淆候选
 
@@ -403,6 +414,10 @@ Schema version 1 不提供 per-pass seed override、include/exclude method filte
 - config 启用了尚未实现的 pass 时，j2ll warning + ignore。
 - pass 对某个 method 不适用时，只跳过该 pass 并 warning；不要因此把 method 从 requested lowering set 中标记为 `frontendSkipped`。
 - pass 缺少硬依赖时，例如 `classPath`、JDK metadata、target toolchain capability，preflight error 并提示补齐输入或关闭该 pass。
+
+当前 `reports/protection-report.json` 为 stable schema v1，按 pass 记录 `passName`、`layer`、`status`、`reasonCode`、`affectedMethods`、`affectedSymbols` 和 seed。已接实 status 使用 `RAN` / `SKIPPED` / `FAILED`，未实现 pass 通过 diagnostics warning 暴露；method 级不适用使用稳定 reason code，例如 `NO_STRING_CONSTANT_CARRIER`、`NO_PRIMITIVE_CONSTANTS`、`PROTECTION_CFG_SHAPE_NOT_SUPPORTED`、`PROTECTION_STUB_BACKED_METHOD` 和 `PROTECTION_MONITOR_SENSITIVE_SKIP`。
+
+当前 fallback blob hardening v1 已在 packaging/native path 接实：fallback helper class bytes 先 RLE 压缩再用 SHA-256 key stream XOR 编码，写入 native artifact 中的 encoded blob manifest；JNI side 做 native-side SHA-256 校验、解码、`DefineClass` lazy define/reuse。schema v1 仍禁止输出明文 generated fallback `.class` entry；hidden-class definition 和完整 per-classloader map 仍是后续项。
 
 ## Required Tests
 

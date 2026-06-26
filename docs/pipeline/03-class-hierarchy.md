@@ -49,7 +49,7 @@ xyz.melodysky.analysis.hierarchy
 
 ## World model
 
-为了接近 GraalVM 级别的健壮性，hierarchy builder 必须明确当前分析世界：
+为了让后续分析知道自己的精度边界，hierarchy builder 必须明确当前分析世界：
 
 ```text
 CLOSED_WORLD
@@ -58,11 +58,11 @@ JDK_EXTERNAL_WORLD
 UNKNOWN_DYNAMIC_WORLD
 ```
 
-不同 world 会影响 call graph、devirtualization 和 fallback。`CLOSED_WORLD` 可以更激进，`UNKNOWN_DYNAMIC_WORLD` 必须保留 runtime helper。
+不同 world 会影响 call graph、devirtualization 和 fallback。`CLOSED_WORLD` 是历史 wire name，表示完整 JVM classpath 分析假设；`UNKNOWN_DYNAMIC_WORLD` 必须保留 runtime helper。
 
 含义：
 
-- `CLOSED_WORLD`：输入 JAR、resolved `classPath` 和 JDK metadata 覆盖所有运行时可见 classes。适合更激进的 CHA/RTA、devirtualization、call indirection 和 method table hiding。
+- `CLOSED_WORLD`：输入 JAR、resolved `classPath` 和 JDK metadata 覆盖分析需要的 JVM classes。适合更激进的 CHA/RTA、devirtualization、call indirection 和 method table hiding；输出仍是 JVM-hosted JAR。
 - `PARTIAL_WORLD`：应用 class 基本可见，但外部依赖可能不完整。对 external type 保守，不能假设没有额外 subtype。
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 作为外部 runtime/library 处理。JDK method 多数走 runtime/JVM helper 或专门 intrinsic。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader 或 runtime generated class 改变类型世界。只能做保守 call graph 和 guarded/fallback-friendly lowering。
