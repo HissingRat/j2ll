@@ -27,6 +27,14 @@ sourceSets {
         java.srcDirs = ['src/main/java']
         resources.srcDirs = ['src/main/resources']
     }
+    dummy {
+        java.srcDirs = ['src/dummy/main/java']
+        resources.srcDirs = ['src/dummy/main/resources']
+    }
+    dummyVersion17 {
+        java.srcDirs = ['src/dummy/versioned17/java']
+        resources.srcDirs = []
+    }
     bench {
         java.srcDirs = ['obfuscator/bench/src/main/java']
         resources.srcDirs = ['obfuscator/bench/src/main/resources']
@@ -103,6 +111,90 @@ tasks.register('distJ2ll', Sync) {
     }
     from('AGENTS.md') {
         rename { 'README.md' }
+    }
+}
+
+tasks.named('compileDummyJava', JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.named('compileDummyVersion17Java', JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.register('buildDummy', Jar) {
+    group = 'verification'
+    description = 'Builds the Dummy feature-zoo fixture JAR at build/dummy/Dummy.jar.'
+    dependsOn('dummyClasses', 'dummyVersion17Classes')
+    archiveFileName.set('Dummy.jar')
+    destinationDirectory.set(layout.buildDirectory.dir('dummy'))
+    from sourceSets.dummy.output
+    into('META-INF/versions/17') {
+        from sourceSets.dummyVersion17.output
+    }
+    manifest {
+        attributes(
+                'Main-Class': 'zoo.Main',
+                'Multi-Release': 'true'
+        )
+    }
+}
+
+tasks.register('dTestBasic', Test) {
+    group = 'verification'
+    description = 'Runs j2ll against Dummy.jar in basic mode.'
+    dependsOn('buildDummy', 'testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching 'xyz.melodysky.pipeline.DummyE2eTest.dummyBasicRunsThroughJ2ll'
+    }
+    systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
+    environment 'JAVA_HOME', System.getProperty('java.home')
+}
+
+tasks.register('dTestAdvanced', Test) {
+    group = 'verification'
+    description = 'Runs j2ll against Dummy.jar in advanced mode.'
+    dependsOn('buildDummy', 'testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching 'xyz.melodysky.pipeline.DummyE2eTest.dummyAdvancedRunsThroughJ2ll'
+    }
+    systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
+    environment 'JAVA_HOME', System.getProperty('java.home')
+}
+
+tasks.register('dummyTest', Test) {
+    group = 'verification'
+    description = 'Runs j2ll against Dummy.jar in all mode.'
+    dependsOn('buildDummy', 'testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching 'xyz.melodysky.pipeline.DummyE2eTest.dummyAllRunsThroughJ2ll'
+    }
+    systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
+    environment 'JAVA_HOME', System.getProperty('java.home')
+}
+
+['dTestBasic', 'dTestAdvanced', 'dummyTest'].each { taskName ->
+    tasks.named(taskName, Test) {
+        testLogging {
+            events 'failed'
+            exceptionFormat 'full'
+        }
+        afterTest { descriptor, result ->
+            if (result.resultType == TestResult.ResultType.FAILURE && result.exception != null) {
+                println(result.exception.message)
+            }
+        }
     }
 }
 
