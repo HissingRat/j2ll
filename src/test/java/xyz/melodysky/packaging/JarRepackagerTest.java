@@ -15,6 +15,7 @@ import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import xyz.melodysky.config.SignaturePolicy;
 
 class JarRepackagerTest {
     @TempDir
@@ -88,6 +89,43 @@ class JarRepackagerTest {
             assertNull(jarFile.getJarEntry("j2ll/generated/fallback/pkg_Foo/Fallback.class"));
             assertNotNull(jarFile.getJarEntry("j2ll/generated/seed/NativeLoader.class"));
         }
+    }
+
+    @Test
+    void stripsSignatureFilesWhenPolicyIsStrip() throws IOException {
+        Path inputJar = tempDir.resolve("signed.jar");
+        Path outputJar = tempDir.resolve("out").resolve("signed.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/MANIFEST.MF", bytes("Manifest-Version: 1.0\r\n\r\n"),
+                "META-INF/TEST.SF", bytes("Signature-Version: 1.0\r\n\r\n"),
+                "META-INF/TEST.RSA", new byte[] {1, 2, 3},
+                "pkg/Foo.class", new byte[] {4, 5, 6}));
+
+        JarRepackager repackager = new JarRepackager();
+        SignatureActionReport action = repackager.inspectSignature(inputJar, SignaturePolicy.STRIP);
+        repackager.write(inputJar, outputJar, Map.of(), Map.of(), SignaturePolicy.STRIP);
+
+        assertEquals("strip", action.action());
+        assertEquals(2, action.removedEntries().size());
+        assertArrayEquals(bytes("Manifest-Version: 1.0\r\n\r\n"), readEntry(outputJar, "META-INF/MANIFEST.MF"));
+        assertArrayEquals(new byte[] {4, 5, 6}, readEntry(outputJar, "pkg/Foo.class"));
+        try (JarFile jarFile = new JarFile(outputJar.toFile())) {
+            assertNull(jarFile.getJarEntry("META-INF/TEST.SF"));
+            assertNull(jarFile.getJarEntry("META-INF/TEST.RSA"));
+        }
+    }
+
+    @Test
+    void reportsSignedInputForFailPolicy() throws IOException {
+        Path inputJar = tempDir.resolve("signed.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/TEST.SF", bytes("Signature-Version: 1.0\r\n\r\n"),
+                "pkg/Foo.class", new byte[] {4, 5, 6}));
+
+        SignatureActionReport action = new JarRepackager().inspectSignature(inputJar, SignaturePolicy.FAIL);
+
+        assertEquals("fail", action.action());
+        assertEquals("SIGNED_INPUT_REJECTED", action.reasonCode());
     }
 
     private void writeJar(Path path, Map<String, byte[]> entries) throws IOException {

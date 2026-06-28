@@ -64,10 +64,17 @@ public record RuntimeHelper(
                 || kind == RuntimeHelperKind.GET_DECLARED_CONSTRUCTOR
                 || kind == RuntimeHelperKind.REFLECT_INVOKE
                 || kind == RuntimeHelperKind.REFLECT_NEW_INSTANCE
+                || kind == RuntimeHelperKind.REFLECT_SET_ACCESSIBLE
                 || kind == RuntimeHelperKind.REFLECT_FIELD_GET
                 || kind == RuntimeHelperKind.REFLECT_FIELD_SET
                 || kind == RuntimeHelperKind.REFLECT_FIELD_GET_INT
                 || kind == RuntimeHelperKind.REFLECT_FIELD_SET_INT
+                || kind == RuntimeHelperKind.REFLECT_FIELD_GET_BOOLEAN
+                || kind == RuntimeHelperKind.REFLECT_FIELD_SET_BOOLEAN
+                || kind == RuntimeHelperKind.REFLECT_FIELD_GET_LONG
+                || kind == RuntimeHelperKind.REFLECT_FIELD_SET_LONG
+                || kind == RuntimeHelperKind.REFLECT_FIELD_GET_DOUBLE
+                || kind == RuntimeHelperKind.REFLECT_FIELD_SET_DOUBLE
                 || kind == RuntimeHelperKind.STRING_BUILDER_NEW
                 || kind == RuntimeHelperKind.STRING_BUILDER_INIT
                 || kind == RuntimeHelperKind.STRING_BUILDER_APPEND_REF
@@ -130,7 +137,9 @@ public record RuntimeHelper(
             case CALL_STATIC_I32, CALL_SPECIAL_I32, CALL_CONSTRUCTOR_VOID,
                     CALL_CONSTRUCTOR_VOID_I32_I32,
                     CALL_VIRTUAL_I32, CALL_INTERFACE_I32,
-                    CALL_STATIC_REF, CALL_VIRTUAL_REF -> RuntimeHelperCategory.CALL_SITE;
+                    CALL_VIRTUAL_I32_ARG_I32, CALL_INTERFACE_I32_ARG_I32,
+                    CALL_STATIC_REF, CALL_VIRTUAL_REF, CALL_INTERFACE_REF,
+                    CALL_VIRTUAL_REF_ARG_REF, CALL_INTERFACE_REF_ARG_REF -> RuntimeHelperCategory.CALL_SITE;
             case STRING_LENGTH, STRING_IS_EMPTY, STRING_CHAR_AT, STRING_EQUALS,
                     STRING_STARTS_WITH, STRING_ENDS_WITH, STRING_SUBSTRING,
                     STRING_SUBSTRING_RANGE, STRING_CONSTANT ->
@@ -151,8 +160,11 @@ public record RuntimeHelper(
                     OBJECTS_REQUIRE_NON_NULL, OBJECTS_EQUALS, LAMBDA_NEW,
                     CLASS_FOR_NAME_STATIC, GET_DECLARED_METHOD, GET_DECLARED_FIELD,
                     GET_DECLARED_CONSTRUCTOR, REFLECT_INVOKE,
-                    REFLECT_NEW_INSTANCE, REFLECT_FIELD_GET, REFLECT_FIELD_SET,
+                    REFLECT_NEW_INSTANCE, REFLECT_SET_ACCESSIBLE, REFLECT_FIELD_GET, REFLECT_FIELD_SET,
                     REFLECT_FIELD_GET_INT, REFLECT_FIELD_SET_INT,
+                    REFLECT_FIELD_GET_BOOLEAN, REFLECT_FIELD_SET_BOOLEAN,
+                    REFLECT_FIELD_GET_LONG, REFLECT_FIELD_SET_LONG,
+                    REFLECT_FIELD_GET_DOUBLE, REFLECT_FIELD_SET_DOUBLE,
                     METHOD_HANDLE_INVOKE_EXACT,
                     CONSTANT_DYNAMIC, UNSAFE_OBJECT_FIELD_OFFSET, UNSAFE_STATIC_FIELD_OFFSET,
                     UNSAFE_ARRAY_BASE_OFFSET, UNSAFE_ARRAY_INDEX_SCALE,

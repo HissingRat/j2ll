@@ -27,6 +27,7 @@ class ReportJsonWriterTest {
         assertEquals("""
                 {
                   "schemaVersion": 1,
+                  "reportVersion": 1,
                   "diagnostics": [
                     {
                       "severity": "warning",
@@ -38,6 +39,7 @@ class ReportJsonWriterTest {
                       "instructionOffset": 12,
                       "artifactId": "pkg/Foo#run!()V",
                       "message": "virtual call requires JVM helper fallback",
+                      "hint": "",
                       "decision": "halfLowered"
                     }
                   ]
@@ -67,6 +69,7 @@ class ReportJsonWriterTest {
         assertEquals("""
                 {
                   "schemaVersion": 1,
+                  "reportVersion": 1,
                   "requestedMethods": [
                     {
                       "class": "pkg/Foo",
@@ -153,6 +156,7 @@ class ReportJsonWriterTest {
         assertEquals("""
                 {
                   "schemaVersion": 1,
+                  "reportVersion": 1,
                   "requestedMethods": [
                     {
                       "class": "pkg/Foo",

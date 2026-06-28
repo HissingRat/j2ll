@@ -2,6 +2,7 @@ package xyz.melodysky.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
@@ -22,6 +23,8 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
+import xyz.melodysky.frontend.classfile.AsmClassParser;
+import xyz.melodysky.frontend.classfile.JarClassFileSource;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.testsupport.DifferentialHarness;
 import xyz.melodysky.testsupport.DifferentialResult;
@@ -81,6 +84,48 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     }
 
     @Test
+    void protectedFloatAndDoubleConstantsRunInChildJvmThroughLlvmNativePath() throws Exception {
+        Path inputJar = temp.resolve("llvm-protected-floating-constants.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/FloatingConstantOps.class", floatingConstantOpsClass(),
+                "pkg/FloatingConstantMain.class", floatingConstantMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/FloatingConstantOps#floatValue!()F",
+                "pkg/FloatingConstantOps#floatNaN!()F",
+                "pkg/FloatingConstantOps#negativeZero!()D",
+                "pkg/FloatingConstantOps#negativeInfinity!()D"));
+        Path workspace = temp.resolve("out/llvm-protected-floating-constants");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.FloatingConstantMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                1069547520
+                2143289344
+                -9223372036854775808
+                -4503599627370496
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(4, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"FLOAT_CONSTANT_ENCRYPTION\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"DOUBLE_CONSTANT_ENCRYPTION\""));
+        String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_FloatingConstantOps.ll"));
+        assertTrue(llvm.contains("xor i32"));
+        assertTrue(llvm.contains("bitcast i32"));
+        assertTrue(llvm.contains("xor i64"));
+        assertTrue(llvm.contains("bitcast i64"));
+        assertFalse(llvm.contains("fadd float 0.0"));
+        assertFalse(llvm.contains("fadd double 0.0"));
+    }
+
+    @Test
     void branchAndPhiLlvmNativePathRunsInChildJvm() throws Exception {
         Path inputJar = temp.resolve("llvm-branch-phi.jar");
         writeJar(inputJar, Map.of(
@@ -115,10 +160,75 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(4, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"CONTROL_FLOW_FLATTENING\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"CONTROL_FLOW_FLATTENING\""));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_BranchPhiOps.ll"));
+        assertTrue(llvm.contains("switch i32"));
         assertTrue(llvm.contains("br i1"));
         assertTrue(llvm.contains("icmp"));
         assertTrue(llvm.contains(" phi i32 "));
+    }
+
+    @Test
+    void switchAndJvmNumericHelpersRunInChildJvmThroughLlvmNativePath() throws Exception {
+        Path inputJar = temp.resolve("llvm-switch-numeric.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/TableSwitch.class", AsmFixtureBuilder.classWithTableSwitchMethod("pkg/TableSwitch"),
+                "pkg/LookupSwitch.class", AsmFixtureBuilder.classWithLookupSwitchMethod("pkg/LookupSwitch"),
+                "pkg/ConvertMore.class", AsmFixtureBuilder.classWithPrimitiveConversionMethods("pkg/ConvertMore"),
+                "pkg/CompareMore.class", AsmFixtureBuilder.classWithJvmComparisonMethods("pkg/CompareMore"),
+                "pkg/SwitchNumericMain.class", switchNumericMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/TableSwitch#select!(I)I",
+                "pkg/LookupSwitch#lookup!(I)I",
+                "pkg/ConvertMore#narrow!(J)I",
+                "pkg/ConvertMore#floatToInt!(F)I",
+                "pkg/ConvertMore#floatToDouble!(F)D",
+                "pkg/CompareMore#longCmp!(JJ)I",
+                "pkg/CompareMore#floatCmp!(FF)I"));
+        Path workspace = temp.resolve("out/llvm-switch-numeric");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.SwitchNumericMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                0
+                1
+                -1
+                10
+                20
+                -1
+                -1
+                3
+                2.5
+                1
+                -1
+                -1
+                0
+                """, differential.outputRun().stdout());
+        String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(7, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(4, countOccurrences(report, "\"reasonCode\": \"JVM_NUMERIC_HELPER\""));
+        String tableLlvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_TableSwitch.ll"));
+        String lookupLlvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_LookupSwitch.ll"));
+        String convertLlvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ConvertMore.ll"));
+        String compareLlvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_CompareMore.ll"));
+        assertTrue(tableLlvm.contains("switch i32"));
+        assertTrue(lookupLlvm.contains("switch i32"));
+        assertTrue(convertLlvm.contains("call i32 @j2ll_rt_i2b"));
+        assertTrue(compareLlvm.contains("call i32 @j2ll_rt_lcmp"));
+        assertTrue(compareLlvm.contains("call i32 @j2ll_rt_fcmpl"));
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("int32_t j2ll_rt_i2b"));
+        assertTrue(source.contains("int32_t j2ll_rt_lcmp"));
+        assertTrue(source.contains("int32_t j2ll_rt_fcmpl"));
     }
 
     @Test
@@ -167,10 +277,19 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_FieldCallOps.ll"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_field_get_static_i32"));
         assertTrue(llvm.contains("call void @j2ll_rt_field_put_field_i32"));
-        assertTrue(llvm.matches("(?s).*call i32 @j2ll_f_[0-9a-f]{32}\\(.*"));
+        assertTrue(llvm.matches("(?s).*@j2ll_cit_[0-9a-f]{32} = internal constant \\[[0-9]+ x ptr] \\[.*"));
+        assertTrue(llvm.matches("(?s).*getelementptr inbounds \\[[0-9]+ x ptr], ptr @j2ll_cit_[0-9a-f]{32}, i32 0, i32 [0-9]+.*"));
+        assertTrue(llvm.contains("load ptr, ptr %j2ll_indirect_slot_"));
+        assertTrue(llvm.matches("(?s).*%[A-Za-z0-9_]+ = call i32 \\([^)]*\\) %j2ll_indirect_fn_[A-Za-z0-9_]+\\(.*"));
+        assertTrue(llvm.matches("(?s).*ptr @j2ll_f_[0-9a-f]{32}.*"));
         assertFalse(llvm.contains("@j2ll_call_pkg_FieldCallOps_callee"));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"CALL_INDIRECTION\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"CALL_INDIRECTION_TABLE\""));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
         assertTrue(symbolAudit.contains("\"JNI_OnLoad\""));
+        assertFalse(symbolAudit.contains("j2ll_cit_"));
+        assertFalse(symbolAudit.contains("j2ll_f_"));
         assertFalse(symbolAudit.contains("j2ll_pkg_FieldCallOps_callee_"));
     }
 
@@ -200,10 +319,19 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"DIRECT_LLVM_CALL\""));
         assertTrue(report.contains("\"helper\": \"direct:pkg/SpecialCallOps#helper!(I)I\""));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_SpecialCallOps.ll"));
-        assertTrue(llvm.matches("(?s).*call i32 @j2ll_f_[0-9a-f]{32}\\(.*"));
+        assertTrue(llvm.matches("(?s).*@j2ll_cit_[0-9a-f]{32} = internal constant \\[[0-9]+ x ptr] \\[.*"));
+        assertTrue(llvm.matches("(?s).*getelementptr inbounds \\[[0-9]+ x ptr], ptr @j2ll_cit_[0-9a-f]{32}, i32 0, i32 [0-9]+.*"));
+        assertTrue(llvm.contains("load ptr, ptr %j2ll_indirect_slot_"));
+        assertTrue(llvm.matches("(?s).*call i32 \\([^)]*\\) %j2ll_indirect_fn_[A-Za-z0-9_]+\\(.*"));
+        assertTrue(llvm.matches("(?s).*ptr @j2ll_f_[0-9a-f]{32}.*"));
         assertTrue(llvm.contains("ptr %p0, i32 %p1"));
         assertFalse(llvm.contains("@j2ll_call_pkg_SpecialCallOps_helper"));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"CALL_INDIRECTION\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"CALL_INDIRECTION_TABLE\""));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
+        assertFalse(symbolAudit.contains("j2ll_cit_"));
+        assertFalse(symbolAudit.contains("j2ll_f_"));
         assertFalse(symbolAudit.contains("j2ll_pkg_SpecialCallOps_helper_"));
     }
 
@@ -233,9 +361,18 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"DIRECT_LLVM_CALL\""));
         assertTrue(report.contains("\"helper\": \"direct:pkg/MethodHandleOps#target!()I\""));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_MethodHandleOps.ll"));
-        assertTrue(llvm.matches("(?s).*call i32 @j2ll_f_[0-9a-f]{32}\\(.*"));
+        assertTrue(llvm.matches("(?s).*@j2ll_cit_[0-9a-f]{32} = internal constant \\[[0-9]+ x ptr] \\[.*"));
+        assertTrue(llvm.matches("(?s).*getelementptr inbounds \\[[0-9]+ x ptr], ptr @j2ll_cit_[0-9a-f]{32}, i32 0, i32 [0-9]+.*"));
+        assertTrue(llvm.contains("load ptr, ptr %j2ll_indirect_slot_"));
+        assertTrue(llvm.matches("(?s).*call i32 \\([^)]*\\) %j2ll_indirect_fn_[A-Za-z0-9_]+\\(.*"));
+        assertTrue(llvm.matches("(?s).*ptr @j2ll_f_[0-9a-f]{32}.*"));
         assertFalse(llvm.contains("call ptr @j2ll_rt_method_handle_invoke_exact"));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"CALL_INDIRECTION\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"CALL_INDIRECTION_TABLE\""));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
+        assertFalse(symbolAudit.contains("j2ll_cit_"));
+        assertFalse(symbolAudit.contains("j2ll_f_"));
         assertFalse(symbolAudit.contains("j2ll_pkg_MethodHandleOps_target_"));
     }
 
@@ -380,7 +517,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(2, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"EXCEPTION_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"ALLOCATION_HELPER\""));
-        assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_CALL_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"THROWABLE_HELPER\""));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ExceptionBridgeOps.ll"));
         assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env"));
         assertTrue(llvm.contains("ret void"));
@@ -400,9 +537,24 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/ReflectionOps#forName!()Ljava/lang/Class;",
                 "pkg/ReflectionOps#invokeStatic!()Ljava/lang/String;",
+                "pkg/ReflectionOps#invokeStaticArg!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#invokeInstanceArg!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
                 "pkg/ReflectionOps#constructAndInvoke!()Ljava/lang/String;",
+                "pkg/ReflectionOps#constructWithArg!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateMethodAccessible!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateVoidAccessible!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateConstructorAccessible!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privatePrimitiveAccessible!(Lpkg/ReflectionTarget;IJ)I",
+                "pkg/ReflectionOps#refReturn!(Lpkg/ReflectionTarget;)Ljava/lang/String;",
+                "pkg/ReflectionOps#constructPrimitiveAndRef!(ILjava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#arrayArg!([I)Ljava/lang/String;",
                 "pkg/ReflectionOps#fieldInt!(Lpkg/ReflectionTarget;)I",
-                "pkg/ReflectionOps#fieldRef!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;"));
+                "pkg/ReflectionOps#fieldRef!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#fieldBoolean!(Lpkg/ReflectionTarget;)Z",
+                "pkg/ReflectionOps#fieldLong!(Lpkg/ReflectionTarget;)J",
+                "pkg/ReflectionOps#fieldDouble!(Lpkg/ReflectionTarget;)D",
+                "pkg/ReflectionOps#staticLong!()J",
+                "pkg/ReflectionOps#staticRef!(Ljava/lang/String;)Ljava/lang/String;"));
         Path workspace = temp.resolve("out/llvm-reflection");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
@@ -417,13 +569,32 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals("""
                 pkg.ReflectionTarget
                 hello
+                static:arg
+                target:arg
                 target
+                made
+                private:arg
+                null
+                hidden
+                52
+                target
+                seven:7
+                len=3
                 41
                 field
+                true
+                1234567890123
+                2.5
+                88
+                static-ref
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(5, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(20, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"REFLECTION_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"REFLECTION_FIELD_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"REFLECTION_METHOD_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"REFLECTION_CONSTRUCTOR_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"REFLECTION_ACCESSIBLE_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"TYPE_HELPER\""));
         String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
         assertTrue(source.contains("j2ll_reflection_method_table"));
@@ -434,8 +605,17 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(source.contains("j2ll_rt_get_declared_constructor"));
         assertTrue(source.contains("j2ll_rt_reflect_invoke"));
         assertTrue(source.contains("j2ll_rt_reflect_new_instance"));
+        assertTrue(source.contains("j2ll_rt_reflect_set_accessible"));
+        assertTrue(source.contains("j2ll_parameter_array_for_descriptor"));
+        assertTrue(source.contains("fromMethodDescriptorString"));
         assertTrue(source.contains("j2ll_rt_reflect_field_get_int"));
         assertTrue(source.contains("j2ll_rt_reflect_field_set_int"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_get_boolean"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_set_boolean"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_get_long"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_set_long"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_get_double"));
+        assertTrue(source.contains("j2ll_rt_reflect_field_set_double"));
         assertTrue(source.contains("j2ll_rt_reflect_field_get"));
         assertTrue(source.contains("j2ll_rt_reflect_field_set"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ReflectionOps.ll"));
@@ -445,8 +625,15 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(llvm.contains("call ptr @j2ll_rt_get_declared_constructor(ptr %j2ll_env"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_reflect_invoke(ptr %j2ll_env"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_reflect_new_instance(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call void @j2ll_rt_reflect_set_accessible(ptr %j2ll_env"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_reflect_field_get_int(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_reflect_field_set_int(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call i32 @j2ll_rt_reflect_field_get_boolean(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call void @j2ll_rt_reflect_field_set_boolean(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call i64 @j2ll_rt_reflect_field_get_long(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call void @j2ll_rt_reflect_field_set_long(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call double @j2ll_rt_reflect_field_get_double(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call void @j2ll_rt_reflect_field_set_double(ptr %j2ll_env"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_reflect_field_get(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_reflect_field_set(ptr %j2ll_env"));
     }
@@ -843,6 +1030,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/ArraycopyOps#copyInt!([I[I)V",
                 "pkg/ArraycopyOps#copyByte!([B[B)V",
+                "pkg/ArraycopyOps#copyLong!([J[J)V",
+                "pkg/ArraycopyOps#copyDouble!([D[D)V",
                 "pkg/ArraycopyOps#copyObject!([Ljava/lang/Object;[Ljava/lang/Object;)V",
                 "pkg/ArraycopyOps#overlap!([I)V",
                 "pkg/ArraycopyOps#copyObjectToString!([Ljava/lang/Object;[Ljava/lang/String;)V",
@@ -862,6 +1051,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals("""
                 3
                 8
+                13
+                2.5
                 hi
                 1
                 3
@@ -870,7 +1061,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 ASE
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(7, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(9, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"ARRAYCOPY_HELPER\""));
         String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
         assertTrue(source.contains("void j2ll_rt_system_arraycopy(JNIEnv* env"));
@@ -1101,7 +1292,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"STRING_CONCAT_CONSTANTS_HELPER\""));
         String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
         assertTrue(source.contains("j2ll_rt_string_constant"));
-        assertTrue(source.contains("j2ll_encrypted_string_constant_table"));
+        assertTrue(source.contains("j2ll_encrypted_string_constant_table"), source);
         assertFalse(source.contains("static const struct j2ll_string_constant_entry j2ll_string_constant_table"));
         assertTrue(source.contains("NewStringUTF"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_StringConcatRecipe.ll"));
@@ -1109,6 +1300,55 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(llvm.contains("call ptr @j2ll_rt_string_builder_to_string(ptr %j2ll_env"));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
         assertFalse(symbolAudit.contains("value="));
+    }
+
+    @Test
+    void protectedConstStringsRunThroughEncryptedHelperInLlvmAndTemplateBodies() throws Exception {
+        Path inputJar = temp.resolve("protected-const-strings.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/ProtectedStrings.class", protectedStringsClass(),
+                "pkg/ProtectedStringBox.class", protectedStringBoxClass(),
+                "pkg/ProtectedStringsMain.class", protectedStringsMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/ProtectedStrings#literal!()Ljava/lang/String;",
+                "pkg/ProtectedStringBox#<init>!()V"));
+        Path workspace = temp.resolve("out/protected-const-strings");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.ProtectedStringsMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                ordinary-secret
+                ctor-secret
+                """, differential.outputRun().stdout());
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("j2ll_encrypted_string_constant_table"));
+        assertTrue(source.contains("j2ll_rt_string_constant(env"));
+        assertFalse(source.contains("ordinary-secret"));
+        assertFalse(source.contains("ctor-secret"));
+        String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ProtectedStrings.ll"));
+        assertTrue(llvm.contains("call ptr @j2ll_rt_string_constant(ptr %j2ll_env"));
+        assertFalse(llvm.contains("ordinary-secret"));
+        assertFalse(llvm.contains("ctor-secret"));
+        String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
+        assertFalse(symbolAudit.contains("ordinary-secret"));
+        assertFalse(symbolAudit.contains("ctor-secret"));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"STRING_ENCRYPTION\""));
+        assertTrue(protectionReport.contains("\"status\": \"RAN\""));
+        assertTrue(protectionReport.contains("\"pathKind\": \"TEMPLATE_JNI_PATH_STABLE_SURFACE\""));
+        assertTrue(protectionReport.contains("\"gateMode\": \"blocking\""));
+        String artifactAudit = Files.readString(workspace.resolve("reports/artifact-audit.json"));
+        assertTrue(artifactAudit.contains("\"pathKind\": \"TEMPLATE_JNI_PATH_STABLE_SURFACE\""));
+        assertTrue(artifactAudit.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT\""));
+        assertTrue(artifactAudit.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR\""));
+        assertFalse(artifactAudit.contains("ctor-secret"));
     }
 
     @Test
@@ -1208,16 +1448,30 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     @Test
     void virtualAndInterfaceDispatchHelpersRunInChildJvmThroughLlvmNativePath() throws Exception {
         Path inputJar = temp.resolve("llvm-dispatch.jar");
-        writeJar(inputJar, Map.of(
-                "pkg/Base.class", dispatchBaseClass(),
-                "pkg/Sub.class", dispatchSubClass(),
-                "pkg/I.class", dispatchInterfaceClass(),
-                "pkg/Impl.class", dispatchImplClass(),
-                "pkg/DispatchOps.class", dispatchOpsClass(),
-                "pkg/DispatchMain.class", dispatchMainClass()));
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("pkg/Base.class", dispatchBaseClass());
+        entries.put("pkg/Sub.class", dispatchSubClass());
+        entries.put("pkg/I.class", dispatchInterfaceClass());
+        entries.put("pkg/Impl.class", dispatchImplClass());
+        entries.put("pkg/DefaultI.class", dispatchDefaultInterfaceClass());
+        entries.put("pkg/DefaultInherited.class", dispatchDefaultInheritedClass());
+        entries.put("pkg/DefaultOverride.class", dispatchDefaultOverrideClass());
+        entries.put("pkg/DefaultSuperImpl.class", dispatchDefaultSuperImplClass());
+        entries.put("pkg/ConflictLeft.class", dispatchConflictLeftClass());
+        entries.put("pkg/ConflictRight.class", dispatchConflictRightClass());
+        entries.put("pkg/ConflictImpl.class", dispatchConflictImplClass());
+        entries.put("pkg/DispatchOps.class", dispatchOpsClass());
+        entries.put("pkg/DispatchMain.class", dispatchMainClass());
+        writeJar(inputJar, entries);
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/DispatchOps#virtualValue!(Lpkg/Base;)I",
-                "pkg/DispatchOps#interfaceValue!(Lpkg/I;)I"));
+                "pkg/DispatchOps#virtualAdd!(Lpkg/Base;I)I",
+                "pkg/DispatchOps#interfaceValue!(Lpkg/I;)I",
+                "pkg/DispatchOps#interfaceName!(Lpkg/I;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/DispatchOps#defaultValue!(Lpkg/DefaultI;)I",
+                "pkg/DispatchOps#defaultName!(Lpkg/DefaultI;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/DispatchOps#conflictValue!(Lpkg/ConflictLeft;)I",
+                "pkg/DefaultSuperImpl#value!()I"));
         Path workspace = temp.resolve("out/llvm-dispatch");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
@@ -1231,12 +1485,42 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("""
                 41
+                46
                 7
+                impl:ok
+                33
+                44
+                default:ok
+                override:ok
+                35
+                default-conflict
                 NPE
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(2, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(7, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertTrue(report.contains("\"status\": \"frontendSkipped\""));
+        assertTrue(report.contains("\"reasonCode\": \"DISPATCH_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"DEFAULT_INTERFACE_DISPATCH_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"DEFAULT_INTERFACE_DISPATCH_FALLBACK\""));
+        assertTrue(report.contains("\"reasonCode\": \"UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT\""));
+        assertTrue(report.contains("\"reasonCode\": \"UNSUPPORTED_DEFAULT_INTERFACE_SUPER\""));
         assertTrue(report.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertFalse(packagingReport.contains("\"registrationOwner\": \"pkg/DefaultSuperImpl\""));
+        assertFalse(packagingReport.contains("pkg/DefaultSuperImpl#value!()I"));
+        var defaultSuperClass = new AsmClassParser()
+                .parseAll(new JarClassFileSource(pipeline.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass("pkg/DefaultSuperImpl")
+                .orElseThrow();
+        var defaultSuperValue = defaultSuperClass.methods().stream()
+                .filter(method -> method.name().equals("value") && method.descriptor().equals("()I"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(defaultSuperValue.accessFlags().isNative());
+        assertTrue(defaultSuperValue.hasCode());
         String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
         assertTrue(source.contains("j2ll_method_table"));
         assertTrue(source.contains("CallIntMethod"));
@@ -1244,6 +1528,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DispatchOps.ll"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32(ptr %j2ll_env"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_call_interface_i32(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32_arg_i32(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call ptr @j2ll_rt_call_interface_ref_arg_ref(ptr %j2ll_env"));
     }
 
     @Test
@@ -1517,6 +1803,73 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     }
 
     @Test
+    void throwableFallbackKeepsMessageAndCauseInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("throwable-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/ThrowableOps.class", throwableOpsClass(),
+                "pkg/ThrowableMain.class", throwableMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/throwable-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.ThrowableMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("outer:cause\n", differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
+        assertTrue(packagingReport.contains("pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
+    }
+
+    @Test
+    void threadAndWaitNotifyFallbacksRunInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("thread-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/ThreadOps.class", threadOpsClass(),
+                "pkg/ThreadOps$Worker.class", threadWorkerClass(),
+                "pkg/ThreadMain.class", threadMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/ThreadOps#runThread!()I",
+                "pkg/ThreadOps#waitNotify!()Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/thread-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.ThreadMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                7
+                wait-boundary
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THREAD_HELPER_FALLBACK\""));
+        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertFalse(source.contains("pthread_cond"));
+        assertFalse(source.contains("pthread_create"));
+        assertFalse(source.contains("MonitorQueue"));
+    }
+
+    @Test
     void nativeEmbeddedClassBlobFallbackDefinesHelperLazilyAndRunsInChildJvm() throws Exception {
         Path inputJar = temp.resolve("fallback.jar");
         writeJar(inputJar, Map.of(
@@ -1540,12 +1893,22 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
             assertFalse(jarFile.stream()
                     .anyMatch(entry -> entry.getName().startsWith("j2ll/generated/fallback/")
                             && entry.getName().endsWith(".class")));
+            assertFalse(jarFile.stream()
+                    .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
+                            && entry.getName().endsWith(".class")));
+            assertNotNull(jarFile.getJarEntry("xyz/melodysky/runtime/fallback/J2llFallbackSupport.class"));
         }
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"definitionMechanism\": \"DefineClass\""));
-        assertTrue(packagingReport.contains("\"definitionMechanismReasonCode\": \"FALLBACK_DEFINE_CLASS\""));
+        assertTrue(packagingReport.contains("\"definitionMechanism\": \"HiddenClass\""));
+        assertTrue(packagingReport.contains("\"definitionMechanismReasonCode\": \"FALLBACK_HIDDEN_CLASS\""));
+        assertTrue(packagingReport.contains("\"ownerLookupSupported\": true"));
+        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
         assertTrue(packagingReport.contains("\"classloaderReusePolicy\": \"lazyPerClassLoaderReuse\""));
+        assertTrue(packagingReport.contains("\"cacheScope\": \"process\""));
+        assertTrue(packagingReport.contains("\"cacheKey\": \"fallbackId+definingClassLoaderIdentity\""));
+        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
+        assertTrue(packagingReport.contains("\"globalReferencePolicy\": \"globalRefPerFallbackClassAndClassLoader\""));
         assertTrue(packagingReport.contains("\"encodingVersion\": \"fallbackBlobEncodingV1\""));
         assertTrue(packagingReport.contains("\"originalSha256\""));
         assertTrue(packagingReport.contains("\"encodedSha256\""));
@@ -1553,14 +1916,424 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(packagingReport.contains("\"encryptionAlgorithm\": \"xor-sha256-key-stream-v1\""));
         String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
         assertTrue(source.contains("DefineClass"));
+        assertTrue(source.contains("j2ll_try_define_hidden_fallback"));
+        assertTrue(source.contains("J2llFallbackSupport"));
+        assertTrue(source.contains("defineHiddenFallback"));
         assertTrue(source.contains("j2ll_verify_sha256_hex"));
         assertTrue(source.contains("fallback encoded SHA-256 mismatch"));
         assertTrue(source.contains("fallback decoded SHA-256 mismatch"));
-        assertTrue(source.contains("_loaders[16]"));
+        assertTrue(source.contains("_cache_entry"));
+        assertTrue(source.contains("_cache = entry"));
+        assertFalse(source.contains("_loaders[16]"));
         assertTrue(source.contains("IsSameObject"));
         assertTrue(source.contains("_encoded[]"));
         assertTrue(source.contains("_decode(JNIEnv* env"));
         assertFalse(source.contains("_bytes[]"));
+    }
+
+    @Test
+    void jdkCollectionPolicyFallsBackToEncodedHelperAndRunsInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("collection-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/CollectionOps.class", collectionOpsClass(),
+                "pkg/CollectionMain.class", collectionMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/CollectionOps#arrayListSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#arraysSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/collection-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.CollectionMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                2:b:true
+                true:v2
+                true:7:3
+                true:x:fallback:0:one:2:fmt-7
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(4, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_COLLECTION_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("pkg/CollectionOps#arrayListSummary!()Ljava/lang/String;"));
+        assertTrue(packagingReport.contains("pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;"));
+        assertTrue(packagingReport.contains("pkg/CollectionOps#arraysSummary!()Ljava/lang/String;"));
+        assertTrue(packagingReport.contains("pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;"));
+        assertEquals(4, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"JDK_HELPER_FALLBACK\""));
+        try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
+            assertFalse(jarFile.stream()
+                    .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
+                            && entry.getName().endsWith(".class")));
+        }
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertFalse(source.contains("ArrayList.elementData"));
+        assertFalse(source.contains("HashMap.table"));
+        assertFalse(source.contains("ArraysSupport.native"));
+        assertFalse(source.contains("Optional.value"));
+    }
+
+    @Test
+    void mixedSupportedCorpusRunsWithProtectionAllOnInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("mixed-corpus.jar");
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("pkg/ReflectionTarget.class", reflectionTargetClass());
+        entries.put("pkg/ReflectionOps.class", reflectionOpsClass());
+        entries.put("pkg/ReflectionMain.class", reflectionMainClass());
+        entries.put("pkg/ArraycopyOps.class", arraycopyOpsClass());
+        entries.put("pkg/ArraycopyMain.class", arraycopyMainClass());
+        entries.put("pkg/LambdaShapes.class", AsmFixtureBuilder.classWithLambdaMetafactoryMethods("pkg/LambdaShapes"));
+        entries.put("pkg/LambdaMain.class", lambdaMainClass());
+        entries.put("pkg/CollectionOps.class", collectionOpsClass());
+        entries.put("pkg/CollectionMain.class", collectionMainClass());
+        entries.put("pkg/ThrowableOps.class", throwableOpsClass());
+        entries.put("pkg/ThrowableMain.class", throwableMainClass());
+        entries.put("pkg/ThreadOps.class", threadOpsClass());
+        entries.put("pkg/ThreadOps$Worker.class", threadWorkerClass());
+        entries.put("pkg/ThreadMain.class", threadMainClass());
+        entries.put("pkg/CorpusMain.class", corpusMainClass());
+        writeJar(inputJar, entries);
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/ReflectionOps#forName!()Ljava/lang/Class;",
+                "pkg/ReflectionOps#invokeStatic!()Ljava/lang/String;",
+                "pkg/ReflectionOps#invokeStaticArg!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#invokeInstanceArg!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#constructAndInvoke!()Ljava/lang/String;",
+                "pkg/ReflectionOps#constructWithArg!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateMethodAccessible!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateVoidAccessible!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privateConstructorAccessible!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#privatePrimitiveAccessible!(Lpkg/ReflectionTarget;IJ)I",
+                "pkg/ReflectionOps#refReturn!(Lpkg/ReflectionTarget;)Ljava/lang/String;",
+                "pkg/ReflectionOps#constructPrimitiveAndRef!(ILjava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#arrayArg!([I)Ljava/lang/String;",
+                "pkg/ReflectionOps#fieldInt!(Lpkg/ReflectionTarget;)I",
+                "pkg/ReflectionOps#fieldRef!(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectionOps#fieldBoolean!(Lpkg/ReflectionTarget;)Z",
+                "pkg/ReflectionOps#fieldLong!(Lpkg/ReflectionTarget;)J",
+                "pkg/ReflectionOps#fieldDouble!(Lpkg/ReflectionTarget;)D",
+                "pkg/ReflectionOps#staticLong!()J",
+                "pkg/ReflectionOps#staticRef!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ArraycopyOps#copyInt!([I[I)V",
+                "pkg/ArraycopyOps#copyByte!([B[B)V",
+                "pkg/ArraycopyOps#copyLong!([J[J)V",
+                "pkg/ArraycopyOps#copyDouble!([D[D)V",
+                "pkg/ArraycopyOps#copyObject!([Ljava/lang/Object;[Ljava/lang/Object;)V",
+                "pkg/ArraycopyOps#overlap!([I)V",
+                "pkg/ArraycopyOps#copyObjectToString!([Ljava/lang/Object;[Ljava/lang/String;)V",
+                "pkg/ArraycopyOps#copyNull!([Ljava/lang/Object;)V",
+                "pkg/ArraycopyOps#copyOob!([I[I)V",
+                "pkg/LambdaShapes#nonCapturing!()Ljava/lang/Runnable;",
+                "pkg/LambdaShapes#capturing!(Ljava/lang/String;)Ljava/util/function/Supplier;",
+                "pkg/LambdaShapes#staticReference!()Ljava/util/function/Supplier;",
+                "pkg/LambdaShapes#instanceReference!(Ljava/lang/String;)Ljava/util/function/Supplier;",
+                "pkg/LambdaShapes#constructorReference!()Ljava/util/function/Supplier;",
+                "pkg/CollectionOps#arrayListSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#arraysSummary!()Ljava/lang/String;",
+                "pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;",
+                "pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;",
+                "pkg/ThreadOps#runThread!()I",
+                "pkg/ThreadOps#waitNotify!()Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/mixed-corpus");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.CorpusMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                pkg.ReflectionTarget
+                hello
+                static:arg
+                target:arg
+                target
+                made
+                private:arg
+                null
+                hidden
+                52
+                target
+                seven:7
+                len=3
+                41
+                field
+                true
+                1234567890123
+                2.5
+                88
+                static-ref
+                3
+                8
+                13
+                2.5
+                hi
+                1
+                3
+                NPE
+                OOB
+                ASE
+                ran
+                cap
+                value
+                trim
+                true
+                2:b:true
+                true:v2
+                true:7:3
+                true:x:fallback:0:one:2:fmt-7
+                outer:cause
+                7
+                wait-boundary
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(34, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(7, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"REFLECTION_FIELD_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"ARRAYCOPY_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"LAMBDA_METAFACTORY_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_COLLECTION_HELPER\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
+        assertTrue(protectionReport.contains("\"passName\": \"STRING_ENCRYPTION\""));
+        assertTrue(protectionReport.contains("\"status\": \"RAN\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertEquals(4, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"JDK_HELPER_FALLBACK\""));
+        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
+        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THREAD_HELPER_FALLBACK\""));
+        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
+        assertTrue(symbolAudit.contains("\"status\": \"passed\""));
+        try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
+            assertFalse(jarFile.stream()
+                    .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
+                            && entry.getName().endsWith(".class")));
+        }
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("_encoded[]"));
+        assertFalse(source.contains("_bytes[]"));
+    }
+
+    @Test
+    void dynamicReflectionFallbackRunsFromEncodedHiddenHelperInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("reflection-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/ReflectFallback.class", reflectionDynamicFallbackClass(),
+                "pkg/ReflectionFallbackMain.class", reflectionFallbackMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/ReflectFallback#dynamicForName!(Ljava/lang/String;)V",
+                "pkg/ReflectFallback#dynamicMethodName!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/ReflectFallback#dynamicParameterArray!([Ljava/lang/Class;)Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/reflection-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.ReflectionFallbackMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                ok
+                ello
+                reflection-ok
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(3, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
+        assertEquals(3, countOccurrences(loweringReport, "\"reasonCode\": \"REFLECTION_DYNAMIC_FALLBACK\""));
+        assertEquals(3, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicForName!(Ljava/lang/String;)V"));
+        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicMethodName!(Ljava/lang/String;)Ljava/lang/String;"));
+        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicParameterArray!([Ljava/lang/Class;)Ljava/lang/String;"));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)V\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"([Ljava/lang/Class;)Ljava/lang/String;\""));
+        assertTrue(packagingReport.contains("\"definitionMechanism\": \"HiddenClass\""));
+        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
+        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
+        try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
+            assertFalse(jarFile.stream()
+                    .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
+                            && entry.getName().endsWith(".class")));
+        }
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("CallStaticVoidMethod"));
+        assertTrue(source.contains("\"invoke\""));
+    }
+
+    @Test
+    void instanceFallbackPassesReceiverReturnsReferenceAndPropagatesException() throws Exception {
+        Path inputJar = temp.resolve("instance-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/InstanceFallback.class", instanceFallbackClass(),
+                "pkg/InstanceFallbackMain.class", instanceFallbackMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/InstanceFallback#tail!(Ljava/lang/String;)Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/instance-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.InstanceFallbackMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("ello\ncaught-npe\n", differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
+        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("GetObjectClass(env, self)"));
+        assertTrue(source.contains("CallStaticObjectMethod(env, helper, method, self, arg0)"));
+    }
+
+    @Test
+    void methodHandleAdapterChainFallbackRunsFromEncodedHelperInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("method-handle-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/MethodHandleAdapterFallback.class", methodHandleAdapterFallbackClass(),
+                "pkg/MethodHandleAdapterMain.class", methodHandleAdapterMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/MethodHandleAdapterFallback#bindPrefix!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#asTypeLength!(Ljava/lang/String;)I",
+                "pkg/MethodHandleAdapterFallback#dropMiddle!(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#permuteJoin!(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#filterArgument!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#foldPrefix!(Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#collectorBoundary!(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                "pkg/MethodHandleAdapterFallback#throwing!(Ljava/lang/String;)Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/method-handle-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.MethodHandleAdapterMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                pre-value
+                5
+                pre-post
+                RL
+                f:raw
+                fold:ok
+                col:2
+                bang
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertEquals(4, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
+        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
+        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
+        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
+        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
+        assertEquals(8, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)I\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\""));
+        assertNoPlainFallbackClassEntry(pipeline.outputJar());
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("CallStaticObjectMethod"));
+        assertTrue(source.contains("CallStaticIntMethod"));
+        assertTrue(source.contains("\"invoke\""));
+    }
+
+    @Test
+    void altMetafactoryUnsupportedCaptureFallbackRunsFromEncodedHelperInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("alt-lambda-fallback.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/AltLambdaFallback.class", altLambdaFallbackClass(),
+                "pkg/AltLambdaFallbackMain.class", altLambdaFallbackMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/AltLambdaFallback#serializableTwoCapture!(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;"));
+        Path workspace = temp.resolve("out/alt-lambda-fallback");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.AltLambdaFallbackMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                left-right
+                true
+                """, differential.outputRun().stdout());
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"ALT_METAFACTORY_FALLBACK\""));
+        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"ALT_METAFACTORY_FALLBACK\""));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;\""));
+        assertNoPlainFallbackClassEntry(pipeline.outputJar());
+    }
+
+    @Test
+    void nativeEmbeddedFallbackIsIsolatedAcrossTwoClassloadersInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("fallback-classloader-isolation.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/JdkFallback.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"),
+                "pkg/FallbackClassLoaderMain.class", fallbackClassLoaderMainClass()));
+        ResolvedConfig config = config(inputJar, List.of(
+                "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
+        Path workspace = temp.resolve("out/fallback-classloader-isolation");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.FallbackClassLoaderMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("""
+                bcd
+                xyz
+                bcd
+                false
+                """, differential.outputRun().stdout());
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("\"cacheScope\": \"process\""));
+        assertTrue(packagingReport.contains("\"cacheKey\": \"fallbackId+definingClassLoaderIdentity\""));
+        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
+        assertTrue(packagingReport.contains("\"globalReferencePolicy\": \"globalRefPerFallbackClassAndClassLoader\""));
+        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        assertTrue(source.contains("IsSameObject(env, entry->loader, loader)"));
+        assertTrue(source.contains("_cache_entry"));
     }
 
     private int countEntries(Path jar, String suffix) throws IOException {
@@ -1568,6 +2341,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
             return (int) jarFile.stream()
                     .filter(entry -> entry.getName().endsWith(suffix))
                     .count();
+        }
+    }
+
+    private void assertNoPlainFallbackClassEntry(Path jar) throws IOException {
+        try (JarFile jarFile = new JarFile(jar.toFile())) {
+            assertFalse(jarFile.stream()
+                    .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
+                            && entry.getName().endsWith(".class")));
         }
     }
 
@@ -1760,6 +2541,60 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         return writer.toByteArray();
     }
 
+    private byte[] floatingConstantOpsClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/FloatingConstantOps", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+
+        MethodVisitor floatValue = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "floatValue", "()F", null, null);
+        floatValue.visitCode();
+        floatValue.visitLdcInsn(1.5F);
+        floatValue.visitInsn(FRETURN);
+        floatValue.visitMaxs(0, 0);
+        floatValue.visitEnd();
+
+        MethodVisitor floatNaN = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "floatNaN", "()F", null, null);
+        floatNaN.visitCode();
+        floatNaN.visitLdcInsn(Float.NaN);
+        floatNaN.visitInsn(FRETURN);
+        floatNaN.visitMaxs(0, 0);
+        floatNaN.visitEnd();
+
+        MethodVisitor negativeZero = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "negativeZero", "()D", null, null);
+        negativeZero.visitCode();
+        negativeZero.visitLdcInsn(-0.0D);
+        negativeZero.visitInsn(DRETURN);
+        negativeZero.visitMaxs(0, 0);
+        negativeZero.visitEnd();
+
+        MethodVisitor negativeInfinity = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "negativeInfinity",
+                "()D",
+                null,
+                null);
+        negativeInfinity.visitCode();
+        negativeInfinity.visitLdcInsn(Double.NEGATIVE_INFINITY);
+        negativeInfinity.visitInsn(DRETURN);
+        negativeInfinity.visitMaxs(0, 0);
+        negativeInfinity.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] floatingConstantMainClass() {
+        ClassWriter writer = mainClass("pkg/FloatingConstantMain");
+        MethodVisitor main = beginMain(writer);
+        printStaticFloatRawBits(main, "pkg/FloatingConstantOps", "floatValue");
+        printStaticFloatRawBits(main, "pkg/FloatingConstantOps", "floatNaN");
+        printStaticDoubleRawBits(main, "pkg/FloatingConstantOps", "negativeZero");
+        printStaticDoubleRawBits(main, "pkg/FloatingConstantOps", "negativeInfinity");
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     private byte[] branchPhiOpsClass() {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/BranchPhiOps", null, "java/lang/Object", null);
@@ -1853,6 +2688,36 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         printStaticBooleanIntCall(main, "pkg/BranchPhiOps", "isZero", 3);
         printStaticIntCall(main, "pkg/BranchPhiOps", "merge", 4);
         printStaticIntCall(main, "pkg/BranchPhiOps", "merge", -3);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] switchNumericMainClass() {
+        ClassWriter writer = mainClass("pkg/SwitchNumericMain");
+        MethodVisitor main = beginMain(writer);
+        printStaticIntCall(main, "pkg/TableSwitch", "select", 0);
+        printStaticIntCall(main, "pkg/TableSwitch", "select", 1);
+        printStaticIntCall(main, "pkg/TableSwitch", "select", 7);
+        printStaticIntCall(main, "pkg/LookupSwitch", "lookup", 10);
+        printStaticIntCall(main, "pkg/LookupSwitch", "lookup", 20);
+        printStaticIntCall(main, "pkg/LookupSwitch", "lookup", 7);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn(255L);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ConvertMore", "narrow", "(J)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn(3.75F);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ConvertMore", "floatToInt", "(F)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn(2.5F);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ConvertMore", "floatToDouble", "(F)D", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(D)V", false);
+        printStaticLongCompare(main, 8L, 3L);
+        printStaticLongCompare(main, 3L, 8L);
+        printStaticFloatCompare(main, Float.NaN, 1.0F);
+        printStaticFloatCompare(main, 2.0F, 2.0F);
         endMain(main);
         writer.visitEnd();
         return writer.toByteArray();
@@ -2347,12 +3212,233 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         return writer.toByteArray();
     }
 
+    private byte[] throwableOpsClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ThrowableOps", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "messageAndCause",
+                "()Ljava/lang/String;",
+                null,
+                null);
+        method.visitCode();
+        method.visitTypeInsn(NEW, "java/lang/RuntimeException");
+        method.visitInsn(DUP);
+        method.visitLdcInsn("outer");
+        method.visitMethodInsn(INVOKESPECIAL, "java/lang/RuntimeException", "<init>", "(Ljava/lang/String;)V", false);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitTypeInsn(NEW, "java/lang/IllegalArgumentException");
+        method.visitInsn(DUP);
+        method.visitLdcInsn("cause");
+        method.visitMethodInsn(INVOKESPECIAL, "java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/String;)V", false);
+        method.visitVarInsn(ASTORE, 1);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitVarInsn(ALOAD, 1);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Throwable",
+                "initCause",
+                "(Ljava/lang/Throwable;)Ljava/lang/Throwable;",
+                false);
+        method.visitInsn(POP);
+        method.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        method.visitInsn(DUP);
+        method.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Throwable", "getMessage", "()Ljava/lang/String;", false);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        method.visitLdcInsn(":");
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Throwable", "getCause", "()Ljava/lang/Throwable;", false);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Throwable", "getMessage", "()Ljava/lang/String;", false);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        method.visitInsn(ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] throwableMainClass() {
+        ClassWriter writer = mainClass("pkg/ThrowableMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ThrowableOps", "messageAndCause", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] threadOpsClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ThreadOps", null, "java/lang/Object", null);
+        writer.visitField(ACC_PUBLIC | ACC_STATIC, "value", "I", null, null).visitEnd();
+        defaultConstructor(writer);
+
+        MethodVisitor runThread = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "runThread", "()I", null, null);
+        runThread.visitCode();
+        runThread.visitInsn(ICONST_0);
+        runThread.visitFieldInsn(PUTSTATIC, "pkg/ThreadOps", "value", "I");
+        runThread.visitTypeInsn(NEW, "java/lang/Thread");
+        runThread.visitInsn(DUP);
+        runThread.visitTypeInsn(NEW, "pkg/ThreadOps$Worker");
+        runThread.visitInsn(DUP);
+        runThread.visitMethodInsn(INVOKESPECIAL, "pkg/ThreadOps$Worker", "<init>", "()V", false);
+        runThread.visitMethodInsn(INVOKESPECIAL, "java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V", false);
+        runThread.visitVarInsn(ASTORE, 0);
+        runThread.visitVarInsn(ALOAD, 0);
+        runThread.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "start", "()V", false);
+        runThread.visitVarInsn(ALOAD, 0);
+        runThread.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "join", "()V", false);
+        runThread.visitFieldInsn(GETSTATIC, "pkg/ThreadOps", "value", "I");
+        runThread.visitInsn(IRETURN);
+        runThread.visitMaxs(0, 0);
+        runThread.visitEnd();
+
+        MethodVisitor waitNotify = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "waitNotify", "()Ljava/lang/String;", null, null);
+        waitNotify.visitCode();
+        waitNotify.visitTypeInsn(NEW, "java/lang/Object");
+        waitNotify.visitInsn(DUP);
+        waitNotify.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        waitNotify.visitVarInsn(ASTORE, 0);
+        waitNotify.visitVarInsn(ALOAD, 0);
+        waitNotify.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "notify", "()V", false);
+        waitNotify.visitVarInsn(ALOAD, 0);
+        waitNotify.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "wait", "()V", false);
+        waitNotify.visitLdcInsn("waited");
+        waitNotify.visitInsn(ARETURN);
+        waitNotify.visitMaxs(0, 0);
+        waitNotify.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] threadWorkerClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                V17,
+                ACC_PUBLIC | ACC_SUPER,
+                "pkg/ThreadOps$Worker",
+                null,
+                "java/lang/Object",
+                new String[] {"java/lang/Runnable"});
+        defaultConstructor(writer);
+        MethodVisitor run = writer.visitMethod(ACC_PUBLIC, "run", "()V", null, null);
+        run.visitCode();
+        run.visitIntInsn(BIPUSH, 7);
+        run.visitFieldInsn(PUTSTATIC, "pkg/ThreadOps", "value", "I");
+        run.visitInsn(RETURN);
+        run.visitMaxs(0, 0);
+        run.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] threadMainClass() {
+        ClassWriter writer = mainClass("pkg/ThreadMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ThreadOps", "runThread", "()I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label done = new org.objectweb.asm.Label();
+        main.visitTryCatchBlock(start, end, handler, "java/lang/IllegalMonitorStateException");
+        main.visitLabel(start);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ThreadOps", "waitNotify", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitLabel(end);
+        main.visitJumpInsn(GOTO, done);
+        main.visitLabel(handler);
+        main.visitInsn(POP);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("wait-boundary");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitLabel(done);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     private byte[] reflectionTargetClass() {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ReflectionTarget", null, "java/lang/Object", null);
         writer.visitField(ACC_PUBLIC, "count", "I", null, null).visitEnd();
         writer.visitField(ACC_PUBLIC, "note", "Ljava/lang/String;", null, null).visitEnd();
+        writer.visitField(ACC_PUBLIC, "flag", "Z", null, null).visitEnd();
+        writer.visitField(ACC_PUBLIC, "big", "J", null, null).visitEnd();
+        writer.visitField(ACC_PUBLIC, "ratio", "D", null, null).visitEnd();
+        writer.visitField(ACC_PUBLIC | ACC_STATIC, "staticBig", "J", null, null).visitEnd();
+        writer.visitField(ACC_PUBLIC | ACC_STATIC, "staticNote", "Ljava/lang/String;", null, null).visitEnd();
         defaultConstructor(writer);
+        MethodVisitor stringConstructor = writer.visitMethod(ACC_PUBLIC, "<init>", "(Ljava/lang/String;)V", null, null);
+        stringConstructor.visitCode();
+        stringConstructor.visitVarInsn(ALOAD, 0);
+        stringConstructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        stringConstructor.visitVarInsn(ALOAD, 0);
+        stringConstructor.visitVarInsn(ALOAD, 1);
+        stringConstructor.visitFieldInsn(PUTFIELD, "pkg/ReflectionTarget", "note", "Ljava/lang/String;");
+        stringConstructor.visitInsn(RETURN);
+        stringConstructor.visitMaxs(0, 0);
+        stringConstructor.visitEnd();
+        MethodVisitor objectConstructor = writer.visitMethod(ACC_PRIVATE, "<init>", "(Ljava/lang/Object;)V", null, null);
+        objectConstructor.visitCode();
+        objectConstructor.visitVarInsn(ALOAD, 0);
+        objectConstructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        objectConstructor.visitVarInsn(ALOAD, 0);
+        objectConstructor.visitVarInsn(ALOAD, 1);
+        objectConstructor.visitTypeInsn(CHECKCAST, "java/lang/String");
+        objectConstructor.visitFieldInsn(PUTFIELD, "pkg/ReflectionTarget", "note", "Ljava/lang/String;");
+        objectConstructor.visitInsn(RETURN);
+        objectConstructor.visitMaxs(0, 0);
+        objectConstructor.visitEnd();
+        MethodVisitor intStringConstructor = writer.visitMethod(ACC_PUBLIC, "<init>", "(ILjava/lang/String;)V", null, null);
+        intStringConstructor.visitCode();
+        intStringConstructor.visitVarInsn(ALOAD, 0);
+        intStringConstructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        intStringConstructor.visitVarInsn(ALOAD, 0);
+        intStringConstructor.visitVarInsn(ALOAD, 2);
+        intStringConstructor.visitLdcInsn(":");
+        intStringConstructor.visitVarInsn(ILOAD, 1);
+        intStringConstructor.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001\u0001");
+        intStringConstructor.visitFieldInsn(PUTFIELD, "pkg/ReflectionTarget", "note", "Ljava/lang/String;");
+        intStringConstructor.visitInsn(RETURN);
+        intStringConstructor.visitMaxs(0, 0);
+        intStringConstructor.visitEnd();
 
         MethodVisitor greet = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
@@ -2365,6 +3451,29 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         greet.visitInsn(ARETURN);
         greet.visitMaxs(0, 0);
         greet.visitEnd();
+        MethodVisitor greetArg = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "greetArg",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        greetArg.visitCode();
+        greetArg.visitLdcInsn("static:");
+        greetArg.visitVarInsn(ALOAD, 0);
+        greetArg.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        greetArg.visitInsn(ARETURN);
+        greetArg.visitMaxs(0, 0);
+        greetArg.visitEnd();
 
         MethodVisitor label = writer.visitMethod(ACC_PUBLIC, "label", "()Ljava/lang/String;", null, null);
         label.visitCode();
@@ -2372,6 +3481,110 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         label.visitInsn(ARETURN);
         label.visitMaxs(0, 0);
         label.visitEnd();
+        MethodVisitor note = writer.visitMethod(ACC_PUBLIC, "note", "()Ljava/lang/String;", null, null);
+        note.visitCode();
+        note.visitVarInsn(ALOAD, 0);
+        note.visitFieldInsn(GETFIELD, "pkg/ReflectionTarget", "note", "Ljava/lang/String;");
+        note.visitInsn(ARETURN);
+        note.visitMaxs(0, 0);
+        note.visitEnd();
+        MethodVisitor prefix = writer.visitMethod(
+                ACC_PUBLIC,
+                "prefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        prefix.visitCode();
+        prefix.visitLdcInsn("target:");
+        prefix.visitVarInsn(ALOAD, 1);
+        prefix.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        prefix.visitInsn(ARETURN);
+        prefix.visitMaxs(0, 0);
+        prefix.visitEnd();
+        MethodVisitor secret = writer.visitMethod(
+                ACC_PRIVATE,
+                "secret",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        secret.visitCode();
+        secret.visitLdcInsn("private:");
+        secret.visitVarInsn(ALOAD, 1);
+        secret.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        secret.visitInsn(ARETURN);
+        secret.visitMaxs(0, 0);
+        secret.visitEnd();
+        MethodVisitor primitive = writer.visitMethod(
+                ACC_PRIVATE,
+                "primitive",
+                "(IJ)I",
+                null,
+                null);
+        primitive.visitCode();
+        primitive.visitVarInsn(ILOAD, 1);
+        primitive.visitVarInsn(LLOAD, 2);
+        primitive.visitInsn(L2I);
+        primitive.visitInsn(IADD);
+        primitive.visitInsn(IRETURN);
+        primitive.visitMaxs(0, 0);
+        primitive.visitEnd();
+        MethodVisitor arrayLabel = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "arrayLabel",
+                "([I)Ljava/lang/String;",
+                null,
+                null);
+        arrayLabel.visitCode();
+        arrayLabel.visitLdcInsn("len=");
+        arrayLabel.visitVarInsn(ALOAD, 0);
+        arrayLabel.visitInsn(ARRAYLENGTH);
+        arrayLabel.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;I)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        arrayLabel.visitInsn(ARETURN);
+        arrayLabel.visitMaxs(0, 0);
+        arrayLabel.visitEnd();
+        MethodVisitor setNotePrivate = writer.visitMethod(
+                ACC_PRIVATE,
+                "setNotePrivate",
+                "(Ljava/lang/String;)V",
+                null,
+                null);
+        setNotePrivate.visitCode();
+        setNotePrivate.visitVarInsn(ALOAD, 0);
+        setNotePrivate.visitVarInsn(ALOAD, 1);
+        setNotePrivate.visitFieldInsn(PUTFIELD, "pkg/ReflectionTarget", "note", "Ljava/lang/String;");
+        setNotePrivate.visitInsn(RETURN);
+        setNotePrivate.visitMaxs(0, 0);
+        setNotePrivate.visitEnd();
 
         writer.visitEnd();
         return writer.toByteArray();
@@ -2431,6 +3644,74 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         invokeStatic.visitMaxs(0, 0);
         invokeStatic.visitEnd();
 
+        MethodVisitor invokeStaticArg = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "invokeStaticArg",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        invokeStaticArg.visitCode();
+        invokeStaticArg.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        invokeStaticArg.visitLdcInsn("greetArg");
+        classArrayOfString(invokeStaticArg);
+        invokeStaticArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        invokeStaticArg.visitInsn(ACONST_NULL);
+        invokeStaticArg.visitInsn(ICONST_1);
+        invokeStaticArg.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        invokeStaticArg.visitInsn(DUP);
+        invokeStaticArg.visitInsn(ICONST_0);
+        invokeStaticArg.visitVarInsn(ALOAD, 0);
+        invokeStaticArg.visitInsn(AASTORE);
+        invokeStaticArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        invokeStaticArg.visitTypeInsn(CHECKCAST, "java/lang/String");
+        invokeStaticArg.visitInsn(ARETURN);
+        invokeStaticArg.visitMaxs(0, 0);
+        invokeStaticArg.visitEnd();
+
+        MethodVisitor invokeInstanceArg = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "invokeInstanceArg",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        invokeInstanceArg.visitCode();
+        invokeInstanceArg.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        invokeInstanceArg.visitLdcInsn("prefix");
+        classArrayOfString(invokeInstanceArg);
+        invokeInstanceArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        invokeInstanceArg.visitVarInsn(ALOAD, 0);
+        invokeInstanceArg.visitInsn(ICONST_1);
+        invokeInstanceArg.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        invokeInstanceArg.visitInsn(DUP);
+        invokeInstanceArg.visitInsn(ICONST_0);
+        invokeInstanceArg.visitVarInsn(ALOAD, 1);
+        invokeInstanceArg.visitInsn(AASTORE);
+        invokeInstanceArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        invokeInstanceArg.visitTypeInsn(CHECKCAST, "java/lang/String");
+        invokeInstanceArg.visitInsn(ARETURN);
+        invokeInstanceArg.visitMaxs(0, 0);
+        invokeInstanceArg.visitEnd();
+
         MethodVisitor constructAndInvoke = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
                 "constructAndInvoke",
@@ -2480,6 +3761,324 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         constructAndInvoke.visitInsn(ARETURN);
         constructAndInvoke.visitMaxs(0, 0);
         constructAndInvoke.visitEnd();
+
+        MethodVisitor constructWithArg = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "constructWithArg",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        constructWithArg.visitCode();
+        constructWithArg.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        classArrayOfString(constructWithArg);
+        constructWithArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredConstructor",
+                "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+                false);
+        constructWithArg.visitInsn(ICONST_1);
+        constructWithArg.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        constructWithArg.visitInsn(DUP);
+        constructWithArg.visitInsn(ICONST_0);
+        constructWithArg.visitVarInsn(ALOAD, 0);
+        constructWithArg.visitInsn(AASTORE);
+        constructWithArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Constructor",
+                "newInstance",
+                "([Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        constructWithArg.visitTypeInsn(CHECKCAST, "pkg/ReflectionTarget");
+        constructWithArg.visitMethodInsn(INVOKEVIRTUAL, "pkg/ReflectionTarget", "note", "()Ljava/lang/String;", false);
+        constructWithArg.visitInsn(ARETURN);
+        constructWithArg.visitMaxs(0, 0);
+        constructWithArg.visitEnd();
+
+        MethodVisitor privateMethodAccessible = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "privateMethodAccessible",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        privateMethodAccessible.visitCode();
+        privateMethodAccessible.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        privateMethodAccessible.visitLdcInsn("secret");
+        classArrayOfString(privateMethodAccessible);
+        privateMethodAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        privateMethodAccessible.visitVarInsn(ASTORE, 2);
+        privateMethodAccessible.visitVarInsn(ALOAD, 2);
+        privateMethodAccessible.visitInsn(ICONST_1);
+        privateMethodAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "setAccessible",
+                "(Z)V",
+                false);
+        privateMethodAccessible.visitVarInsn(ALOAD, 2);
+        privateMethodAccessible.visitVarInsn(ALOAD, 0);
+        privateMethodAccessible.visitInsn(ICONST_1);
+        privateMethodAccessible.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        privateMethodAccessible.visitInsn(DUP);
+        privateMethodAccessible.visitInsn(ICONST_0);
+        privateMethodAccessible.visitVarInsn(ALOAD, 1);
+        privateMethodAccessible.visitInsn(AASTORE);
+        privateMethodAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        privateMethodAccessible.visitTypeInsn(CHECKCAST, "java/lang/String");
+        privateMethodAccessible.visitInsn(ARETURN);
+        privateMethodAccessible.visitMaxs(0, 0);
+        privateMethodAccessible.visitEnd();
+
+        MethodVisitor privateVoidAccessible = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "privateVoidAccessible",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        privateVoidAccessible.visitCode();
+        privateVoidAccessible.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        privateVoidAccessible.visitLdcInsn("setNotePrivate");
+        classArrayOfString(privateVoidAccessible);
+        privateVoidAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        privateVoidAccessible.visitVarInsn(ASTORE, 2);
+        privateVoidAccessible.visitVarInsn(ALOAD, 2);
+        privateVoidAccessible.visitInsn(ICONST_1);
+        privateVoidAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "setAccessible",
+                "(Z)V",
+                false);
+        privateVoidAccessible.visitVarInsn(ALOAD, 2);
+        privateVoidAccessible.visitVarInsn(ALOAD, 0);
+        privateVoidAccessible.visitInsn(ICONST_1);
+        privateVoidAccessible.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        privateVoidAccessible.visitInsn(DUP);
+        privateVoidAccessible.visitInsn(ICONST_0);
+        privateVoidAccessible.visitVarInsn(ALOAD, 1);
+        privateVoidAccessible.visitInsn(AASTORE);
+        privateVoidAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        privateVoidAccessible.visitTypeInsn(CHECKCAST, "java/lang/String");
+        privateVoidAccessible.visitInsn(ARETURN);
+        privateVoidAccessible.visitMaxs(0, 0);
+        privateVoidAccessible.visitEnd();
+
+        MethodVisitor privateConstructorAccessible = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "privateConstructorAccessible",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        privateConstructorAccessible.visitCode();
+        privateConstructorAccessible.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        classArrayOfObject(privateConstructorAccessible);
+        privateConstructorAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredConstructor",
+                "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+                false);
+        privateConstructorAccessible.visitVarInsn(ASTORE, 1);
+        privateConstructorAccessible.visitVarInsn(ALOAD, 1);
+        privateConstructorAccessible.visitInsn(ICONST_1);
+        privateConstructorAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Constructor",
+                "setAccessible",
+                "(Z)V",
+                false);
+        privateConstructorAccessible.visitVarInsn(ALOAD, 1);
+        privateConstructorAccessible.visitInsn(ICONST_1);
+        privateConstructorAccessible.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        privateConstructorAccessible.visitInsn(DUP);
+        privateConstructorAccessible.visitInsn(ICONST_0);
+        privateConstructorAccessible.visitVarInsn(ALOAD, 0);
+        privateConstructorAccessible.visitInsn(AASTORE);
+        privateConstructorAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Constructor",
+                "newInstance",
+                "([Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        privateConstructorAccessible.visitTypeInsn(CHECKCAST, "pkg/ReflectionTarget");
+        privateConstructorAccessible.visitMethodInsn(INVOKEVIRTUAL, "pkg/ReflectionTarget", "note", "()Ljava/lang/String;", false);
+        privateConstructorAccessible.visitInsn(ARETURN);
+        privateConstructorAccessible.visitMaxs(0, 0);
+        privateConstructorAccessible.visitEnd();
+
+        MethodVisitor privatePrimitiveAccessible = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "privatePrimitiveAccessible",
+                "(Lpkg/ReflectionTarget;IJ)I",
+                null,
+                new String[] {"java/lang/Exception"});
+        privatePrimitiveAccessible.visitCode();
+        privatePrimitiveAccessible.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        privatePrimitiveAccessible.visitLdcInsn("primitive");
+        classArrayOfIntegerAndLong(privatePrimitiveAccessible);
+        privatePrimitiveAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        privatePrimitiveAccessible.visitVarInsn(ASTORE, 4);
+        privatePrimitiveAccessible.visitVarInsn(ALOAD, 4);
+        privatePrimitiveAccessible.visitInsn(ICONST_1);
+        privatePrimitiveAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "setAccessible",
+                "(Z)V",
+                false);
+        privatePrimitiveAccessible.visitVarInsn(ALOAD, 4);
+        privatePrimitiveAccessible.visitVarInsn(ALOAD, 0);
+        privatePrimitiveAccessible.visitInsn(ICONST_2);
+        privatePrimitiveAccessible.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        privatePrimitiveAccessible.visitInsn(DUP);
+        privatePrimitiveAccessible.visitInsn(ICONST_0);
+        privatePrimitiveAccessible.visitVarInsn(ILOAD, 1);
+        privatePrimitiveAccessible.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+        privatePrimitiveAccessible.visitInsn(AASTORE);
+        privatePrimitiveAccessible.visitInsn(DUP);
+        privatePrimitiveAccessible.visitInsn(ICONST_1);
+        privatePrimitiveAccessible.visitVarInsn(LLOAD, 2);
+        privatePrimitiveAccessible.visitMethodInsn(INVOKESTATIC, "java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", false);
+        privatePrimitiveAccessible.visitInsn(AASTORE);
+        privatePrimitiveAccessible.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        privatePrimitiveAccessible.visitTypeInsn(CHECKCAST, "java/lang/Integer");
+        privatePrimitiveAccessible.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Integer", "intValue", "()I", false);
+        privatePrimitiveAccessible.visitInsn(IRETURN);
+        privatePrimitiveAccessible.visitMaxs(0, 0);
+        privatePrimitiveAccessible.visitEnd();
+
+        MethodVisitor refReturn = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "refReturn",
+                "(Lpkg/ReflectionTarget;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        refReturn.visitCode();
+        refReturn.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        refReturn.visitLdcInsn("label");
+        refReturn.visitInsn(ICONST_0);
+        refReturn.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        refReturn.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        refReturn.visitVarInsn(ALOAD, 0);
+        refReturn.visitInsn(ICONST_0);
+        refReturn.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        refReturn.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        refReturn.visitTypeInsn(CHECKCAST, "java/lang/String");
+        refReturn.visitInsn(ARETURN);
+        refReturn.visitMaxs(0, 0);
+        refReturn.visitEnd();
+
+        MethodVisitor constructPrimitiveAndRef = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "constructPrimitiveAndRef",
+                "(ILjava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        constructPrimitiveAndRef.visitCode();
+        constructPrimitiveAndRef.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        classArrayOfIntegerAndString(constructPrimitiveAndRef);
+        constructPrimitiveAndRef.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredConstructor",
+                "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+                false);
+        constructPrimitiveAndRef.visitInsn(ICONST_2);
+        constructPrimitiveAndRef.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        constructPrimitiveAndRef.visitInsn(DUP);
+        constructPrimitiveAndRef.visitInsn(ICONST_0);
+        constructPrimitiveAndRef.visitVarInsn(ILOAD, 0);
+        constructPrimitiveAndRef.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+        constructPrimitiveAndRef.visitInsn(AASTORE);
+        constructPrimitiveAndRef.visitInsn(DUP);
+        constructPrimitiveAndRef.visitInsn(ICONST_1);
+        constructPrimitiveAndRef.visitVarInsn(ALOAD, 1);
+        constructPrimitiveAndRef.visitInsn(AASTORE);
+        constructPrimitiveAndRef.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Constructor",
+                "newInstance",
+                "([Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        constructPrimitiveAndRef.visitTypeInsn(CHECKCAST, "pkg/ReflectionTarget");
+        constructPrimitiveAndRef.visitMethodInsn(INVOKEVIRTUAL, "pkg/ReflectionTarget", "note", "()Ljava/lang/String;", false);
+        constructPrimitiveAndRef.visitInsn(ARETURN);
+        constructPrimitiveAndRef.visitMaxs(0, 0);
+        constructPrimitiveAndRef.visitEnd();
+
+        MethodVisitor arrayArg = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "arrayArg",
+                "([I)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        arrayArg.visitCode();
+        arrayArg.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        arrayArg.visitLdcInsn("arrayLabel");
+        classArrayOfIntArray(arrayArg);
+        arrayArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        arrayArg.visitInsn(ACONST_NULL);
+        arrayArg.visitInsn(ICONST_1);
+        arrayArg.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        arrayArg.visitInsn(DUP);
+        arrayArg.visitInsn(ICONST_0);
+        arrayArg.visitVarInsn(ALOAD, 0);
+        arrayArg.visitInsn(AASTORE);
+        arrayArg.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        arrayArg.visitTypeInsn(CHECKCAST, "java/lang/String");
+        arrayArg.visitInsn(ARETURN);
+        arrayArg.visitMaxs(0, 0);
+        arrayArg.visitEnd();
 
         MethodVisitor fieldInt = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
@@ -2556,6 +4155,192 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         fieldRef.visitMaxs(0, 0);
         fieldRef.visitEnd();
 
+        MethodVisitor fieldBoolean = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "fieldBoolean",
+                "(Lpkg/ReflectionTarget;)Z",
+                null,
+                new String[] {"java/lang/Exception"});
+        fieldBoolean.visitCode();
+        fieldBoolean.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        fieldBoolean.visitLdcInsn("flag");
+        fieldBoolean.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        fieldBoolean.visitVarInsn(ASTORE, 1);
+        fieldBoolean.visitVarInsn(ALOAD, 1);
+        fieldBoolean.visitVarInsn(ALOAD, 0);
+        fieldBoolean.visitInsn(ICONST_1);
+        fieldBoolean.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "setBoolean",
+                "(Ljava/lang/Object;Z)V",
+                false);
+        fieldBoolean.visitVarInsn(ALOAD, 1);
+        fieldBoolean.visitVarInsn(ALOAD, 0);
+        fieldBoolean.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "getBoolean",
+                "(Ljava/lang/Object;)Z",
+                false);
+        fieldBoolean.visitInsn(IRETURN);
+        fieldBoolean.visitMaxs(0, 0);
+        fieldBoolean.visitEnd();
+
+        MethodVisitor fieldLong = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "fieldLong",
+                "(Lpkg/ReflectionTarget;)J",
+                null,
+                new String[] {"java/lang/Exception"});
+        fieldLong.visitCode();
+        fieldLong.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        fieldLong.visitLdcInsn("big");
+        fieldLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        fieldLong.visitVarInsn(ASTORE, 1);
+        fieldLong.visitVarInsn(ALOAD, 1);
+        fieldLong.visitVarInsn(ALOAD, 0);
+        fieldLong.visitLdcInsn(1234567890123L);
+        fieldLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "setLong",
+                "(Ljava/lang/Object;J)V",
+                false);
+        fieldLong.visitVarInsn(ALOAD, 1);
+        fieldLong.visitVarInsn(ALOAD, 0);
+        fieldLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "getLong",
+                "(Ljava/lang/Object;)J",
+                false);
+        fieldLong.visitInsn(LRETURN);
+        fieldLong.visitMaxs(0, 0);
+        fieldLong.visitEnd();
+
+        MethodVisitor fieldDouble = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "fieldDouble",
+                "(Lpkg/ReflectionTarget;)D",
+                null,
+                new String[] {"java/lang/Exception"});
+        fieldDouble.visitCode();
+        fieldDouble.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        fieldDouble.visitLdcInsn("ratio");
+        fieldDouble.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        fieldDouble.visitVarInsn(ASTORE, 1);
+        fieldDouble.visitVarInsn(ALOAD, 1);
+        fieldDouble.visitVarInsn(ALOAD, 0);
+        fieldDouble.visitLdcInsn(2.5D);
+        fieldDouble.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "setDouble",
+                "(Ljava/lang/Object;D)V",
+                false);
+        fieldDouble.visitVarInsn(ALOAD, 1);
+        fieldDouble.visitVarInsn(ALOAD, 0);
+        fieldDouble.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "getDouble",
+                "(Ljava/lang/Object;)D",
+                false);
+        fieldDouble.visitInsn(DRETURN);
+        fieldDouble.visitMaxs(0, 0);
+        fieldDouble.visitEnd();
+
+        MethodVisitor staticLong = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "staticLong",
+                "()J",
+                null,
+                new String[] {"java/lang/Exception"});
+        staticLong.visitCode();
+        staticLong.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        staticLong.visitLdcInsn("staticBig");
+        staticLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        staticLong.visitVarInsn(ASTORE, 0);
+        staticLong.visitVarInsn(ALOAD, 0);
+        staticLong.visitInsn(ACONST_NULL);
+        staticLong.visitLdcInsn(88L);
+        staticLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "setLong",
+                "(Ljava/lang/Object;J)V",
+                false);
+        staticLong.visitVarInsn(ALOAD, 0);
+        staticLong.visitInsn(ACONST_NULL);
+        staticLong.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "getLong",
+                "(Ljava/lang/Object;)J",
+                false);
+        staticLong.visitInsn(LRETURN);
+        staticLong.visitMaxs(0, 0);
+        staticLong.visitEnd();
+
+        MethodVisitor staticRef = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "staticRef",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        staticRef.visitCode();
+        staticRef.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/ReflectionTarget"));
+        staticRef.visitLdcInsn("staticNote");
+        staticRef.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        staticRef.visitVarInsn(ASTORE, 1);
+        staticRef.visitVarInsn(ALOAD, 1);
+        staticRef.visitInsn(ACONST_NULL);
+        staticRef.visitVarInsn(ALOAD, 0);
+        staticRef.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "set",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+                false);
+        staticRef.visitVarInsn(ALOAD, 1);
+        staticRef.visitInsn(ACONST_NULL);
+        staticRef.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Field",
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        staticRef.visitTypeInsn(CHECKCAST, "java/lang/String");
+        staticRef.visitInsn(ARETURN);
+        staticRef.visitMaxs(0, 0);
+        staticRef.visitEnd();
+
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -2575,7 +4360,103 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitMethodInsn(INVOKESTATIC, "pkg/ReflectionOps", "invokeStatic", "()Ljava/lang/String;", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("arg");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "invokeStaticArg",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitLdcInsn("arg");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "invokeInstanceArg",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitMethodInsn(INVOKESTATIC, "pkg/ReflectionOps", "constructAndInvoke", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("made");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "constructWithArg",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitLdcInsn("arg");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "privateMethodAccessible",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitLdcInsn("voided");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "privateVoidAccessible",
+                "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("hidden");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "privateConstructorAccessible",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitIntInsn(BIPUSH, 10);
+        main.visitLdcInsn(42L);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "privatePrimitiveAccessible",
+                "(Lpkg/ReflectionTarget;IJ)I",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "refReturn",
+                "(Lpkg/ReflectionTarget;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitIntInsn(BIPUSH, 7);
+        main.visitLdcInsn("seven");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "constructPrimitiveAndRef",
+                "(ILjava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        intArray(main, 4, 5, 6);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "arrayArg",
+                "([I)Ljava/lang/String;",
+                false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitVarInsn(ALOAD, 1);
@@ -2594,6 +4475,45 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 "pkg/ReflectionOps",
                 "fieldRef",
                 "(Lpkg/ReflectionTarget;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "fieldBoolean",
+                "(Lpkg/ReflectionTarget;)Z",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Z)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "fieldLong",
+                "(Lpkg/ReflectionTarget;)J",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(J)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "fieldDouble",
+                "(Lpkg/ReflectionTarget;)D",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(D)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ReflectionOps", "staticLong", "()J", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(J)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("static-ref");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectionOps",
+                "staticRef",
+                "(Ljava/lang/String;)Ljava/lang/String;",
                 false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         endMain(main);
@@ -3745,6 +5665,30 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         copyByte.visitInsn(RETURN);
         copyByte.visitMaxs(0, 0);
         copyByte.visitEnd();
+        MethodVisitor copyLong = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "copyLong", "([J[J)V", null, null);
+        copyLong.visitCode();
+        copyLong.visitVarInsn(ALOAD, 0);
+        copyLong.visitInsn(ICONST_0);
+        copyLong.visitVarInsn(ALOAD, 1);
+        copyLong.visitInsn(ICONST_0);
+        copyLong.visitVarInsn(ALOAD, 0);
+        copyLong.visitInsn(ARRAYLENGTH);
+        copyLong.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
+        copyLong.visitInsn(RETURN);
+        copyLong.visitMaxs(0, 0);
+        copyLong.visitEnd();
+        MethodVisitor copyDouble = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "copyDouble", "([D[D)V", null, null);
+        copyDouble.visitCode();
+        copyDouble.visitVarInsn(ALOAD, 0);
+        copyDouble.visitInsn(ICONST_0);
+        copyDouble.visitVarInsn(ALOAD, 1);
+        copyDouble.visitInsn(ICONST_0);
+        copyDouble.visitVarInsn(ALOAD, 0);
+        copyDouble.visitInsn(ARRAYLENGTH);
+        copyDouble.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
+        copyDouble.visitInsn(RETURN);
+        copyDouble.visitMaxs(0, 0);
+        copyDouble.visitEnd();
         MethodVisitor copyObject = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
                 "copyObject",
@@ -3889,6 +5833,34 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitInsn(ICONST_1);
         main.visitInsn(BALOAD);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+
+        longArray(main, 11L, 13L);
+        main.visitVarInsn(ASTORE, 11);
+        main.visitInsn(ICONST_2);
+        main.visitIntInsn(NEWARRAY, T_LONG);
+        main.visitVarInsn(ASTORE, 12);
+        main.visitVarInsn(ALOAD, 11);
+        main.visitVarInsn(ALOAD, 12);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ArraycopyOps", "copyLong", "([J[J)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 12);
+        main.visitInsn(ICONST_1);
+        main.visitInsn(LALOAD);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(J)V", false);
+
+        doubleArray(main, 1.5D, 2.5D);
+        main.visitVarInsn(ASTORE, 13);
+        main.visitInsn(ICONST_2);
+        main.visitIntInsn(NEWARRAY, T_DOUBLE);
+        main.visitVarInsn(ASTORE, 14);
+        main.visitVarInsn(ALOAD, 13);
+        main.visitVarInsn(ALOAD, 14);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ArraycopyOps", "copyDouble", "([D[D)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 14);
+        main.visitInsn(ICONST_1);
+        main.visitInsn(DALOAD);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(D)V", false);
 
         main.visitInsn(ICONST_1);
         main.visitTypeInsn(ANEWARRAY, "java/lang/Object");
@@ -4400,6 +6372,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         value.visitInsn(IRETURN);
         value.visitMaxs(0, 0);
         value.visitEnd();
+        MethodVisitor add = writer.visitMethod(ACC_PUBLIC, "add", "(I)I", null, null);
+        add.visitCode();
+        add.visitVarInsn(ILOAD, 1);
+        add.visitInsn(ICONST_1);
+        add.visitInsn(IADD);
+        add.visitInsn(IRETURN);
+        add.visitMaxs(0, 0);
+        add.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -4420,6 +6400,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         value.visitInsn(IRETURN);
         value.visitMaxs(0, 0);
         value.visitEnd();
+        MethodVisitor add = writer.visitMethod(ACC_PUBLIC, "add", "(I)I", null, null);
+        add.visitCode();
+        add.visitVarInsn(ILOAD, 1);
+        add.visitIntInsn(BIPUSH, 41);
+        add.visitInsn(IADD);
+        add.visitInsn(IRETURN);
+        add.visitMaxs(0, 0);
+        add.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -4429,6 +6417,13 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         writer.visit(V17, ACC_PUBLIC | ACC_ABSTRACT | ACC_INTERFACE, "pkg/I", null, "java/lang/Object", null);
         MethodVisitor value = writer.visitMethod(ACC_PUBLIC | ACC_ABSTRACT, "value", "()I", null, null);
         value.visitEnd();
+        MethodVisitor name = writer.visitMethod(
+                ACC_PUBLIC | ACC_ABSTRACT,
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        name.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -4443,6 +6438,167 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         value.visitInsn(IRETURN);
         value.visitMaxs(0, 0);
         value.visitEnd();
+        MethodVisitor name = writer.visitMethod(
+                ACC_PUBLIC,
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        name.visitCode();
+        name.visitLdcInsn("impl:");
+        name.visitVarInsn(ALOAD, 1);
+        name.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        name.visitInsn(ARETURN);
+        name.visitMaxs(0, 0);
+        name.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchDefaultInterfaceClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_ABSTRACT | ACC_INTERFACE, "pkg/DefaultI", null, "java/lang/Object", null);
+        MethodVisitor value = writer.visitMethod(ACC_PUBLIC, "value", "()I", null, null);
+        value.visitCode();
+        value.visitIntInsn(BIPUSH, 33);
+        value.visitInsn(IRETURN);
+        value.visitMaxs(0, 0);
+        value.visitEnd();
+        MethodVisitor name = writer.visitMethod(
+                ACC_PUBLIC,
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        name.visitCode();
+        name.visitLdcInsn("default:");
+        name.visitVarInsn(ALOAD, 1);
+        name.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        name.visitInsn(ARETURN);
+        name.visitMaxs(0, 0);
+        name.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchDefaultInheritedClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/DefaultInherited", null, "java/lang/Object", new String[] {"pkg/DefaultI"});
+        defaultConstructor(writer);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchDefaultOverrideClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/DefaultOverride", null, "java/lang/Object", new String[] {"pkg/DefaultI"});
+        defaultConstructor(writer);
+        MethodVisitor value = writer.visitMethod(ACC_PUBLIC, "value", "()I", null, null);
+        value.visitCode();
+        value.visitIntInsn(BIPUSH, 44);
+        value.visitInsn(IRETURN);
+        value.visitMaxs(0, 0);
+        value.visitEnd();
+        MethodVisitor name = writer.visitMethod(
+                ACC_PUBLIC,
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        name.visitCode();
+        name.visitLdcInsn("override:");
+        name.visitVarInsn(ALOAD, 1);
+        name.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        name.visitInsn(ARETURN);
+        name.visitMaxs(0, 0);
+        name.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchDefaultSuperImplClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/DefaultSuperImpl", null, "java/lang/Object", new String[] {"pkg/DefaultI"});
+        defaultConstructor(writer);
+        MethodVisitor value = writer.visitMethod(ACC_PUBLIC, "value", "()I", null, null);
+        value.visitCode();
+        value.visitVarInsn(ALOAD, 0);
+        value.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultI", "value", "()I", true);
+        value.visitInsn(ICONST_2);
+        value.visitInsn(IADD);
+        value.visitInsn(IRETURN);
+        value.visitMaxs(0, 0);
+        value.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchConflictLeftClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_ABSTRACT | ACC_INTERFACE, "pkg/ConflictLeft", null, "java/lang/Object", null);
+        MethodVisitor answer = writer.visitMethod(ACC_PUBLIC, "answer", "()I", null, null);
+        answer.visitCode();
+        answer.visitIntInsn(BIPUSH, 11);
+        answer.visitInsn(IRETURN);
+        answer.visitMaxs(0, 0);
+        answer.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchConflictRightClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_ABSTRACT | ACC_INTERFACE, "pkg/ConflictRight", null, "java/lang/Object", null);
+        MethodVisitor answer = writer.visitMethod(ACC_PUBLIC, "answer", "()I", null, null);
+        answer.visitCode();
+        answer.visitIntInsn(BIPUSH, 22);
+        answer.visitInsn(IRETURN);
+        answer.visitMaxs(0, 0);
+        answer.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] dispatchConflictImplClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                V17,
+                ACC_PUBLIC | ACC_SUPER,
+                "pkg/ConflictImpl",
+                null,
+                "java/lang/Object",
+                new String[] {"pkg/ConflictLeft", "pkg/ConflictRight"});
+        defaultConstructor(writer);
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -4463,6 +6619,19 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         virtualValue.visitInsn(IRETURN);
         virtualValue.visitMaxs(0, 0);
         virtualValue.visitEnd();
+        MethodVisitor virtualAdd = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "virtualAdd",
+                "(Lpkg/Base;I)I",
+                null,
+                null);
+        virtualAdd.visitCode();
+        virtualAdd.visitVarInsn(ALOAD, 0);
+        virtualAdd.visitVarInsn(ILOAD, 1);
+        virtualAdd.visitMethodInsn(INVOKEVIRTUAL, "pkg/Base", "add", "(I)I", false);
+        virtualAdd.visitInsn(IRETURN);
+        virtualAdd.visitMaxs(0, 0);
+        virtualAdd.visitEnd();
         MethodVisitor interfaceValue = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
                 "interfaceValue",
@@ -4475,6 +6644,66 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         interfaceValue.visitInsn(IRETURN);
         interfaceValue.visitMaxs(0, 0);
         interfaceValue.visitEnd();
+        MethodVisitor interfaceName = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "interfaceName",
+                "(Lpkg/I;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        interfaceName.visitCode();
+        interfaceName.visitVarInsn(ALOAD, 0);
+        interfaceName.visitVarInsn(ALOAD, 1);
+        interfaceName.visitMethodInsn(
+                INVOKEINTERFACE,
+                "pkg/I",
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                true);
+        interfaceName.visitInsn(ARETURN);
+        interfaceName.visitMaxs(0, 0);
+        interfaceName.visitEnd();
+        MethodVisitor defaultValue = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "defaultValue",
+                "(Lpkg/DefaultI;)I",
+                null,
+                null);
+        defaultValue.visitCode();
+        defaultValue.visitVarInsn(ALOAD, 0);
+        defaultValue.visitMethodInsn(INVOKEINTERFACE, "pkg/DefaultI", "value", "()I", true);
+        defaultValue.visitInsn(IRETURN);
+        defaultValue.visitMaxs(0, 0);
+        defaultValue.visitEnd();
+        MethodVisitor defaultName = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "defaultName",
+                "(Lpkg/DefaultI;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        defaultName.visitCode();
+        defaultName.visitVarInsn(ALOAD, 0);
+        defaultName.visitVarInsn(ALOAD, 1);
+        defaultName.visitMethodInsn(
+                INVOKEINTERFACE,
+                "pkg/DefaultI",
+                "name",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                true);
+        defaultName.visitInsn(ARETURN);
+        defaultName.visitMaxs(0, 0);
+        defaultName.visitEnd();
+        MethodVisitor conflictValue = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "conflictValue",
+                "(Lpkg/ConflictLeft;)I",
+                null,
+                null);
+        conflictValue.visitCode();
+        conflictValue.visitVarInsn(ALOAD, 0);
+        conflictValue.visitMethodInsn(INVOKEINTERFACE, "pkg/ConflictLeft", "answer", "()I", true);
+        conflictValue.visitInsn(IRETURN);
+        conflictValue.visitMaxs(0, 0);
+        conflictValue.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -4489,11 +6718,73 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "virtualValue", "(Lpkg/Base;)I", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/Sub");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/Sub", "<init>", "()V", false);
+        pushInt(main, 5);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "virtualAdd", "(Lpkg/Base;I)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitTypeInsn(NEW, "pkg/Impl");
         main.visitInsn(DUP);
         main.visitMethodInsn(INVOKESPECIAL, "pkg/Impl", "<init>", "()V", false);
         main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "interfaceValue", "(Lpkg/I;)I", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/Impl");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/Impl", "<init>", "()V", false);
+        main.visitLdcInsn("ok");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/DispatchOps",
+                "interfaceName",
+                "(Lpkg/I;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/DefaultInherited");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultInherited", "<init>", "()V", false);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "defaultValue", "(Lpkg/DefaultI;)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/DefaultOverride");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultOverride", "<init>", "()V", false);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "defaultValue", "(Lpkg/DefaultI;)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/DefaultInherited");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultInherited", "<init>", "()V", false);
+        main.visitLdcInsn("ok");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/DispatchOps",
+                "defaultName",
+                "(Lpkg/DefaultI;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/DefaultOverride");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultOverride", "<init>", "()V", false);
+        main.visitLdcInsn("ok");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/DispatchOps",
+                "defaultName",
+                "(Lpkg/DefaultI;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/DefaultSuperImpl");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/DefaultSuperImpl", "<init>", "()V", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "pkg/DefaultSuperImpl", "value", "()I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        printDefaultConflictCatchForDispatch(main);
         printNpeCatchForDispatch(main);
         endMain(main);
         writer.visitEnd();
@@ -4547,6 +6838,67 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         clinit.visitInsn(RETURN);
         clinit.visitMaxs(0, 0);
         clinit.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] protectedStringsClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ProtectedStrings", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+        MethodVisitor literal = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "literal",
+                "()Ljava/lang/String;",
+                null,
+                null);
+        literal.visitCode();
+        literal.visitLdcInsn("ordinary-secret");
+        literal.visitInsn(ARETURN);
+        literal.visitMaxs(0, 0);
+        literal.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] protectedStringBoxClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ProtectedStringBox", null, "java/lang/Object", null);
+        writer.visitField(ACC_PRIVATE, "label", "Ljava/lang/String;", null, null).visitEnd();
+        MethodVisitor constructor = writer.visitMethod(ACC_PUBLIC, "<init>", "()V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitLdcInsn("ctor-secret");
+        constructor.visitFieldInsn(PUTFIELD, "pkg/ProtectedStringBox", "label", "Ljava/lang/String;");
+        constructor.visitInsn(RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+        MethodVisitor label = writer.visitMethod(ACC_PUBLIC, "label", "()Ljava/lang/String;", null, null);
+        label.visitCode();
+        label.visitVarInsn(ALOAD, 0);
+        label.visitFieldInsn(GETFIELD, "pkg/ProtectedStringBox", "label", "Ljava/lang/String;");
+        label.visitInsn(ARETURN);
+        label.visitMaxs(0, 0);
+        label.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] protectedStringsMainClass() {
+        ClassWriter writer = mainClass("pkg/ProtectedStringsMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/ProtectedStrings", "literal", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/ProtectedStringBox");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/ProtectedStringBox", "<init>", "()V", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "pkg/ProtectedStringBox", "label", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        endMain(main);
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -5204,6 +7556,1391 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         return writer.toByteArray();
     }
 
+    private byte[] collectionOpsClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/CollectionOps", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+        MethodVisitor list = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "arrayListSummary", "()Ljava/lang/String;", null, null);
+        list.visitCode();
+        list.visitTypeInsn(NEW, "java/util/ArrayList");
+        list.visitInsn(DUP);
+        list.visitMethodInsn(INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false);
+        list.visitVarInsn(ASTORE, 0);
+        list.visitVarInsn(ALOAD, 0);
+        list.visitLdcInsn("a");
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/util/ArrayList", "add", "(Ljava/lang/Object;)Z", false);
+        list.visitInsn(POP);
+        list.visitVarInsn(ALOAD, 0);
+        list.visitLdcInsn("b");
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/util/ArrayList", "add", "(Ljava/lang/Object;)Z", false);
+        list.visitInsn(POP);
+        list.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        list.visitInsn(DUP);
+        list.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        list.visitVarInsn(ALOAD, 0);
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/util/ArrayList", "size", "()I", false);
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false);
+        list.visitLdcInsn(":");
+        list.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        list.visitVarInsn(ALOAD, 0);
+        list.visitInsn(ICONST_1);
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/util/ArrayList", "get", "(I)Ljava/lang/Object;", false);
+        list.visitTypeInsn(CHECKCAST, "java/lang/String");
+        list.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        list.visitLdcInsn(":");
+        list.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        list.visitVarInsn(ALOAD, 0);
+        list.visitLdcInsn("a");
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/util/ArrayList", "contains", "(Ljava/lang/Object;)Z", false);
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        list.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        list.visitInsn(ARETURN);
+        list.visitMaxs(0, 0);
+        list.visitEnd();
+
+        MethodVisitor map = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "hashMapSummary", "()Ljava/lang/String;", null, null);
+        map.visitCode();
+        map.visitTypeInsn(NEW, "java/util/HashMap");
+        map.visitInsn(DUP);
+        map.visitMethodInsn(INVOKESPECIAL, "java/util/HashMap", "<init>", "()V", false);
+        map.visitVarInsn(ASTORE, 0);
+        map.visitVarInsn(ALOAD, 0);
+        map.visitLdcInsn("k");
+        map.visitLdcInsn("v");
+        map.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/util/HashMap",
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        map.visitInsn(POP);
+        map.visitVarInsn(ALOAD, 0);
+        map.visitLdcInsn("k");
+        map.visitLdcInsn("v2");
+        map.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/util/HashMap",
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        map.visitInsn(POP);
+        map.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        map.visitInsn(DUP);
+        map.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        map.visitVarInsn(ALOAD, 0);
+        map.visitLdcInsn("k");
+        map.visitMethodInsn(INVOKEVIRTUAL, "java/util/HashMap", "containsKey", "(Ljava/lang/Object;)Z", false);
+        map.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        map.visitLdcInsn(":");
+        map.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        map.visitVarInsn(ALOAD, 0);
+        map.visitLdcInsn("k");
+        map.visitMethodInsn(INVOKEVIRTUAL, "java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", false);
+        map.visitTypeInsn(CHECKCAST, "java/lang/String");
+        map.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        map.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        map.visitInsn(ARETURN);
+        map.visitMaxs(0, 0);
+        map.visitEnd();
+
+        MethodVisitor arrays = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "arraysSummary", "()Ljava/lang/String;", null, null);
+        arrays.visitCode();
+        arrays.visitInsn(ICONST_2);
+        arrays.visitIntInsn(NEWARRAY, T_INT);
+        arrays.visitInsn(DUP);
+        arrays.visitInsn(ICONST_0);
+        arrays.visitInsn(ICONST_1);
+        arrays.visitInsn(IASTORE);
+        arrays.visitInsn(DUP);
+        arrays.visitInsn(ICONST_1);
+        arrays.visitInsn(ICONST_2);
+        arrays.visitInsn(IASTORE);
+        arrays.visitVarInsn(ASTORE, 0);
+        arrays.visitVarInsn(ALOAD, 0);
+        arrays.visitInsn(ICONST_3);
+        arrays.visitMethodInsn(INVOKESTATIC, "java/util/Arrays", "copyOf", "([II)[I", false);
+        arrays.visitVarInsn(ASTORE, 1);
+        arrays.visitVarInsn(ALOAD, 1);
+        arrays.visitInsn(ICONST_2);
+        arrays.visitInsn(ICONST_3);
+        arrays.visitIntInsn(BIPUSH, 7);
+        arrays.visitMethodInsn(INVOKESTATIC, "java/util/Arrays", "fill", "([IIII)V", false);
+        arrays.visitInsn(ICONST_3);
+        arrays.visitIntInsn(NEWARRAY, T_INT);
+        arrays.visitInsn(DUP);
+        arrays.visitInsn(ICONST_0);
+        arrays.visitInsn(ICONST_1);
+        arrays.visitInsn(IASTORE);
+        arrays.visitInsn(DUP);
+        arrays.visitInsn(ICONST_1);
+        arrays.visitInsn(ICONST_2);
+        arrays.visitInsn(IASTORE);
+        arrays.visitInsn(DUP);
+        arrays.visitInsn(ICONST_2);
+        arrays.visitIntInsn(BIPUSH, 7);
+        arrays.visitInsn(IASTORE);
+        arrays.visitVarInsn(ASTORE, 2);
+        arrays.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        arrays.visitInsn(DUP);
+        arrays.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        arrays.visitVarInsn(ALOAD, 1);
+        arrays.visitVarInsn(ALOAD, 2);
+        arrays.visitMethodInsn(INVOKESTATIC, "java/util/Arrays", "equals", "([I[I)Z", false);
+        arrays.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        arrays.visitLdcInsn(":");
+        arrays.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        arrays.visitVarInsn(ALOAD, 1);
+        arrays.visitInsn(ICONST_2);
+        arrays.visitInsn(IALOAD);
+        arrays.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false);
+        arrays.visitLdcInsn(":");
+        arrays.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/StringBuilder",
+                "append",
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+                false);
+        arrays.visitVarInsn(ALOAD, 1);
+        arrays.visitInsn(ARRAYLENGTH);
+        arrays.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false);
+        arrays.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        arrays.visitInsn(ARETURN);
+        arrays.visitMaxs(0, 0);
+        arrays.visitEnd();
+
+        MethodVisitor optional = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "optionalCollectionsFormatSummary",
+                "()Ljava/lang/String;",
+                null,
+                null);
+        optional.visitCode();
+        optional.visitLdcInsn("x");
+        optional.visitMethodInsn(
+                INVOKESTATIC,
+                "java/util/Optional",
+                "ofNullable",
+                "(Ljava/lang/Object;)Ljava/util/Optional;",
+                false);
+        optional.visitVarInsn(ASTORE, 0);
+        optional.visitInsn(ACONST_NULL);
+        optional.visitMethodInsn(
+                INVOKESTATIC,
+                "java/util/Optional",
+                "ofNullable",
+                "(Ljava/lang/Object;)Ljava/util/Optional;",
+                false);
+        optional.visitVarInsn(ASTORE, 1);
+        optional.visitMethodInsn(INVOKESTATIC, "java/util/Collections", "emptyList", "()Ljava/util/List;", false);
+        optional.visitVarInsn(ASTORE, 2);
+        optional.visitLdcInsn("one");
+        optional.visitMethodInsn(
+                INVOKESTATIC,
+                "java/util/Collections",
+                "singletonList",
+                "(Ljava/lang/Object;)Ljava/util/List;",
+                false);
+        optional.visitVarInsn(ASTORE, 3);
+        optional.visitInsn(ICONST_2);
+        optional.visitTypeInsn(ANEWARRAY, "java/lang/String");
+        optional.visitInsn(DUP);
+        optional.visitInsn(ICONST_0);
+        optional.visitLdcInsn("a");
+        optional.visitInsn(AASTORE);
+        optional.visitInsn(DUP);
+        optional.visitInsn(ICONST_1);
+        optional.visitLdcInsn("b");
+        optional.visitInsn(AASTORE);
+        optional.visitMethodInsn(
+                INVOKESTATIC,
+                "java/util/Arrays",
+                "asList",
+                "([Ljava/lang/Object;)Ljava/util/List;",
+                false);
+        optional.visitVarInsn(ASTORE, 4);
+        optional.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        optional.visitInsn(DUP);
+        optional.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        optional.visitVarInsn(ALOAD, 0);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/util/Optional", "isPresent", "()Z", false);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitVarInsn(ALOAD, 0);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/util/Optional", "get", "()Ljava/lang/Object;", false);
+        optional.visitTypeInsn(CHECKCAST, "java/lang/String");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitVarInsn(ALOAD, 1);
+        optional.visitLdcInsn("fallback");
+        optional.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/util/Optional",
+                "orElse",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        optional.visitTypeInsn(CHECKCAST, "java/lang/String");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitVarInsn(ALOAD, 2);
+        optional.visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitVarInsn(ALOAD, 3);
+        optional.visitInsn(ICONST_0);
+        optional.visitMethodInsn(INVOKEINTERFACE, "java/util/List", "get", "(I)Ljava/lang/Object;", true);
+        optional.visitTypeInsn(CHECKCAST, "java/lang/String");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitVarInsn(ALOAD, 4);
+        optional.visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn(":");
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitLdcInsn("%s-%d");
+        optional.visitInsn(ICONST_2);
+        optional.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        optional.visitInsn(DUP);
+        optional.visitInsn(ICONST_0);
+        optional.visitLdcInsn("fmt");
+        optional.visitInsn(AASTORE);
+        optional.visitInsn(DUP);
+        optional.visitInsn(ICONST_1);
+        optional.visitIntInsn(BIPUSH, 7);
+        optional.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+        optional.visitInsn(AASTORE);
+        optional.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/String",
+                "format",
+                "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
+                false);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        optional.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        optional.visitInsn(ARETURN);
+        optional.visitMaxs(0, 0);
+        optional.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] collectionMainClass() {
+        ClassWriter writer = mainClass("pkg/CollectionMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/CollectionOps", "arrayListSummary", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/CollectionOps", "hashMapSummary", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, "pkg/CollectionOps", "arraysSummary", "()Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/CollectionOps",
+                "optionalCollectionsFormatSummary",
+                "()Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] corpusMainClass() {
+        ClassWriter writer = mainClass("pkg/CorpusMain");
+        MethodVisitor main = beginMain(writer);
+        callMain(main, "pkg/ReflectionMain");
+        callMain(main, "pkg/ArraycopyMain");
+        callMain(main, "pkg/LambdaMain");
+        callMain(main, "pkg/CollectionMain");
+        callMain(main, "pkg/ThrowableMain");
+        callMain(main, "pkg/ThreadMain");
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private void callMain(MethodVisitor method, String owner) {
+        method.visitInsn(ICONST_0);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/String");
+        method.visitMethodInsn(INVOKESTATIC, owner, "main", "([Ljava/lang/String;)V", false);
+    }
+
+    private byte[] reflectionDynamicFallbackClass() {
+        ClassWriter writer = mainClass("pkg/ReflectFallback");
+        MethodVisitor dynamicForName = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dynamicForName",
+                "(Ljava/lang/String;)V",
+                null,
+                new String[] {"java/lang/Exception"});
+        dynamicForName.visitCode();
+        dynamicForName.visitVarInsn(ALOAD, 0);
+        dynamicForName.visitMethodInsn(INVOKESTATIC, "java/lang/Class", "forName", "(Ljava/lang/String;)Ljava/lang/Class;", false);
+        dynamicForName.visitInsn(POP);
+        dynamicForName.visitInsn(RETURN);
+        dynamicForName.visitMaxs(0, 0);
+        dynamicForName.visitEnd();
+
+        MethodVisitor dynamicMethodName = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dynamicMethodName",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        dynamicMethodName.visitCode();
+        dynamicMethodName.visitLdcInsn(org.objectweb.asm.Type.getObjectType("java/lang/String"));
+        dynamicMethodName.visitVarInsn(ALOAD, 0);
+        dynamicMethodName.visitInsn(ICONST_0);
+        dynamicMethodName.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        dynamicMethodName.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        dynamicMethodName.visitLdcInsn(" ok ");
+        dynamicMethodName.visitInsn(ICONST_0);
+        dynamicMethodName.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        dynamicMethodName.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        dynamicMethodName.visitTypeInsn(CHECKCAST, "java/lang/String");
+        dynamicMethodName.visitInsn(ARETURN);
+        dynamicMethodName.visitMaxs(0, 0);
+        dynamicMethodName.visitEnd();
+
+        MethodVisitor dynamicParameterArray = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dynamicParameterArray",
+                "([Ljava/lang/Class;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Exception"});
+        dynamicParameterArray.visitCode();
+        dynamicParameterArray.visitLdcInsn(org.objectweb.asm.Type.getObjectType("java/lang/String"));
+        dynamicParameterArray.visitLdcInsn("substring");
+        dynamicParameterArray.visitVarInsn(ALOAD, 0);
+        dynamicParameterArray.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        dynamicParameterArray.visitLdcInsn("hello");
+        dynamicParameterArray.visitInsn(ICONST_1);
+        dynamicParameterArray.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        dynamicParameterArray.visitInsn(DUP);
+        dynamicParameterArray.visitInsn(ICONST_0);
+        dynamicParameterArray.visitInsn(ICONST_1);
+        dynamicParameterArray.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+        dynamicParameterArray.visitInsn(AASTORE);
+        dynamicParameterArray.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        dynamicParameterArray.visitTypeInsn(CHECKCAST, "java/lang/String");
+        dynamicParameterArray.visitInsn(ARETURN);
+        dynamicParameterArray.visitMaxs(0, 0);
+        dynamicParameterArray.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] reflectionFallbackMainClass() {
+        ClassWriter writer = mainClass("pkg/ReflectionFallbackMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitLdcInsn("java.lang.String");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectFallback",
+                "dynamicForName",
+                "(Ljava/lang/String;)V",
+                false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("trim");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectFallback",
+                "dynamicMethodName",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitInsn(ICONST_1);
+        main.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        main.visitInsn(DUP);
+        main.visitInsn(ICONST_0);
+        main.visitFieldInsn(GETSTATIC, "java/lang/Integer", "TYPE", "Ljava/lang/Class;");
+        main.visitInsn(AASTORE);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReflectFallback",
+                "dynamicParameterArray",
+                "([Ljava/lang/Class;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("reflection-ok");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] instanceFallbackClass() {
+        ClassWriter writer = mainClass("pkg/InstanceFallback");
+        MethodVisitor method = writer.visitMethod(
+                ACC_PUBLIC,
+                "tail",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        method.visitCode();
+        method.visitVarInsn(ALOAD, 1);
+        method.visitInsn(ICONST_1);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "substring", "(I)Ljava/lang/String;", false);
+        method.visitInsn(ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] instanceFallbackMainClass() {
+        ClassWriter writer = mainClass("pkg/InstanceFallbackMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitTypeInsn(NEW, "pkg/InstanceFallback");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/InstanceFallback", "<init>", "()V", false);
+        main.visitVarInsn(ASTORE, 1);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitLdcInsn("hello");
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "pkg/InstanceFallback",
+                "tail",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label done = new org.objectweb.asm.Label();
+        main.visitTryCatchBlock(start, end, handler, "java/lang/NullPointerException");
+        main.visitLabel(start);
+        main.visitVarInsn(ALOAD, 1);
+        main.visitInsn(ACONST_NULL);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "pkg/InstanceFallback",
+                "tail",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitInsn(POP);
+        main.visitLabel(end);
+        main.visitJumpInsn(GOTO, done);
+        main.visitLabel(handler);
+        main.visitVarInsn(ASTORE, 2);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("caught-npe");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitLabel(done);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] methodHandleAdapterFallbackClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/MethodHandleAdapterFallback", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+
+        MethodVisitor prefixTarget = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "prefixTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        prefixTarget.visitCode();
+        prefixTarget.visitVarInsn(ALOAD, 0);
+        prefixTarget.visitVarInsn(ALOAD, 1);
+        prefixTarget.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        prefixTarget.visitInsn(ARETURN);
+        prefixTarget.visitMaxs(0, 0);
+        prefixTarget.visitEnd();
+
+        MethodVisitor identityString = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "identityString",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        identityString.visitCode();
+        identityString.visitVarInsn(ALOAD, 0);
+        identityString.visitInsn(ARETURN);
+        identityString.visitMaxs(0, 0);
+        identityString.visitEnd();
+
+        MethodVisitor filterPrefix = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "filterPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        filterPrefix.visitCode();
+        filterPrefix.visitLdcInsn("f:");
+        filterPrefix.visitVarInsn(ALOAD, 0);
+        filterPrefix.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        filterPrefix.visitInsn(ARETURN);
+        filterPrefix.visitMaxs(0, 0);
+        filterPrefix.visitEnd();
+
+        MethodVisitor constantPrefix = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "constantPrefix",
+                "()Ljava/lang/String;",
+                null,
+                null);
+        constantPrefix.visitCode();
+        constantPrefix.visitLdcInsn("fold:");
+        constantPrefix.visitInsn(ARETURN);
+        constantPrefix.visitMaxs(0, 0);
+        constantPrefix.visitEnd();
+
+        MethodVisitor lengthObject = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "lengthObject",
+                "(Ljava/lang/Object;)I",
+                null,
+                null);
+        lengthObject.visitCode();
+        lengthObject.visitVarInsn(ALOAD, 0);
+        lengthObject.visitTypeInsn(CHECKCAST, "java/lang/String");
+        lengthObject.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "length", "()I", false);
+        lengthObject.visitInsn(IRETURN);
+        lengthObject.visitMaxs(0, 0);
+        lengthObject.visitEnd();
+
+        MethodVisitor throwTarget = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "throwTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        org.objectweb.asm.Label ok = new org.objectweb.asm.Label();
+        throwTarget.visitCode();
+        throwTarget.visitVarInsn(ALOAD, 1);
+        throwTarget.visitLdcInsn("!");
+        throwTarget.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z", false);
+        throwTarget.visitJumpInsn(IFEQ, ok);
+        throwTarget.visitTypeInsn(NEW, "java/lang/IllegalArgumentException");
+        throwTarget.visitInsn(DUP);
+        throwTarget.visitLdcInsn("bang");
+        throwTarget.visitMethodInsn(
+                INVOKESPECIAL,
+                "java/lang/IllegalArgumentException",
+                "<init>",
+                "(Ljava/lang/String;)V",
+                false);
+        throwTarget.visitInsn(ATHROW);
+        throwTarget.visitLabel(ok);
+        throwTarget.visitVarInsn(ALOAD, 0);
+        throwTarget.visitVarInsn(ALOAD, 1);
+        throwTarget.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        throwTarget.visitInsn(ARETURN);
+        throwTarget.visitMaxs(0, 0);
+        throwTarget.visitEnd();
+
+        MethodVisitor arrayTarget = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "arrayTarget",
+                "(Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        arrayTarget.visitCode();
+        arrayTarget.visitVarInsn(ALOAD, 0);
+        arrayTarget.visitVarInsn(ALOAD, 1);
+        arrayTarget.visitInsn(ARRAYLENGTH);
+        arrayTarget.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;I)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+                                + "Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001\u0001");
+        arrayTarget.visitInsn(ARETURN);
+        arrayTarget.visitMaxs(0, 0);
+        arrayTarget.visitEnd();
+
+        MethodVisitor bindPrefix = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "bindPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        bindPrefix.visitCode();
+        emitFindStaticMethodHandle(
+                bindPrefix,
+                "pkg/MethodHandleAdapterFallback",
+                "prefixTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        bindPrefix.visitLdcInsn("pre-");
+        bindPrefix.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "bindTo",
+                "(Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        bindPrefix.visitVarInsn(ALOAD, 0);
+        bindPrefix.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        bindPrefix.visitInsn(ARETURN);
+        bindPrefix.visitMaxs(0, 0);
+        bindPrefix.visitEnd();
+
+        MethodVisitor asTypeLength = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "asTypeLength",
+                "(Ljava/lang/String;)I",
+                null,
+                null);
+        asTypeLength.visitCode();
+        emitFindStaticMethodHandle(
+                asTypeLength,
+                "pkg/MethodHandleAdapterFallback",
+                "lengthObject",
+                "(Ljava/lang/Object;)I");
+        asTypeLength.visitLdcInsn(org.objectweb.asm.Type.getMethodType("(Ljava/lang/String;)I"));
+        asTypeLength.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "asType",
+                "(Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        asTypeLength.visitVarInsn(ALOAD, 0);
+        asTypeLength.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;)I",
+                false);
+        asTypeLength.visitInsn(IRETURN);
+        asTypeLength.visitMaxs(0, 0);
+        asTypeLength.visitEnd();
+
+        MethodVisitor dropMiddle = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dropMiddle",
+                "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        dropMiddle.visitCode();
+        emitFindStaticMethodHandle(
+                dropMiddle,
+                "pkg/MethodHandleAdapterFallback",
+                "prefixTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        dropMiddle.visitInsn(ICONST_1);
+        dropMiddle.visitInsn(ICONST_1);
+        dropMiddle.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        dropMiddle.visitInsn(DUP);
+        dropMiddle.visitInsn(ICONST_0);
+        dropMiddle.visitFieldInsn(GETSTATIC, "java/lang/Integer", "TYPE", "Ljava/lang/Class;");
+        dropMiddle.visitInsn(AASTORE);
+        dropMiddle.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/invoke/MethodHandles",
+                "dropArguments",
+                "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        dropMiddle.visitVarInsn(ALOAD, 0);
+        dropMiddle.visitVarInsn(ILOAD, 1);
+        dropMiddle.visitVarInsn(ALOAD, 2);
+        dropMiddle.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;",
+                false);
+        dropMiddle.visitInsn(ARETURN);
+        dropMiddle.visitMaxs(0, 0);
+        dropMiddle.visitEnd();
+
+        MethodVisitor permuteJoin = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "permuteJoin",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Throwable"});
+        permuteJoin.visitCode();
+        emitFindStaticMethodHandle(
+                permuteJoin,
+                "pkg/MethodHandleAdapterFallback",
+                "prefixTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        permuteJoin.visitLdcInsn(org.objectweb.asm.Type.getMethodType("(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
+        permuteJoin.visitInsn(ICONST_2);
+        permuteJoin.visitIntInsn(NEWARRAY, T_INT);
+        permuteJoin.visitInsn(DUP);
+        permuteJoin.visitInsn(ICONST_0);
+        permuteJoin.visitInsn(ICONST_1);
+        permuteJoin.visitInsn(IASTORE);
+        permuteJoin.visitInsn(DUP);
+        permuteJoin.visitInsn(ICONST_1);
+        permuteJoin.visitInsn(ICONST_0);
+        permuteJoin.visitInsn(IASTORE);
+        permuteJoin.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/invoke/MethodHandles",
+                "permuteArguments",
+                "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;[I)Ljava/lang/invoke/MethodHandle;",
+                false);
+        permuteJoin.visitVarInsn(ALOAD, 0);
+        permuteJoin.visitVarInsn(ALOAD, 1);
+        permuteJoin.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        permuteJoin.visitInsn(ARETURN);
+        permuteJoin.visitMaxs(0, 0);
+        permuteJoin.visitEnd();
+
+        MethodVisitor filterArgument = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "filterArgument",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Throwable"});
+        filterArgument.visitCode();
+        emitFindStaticMethodHandle(
+                filterArgument,
+                "pkg/MethodHandleAdapterFallback",
+                "identityString",
+                "(Ljava/lang/String;)Ljava/lang/String;");
+        filterArgument.visitVarInsn(ASTORE, 1);
+        emitFindStaticMethodHandle(
+                filterArgument,
+                "pkg/MethodHandleAdapterFallback",
+                "filterPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;");
+        filterArgument.visitVarInsn(ASTORE, 2);
+        filterArgument.visitVarInsn(ALOAD, 1);
+        filterArgument.visitInsn(ICONST_0);
+        filterArgument.visitInsn(ICONST_1);
+        filterArgument.visitTypeInsn(ANEWARRAY, "java/lang/invoke/MethodHandle");
+        filterArgument.visitInsn(DUP);
+        filterArgument.visitInsn(ICONST_0);
+        filterArgument.visitVarInsn(ALOAD, 2);
+        filterArgument.visitInsn(AASTORE);
+        filterArgument.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/invoke/MethodHandles",
+                "filterArguments",
+                "(Ljava/lang/invoke/MethodHandle;I[Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        filterArgument.visitVarInsn(ALOAD, 0);
+        filterArgument.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        filterArgument.visitInsn(ARETURN);
+        filterArgument.visitMaxs(0, 0);
+        filterArgument.visitEnd();
+
+        MethodVisitor foldPrefix = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "foldPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                new String[] {"java/lang/Throwable"});
+        foldPrefix.visitCode();
+        emitFindStaticMethodHandle(
+                foldPrefix,
+                "pkg/MethodHandleAdapterFallback",
+                "prefixTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        foldPrefix.visitVarInsn(ASTORE, 1);
+        emitFindStaticMethodHandle(
+                foldPrefix,
+                "pkg/MethodHandleAdapterFallback",
+                "constantPrefix",
+                "()Ljava/lang/String;");
+        foldPrefix.visitVarInsn(ASTORE, 2);
+        foldPrefix.visitVarInsn(ALOAD, 1);
+        foldPrefix.visitVarInsn(ALOAD, 2);
+        foldPrefix.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/invoke/MethodHandles",
+                "foldArguments",
+                "(Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        foldPrefix.visitVarInsn(ALOAD, 0);
+        foldPrefix.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        foldPrefix.visitInsn(ARETURN);
+        foldPrefix.visitMaxs(0, 0);
+        foldPrefix.visitEnd();
+
+        MethodVisitor collectorBoundary = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "collectorBoundary",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        collectorBoundary.visitCode();
+        emitFindStaticMethodHandle(
+                collectorBoundary,
+                "pkg/MethodHandleAdapterFallback",
+                "arrayTarget",
+                "(Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/String;");
+        collectorBoundary.visitLdcInsn(org.objectweb.asm.Type.getType("[Ljava/lang/String;"));
+        collectorBoundary.visitInsn(ICONST_2);
+        collectorBoundary.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "asCollector",
+                "(Ljava/lang/Class;I)Ljava/lang/invoke/MethodHandle;",
+                false);
+        collectorBoundary.visitVarInsn(ALOAD, 0);
+        collectorBoundary.visitVarInsn(ALOAD, 1);
+        collectorBoundary.visitVarInsn(ALOAD, 2);
+        collectorBoundary.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        collectorBoundary.visitInsn(ARETURN);
+        collectorBoundary.visitMaxs(0, 0);
+        collectorBoundary.visitEnd();
+
+        MethodVisitor throwing = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "throwing",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        throwing.visitCode();
+        emitFindStaticMethodHandle(
+                throwing,
+                "pkg/MethodHandleAdapterFallback",
+                "throwTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        throwing.visitLdcInsn("pre-");
+        throwing.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "bindTo",
+                "(Ljava/lang/Object;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        throwing.visitVarInsn(ALOAD, 0);
+        throwing.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandle",
+                "invokeExact",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        throwing.visitInsn(ARETURN);
+        throwing.visitMaxs(0, 0);
+        throwing.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private void emitFindStaticMethodHandle(
+            MethodVisitor method,
+            String owner,
+            String name,
+            String descriptor) {
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/invoke/MethodHandles",
+                "lookup",
+                "()Ljava/lang/invoke/MethodHandles$Lookup;",
+                false);
+        method.visitLdcInsn(org.objectweb.asm.Type.getObjectType(owner));
+        method.visitLdcInsn(name);
+        method.visitLdcInsn(org.objectweb.asm.Type.getMethodType(descriptor));
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandles$Lookup",
+                "findStatic",
+                "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+                false);
+    }
+
+    private byte[] methodHandleAdapterMainClass() {
+        ClassWriter writer = mainClass("pkg/MethodHandleAdapterMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("value");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "bindPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("hello");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "asTypeLength",
+                "(Ljava/lang/String;)I",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("pre-");
+        main.visitIntInsn(BIPUSH, 99);
+        main.visitLdcInsn("post");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "dropMiddle",
+                "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("L");
+        main.visitLdcInsn("R");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "permuteJoin",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("raw");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "filterArgument",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("ok");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "foldPrefix",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("col:");
+        main.visitLdcInsn("a");
+        main.visitLdcInsn("b");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "collectorBoundary",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label done = new org.objectweb.asm.Label();
+        main.visitTryCatchBlock(start, end, handler, "java/lang/IllegalArgumentException");
+        main.visitLabel(start);
+        main.visitLdcInsn("!");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/MethodHandleAdapterFallback",
+                "throwing",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitInsn(POP);
+        main.visitLabel(end);
+        main.visitJumpInsn(GOTO, done);
+        main.visitLabel(handler);
+        main.visitVarInsn(ASTORE, 1);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/IllegalArgumentException",
+                "getMessage",
+                "()Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitLabel(done);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] altLambdaFallbackClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/AltLambdaFallback", null, "java/lang/Object", null);
+        defaultConstructor(writer);
+
+        MethodVisitor join = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "join",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        join.visitCode();
+        join.visitVarInsn(ALOAD, 0);
+        join.visitVarInsn(ALOAD, 1);
+        join.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        join.visitInsn(ARETURN);
+        join.visitMaxs(0, 0);
+        join.visitEnd();
+
+        MethodVisitor lambda = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "serializableTwoCapture",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;",
+                null,
+                null);
+        lambda.visitCode();
+        lambda.visitVarInsn(ALOAD, 0);
+        lambda.visitVarInsn(ALOAD, 1);
+        lambda.visitInvokeDynamicInsn(
+                "get",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;",
+                lambdaMetafactoryBootstrap("altMetafactory"),
+                org.objectweb.asm.Type.getMethodType("()Ljava/lang/Object;"),
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "pkg/AltLambdaFallback",
+                        "join",
+                        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                        false),
+                org.objectweb.asm.Type.getMethodType("()Ljava/lang/String;"),
+                1);
+        lambda.visitInsn(ARETURN);
+        lambda.visitMaxs(0, 0);
+        lambda.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] altLambdaFallbackMainClass() {
+        ClassWriter writer = mainClass("pkg/AltLambdaFallbackMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitLdcInsn("left-");
+        main.visitLdcInsn("right");
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/AltLambdaFallback",
+                "serializableTwoCapture",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;",
+                false);
+        main.visitVarInsn(ASTORE, 1);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKEINTERFACE,
+                "java/util/function/Supplier",
+                "get",
+                "()Ljava/lang/Object;",
+                true);
+        main.visitTypeInsn(CHECKCAST, "java/lang/String");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 1);
+        main.visitTypeInsn(INSTANCEOF, "java/io/Serializable");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Z)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private org.objectweb.asm.Handle lambdaMetafactoryBootstrap(String name) {
+        String descriptor = name.equals("metafactory")
+                ? "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;"
+                : "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;";
+        return new org.objectweb.asm.Handle(
+                H_INVOKESTATIC,
+                "java/lang/invoke/LambdaMetafactory",
+                name,
+                descriptor,
+                false);
+    }
+
+    private byte[] fallbackClassLoaderMainClass() {
+        ClassWriter writer = mainClass("pkg/FallbackClassLoaderMain");
+        emitNewIsolatedLoader(writer);
+        emitFallbackClassLoaderCall(writer);
+        emitSameFallbackClass(writer);
+
+        MethodVisitor main = beginMain(writer);
+        main.visitLdcInsn(org.objectweb.asm.Type.getObjectType("pkg/FallbackClassLoaderMain"));
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getProtectionDomain",
+                "()Ljava/security/ProtectionDomain;",
+                false);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/security/ProtectionDomain",
+                "getCodeSource",
+                "()Ljava/security/CodeSource;",
+                false);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/security/CodeSource",
+                "getLocation",
+                "()Ljava/net/URL;",
+                false);
+        main.visitVarInsn(ASTORE, 1);
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/FallbackClassLoaderMain",
+                "newIsolatedLoader",
+                "(Ljava/net/URL;)Ljava/net/URLClassLoader;",
+                false);
+        main.visitVarInsn(ASTORE, 2);
+        main.visitVarInsn(ALOAD, 1);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/FallbackClassLoaderMain",
+                "newIsolatedLoader",
+                "(Ljava/net/URL;)Ljava/net/URLClassLoader;",
+                false);
+        main.visitVarInsn(ASTORE, 3);
+        printFallbackClassLoaderCall(main, 2, "abcd");
+        printFallbackClassLoaderCall(main, 2, "wxyz");
+        printFallbackClassLoaderCall(main, 3, "abcd");
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, 2);
+        main.visitVarInsn(ALOAD, 3);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/FallbackClassLoaderMain",
+                "sameFallbackClass",
+                "(Ljava/lang/ClassLoader;Ljava/lang/ClassLoader;)Z",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Z)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private void emitNewIsolatedLoader(ClassWriter writer) {
+        MethodVisitor method = writer.visitMethod(
+                ACC_PRIVATE | ACC_STATIC,
+                "newIsolatedLoader",
+                "(Ljava/net/URL;)Ljava/net/URLClassLoader;",
+                null,
+                null);
+        method.visitCode();
+        method.visitTypeInsn(NEW, "java/net/URLClassLoader");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/net/URL");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(AASTORE);
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/ClassLoader",
+                "getPlatformClassLoader",
+                "()Ljava/lang/ClassLoader;",
+                false);
+        method.visitMethodInsn(
+                INVOKESPECIAL,
+                "java/net/URLClassLoader",
+                "<init>",
+                "([Ljava/net/URL;Ljava/lang/ClassLoader;)V",
+                false);
+        method.visitInsn(ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    private void emitFallbackClassLoaderCall(ClassWriter writer) {
+        MethodVisitor method = writer.visitMethod(
+                ACC_PRIVATE | ACC_STATIC,
+                "call",
+                "(Ljava/lang/ClassLoader;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        method.visitCode();
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/Thread",
+                "currentThread",
+                "()Ljava/lang/Thread;",
+                false);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Thread",
+                "setContextClassLoader",
+                "(Ljava/lang/ClassLoader;)V",
+                false);
+        method.visitLdcInsn("pkg.JdkFallback");
+        method.visitInsn(ICONST_1);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/Class",
+                "forName",
+                "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+                false);
+        method.visitVarInsn(ASTORE, 2);
+        method.visitVarInsn(ALOAD, 2);
+        method.visitLdcInsn("substring");
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitLdcInsn(org.objectweb.asm.Type.getType("Ljava/lang/String;"));
+        method.visitInsn(AASTORE);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        method.visitVarInsn(ASTORE, 3);
+        method.visitVarInsn(ALOAD, 3);
+        method.visitInsn(ACONST_NULL);
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Object");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitVarInsn(ALOAD, 1);
+        method.visitInsn(AASTORE);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/reflect/Method",
+                "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        method.visitTypeInsn(CHECKCAST, "java/lang/String");
+        method.visitInsn(ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    private void emitSameFallbackClass(ClassWriter writer) {
+        MethodVisitor method = writer.visitMethod(
+                ACC_PRIVATE | ACC_STATIC,
+                "sameFallbackClass",
+                "(Ljava/lang/ClassLoader;Ljava/lang/ClassLoader;)Z",
+                null,
+                null);
+        org.objectweb.asm.Label notSame = new org.objectweb.asm.Label();
+        method.visitCode();
+        method.visitLdcInsn("pkg.JdkFallback");
+        method.visitInsn(ICONST_0);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/Class",
+                "forName",
+                "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+                false);
+        method.visitVarInsn(ASTORE, 2);
+        method.visitLdcInsn("pkg.JdkFallback");
+        method.visitInsn(ICONST_0);
+        method.visitVarInsn(ALOAD, 1);
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                "java/lang/Class",
+                "forName",
+                "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;",
+                false);
+        method.visitVarInsn(ASTORE, 3);
+        method.visitVarInsn(ALOAD, 2);
+        method.visitVarInsn(ALOAD, 3);
+        method.visitJumpInsn(IF_ACMPNE, notSame);
+        method.visitInsn(ICONST_1);
+        method.visitInsn(IRETURN);
+        method.visitLabel(notSame);
+        method.visitInsn(ICONST_0);
+        method.visitInsn(IRETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    private void printFallbackClassLoaderCall(MethodVisitor main, int loaderSlot, String value) {
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitVarInsn(ALOAD, loaderSlot);
+        main.visitLdcInsn(value);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/FallbackClassLoaderMain",
+                "call",
+                "(Ljava/lang/ClassLoader;Ljava/lang/String;)Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+    }
+
     private ClassWriter mainClass(String internalName) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
@@ -5279,6 +9016,20 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(D)V", false);
     }
 
+    private void printStaticFloatRawBits(MethodVisitor main, String owner, String name) {
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, owner, name, "()F", false);
+        main.visitMethodInsn(INVOKESTATIC, "java/lang/Float", "floatToRawIntBits", "(F)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+    }
+
+    private void printStaticDoubleRawBits(MethodVisitor main, String owner, String name) {
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitMethodInsn(INVOKESTATIC, owner, name, "()D", false);
+        main.visitMethodInsn(INVOKESTATIC, "java/lang/Double", "doubleToRawLongBits", "(D)J", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(J)V", false);
+    }
+
     private void printStaticBoolean(MethodVisitor main, String owner, String name, boolean value) {
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitInsn(value ? ICONST_1 : ICONST_0);
@@ -5306,6 +9057,22 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         pushInt(main, left);
         pushInt(main, right);
         main.visitMethodInsn(INVOKESTATIC, owner, name, "(II)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+    }
+
+    private void printStaticLongCompare(MethodVisitor main, long left, long right) {
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn(left);
+        main.visitLdcInsn(right);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/CompareMore", "longCmp", "(JJ)I", false);
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+    }
+
+    private void printStaticFloatCompare(MethodVisitor main, float left, float right) {
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn(left);
+        main.visitLdcInsn(right);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/CompareMore", "floatCmp", "(FF)I", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
     }
 
@@ -5338,6 +9105,59 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitLdcInsn(value);
         main.visitMethodInsn(INVOKESTATIC, owner, method, "(Ljava/lang/String;)Ljava/lang/String;", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+    }
+
+    private void classArrayOfString(MethodVisitor method) {
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitLdcInsn(org.objectweb.asm.Type.getObjectType("java/lang/String"));
+        method.visitInsn(AASTORE);
+    }
+
+    private void classArrayOfObject(MethodVisitor method) {
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitLdcInsn(org.objectweb.asm.Type.getObjectType("java/lang/Object"));
+        method.visitInsn(AASTORE);
+    }
+
+    private void classArrayOfIntegerAndLong(MethodVisitor method) {
+        method.visitInsn(ICONST_2);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitFieldInsn(GETSTATIC, "java/lang/Integer", "TYPE", "Ljava/lang/Class;");
+        method.visitInsn(AASTORE);
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_1);
+        method.visitFieldInsn(GETSTATIC, "java/lang/Long", "TYPE", "Ljava/lang/Class;");
+        method.visitInsn(AASTORE);
+    }
+
+    private void classArrayOfIntegerAndString(MethodVisitor method) {
+        method.visitInsn(ICONST_2);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitFieldInsn(GETSTATIC, "java/lang/Integer", "TYPE", "Ljava/lang/Class;");
+        method.visitInsn(AASTORE);
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_1);
+        method.visitLdcInsn(org.objectweb.asm.Type.getObjectType("java/lang/String"));
+        method.visitInsn(AASTORE);
+    }
+
+    private void classArrayOfIntArray(MethodVisitor method) {
+        method.visitInsn(ICONST_1);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitLdcInsn(org.objectweb.asm.Type.getType("[I"));
+        method.visitInsn(AASTORE);
     }
 
     private void printStaticStringLength(MethodVisitor main, String owner, String method, String value) {
@@ -5847,6 +9667,28 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitInsn(POP);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitLdcInsn("NPE");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
+        main.visitLabel(done);
+    }
+
+    private void printDefaultConflictCatchForDispatch(MethodVisitor main) {
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label done = new org.objectweb.asm.Label();
+        main.visitTryCatchBlock(start, end, handler, "java/lang/IncompatibleClassChangeError");
+        main.visitLabel(start);
+        main.visitTypeInsn(NEW, "pkg/ConflictImpl");
+        main.visitInsn(DUP);
+        main.visitMethodInsn(INVOKESPECIAL, "pkg/ConflictImpl", "<init>", "()V", false);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/DispatchOps", "conflictValue", "(Lpkg/ConflictLeft;)I", false);
+        main.visitInsn(POP);
+        main.visitLabel(end);
+        main.visitJumpInsn(GOTO, done);
+        main.visitLabel(handler);
+        main.visitInsn(POP);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitLdcInsn("default-conflict");
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitLabel(done);
     }

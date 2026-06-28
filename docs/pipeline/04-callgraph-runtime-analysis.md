@@ -92,6 +92,8 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 
 如果未来引入 guarded devirtualization，plan 还需要描述 guard condition 和 fallback target。第一版可以只做 unguarded safe devirtualization。
 
+当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。当前 child JVM E2E 已覆盖 class inherited default-interface method、class override default method，以及 unrelated default providers 的 conflict boundary；report 额外标记 `DEFAULT_INTERFACE_DISPATCH_HELPER`，conflict/diamond boundary 追加 `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT` / `DEFAULT_INTERFACE_DISPATCH_FALLBACK`。更复杂 descriptor、incomplete hierarchy sensitive shape 仍必须报告明确 fallback reason。
+
 ## 测试
 
 - CHA final receiver 单目标。

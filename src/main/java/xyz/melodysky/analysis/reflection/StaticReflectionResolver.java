@@ -177,6 +177,21 @@ public final class StaticReflectionResolver implements Opcodes {
                 && methodInsn.desc.equals("([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;")) {
             return handleGetDeclaredConstructor(currentMethod, instructionIndex, operands, metadataIndex, builder);
         }
+        if (methodInsn.owner.equals("java/lang/Class")
+                && (methodInsn.name.equals("getDeclaredMethods")
+                        || methodInsn.name.equals("getMethods")
+                        || methodInsn.name.equals("getDeclaredFields")
+                        || methodInsn.name.equals("getFields")
+                        || methodInsn.name.equals("getDeclaredConstructors")
+                        || methodInsn.name.equals("getConstructors"))) {
+            fallback(
+                    currentMethod,
+                    instructionIndex,
+                    StaticReflectionDiagnostics.REFLECTION_UNSUPPORTED_SCAN,
+                    "reflection member scan is not statically enumerated",
+                    builder);
+            return Optional.empty();
+        }
         if (methodInsn.owner.equals("java/lang/reflect/Method")
                 && methodInsn.name.equals("invoke")
                 && methodInsn.desc.equals("(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;")) {

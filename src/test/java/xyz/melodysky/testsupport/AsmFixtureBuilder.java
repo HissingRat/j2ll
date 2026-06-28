@@ -402,6 +402,47 @@ public final class AsmFixtureBuilder implements Opcodes {
         return writer.toByteArray();
     }
 
+    public static byte[] classWithUnreachableBlockMethod(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "unreachable", "()I", null, null);
+        org.objectweb.asm.Label live = new org.objectweb.asm.Label();
+        method.visitCode();
+        method.visitJumpInsn(GOTO, live);
+        method.visitInsn(ICONST_M1);
+        method.visitInsn(IRETURN);
+        method.visitLabel(live);
+        method.visitInsn(ICONST_1);
+        method.visitInsn(IRETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithLegacyJsrRetSubroutine(String internalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(V1_5, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "legacyFinally", "()V", null, null);
+        org.objectweb.asm.Label finallyBlock = new org.objectweb.asm.Label();
+        method.visitCode();
+        method.visitJumpInsn(JSR, finallyBlock);
+        method.visitInsn(RETURN);
+        method.visitLabel(finallyBlock);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitVarInsn(RET, 0);
+        method.visitMaxs(1, 1);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     public static byte[] classWithBitwiseShiftMethod(String internalName) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
@@ -968,6 +1009,121 @@ public final class AsmFixtureBuilder implements Opcodes {
         return writer.toByteArray();
     }
 
+    public static byte[] classWithUnsupportedExceptionStateMergeFinallyShape(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "badStateMergeFinally", "()V", null, null);
+        org.objectweb.asm.Label firstStart = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label firstEnd = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label firstHandler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label secondStart = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label secondEnd = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label secondHandler = new org.objectweb.asm.Label();
+        method.visitTryCatchBlock(firstStart, firstEnd, firstHandler, null);
+        method.visitTryCatchBlock(secondStart, secondEnd, secondHandler, null);
+        method.visitCode();
+        method.visitLabel(firstStart);
+        method.visitInsn(ICONST_1);
+        method.visitInsn(POP);
+        method.visitLabel(firstEnd);
+        method.visitJumpInsn(GOTO, secondStart);
+        method.visitLabel(firstHandler);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(ATHROW);
+        method.visitLabel(secondStart);
+        method.visitInsn(ICONST_2);
+        method.visitInsn(POP);
+        method.visitLabel(secondEnd);
+        method.visitInsn(RETURN);
+        method.visitLabel(secondHandler);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithUnsupportedMonitorFinallyInteraction(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "badMonitorFinally",
+                "(Ljava/lang/Object;)V",
+                null,
+                null);
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        method.visitTryCatchBlock(start, end, handler, null);
+        method.visitCode();
+        method.visitLabel(start);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(MONITORENTER);
+        method.visitInsn(ICONST_1);
+        method.visitInsn(POP);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(MONITOREXIT);
+        method.visitLabel(end);
+        method.visitInsn(RETURN);
+        method.visitLabel(handler);
+        method.visitVarInsn(ASTORE, 1);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithUnsupportedNestedFinallyShape(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "badNestedFinally", "()V", null, null);
+        org.objectweb.asm.Label outerStart = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label innerStart = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label innerEnd = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label innerHandler = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label outerEnd = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label outerHandler = new org.objectweb.asm.Label();
+        method.visitTryCatchBlock(outerStart, outerEnd, outerHandler, null);
+        method.visitTryCatchBlock(innerStart, innerEnd, innerHandler, null);
+        method.visitCode();
+        method.visitLabel(outerStart);
+        method.visitLabel(innerStart);
+        method.visitInsn(ICONST_1);
+        method.visitInsn(POP);
+        method.visitLabel(innerEnd);
+        method.visitInsn(ICONST_2);
+        method.visitInsn(POP);
+        method.visitJumpInsn(GOTO, outerEnd);
+        method.visitLabel(innerHandler);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitInsn(ICONST_3);
+        method.visitInsn(POP);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(ATHROW);
+        method.visitLabel(outerEnd);
+        method.visitInsn(RETURN);
+        method.visitLabel(outerHandler);
+        method.visitVarInsn(ASTORE, 0);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     public static byte[] classWithIntDivideMethod(String internalName) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
@@ -1200,6 +1356,30 @@ public final class AsmFixtureBuilder implements Opcodes {
         method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "start", "()V", false);
         method.visitVarInsn(ALOAD, 0);
         method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Thread", "join", "()V", false);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithWaitNotifyMethod(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor method = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "waitNotify",
+                "(Ljava/lang/Object;)V",
+                null,
+                new String[] {"java/lang/InterruptedException"});
+        method.visitCode();
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "notify", "()V", false);
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "wait", "()V", false);
         method.visitInsn(RETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
@@ -2036,6 +2216,83 @@ public final class AsmFixtureBuilder implements Opcodes {
         unsupported.visitMaxs(0, 0);
         unsupported.visitEnd();
 
+        MethodVisitor allocateMemory = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "allocateMemory", "(Lsun/misc/Unsafe;J)J", null, null);
+        allocateMemory.visitCode();
+        allocateMemory.visitVarInsn(ALOAD, 0);
+        allocateMemory.visitVarInsn(LLOAD, 1);
+        allocateMemory.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "allocateMemory", "(J)J", false);
+        allocateMemory.visitInsn(LRETURN);
+        allocateMemory.visitMaxs(0, 0);
+        allocateMemory.visitEnd();
+
+        MethodVisitor freeMemory = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "freeMemory", "(Lsun/misc/Unsafe;J)V", null, null);
+        freeMemory.visitCode();
+        freeMemory.visitVarInsn(ALOAD, 0);
+        freeMemory.visitVarInsn(LLOAD, 1);
+        freeMemory.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "freeMemory", "(J)V", false);
+        freeMemory.visitInsn(RETURN);
+        freeMemory.visitMaxs(0, 0);
+        freeMemory.visitEnd();
+
+        MethodVisitor reallocateMemory = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "reallocateMemory", "(Lsun/misc/Unsafe;JJ)J", null, null);
+        reallocateMemory.visitCode();
+        reallocateMemory.visitVarInsn(ALOAD, 0);
+        reallocateMemory.visitVarInsn(LLOAD, 1);
+        reallocateMemory.visitVarInsn(LLOAD, 3);
+        reallocateMemory.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "reallocateMemory", "(JJ)J", false);
+        reallocateMemory.visitInsn(LRETURN);
+        reallocateMemory.visitMaxs(0, 0);
+        reallocateMemory.visitEnd();
+
+        MethodVisitor getRawLong = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "getRawLong", "(Lsun/misc/Unsafe;J)J", null, null);
+        getRawLong.visitCode();
+        getRawLong.visitVarInsn(ALOAD, 0);
+        getRawLong.visitVarInsn(LLOAD, 1);
+        getRawLong.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "getLong", "(J)J", false);
+        getRawLong.visitInsn(LRETURN);
+        getRawLong.visitMaxs(0, 0);
+        getRawLong.visitEnd();
+
+        MethodVisitor putRawLong = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "putRawLong", "(Lsun/misc/Unsafe;JJ)V", null, null);
+        putRawLong.visitCode();
+        putRawLong.visitVarInsn(ALOAD, 0);
+        putRawLong.visitVarInsn(LLOAD, 1);
+        putRawLong.visitVarInsn(LLOAD, 3);
+        putRawLong.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "putLong", "(JJ)V", false);
+        putRawLong.visitInsn(RETURN);
+        putRawLong.visitMaxs(0, 0);
+        putRawLong.visitEnd();
+
+        MethodVisitor copyMemory = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "copyMemory", "(Lsun/misc/Unsafe;JJJ)V", null, null);
+        copyMemory.visitCode();
+        copyMemory.visitVarInsn(ALOAD, 0);
+        copyMemory.visitVarInsn(LLOAD, 1);
+        copyMemory.visitVarInsn(LLOAD, 3);
+        copyMemory.visitVarInsn(LLOAD, 5);
+        copyMemory.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "copyMemory", "(JJJ)V", false);
+        copyMemory.visitInsn(RETURN);
+        copyMemory.visitMaxs(0, 0);
+        copyMemory.visitEnd();
+
+        MethodVisitor park = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "park", "(Lsun/misc/Unsafe;ZJ)V", null, null);
+        park.visitCode();
+        park.visitVarInsn(ALOAD, 0);
+        park.visitVarInsn(ILOAD, 1);
+        park.visitVarInsn(LLOAD, 2);
+        park.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "park", "(ZJ)V", false);
+        park.visitInsn(RETURN);
+        park.visitMaxs(0, 0);
+        park.visitEnd();
+
+        MethodVisitor unpark = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "unpark", "(Lsun/misc/Unsafe;Ljava/lang/Object;)V", null, null);
+        unpark.visitCode();
+        unpark.visitVarInsn(ALOAD, 0);
+        unpark.visitVarInsn(ALOAD, 1);
+        unpark.visitMethodInsn(INVOKEVIRTUAL, "sun/misc/Unsafe", "unpark", "(Ljava/lang/Object;)V", false);
+        unpark.visitInsn(RETURN);
+        unpark.visitMaxs(0, 0);
+        unpark.visitEnd();
+
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -2571,6 +2828,20 @@ public final class AsmFixtureBuilder implements Opcodes {
         declaredMethod.visitMaxs(0, 0);
         declaredMethod.visitEnd();
 
+        MethodVisitor declaredMethods = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "declaredMethods", "()V", null, null);
+        declaredMethods.visitCode();
+        declaredMethods.visitLdcInsn(Type.getObjectType(targetInternalName));
+        declaredMethods.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethods",
+                "()[Ljava/lang/reflect/Method;",
+                false);
+        declaredMethods.visitInsn(POP);
+        declaredMethods.visitInsn(RETURN);
+        declaredMethods.visitMaxs(0, 0);
+        declaredMethods.visitEnd();
+
         MethodVisitor declaredField = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "declaredField", "()V", null, null);
         declaredField.visitCode();
         declaredField.visitLdcInsn(Type.getObjectType(targetInternalName));
@@ -2605,6 +2876,47 @@ public final class AsmFixtureBuilder implements Opcodes {
         declaredConstructor.visitInsn(RETURN);
         declaredConstructor.visitMaxs(0, 0);
         declaredConstructor.visitEnd();
+
+        MethodVisitor primitiveDeclaredMethod = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "primitiveDeclaredMethod",
+                "()V",
+                null,
+                null);
+        primitiveDeclaredMethod.visitCode();
+        primitiveDeclaredMethod.visitLdcInsn(Type.getObjectType(targetInternalName));
+        primitiveDeclaredMethod.visitLdcInsn("primitiveTarget");
+        emitClassArrayOfPrimitiveAndReference(primitiveDeclaredMethod);
+        primitiveDeclaredMethod.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        primitiveDeclaredMethod.visitInsn(POP);
+        primitiveDeclaredMethod.visitInsn(RETURN);
+        primitiveDeclaredMethod.visitMaxs(0, 0);
+        primitiveDeclaredMethod.visitEnd();
+
+        MethodVisitor primitiveDeclaredConstructor = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "primitiveDeclaredConstructor",
+                "()V",
+                null,
+                null);
+        primitiveDeclaredConstructor.visitCode();
+        primitiveDeclaredConstructor.visitLdcInsn(Type.getObjectType(targetInternalName));
+        emitClassArrayOfPrimitiveAndReference(primitiveDeclaredConstructor);
+        primitiveDeclaredConstructor.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredConstructor",
+                "([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;",
+                false);
+        primitiveDeclaredConstructor.visitInsn(POP);
+        primitiveDeclaredConstructor.visitInsn(RETURN);
+        primitiveDeclaredConstructor.visitMaxs(0, 0);
+        primitiveDeclaredConstructor.visitEnd();
 
         MethodVisitor reflectiveInvoke = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "reflectiveInvoke", "()V", null, null);
         reflectiveInvoke.visitCode();
@@ -2669,5 +2981,18 @@ public final class AsmFixtureBuilder implements Opcodes {
             method.visitLdcInsn(Type.getObjectType(internalNames[index]));
             method.visitInsn(AASTORE);
         }
+    }
+
+    private static void emitClassArrayOfPrimitiveAndReference(MethodVisitor method) {
+        method.visitInsn(ICONST_2);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_0);
+        method.visitFieldInsn(GETSTATIC, "java/lang/Integer", "TYPE", "Ljava/lang/Class;");
+        method.visitInsn(AASTORE);
+        method.visitInsn(DUP);
+        method.visitInsn(ICONST_1);
+        method.visitLdcInsn(Type.getObjectType("java/lang/String"));
+        method.visitInsn(AASTORE);
     }
 }

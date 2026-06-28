@@ -63,6 +63,8 @@ canonicalize
 - exception path parity。
 - validator 检查 CFG 和 SSA 合法。
 
+当前 v1 已实现保守 IR 子集：`ControlFlowFlatteningPass` 对无 exception edge、无 block parameter、无 monitor/JMM/call/field/helper-sensitive opcode、无 target arguments 的 primitive LLVM-native 多 block method 生成 dispatcher block + state switch + transition blocks。该 pass 保持 JVM-visible helper 语义不变；不支持 shape 记录 `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`，成功运行记录 `CONTROL_FLOW_FLATTENING`。child JVM E2E 覆盖 protected if/else / nested branch path。
+
 ### 虚假分支
 
 目标：插入 opaque predicate 和永不执行/极少执行的 branch。
@@ -128,7 +130,7 @@ canonicalize
 - primitive constant parity。
 - edge cases：`MIN_VALUE`、`MAX_VALUE`、`NaN`、`Infinity`。
 
-当前 v1 已接实 `CONST_INT` / `CONST_LONG` 的 deterministic XOR split/decode sequence，并在 LLVM planner/backend 中支持 `XOR_I32` / `XOR_I64` 继续进入 `LLVM_NATIVE_PATH`。浮点常量 bit-level encoding 仍是后续项；exception、monitor/JMM、field/call/helper-sensitive method 只跳过该 pass 并写入 reason code。
+当前 v1 已接实 `CONST_INT` / `CONST_LONG` 的 deterministic XOR split/decode sequence，并在 LLVM planner/backend 中支持 `XOR_I32` / `XOR_I64` 继续进入 `LLVM_NATIVE_PATH`。`CONST_FLOAT` / `CONST_DOUBLE` 使用 `Float.floatToRawIntBits` / `Double.doubleToRawLongBits` 取得原始位模式，经过 integer XOR decode 后通过 LLVM `bitcast i32 -> float` / `bitcast i64 -> double` 恢复值；child JVM E2E 覆盖普通值、`NaN`、`-0.0` 和 infinity 的 raw-bit parity。exception、monitor/JMM、field/call/helper-sensitive method 只跳过该 pass 并写入 reason code。
 
 ### 字符串加密
 
@@ -153,7 +155,7 @@ canonicalize
 - repeated literal cache policy。
 - final binary string audit，确认明文不出现。
 
-当前 v1 已接实 StringConcatFactory constant carrier 的 deterministic native-side string encryption：SSA 中的 `j2ll_rt_string_constant|string:<literal>` 被改写为 `j2ll_rt_string_constant|enc:v1:<token>:<keyHex>:<cipherHex>`，JNI helper C 生成 encrypted table，在 native side 解密后通过 `NewStringUTF` 创建 JVM `String`。该 path 不把 `String` 当作 native char pointer 长期保存；普通 `CONST_STRING` / generic constructor helper 中的明文字符串仍属于后续扩展边界。
+当前 v1 已接实 deterministic native-side string encryption：SSA 中的 `j2ll_rt_string_constant|string:<literal>` carrier、普通 `CONST_STRING` / `ldc String`，以及安全的 TEMPLATE constructor body string literal 都会改写为 `j2ll_rt_string_constant|enc:v1:<token>:<keyHex>:<cipherHex>` helper call。JNI helper C 生成 encrypted table，在 native side 解密后通过 `NewStringUTF` 创建 JVM `String`。该 path 不把 `String` 当作 native char pointer 长期保存。artifact audit 中 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和 StringConcat constant carrier stable generated-C surface 是 blocking sensitive fact，并分别记录 `promotionReason=llvmNativeSurface`、`templateStableSurface`、`stableGeneratedCSurface`；report 只写 literal hash。class name / descriptor / reflection metadata token / lambda 或 MethodHandle bootstrap metadata 仍不加密；reflection-sensitive method 的普通 `CONST_STRING` 记录 `STRING_ENCRYPTION_REFLECTION_SENSITIVE` skip，相关 metadata fact 只按 `metadataSensitiveObservedOnly` 进入 observed-only evidence，避免破坏静态 metadata 解析。
 
 ### 方法内联/拆分
 
@@ -198,6 +200,8 @@ canonicalize
 - static/special/direct call indirect parity。
 - devirtualized call indirect parity。
 - unresolved external fallback。
+
+当前 v1 已接实 LLVM module model 层的保守子集：对 same-class selected static/private direct LLVM call，`LlvmCallIndirectionPass` 按 LLVM function signature 分组，默认在 module 中生成 deterministic hidden function-pointer table `j2ll_cit_<sha256>`。caller 按 seed 派生的 stable table order 取出 function pointer 并 indirect call 原 hidden LLVM function，成功记录 `CALL_INDIRECTION_TABLE`。如果 table 形态不可用，保留 deterministic hidden dispatcher switch `j2ll_cid_<sha256>` fallback，caller 传入 selector，成功记录 `CALL_INDIRECTION_DISPATCHER`。该 pass 只操作 `LlvmModule` model 和 Zig workspace 使用的 `.ll` source，不做最终 `.ll` 文本 regex；table/dispatcher symbol 使用 protection seed 稳定生成，不进入 dynamic export allowlist。当前不处理 virtual/interface generic dispatch、fallback/unresolved call、lambda/MethodHandle bootstrap metadata shape、monitor/exception/JMM-sensitive shape。无适用 direct call 的 table mode 记录 `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE` skip。
 
 ### 虚表/方法表隐藏
 
@@ -381,7 +385,7 @@ Windows / COFF：
 1. Binary symbol visibility / strip：收益大、风险低。
 2. 字符串加密、常量加密、调用间接化。
 3. 基本块拆分、虚假分支。
-4. 控制流平坦化。
+4. 复杂控制流平坦化。
 5. 方法拆分/内联、虚表/方法表隐藏。
 6. LLVM module model protection passes。
 
@@ -415,9 +419,11 @@ Schema version 1 不提供 per-pass seed override、include/exclude method filte
 - pass 对某个 method 不适用时，只跳过该 pass 并 warning；不要因此把 method 从 requested lowering set 中标记为 `frontendSkipped`。
 - pass 缺少硬依赖时，例如 `classPath`、JDK metadata、target toolchain capability，preflight error 并提示补齐输入或关闭该 pass。
 
-当前 `reports/protection-report.json` 为 stable schema v1，按 pass 记录 `passName`、`layer`、`status`、`reasonCode`、`affectedMethods`、`affectedSymbols` 和 seed。已接实 status 使用 `RAN` / `SKIPPED` / `FAILED`，未实现 pass 通过 diagnostics warning 暴露；method 级不适用使用稳定 reason code，例如 `NO_STRING_CONSTANT_CARRIER`、`NO_PRIMITIVE_CONSTANTS`、`PROTECTION_CFG_SHAPE_NOT_SUPPORTED`、`PROTECTION_STUB_BACKED_METHOD` 和 `PROTECTION_MONITOR_SENSITIVE_SKIP`。
+当前 `reports/protection-report.json` 为 stable schema v1，按 pass 记录 `passName`、`layer`、`status`、`reasonCode`、`affectedMethods`、`affectedSymbols` 和 `seedHash`；raw protection seed 不写入 report、final JAR metadata、generated loader/library default name 或 summary。已接实 status 使用 `RAN` / `SKIPPED` / `FAILED`，未实现 pass 通过 diagnostics warning 暴露；method 级不适用使用稳定 reason code，例如 `NO_STRING_CONSTANT_CARRIER`、`NO_PRIMITIVE_CONSTANTS`、`CONTROL_FLOW_FLATTENING`、`CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`、`CALL_INDIRECTION_TABLE`、`CALL_INDIRECTION_DISPATCHER`、`CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE`、`CALL_INDIRECTION_UNSUPPORTED_SHAPE`、`PROTECTION_CFG_SHAPE_NOT_SUPPORTED`、`PROTECTION_STUB_BACKED_METHOD` 和 `PROTECTION_MONITOR_SENSITIVE_SKIP`。
 
-当前 fallback blob hardening v1 已在 packaging/native path 接实：fallback helper class bytes 先 RLE 压缩再用 SHA-256 key stream XOR 编码，写入 native artifact 中的 encoded blob manifest；JNI side 做 native-side SHA-256 校验、解码、`DefineClass` lazy define/reuse。schema v1 仍禁止输出明文 generated fallback `.class` entry；hidden-class definition 和完整 per-classloader map 仍是后续项。
+当前 fallback blob hardening v1 已在 packaging/native path 接实：可 JNI 桥接的 ordinary `halfLowered` 方法会把原 method bytecode 复制到同 owner package helper class 的 static synthetic `invoke` 方法；static wrapper 直接传原参数，instance wrapper 把 `self` 作为首参传入，primitive/reference 返回通过 JNI `CallStatic<Type>Method` 返回，pending exception 保持给 Java caller。fallback helper class bytes 先 RLE 压缩再用 SHA-256 key stream XOR 编码，写入 native artifact 中的 encoded blob manifest；JNI side 做 native-side SHA-256 校验、解码，然后通过打包进 output JAR 的 `J2llFallbackSupport` 获取 owner-private `MethodHandles.Lookup` 并优先 `defineHiddenClass`。如果 JDK 不支持或 access handoff 失败，runtime 清晰回退到 JNI `DefineClass`。schema v1 仍禁止输出明文 generated fallback `.class` entry。fallback report 记录 `fallbackInvokeDescriptor`、`fallbackReasonCode`、hidden-class capability (`FALLBACK_HIDDEN_CLASS` / `FALLBACK_HIDDEN_CLASS_UNAVAILABLE` / `FALLBACK_HIDDEN_CLASS_UNSUPPORTED_ACCESS`)、cache policy (`FALLBACK_CACHE_REUSE`) 和 lifecycle 字段 (`cacheScope` / `cacheKey` / `cacheLifetime` / `globalReferencePolicy` / `unloadAware=false` / `futurePath`)；runtime cache 使用 fallback id + classloader identity 的 process-lifetime linked global-ref cache，当前不承诺 classloader unload 触发释放。codec 对 wrong fallback id/key、encoded hash mismatch、corrupted/truncated RLE payload 和 decoded length capacity 做 bounded validation，避免 malformed blob 触发 unbounded allocation。当前 E2E 覆盖 MethodHandle adapter chain、unsupported altMetafactory capture shape、Throwable/Thread/wait-notify fallback、mixed protected corpus 和 two-classloader isolation；unload-aware cache 仍是后续项。
+
+Release-readiness reports include `reports/artifact-audit.json`, `reports/support-matrix.json`, `reports/opcode-support-matrix.json`, `reports/known-blockers.json`, `reports/release-readiness.json` and `reports/summary.json`, which record artifact hygiene plus protection-sensitive helper/fallback boundaries as stable feature/opcode/status/reason/testCoverage/coverageLevel/evidenceCount rows so enabled protection does not hide unsupported shapes or no-silent-skip diagnostics. Protection reports include hash-only seed identity and hash-only `sensitivePlaintextFacts` for string/constant protection inputs; original plaintext is never written to JSON reports. Each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and artifact surfaces. The artifact audit gate automatically consumes currently connected `LLVM_NATIVE_PATH` facts and stable TEMPLATE constructor/body helper string facts (`TEMPLATE_JNI_PATH_STABLE_SURFACE`) as blocking deny-list entries and rejects generated C/helper C/per-class LLVM/build.zig/native/JAR entry/symbol-audit/packaging sidecar leaks. Complex `HELPER_PATH` and `FALLBACK_BLOB_COMPLEX` facts remain `observedOnlySensitiveFacts` until those artifact surfaces are fully connected; they are reported but do not falsely fail the build. Artifact audit v2.2 also records generated C, per-class LLVM, build.zig, native-resource, output-JAR, symbol-audit, packaging-report and final JAR metadata surface coverage with skipped-surface reasons. Release suite workspaces additionally write `reports/release-suite-summary.json` with `profile`, `requiredCategories`, `missingCategories`, aggregate and determinism evidence; beta strict suite readiness requires dist CLI smoke/docs/report-index evidence plus beta blocker coverage, while RC strict suite readiness requires no missing categories, protected cases with artifact audit evidence, expected support evidence/report locations and child JVM differential output or expected-failure stage/reason evidence. Gate v6 requires beta/rc blocker reasons to be covered by suite expected statuses/diagnostics or weird-bytecode seeds and writes `suiteCoverageByBlocker` plus machine-readable `missingEvidence`; future blockers and explicit non-goals remain visible but do not hide protection regressions or block beta/RC readiness. All-on protection changes must continue to pass the deterministic release suite with at least one `LLVM_NATIVE_PATH` primitive method, one helper-backed path, one `nativeEmbeddedClassBlob` fallback path, dynamic reflection/MethodHandle/lambda fallback, raw Unsafe/dynamic VarHandle/wait-notify boundary evidence, narrow JDK fallback cases and an artifact-audit expected-failure case; artifact audit must continue to reject plaintext fallback class entries, plaintext protected literals in covered generated C/LLVM/native/JAR/report surfaces, hidden symbol exports, legacy output paths, metadata/native SHA mismatches and packaged PDBs.
 
 ## Required Tests
 

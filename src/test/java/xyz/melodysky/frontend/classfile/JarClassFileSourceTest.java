@@ -25,6 +25,7 @@ class JarClassFileSourceTest {
         writeJar(jarPath, Map.of(
                 "pkg/Zed.class", zed,
                 "resource.txt", "hello".getBytes(),
+                "META-INF/versions/9/pkg/Zed.class", AsmFixtureBuilder.minimalClass("pkg/Zed"),
                 "pkg/Alpha.class", alpha));
 
         List<ClassFileEntry> entries = new JarClassFileSource(jarPath).entries();

@@ -2,6 +2,7 @@ package xyz.melodysky.ir.ssa;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -287,6 +288,24 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
+    void safeOpcodeCoverageMatrixHasNoSilentUnsupportedGaps() {
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithStackPermutationMethods("pkg/StackOps"), "dup2X2Int").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithBitwiseShiftMethod("pkg/BitMath"), "bitShift").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithLongBitwiseShiftMethod("pkg/LongBitMath"), "longBitShift").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithPrimitiveConversionMethods("pkg/ConvertMore"), "narrow").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithJvmComparisonMethods("pkg/CompareMore"), "longCmp").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithTableSwitchMethod("pkg/TableSwitch"), "select").status());
+        assertEquals(LoweringStatus.LOWERED,
+                lower(AsmFixtureBuilder.classWithLookupSwitchMethod("pkg/LookupSwitch"), "lookup").status());
+    }
+
+    @Test
     void lowersReferenceConditionalBranchesWithoutMerge() {
         byte[] classBytes = AsmFixtureBuilder.classWithReferenceBranchMethods("pkg/RefBranches");
 
@@ -335,6 +354,18 @@ class BytecodeToSsaLowererTest {
         assertTrue(method.blocks().stream().anyMatch(block -> block.exceptionEdges().stream()
                 .anyMatch(edge -> edge.target().equals(handler.name())
                         && edge.catchType().equals("java/lang/RuntimeException"))));
+    }
+
+    @Test
+    void safeFinallyCleanupShapeLowersWithoutFallbackOrFrontendSkip() {
+        SsaMethodResult result = lower(
+                AsmFixtureBuilder.classWithFinallyCleanupShape("pkg/SafeFinally"),
+                "withCleanup");
+
+        assertEquals(LoweringStatus.LOWERED, result.status());
+        assertTrue(result.irMethod().isPresent());
+        assertNull(result.reasonCode());
+        assertNull(result.reason());
     }
 
     @Test
@@ -397,6 +428,32 @@ class BytecodeToSsaLowererTest {
 
         assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY, result.diagnostics().get(0).code());
+    }
+
+    @Test
+    void unsupportedMonitorFinallyInteractionProducesPreciseDiagnostic() {
+        ParsedMethod parsedMethod = parseMethod(
+                AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinallyShape"),
+                "badMonitorFinally");
+        MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
+
+        var result = new BytecodeToSsaLowerer().lower(cfg);
+
+        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION, result.diagnostics().get(0).code());
+    }
+
+    @Test
+    void unsupportedNestedFinallyProducesPreciseDiagnostic() {
+        ParsedMethod parsedMethod = parseMethod(
+                AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinallyShape"),
+                "badNestedFinally");
+        MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
+
+        var result = new BytecodeToSsaLowerer().lower(cfg);
+
+        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY, result.diagnostics().get(0).code());
     }
 
     @Test
@@ -538,6 +595,20 @@ class BytecodeToSsaLowererTest {
         String llvm = llvm(method);
         assertTrue(llvm.contains("call void @j2ll_rt_thread_start_happens_before(ptr %p0)"));
         assertTrue(llvm.contains("call void @j2ll_rt_thread_join_happens_before(ptr %p0)"));
+    }
+
+    @Test
+    void waitNotifyUsesJvmHelperFallbackBoundary() {
+        ParsedMethod parsedMethod = parseMethod(
+                AsmFixtureBuilder.classWithWaitNotifyMethod("pkg/WaitNotify"),
+                "waitNotify");
+        MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
+
+        var result = new BytecodeToSsaLowerer().lower(cfg);
+
+        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
+        assertTrue(result.diagnostics().get(0).message().contains("WAIT_NOTIFY_FALLBACK"));
     }
 
     @Test
@@ -1022,6 +1093,12 @@ class BytecodeToSsaLowererTest {
         assertTrue(hasHelper(lower(classBytes, "declaredMethod").irMethod().orElseThrow(), "j2ll_rt_get_declared_method"));
         assertTrue(hasHelper(lower(classBytes, "declaredField").irMethod().orElseThrow(), "j2ll_rt_get_declared_field"));
         assertTrue(hasHelper(lower(classBytes, "declaredConstructor").irMethod().orElseThrow(), "j2ll_rt_get_declared_constructor"));
+        assertTrue(hasHelper(
+                lower(classBytes, "primitiveDeclaredMethod").irMethod().orElseThrow(),
+                "j2ll_rt_get_declared_method"));
+        assertTrue(hasHelper(
+                lower(classBytes, "primitiveDeclaredConstructor").irMethod().orElseThrow(),
+                "j2ll_rt_get_declared_constructor"));
 
         var reflectiveInvoke = lower(classBytes, "reflectiveInvoke").irMethod().orElseThrow();
         assertTrue(hasHelper(reflectiveInvoke, "j2ll_rt_get_declared_method"));
@@ -1040,6 +1117,20 @@ class BytecodeToSsaLowererTest {
         assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
         assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
         assertTrue(result.diagnostics().get(0).message().contains("dynamic Class.forName string"));
+    }
+
+    @Test
+    void reflectionMemberScanUsesJvmHelperFallbackReport() {
+        ParsedMethod parsedMethod = parseMethod(
+                AsmFixtureBuilder.classWithStaticReflectionMethods("pkg/ReflectCaller", "pkg/ReflectTarget"),
+                "declaredMethods");
+        MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
+
+        var result = new BytecodeToSsaLowerer().lower(cfg);
+
+        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
+        assertTrue(result.diagnostics().get(0).message().contains("reflection member scan"));
     }
 
     @Test
@@ -1115,7 +1206,8 @@ class BytecodeToSsaLowererTest {
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertTrue(result.diagnostics().get(0).message().contains("unsupported Unsafe API"));
+        assertEquals(DiagnosticCode.UNSAFE_RAW_MEMORY_FALLBACK, result.diagnostics().get(0).code());
+        assertTrue(result.diagnostics().get(0).message().contains("UNSAFE_RAW_MEMORY_FALLBACK"));
     }
 
     @Test

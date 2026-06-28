@@ -59,6 +59,8 @@ dependencies {
 
 shadowJar {
     archiveClassifier.set('')
+    archiveFileName.set('j2ll.jar')
+    destinationDirectory.set(layout.buildDirectory.dir('cli'))
     manifest {
         attributes(
                 'Main-Class': getProperty('mainClass'),
@@ -68,6 +70,54 @@ shadowJar {
 }
 
 assemble.dependsOn(shadowJar)
+
+tasks.register('cliJar') {
+    group = 'distribution'
+    description = 'Builds the runnable j2ll CLI jar at build/cli/j2ll.jar.'
+    dependsOn(shadowJar)
+    outputs.file(tasks.named('shadowJar').flatMap { it.archiveFile })
+}
+
+tasks.register('distJ2ll', Sync) {
+    group = 'distribution'
+    description = 'Assembles the beta j2ll distribution at build/dist/j2ll.'
+    dependsOn('cliJar')
+    into layout.buildDirectory.dir('dist/j2ll')
+    from(tasks.named('shadowJar').flatMap { it.archiveFile }) {
+        rename { 'j2ll.jar' }
+    }
+    from('docs/config.schema.json') {
+        into 'docs'
+    }
+    from('docs/examples') {
+        into 'docs/examples'
+    }
+    from('docs/samples') {
+        into 'docs/samples'
+    }
+    from('docs/io-config-output-contract.md') {
+        into 'docs'
+    }
+    from('docs/getting-started.md') {
+        into 'docs'
+    }
+    from('AGENTS.md') {
+        rename { 'README.md' }
+    }
+}
+
+tasks.register('betaAcceptance', Test) {
+    group = 'verification'
+    description = 'Runs the beta acceptance smoke against build/dist/j2ll/j2ll.jar.'
+    dependsOn('testClasses', 'distJ2ll')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching 'xyz.melodysky.cli.BetaAcceptanceTest'
+    }
+    environment 'JAVA_HOME', System.getProperty('java.home')
+}
 
 jar {
     manifest {
@@ -100,6 +150,7 @@ publishing {
 ConcurrentHashMap<String, StringBuilder> testOutputs = new ConcurrentHashMap<>()
 
 test {
+    dependsOn(shadowJar, distJ2ll)
     useJUnitPlatform()
     environment 'JAVA_HOME', System.getProperty('java.home')
 

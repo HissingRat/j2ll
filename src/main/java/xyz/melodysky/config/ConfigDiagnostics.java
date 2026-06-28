@@ -9,6 +9,8 @@ public final class ConfigDiagnostics {
     public static final DiagnosticCode UNSUPPORTED_SCHEMA_VERSION = DiagnosticCode.of("UNSUPPORTED_SCHEMA_VERSION");
     public static final DiagnosticCode UNSUPPORTED_FALLBACK_MODE = DiagnosticCode.of("UNSUPPORTED_FALLBACK_MODE");
     public static final DiagnosticCode NO_TARGET_SELECTED = DiagnosticCode.of("NO_TARGET_SELECTED");
+    public static final DiagnosticCode HOST_TARGET_UNAVAILABLE = DiagnosticCode.of("HOST_TARGET_UNAVAILABLE");
+    public static final DiagnosticCode INVALID_PATH = DiagnosticCode.of("INVALID_PATH");
     public static final DiagnosticCode INVALID_SELECTOR = DiagnosticCode.of("INVALID_SELECTOR");
     public static final DiagnosticCode UNMATCHED_WHITELIST_SELECTOR = DiagnosticCode.of("UNMATCHED_WHITELIST_SELECTOR");
     public static final DiagnosticCode UNMATCHED_BLACKLIST_SELECTOR = DiagnosticCode.of("UNMATCHED_BLACKLIST_SELECTOR");

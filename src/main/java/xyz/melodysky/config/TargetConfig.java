@@ -11,6 +11,16 @@ public record TargetConfig(
         boolean linuxArm64,
         boolean macosX64,
         boolean macosArm64) {
+    public static TargetConfig single(TargetTriple target) {
+        return new TargetConfig(
+                target == TargetTriple.WINDOWS_X64,
+                target == TargetTriple.WINDOWS_ARM64,
+                target == TargetTriple.LINUX_X64,
+                target == TargetTriple.LINUX_ARM64,
+                target == TargetTriple.MACOS_X64,
+                target == TargetTriple.MACOS_ARM64);
+    }
+
     public List<TargetTriple> enabledTargets() {
         ArrayList<TargetTriple> targets = new ArrayList<>();
         addIf(targets, windowsX64, TargetTriple.WINDOWS_X64);

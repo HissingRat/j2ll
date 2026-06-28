@@ -70,6 +70,10 @@ public final class FallbackBlobCodec {
                 | ((compressed[1] & 0xff) << 16)
                 | ((compressed[2] & 0xff) << 8)
                 | (compressed[3] & 0xff);
+        int maxDecodedLength = ((compressed.length - 4) / 2) * 255;
+        if (expectedLength < 0 || expectedLength > maxDecodedLength) {
+            throw new IllegalArgumentException("fallback blob decoded length exceeds compressed payload capacity");
+        }
         ByteArrayOutputStream output = new ByteArrayOutputStream(expectedLength);
         for (int index = 4; index < compressed.length; index += 2) {
             if (index + 1 >= compressed.length) {

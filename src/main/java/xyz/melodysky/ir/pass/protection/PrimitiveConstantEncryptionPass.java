@@ -29,7 +29,9 @@ public final class PrimitiveConstantEncryptionPass implements ProtectionPass {
         return isSafeMethod(method) && method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.CONST_INT
-                        || instruction.opcode() == IrOpcode.CONST_LONG);
+                        || instruction.opcode() == IrOpcode.CONST_LONG
+                        || instruction.opcode() == IrOpcode.CONST_FLOAT
+                        || instruction.opcode() == IrOpcode.CONST_DOUBLE);
     }
 
     @Override
@@ -55,6 +57,10 @@ public final class PrimitiveConstantEncryptionPass implements ProtectionPass {
                     appendEncryptedInt(method, random, counter, instructions, instruction);
                 } else if (instruction.opcode() == IrOpcode.CONST_LONG) {
                     appendEncryptedLong(method, random, counter, instructions, instruction);
+                } else if (instruction.opcode() == IrOpcode.CONST_FLOAT) {
+                    appendEncryptedFloat(method, random, counter, instructions, instruction);
+                } else if (instruction.opcode() == IrOpcode.CONST_DOUBLE) {
+                    appendEncryptedDouble(method, random, counter, instructions, instruction);
                 } else {
                     instructions.add(instruction);
                 }
@@ -104,6 +110,46 @@ public final class PrimitiveConstantEncryptionPass implements ProtectionPass {
         instructions.add(IrInstruction.constLong(left, encoded));
         instructions.add(IrInstruction.constLong(right, key));
         instructions.add(IrInstruction.binary(instruction.result().orElseThrow(), IrOpcode.XOR_I64, left, right));
+    }
+
+    private void appendEncryptedFloat(
+            IrMethod method,
+            ProtectionRandom random,
+            int[] counter,
+            List<IrInstruction> instructions,
+            IrInstruction instruction) {
+        int bits = Float.floatToRawIntBits(instruction.floatLiteral().orElseThrow());
+        int key = (int) Long.parseUnsignedLong(
+                random.token(name(), method.methodKey() + ":f32:" + counter[0] + ":" + Integer.toUnsignedString(bits), 8),
+                16);
+        int encoded = bits ^ key;
+        IrValue left = new IrValue("%j2ll_ce_" + counter[0]++ + "_a", IrType.I32);
+        IrValue right = new IrValue("%j2ll_ce_" + counter[0]++ + "_b", IrType.I32);
+        IrValue decoded = new IrValue("%j2ll_ce_" + counter[0]++ + "_bits", IrType.I32);
+        instructions.add(IrInstruction.constInt(left, encoded));
+        instructions.add(IrInstruction.constInt(right, key));
+        instructions.add(IrInstruction.binary(decoded, IrOpcode.XOR_I32, left, right));
+        instructions.add(IrInstruction.unary(instruction.result().orElseThrow(), IrOpcode.BITCAST_I32_TO_F32, decoded));
+    }
+
+    private void appendEncryptedDouble(
+            IrMethod method,
+            ProtectionRandom random,
+            int[] counter,
+            List<IrInstruction> instructions,
+            IrInstruction instruction) {
+        long bits = Double.doubleToRawLongBits(instruction.doubleLiteral().orElseThrow());
+        long key = Long.parseUnsignedLong(
+                random.token(name(), method.methodKey() + ":f64:" + counter[0] + ":" + Long.toUnsignedString(bits), 16),
+                16);
+        long encoded = bits ^ key;
+        IrValue left = new IrValue("%j2ll_ce_" + counter[0]++ + "_a", IrType.I64);
+        IrValue right = new IrValue("%j2ll_ce_" + counter[0]++ + "_b", IrType.I64);
+        IrValue decoded = new IrValue("%j2ll_ce_" + counter[0]++ + "_bits", IrType.I64);
+        instructions.add(IrInstruction.constLong(left, encoded));
+        instructions.add(IrInstruction.constLong(right, key));
+        instructions.add(IrInstruction.binary(decoded, IrOpcode.XOR_I64, left, right));
+        instructions.add(IrInstruction.unary(instruction.result().orElseThrow(), IrOpcode.BITCAST_I64_TO_F64, decoded));
     }
 
     private boolean isSafeMethod(IrMethod method) {

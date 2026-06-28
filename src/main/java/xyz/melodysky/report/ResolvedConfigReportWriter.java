@@ -4,6 +4,10 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.config.Selector;
 import xyz.melodysky.toolchain.TargetTriple;
@@ -38,7 +42,7 @@ public final class ResolvedConfigReportWriter {
         root.addProperty("libraryName", config.libraryName());
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
-        root.addProperty("protectionSeed", config.protection().seed());
+        root.addProperty("protectionSeedHash", sha256(config.protection().seed()));
         return GSON.toJson(root) + "\n";
     }
 
@@ -46,5 +50,14 @@ public final class ResolvedConfigReportWriter {
         JsonArray array = new JsonArray();
         selectors.forEach(selector -> array.add(selector.raw()));
         return array;
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 }

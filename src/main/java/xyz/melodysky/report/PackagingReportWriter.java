@@ -10,12 +10,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import xyz.melodysky.config.SignaturePolicy;
+import xyz.melodysky.packaging.JarPreservationReport;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.packaging.SignatureActionReport;
 import xyz.melodysky.toolchain.NativeBuildPlan;
 import xyz.melodysky.toolchain.NativeBuildTargetPreflight;
+import xyz.melodysky.toolchain.ManagedZigBootstrapEvent;
 import xyz.melodysky.toolchain.ZigNativeBuildResult;
 
 public final class PackagingReportWriter {
@@ -45,7 +48,9 @@ public final class PackagingReportWriter {
                 exportedSymbols,
                 zigBuildResult,
                 new NativeBuildPlan(List.of()),
-                fallbackBlobs);
+                fallbackBlobs,
+                JarPreservationReport.empty(),
+                SignatureActionReport.none(false));
     }
 
     public String packagingJson(
@@ -59,15 +64,46 @@ public final class PackagingReportWriter {
             ZigNativeBuildResult zigBuildResult,
             NativeBuildPlan nativeBuildPlan,
             List<NativeEmbeddedFallbackBlob> fallbackBlobs) {
+        return packagingJson(
+                outputJar,
+                signaturePolicy,
+                generatedLoaders,
+                rewrittenMethods,
+                embeddedLibraries,
+                registeredNativeMethods,
+                exportedSymbols,
+                zigBuildResult,
+                nativeBuildPlan,
+                fallbackBlobs,
+                JarPreservationReport.empty(),
+                SignatureActionReport.none(false));
+    }
+
+    public String packagingJson(
+            Path outputJar,
+            SignaturePolicy signaturePolicy,
+            List<String> generatedLoaders,
+            List<MethodRewriteDecision> rewrittenMethods,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<NativeRegistrationEntry> registeredNativeMethods,
+            List<String> exportedSymbols,
+            ZigNativeBuildResult zigBuildResult,
+            NativeBuildPlan nativeBuildPlan,
+            List<NativeEmbeddedFallbackBlob> fallbackBlobs,
+            JarPreservationReport preservationReport,
+            SignatureActionReport signatureActionReport) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
+        root.addProperty("reportVersion", 1);
         root.addProperty("outputJar", outputJar.toString().replace('\\', '/'));
         root.addProperty("manifestPolicy", "preserved");
         root.addProperty("signaturePolicy", signaturePolicy.wireName());
+        root.add("preservationSummary", preservationSummary(preservationReport));
+        root.add("signatureAction", signatureAction(signatureActionReport));
         root.add("generatedLoaders", stringArray(generatedLoaders));
         root.add("rewrittenClasses", rewrittenClasses(rewrittenMethods));
         root.add("embeddedLibraries", embeddedLibraries(embeddedLibraries));
-        root.add("zigToolchain", zigToolchain(zigBuildResult, nativeBuildPlan));
+        root.add("zigToolchain", zigToolchain(zigBuildResult, nativeBuildPlan, embeddedLibraries));
         root.add("registeredNativeMethods", registeredNativeMethods(registeredNativeMethods));
         root.add("registrationGroups", registrationGroups(registeredNativeMethods));
         root.add("exportedSymbols", stringArray(exportedSymbols));
@@ -75,7 +111,31 @@ public final class PackagingReportWriter {
         return GSON.toJson(root) + "\n";
     }
 
-    private JsonObject zigToolchain(ZigNativeBuildResult result, NativeBuildPlan nativeBuildPlan) {
+    private JsonObject preservationSummary(JarPreservationReport report) {
+        JsonObject object = new JsonObject();
+        object.addProperty("manifestPreserved", report.manifestPreserved());
+        object.addProperty("serviceEntriesPreserved", report.serviceEntriesPreserved());
+        object.addProperty("moduleInfoPreserved", report.moduleInfoPreserved());
+        object.addProperty("multiRelease", report.multiRelease());
+        object.addProperty("versionedEntriesPreserved", report.versionedEntriesPreserved());
+        object.addProperty("versionedClassPolicy", report.versionedClassPolicy());
+        return object;
+    }
+
+    private JsonObject signatureAction(SignatureActionReport report) {
+        JsonObject object = new JsonObject();
+        object.addProperty("action", report.action());
+        object.addProperty("signedInput", report.signedInput());
+        object.add("removedEntries", stringArray(report.removedEntries()));
+        object.addProperty("reasonCode", report.reasonCode());
+        object.addProperty("reason", report.reason());
+        return object;
+    }
+
+    private JsonObject zigToolchain(
+            ZigNativeBuildResult result,
+            NativeBuildPlan nativeBuildPlan,
+            List<EmbeddedLibraryReport> embeddedLibraries) {
         JsonObject object = new JsonObject();
         if (result == null) {
             object.addProperty("managed", true);
@@ -84,9 +144,12 @@ public final class PackagingReportWriter {
             object.add("buildZig", com.google.gson.JsonNull.INSTANCE);
             object.add("verificationPolicy", com.google.gson.JsonNull.INSTANCE);
             object.add("selectedTargets", targetNameArray(nativeBuildPlan.targetPreflights()));
+            object.add("requiredTargets", targetNameArray(nativeBuildPlan.targetPreflights()));
             object.add("buildableTargets", targetNameArray(nativeBuildPlan.buildableTargetPreflights()));
             object.add("skippedTargets", targetPreflightArray(nativeBuildPlan.skippedTargetPreflights()));
-            object.add("failedTargets", new JsonArray());
+            object.add("failedTargets", targetPreflightArray(nativeBuildPlan.failedTargetPreflights()));
+            object.add("targetArtifacts", targetArtifactArray(nativeBuildPlan, null, embeddedLibraries));
+            object.add("bootstrapEvents", new JsonArray());
             return object;
         }
         object.addProperty("managed", true);
@@ -97,10 +160,40 @@ public final class PackagingReportWriter {
         object.addProperty("verificationPolicy", result.zig().verificationPolicy());
         object.add("buildCommand", stringArray(result.invocation().command()));
         object.add("selectedTargets", targetNameArray(nativeBuildPlan.targetPreflights()));
+        object.add("requiredTargets", targetNameArray(nativeBuildPlan.targetPreflights()));
         object.add("buildableTargets", targetNameArray(nativeBuildPlan.buildableTargetPreflights()));
         object.add("skippedTargets", targetPreflightArray(nativeBuildPlan.skippedTargetPreflights()));
-        object.add("failedTargets", new JsonArray());
+        object.add("failedTargets", targetPreflightArray(nativeBuildPlan.failedTargetPreflights()));
+        object.add("targetArtifacts", targetArtifactArray(nativeBuildPlan, result, embeddedLibraries));
+        object.add("bootstrapEvents", bootstrapEvents(result.zig().bootstrapEvents()));
         return object;
+    }
+
+    private JsonArray bootstrapEvents(List<ManagedZigBootstrapEvent> events) {
+        JsonArray array = new JsonArray();
+        events.stream()
+                .sorted(Comparator.comparing(ManagedZigBootstrapEvent::code)
+                        .thenComparing(ManagedZigBootstrapEvent::message))
+                .forEach(event -> {
+                    JsonObject object = new JsonObject();
+                    object.addProperty("code", event.code());
+                    object.addProperty("message", event.message());
+                    nullableString(object, "archiveName", event.archiveName());
+                    nullableString(object, "archiveSha256", event.archiveSha256());
+                    nullableString(object, "checksumStatus", event.checksumStatus());
+                    nullableString(object, "signatureStatus", event.signatureStatus());
+                    nullableString(object, "source", event.source());
+                    array.add(object);
+                });
+        return array;
+    }
+
+    private void nullableString(JsonObject object, String field, String value) {
+        if (value == null) {
+            object.add(field, com.google.gson.JsonNull.INSTANCE);
+        } else {
+            object.addProperty(field, value);
+        }
     }
 
     private JsonArray targetNameArray(List<NativeBuildTargetPreflight> targets) {
@@ -123,11 +216,77 @@ public final class PackagingReportWriter {
                     object.addProperty("output", preflight.outputPath().toString().replace('\\', '/'));
                     object.addProperty("status", preflight.status());
                     object.addProperty("currentHost", preflight.currentHost());
+                    object.addProperty("required", preflight.required());
                     object.addProperty("buildable", preflight.buildable());
                     object.addProperty("reasonCode", preflight.reasonCode());
                     object.addProperty("reason", preflight.reason());
                     object.addProperty("requiredCapability", preflight.requiredCapability());
                     object.addProperty("platformSdkRequirement", preflight.platformSdkRequirement());
+                    object.addProperty("failureKind", preflight.failureKind());
+                    object.addProperty("buildLogTail", preflight.buildLogTail());
+                    array.add(object);
+                });
+        return array;
+    }
+
+    private JsonArray targetArtifactArray(
+            NativeBuildPlan nativeBuildPlan,
+            ZigNativeBuildResult result,
+            List<EmbeddedLibraryReport> embeddedLibraries) {
+        JsonArray array = new JsonArray();
+        Map<String, String> embeddedJarPaths = embeddedLibraries.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        EmbeddedLibraryReport::target,
+                        EmbeddedLibraryReport::jarPath,
+                        (left, right) -> left,
+                        java.util.TreeMap::new));
+        nativeBuildPlan.targetPreflights().stream()
+                .sorted(Comparator.comparing(preflight -> preflight.target().directoryName()))
+                .forEach(preflight -> {
+                    java.util.Optional<xyz.melodysky.toolchain.NativeLibraryArtifact> artifact = result == null
+                            ? java.util.Optional.empty()
+                            : result.artifactFor(preflight.target());
+                    JsonObject object = new JsonObject();
+                    object.addProperty("target", preflight.target().directoryName());
+                    object.addProperty("required", preflight.required());
+                    object.addProperty("currentHost", preflight.currentHost());
+                    object.addProperty("buildable", preflight.buildable());
+                    object.addProperty("osClassifier", preflight.target().osClassifier());
+                    object.addProperty("archClassifier", preflight.target().archClassifier());
+                    object.addProperty("libraryExtension", preflight.target().libraryExtension());
+                    object.addProperty("libraryName", preflight.libraryName());
+                    object.addProperty("zigTarget", preflight.zigTarget());
+                    object.addProperty("expectedArtifactPath", preflight.outputPath().toString().replace('\\', '/'));
+                    object.addProperty("expectedArtifactName", preflight.outputPath().getFileName().toString());
+                    object.addProperty("expectedResourcePath", embeddedJarPaths.getOrDefault(
+                            preflight.target().directoryName(),
+                            "native/" + preflight.target().directoryName() + "/" + preflight.outputPath().getFileName()));
+                    object.addProperty("loaderExtractionPathPolicy", "contentAddressedTempCacheBySha256");
+                    object.addProperty("symbolVisibilityPolicy", "allowlistOnlyJniOnLoadAndBootstrap");
+                    object.addProperty("windowsPdbPolicy", preflight.target().isWindows()
+                            ? "excludePdbFromJarAndReports"
+                            : "notApplicable");
+                    object.add("actualArtifactPath", artifact
+                            .<com.google.gson.JsonElement>map(value -> new com.google.gson.JsonPrimitive(value.libraryPath().toString().replace('\\', '/')))
+                            .orElse(com.google.gson.JsonNull.INSTANCE));
+                    object.add("actualJarPath", artifact
+                            .<com.google.gson.JsonElement>map(value -> new com.google.gson.JsonPrimitive(value.jarPath()))
+                            .orElse(com.google.gson.JsonNull.INSTANCE));
+                    object.add("actualSha256", artifact
+                            .<com.google.gson.JsonElement>map(value -> new com.google.gson.JsonPrimitive(value.sha256()))
+                            .orElse(com.google.gson.JsonNull.INSTANCE));
+                    object.add("exportedSymbols", artifact
+                            .map(value -> stringArray(value.exportedSymbols()))
+                            .orElseGet(JsonArray::new));
+                    object.addProperty("status", artifact.isPresent()
+                            ? "built"
+                            : preflight.status());
+                    object.addProperty("reasonCode", preflight.reasonCode());
+                    object.addProperty("reason", preflight.reason());
+                    object.addProperty("requiredCapability", preflight.requiredCapability());
+                    object.addProperty("platformSdkRequirement", preflight.platformSdkRequirement());
+                    object.addProperty("failureKind", preflight.failureKind());
+                    object.addProperty("buildLogTail", preflight.buildLogTail());
                     array.add(object);
                 });
         return array;
@@ -227,6 +386,8 @@ public final class PackagingReportWriter {
                     object.addProperty("originalMethodId", blob.originalMethodId());
                     object.addProperty("originalMethodKey", blob.originalMethodKey());
                     object.addProperty("helperClassName", blob.helperClassName());
+                    object.addProperty("fallbackInvokeDescriptor", blob.fallbackInvokeDescriptor());
+                    object.addProperty("fallbackReasonCode", blob.fallbackReasonCode());
                     object.addProperty("sha256", blob.sha256());
                     object.addProperty("originalSha256", blob.originalSha256());
                     object.addProperty("encodedSha256", blob.encodedSha256());
@@ -238,19 +399,22 @@ public final class PackagingReportWriter {
                     object.addProperty("requiredJavaVersion", blob.requiredJavaVersion());
                     object.addProperty("storageTarget", blob.storageTarget());
                     object.addProperty("definitionMechanism", blob.definitionMechanism());
-                    object.addProperty("definitionMechanismReasonCode",
-                            definitionMechanismReasonCode(blob.definitionMechanism()));
+                    object.addProperty("definitionMechanismReasonCode", blob.definitionMechanismReasonCode());
+                    object.addProperty("hiddenClassApiAvailable", blob.hiddenClassApiAvailable());
+                    object.addProperty("ownerLookupSupported", blob.ownerLookupSupported());
+                    object.addProperty("definitionMechanismReason", blob.definitionMechanismReason());
+                    object.addProperty("cacheReasonCode", blob.cacheReasonCode());
                     object.addProperty("classloaderReusePolicy", blob.classloaderReusePolicy());
+                    object.addProperty("cacheScope", blob.cacheScope());
+                    object.addProperty("cacheKey", blob.cacheKey());
+                    object.addProperty("cacheLifetime", blob.cacheLifetime());
+                    object.addProperty("globalReferencePolicy", blob.globalReferencePolicy());
+                    object.addProperty("unloadAware", false);
+                    object.addProperty("futurePath",
+                            "replace process-lifetime global-ref cache with unload-aware weak/global-reference lifecycle discipline");
                     array.add(object);
                 });
         return array;
-    }
-
-    private String definitionMechanismReasonCode(String definitionMechanism) {
-        if (definitionMechanism.toLowerCase(java.util.Locale.ROOT).contains("hidden")) {
-            return "FALLBACK_HIDDEN_CLASS";
-        }
-        return "FALLBACK_DEFINE_CLASS";
     }
 
     private JsonArray stringArray(List<String> values) {

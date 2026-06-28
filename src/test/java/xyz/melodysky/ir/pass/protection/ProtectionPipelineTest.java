@@ -9,6 +9,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.pass.PassDiagnostics;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionEdge;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -101,6 +102,85 @@ class ProtectionPipelineTest {
     }
 
     @Test
+    void stringEncryptionLowersOrdinaryConstStringToEncryptedRuntimeHelper() {
+        IrValue value = new IrValue("%value", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Strings",
+                "literal",
+                "()Ljava/lang/String;",
+                IrType.REFERENCE,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.symbolicConstant(value, IrOpcode.CONST_STRING, "string:plain-secret")),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(11));
+        List<IrInstruction> instructions = result.method().blocks().get(0).instructions();
+
+        assertEquals(2, instructions.size());
+        assertEquals(IrOpcode.CONST_LONG, instructions.get(0).opcode());
+        assertEquals(IrOpcode.CALL_RUNTIME_HELPER, instructions.get(1).opcode());
+        assertEquals(value, instructions.get(1).result().orElseThrow());
+        String symbol = instructions.get(1).symbol().orElseThrow();
+        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v1:"));
+        assertFalse(symbol.contains("plain-secret"));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void stringEncryptionAcceptsRawConstStringSymbolFromTemplateIr() {
+        IrValue value = new IrValue("%value", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Strings",
+                "rawLiteral",
+                "()Ljava/lang/String;",
+                IrType.REFERENCE,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.symbolicConstant(value, IrOpcode.CONST_STRING, "raw-secret")),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(11));
+        String symbol = result.method().blocks().get(0).instructions().get(1).symbol().orElseThrow();
+
+        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v1:"));
+        assertFalse(symbol.contains("raw-secret"));
+    }
+
+    @Test
+    void stringEncryptionSkipsReflectionSensitiveConstStringWithReason() {
+        IrValue value = new IrValue("%value", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Reflective",
+                "literal",
+                "()Ljava/lang/String;",
+                IrType.REFERENCE,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.symbolicConstant(value, IrOpcode.CONST_STRING, "string:pkg.Reflective"),
+                                IrInstruction.call(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.CALL_RUNTIME_HELPER,
+                                        List.of(),
+                                        "j2ll_rt_class_for_name_static")),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(11));
+
+        assertEquals(IrOpcode.CONST_STRING, result.method().blocks().get(0).instructions().get(0).opcode());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("STRING_ENCRYPTION")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("STRING_ENCRYPTION_REFLECTION_SENSITIVE")));
+    }
+
+    @Test
     void primitiveConstantEncryptionEmitsXorShape() {
         IrValue constant = new IrValue("%c", IrType.I32);
         IrMethod method = new IrMethod(
@@ -119,6 +199,226 @@ class ProtectionPipelineTest {
         assertTrue(result.method().blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.XOR_I32));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningBuildsDispatcherSwitchForSafeBranchShape() {
+        IrMethod method = branchingMethod(false);
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.SWITCH));
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.parameters().stream().anyMatch(parameter -> parameter.name().contains("_state"))));
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.name().startsWith("cff_true_")));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("RAN")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsHelperSensitiveShapeWithReason() {
+        IrMethod method = branchingMethod(true);
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsExceptionEdgeShapeWithReason() {
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Exceptional",
+                "choose",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                List.of(),
+                                List.of(new IrExceptionEdge("handler", "java/lang/Throwable")),
+                                List.of(IrInstruction.constInt(zero, 0)),
+                                IrTerminator.gotoBlock("exit")),
+                        new IrBlock("exit", List.of(), IrTerminator.returnValue(zero)),
+                        new IrBlock(
+                                "handler",
+                                List.of(caught),
+                                List.of("java/lang/Throwable"),
+                                List.of(),
+                                IrTerminator.returnValue(zero))));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsMonitorSensitiveShapeBeforeRewrite() {
+        IrValue monitor = new IrValue("%monitor", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Locky",
+                "guarded",
+                "(Ljava/lang/Object;)V",
+                IrType.VOID,
+                List.of(monitor),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(IrInstruction.operation(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.MONITOR_ENTER,
+                                        List.of(monitor),
+                                        "monitor")),
+                                IrTerminator.gotoBlock("exit")),
+                        new IrBlock("exit", List.of(), IrTerminator.returnVoid())));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_MONITOR_SENSITIVE_SKIP")));
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsVolatileJmmShapeWithReason() {
+        IrValue input = new IrValue("%p0", IrType.I32);
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrMethod method = new IrMethod(
+                "pkg/Jmm",
+                "guarded",
+                "(I)I",
+                IrType.I32,
+                List.of(input),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.operation(
+                                                java.util.Optional.empty(),
+                                                IrOpcode.VOLATILE_READ_BARRIER,
+                                                List.of(),
+                                                "volatile"),
+                                        IrInstruction.constInt(zero, 0),
+                                        IrInstruction.binary(condition, IrOpcode.CMP_GE_I32, input, zero)),
+                                IrTerminator.branch(condition, "yes", "no")),
+                        new IrBlock("yes", List.of(), IrTerminator.returnValue(input)),
+                        new IrBlock("no", List.of(), IrTerminator.returnValue(zero))));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsReferenceHeavyShapeWithReason() {
+        IrValue input = new IrValue("%p0", IrType.REFERENCE);
+        IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrMethod method = new IrMethod(
+                "pkg/References",
+                "choose",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(input),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.constInt(zero, 0),
+                                        IrInstruction.binary(condition, IrOpcode.CMP_EQ_I32, zero, zero)),
+                                IrTerminator.branch(condition, "value", "nil")),
+                        new IrBlock("value", List.of(), IrTerminator.returnValue(input)),
+                        new IrBlock("nil", List.of(IrInstruction.constNull(nullValue)), IrTerminator.returnValue(nullValue))));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void floatConstantEncryptionPreservesBitsThroughIntegerXorAndBitcast() {
+        IrValue constant = new IrValue("%c", IrType.F32);
+        IrMethod method = new IrMethod(
+                "pkg/Constants",
+                "floatBits",
+                "()F",
+                IrType.F32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.constFloat(constant, -0.0F)),
+                        IrTerminator.returnValue(constant))));
+
+        var result = ProtectionPipeline.defaultPipeline().runDetailed(method, ProtectionConfig.enabled(13));
+
+        List<IrInstruction> instructions = result.method().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .toList();
+        assertTrue(instructions.stream().noneMatch(instruction -> instruction.opcode() == IrOpcode.CONST_FLOAT));
+        assertTrue(instructions.stream().anyMatch(instruction -> instruction.opcode() == IrOpcode.XOR_I32));
+        assertTrue(instructions.stream().anyMatch(instruction -> instruction.opcode() == IrOpcode.BITCAST_I32_TO_F32
+                && instruction.result().orElseThrow().equals(constant)));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONSTANT_ENCRYPTION")
+                && report.status().equals("RAN")
+                && report.reasonCode().equals("FLOAT_CONSTANT_ENCRYPTION")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void doubleConstantEncryptionPreservesBitsThroughIntegerXorAndBitcast() {
+        IrValue constant = new IrValue("%c", IrType.F64);
+        IrMethod method = new IrMethod(
+                "pkg/Constants",
+                "doubleBits",
+                "()D",
+                IrType.F64,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.constDouble(constant, Double.NaN)),
+                        IrTerminator.returnValue(constant))));
+
+        var result = ProtectionPipeline.defaultPipeline().runDetailed(method, ProtectionConfig.enabled(13));
+
+        List<IrInstruction> instructions = result.method().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .toList();
+        assertTrue(instructions.stream().noneMatch(instruction -> instruction.opcode() == IrOpcode.CONST_DOUBLE));
+        assertTrue(instructions.stream().anyMatch(instruction -> instruction.opcode() == IrOpcode.XOR_I64));
+        assertTrue(instructions.stream().anyMatch(instruction -> instruction.opcode() == IrOpcode.BITCAST_I64_TO_F64
+                && instruction.result().orElseThrow().equals(constant)));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONSTANT_ENCRYPTION")
+                && report.status().equals("RAN")
+                && report.reasonCode().equals("DOUBLE_CONSTANT_ENCRYPTION")));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
     }
 
@@ -145,5 +445,42 @@ class ProtectionPipelineTest {
                 IrType.VOID,
                 List.of(),
                 List.of(new IrBlock("entry", List.<IrInstruction>of(), IrTerminator.returnVoid())));
+    }
+
+    private IrMethod branchingMethod(boolean helperSensitive) {
+        IrValue input = new IrValue("%p0", IrType.I32);
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrValue left = new IrValue("%left", IrType.I32);
+        IrValue right = new IrValue("%right", IrType.I32);
+        List<IrInstruction> entryInstructions = new java.util.ArrayList<>();
+        if (helperSensitive) {
+            entryInstructions.add(IrInstruction.call(
+                    java.util.Optional.empty(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    List.of(),
+                    "j2ll_rt_sensitive"));
+        }
+        entryInstructions.add(IrInstruction.constInt(zero, 0));
+        entryInstructions.add(IrInstruction.binary(condition, IrOpcode.CMP_GE_I32, input, zero));
+        return new IrMethod(
+                "pkg/Branches",
+                "choose",
+                "(I)I",
+                IrType.I32,
+                List.of(input),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                entryInstructions,
+                                IrTerminator.branch(condition, "left", "right")),
+                        new IrBlock(
+                                "left",
+                                List.of(IrInstruction.constInt(left, 1)),
+                                IrTerminator.returnValue(left)),
+                        new IrBlock(
+                                "right",
+                                List.of(IrInstruction.constInt(right, -1)),
+                                IrTerminator.returnValue(right))));
     }
 }

@@ -206,6 +206,12 @@ class RuntimeHelperCatalogTest {
         assertTrue(declarations.contains("declare void @j2ll_rt_reflect_field_set(ptr, ptr, ptr, ptr) ; reflectFieldSet"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_reflect_field_get_int(ptr, ptr, ptr) ; reflectFieldGetInt"));
         assertTrue(declarations.contains("declare void @j2ll_rt_reflect_field_set_int(ptr, ptr, ptr, i32) ; reflectFieldSetInt"));
+        assertTrue(declarations.contains("declare i32 @j2ll_rt_reflect_field_get_boolean(ptr, ptr, ptr) ; reflectFieldGetBoolean"));
+        assertTrue(declarations.contains("declare void @j2ll_rt_reflect_field_set_boolean(ptr, ptr, ptr, i32) ; reflectFieldSetBoolean"));
+        assertTrue(declarations.contains("declare i64 @j2ll_rt_reflect_field_get_long(ptr, ptr, ptr) ; reflectFieldGetLong"));
+        assertTrue(declarations.contains("declare void @j2ll_rt_reflect_field_set_long(ptr, ptr, ptr, i64) ; reflectFieldSetLong"));
+        assertTrue(declarations.contains("declare double @j2ll_rt_reflect_field_get_double(ptr, ptr, ptr) ; reflectFieldGetDouble"));
+        assertTrue(declarations.contains("declare void @j2ll_rt_reflect_field_set_double(ptr, ptr, ptr, double) ; reflectFieldSetDouble"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_method_handle_invoke_exact(ptr, ptr, ptr) ; methodHandleInvokeExact"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_constant_dynamic(ptr, i64) ; constantDynamic"));
         assertTrue(declarations.contains("declare i64 @j2ll_rt_unsafe_object_field_offset(ptr, ptr) ; unsafeObjectFieldOffset"));

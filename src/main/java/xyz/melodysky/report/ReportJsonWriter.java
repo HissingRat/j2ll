@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import java.util.Comparator;
 import java.util.List;
 import xyz.melodysky.diagnostic.Diagnostic;
+import xyz.melodysky.diagnostic.DiagnosticHints;
 import xyz.melodysky.diagnostic.DiagnosticLocation;
 import xyz.melodysky.pipeline.MethodEligibility;
 
@@ -21,6 +22,7 @@ public final class ReportJsonWriter {
     public String diagnosticsJson(List<Diagnostic> diagnostics) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
+        root.addProperty("reportVersion", 1);
         JsonArray entries = new JsonArray();
         diagnostics.stream().sorted().forEach(diagnostic -> entries.add(diagnosticJson(diagnostic)));
         root.add("diagnostics", entries);
@@ -33,6 +35,7 @@ public final class ReportJsonWriter {
             List<MethodEligibility> excluded) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
+        root.addProperty("reportVersion", 1);
         JsonArray requestedArray = new JsonArray();
         requestedMethods.stream()
                 .sorted(Comparator
@@ -59,6 +62,7 @@ public final class ReportJsonWriter {
         nullableNumber(object, "instructionOffset", location.instructionOffset());
         nullableString(object, "artifactId", location.artifactId());
         object.addProperty("message", diagnostic.message());
+        object.addProperty("hint", DiagnosticHints.hint(diagnostic));
         nullableString(object, "decision", diagnostic.decision());
         return object;
     }

@@ -82,7 +82,7 @@ public final class LlvmModuleLowerer {
             LlvmVisibility visibility,
             Set<String> directCallMethodKeys) {
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
-        if (methodNeedsJniEnv(method)) {
+        if (methodNeedsJniEnv(method, directCallMethodKeys)) {
             parameters.add(new LlvmParameter(LlvmType.PTR, "%j2ll_env"));
         }
         if (methodNeedsOwnerClass(method)) {
@@ -250,6 +250,16 @@ public final class LlvmModuleLowerer {
         if (isMemoryFence(instruction.opcode())) {
             return lowerMemoryFence(instruction);
         }
+        if (instruction.opcode() == IrOpcode.BITCAST_I32_TO_F32) {
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "bitcast i32 " + instruction.operands().get(0).name() + " to float");
+        }
+        if (instruction.opcode() == IrOpcode.BITCAST_I64_TO_F64) {
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "bitcast i64 " + instruction.operands().get(0).name() + " to double");
+        }
         if (isArrayHelper(instruction)) {
             return lowerEnvBackedHelperCall(instruction, arrayHelperName(instruction));
         }
@@ -289,6 +299,7 @@ public final class LlvmModuleLowerer {
             case AND_I32 -> "and";
             case OR_I32 -> "or";
             case XOR_I32 -> "xor";
+            case BITCAST_I32_TO_F32 -> throw new IllegalStateException("handled earlier");
             case CMP_EQ_I32, CMP_NE_I32, CMP_LT_I32, CMP_LE_I32, CMP_GT_I32, CMP_GE_I32,
                     CMP_EQ_REF, CMP_NE_REF ->
                     throw new IllegalStateException("handled earlier");
@@ -303,6 +314,7 @@ public final class LlvmModuleLowerer {
             case AND_I64 -> "and";
             case OR_I64 -> "or";
             case XOR_I64 -> "xor";
+            case BITCAST_I64_TO_F64 -> throw new IllegalStateException("handled earlier");
             case ADD_F32, ADD_F64 -> "fadd";
             case SUB_F32, SUB_F64 -> "fsub";
             case MUL_F32, MUL_F64 -> "fmul";
@@ -564,14 +576,14 @@ public final class LlvmModuleLowerer {
                             + typedOperand(instruction.operands().get(2)) + ")");
         }
         if (isDispatchHelperInstruction(instruction)) {
-            String helper = instruction.opcode() == IrOpcode.CALL_INTERFACE
-                    ? "j2ll_rt_call_interface_i32"
-                    : "j2ll_rt_call_virtual_i32";
+            String helper = dispatchHelperName(instruction);
             String receiver = typedOperand(instruction.operands().get(0));
             String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+            String arguments = dispatchHelperArguments(instruction, receiver, token);
+            String resultType = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call i32 @" + helper + "(ptr %j2ll_env, " + receiver + ", " + token + ", ptr null)");
+                    "call " + resultType + " @" + helper + "(ptr %j2ll_env, " + arguments + ")");
         }
         String symbol = instruction.opcode() == IrOpcode.CALL_DYNAMIC
                 ? stableHash(instruction.symbol().orElseThrow())
@@ -950,6 +962,7 @@ public final class LlvmModuleLowerer {
                 || base.equals("j2ll_rt_get_declared_constructor")
                 || base.equals("j2ll_rt_reflect_invoke")
                 || base.equals("j2ll_rt_reflect_new_instance")
+                || base.equals("j2ll_rt_reflect_set_accessible")
                 || base.startsWith("j2ll_rt_reflect_field_")
                 || base.startsWith("j2ll_rt_unsafe_")
                 || base.startsWith("j2ll_rt_var_handle_");
@@ -963,10 +976,60 @@ public final class LlvmModuleLowerer {
     private boolean isDispatchHelperInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
         return (instruction.opcode() == IrOpcode.CALL_VIRTUAL
                         || instruction.opcode() == IrOpcode.CALL_INTERFACE)
-                && instruction.result().map(IrValue::type).filter(type -> type == xyz.melodysky.ir.model.IrType.I32).isPresent()
-                && instruction.operands().size() == 1
-                && instruction.operands().get(0).type() == xyz.melodysky.ir.model.IrType.REFERENCE
-                && instruction.symbol().map(symbol -> symbol.endsWith("!()I")).orElse(false);
+                && dispatchHelperName(instruction) != null;
+    }
+
+    private String dispatchHelperName(xyz.melodysky.ir.model.IrInstruction instruction) {
+        if (instruction.result().isEmpty()
+                || instruction.operands().isEmpty()
+                || instruction.operands().get(0).type() != xyz.melodysky.ir.model.IrType.REFERENCE) {
+            return null;
+        }
+        String descriptor = instruction.symbol()
+                .flatMap(this::methodDescriptor)
+                .orElse("");
+        boolean iface = instruction.opcode() == IrOpcode.CALL_INTERFACE;
+        if (instruction.result().map(IrValue::type).orElseThrow() == xyz.melodysky.ir.model.IrType.I32) {
+            if (descriptor.equals("()I") && instruction.operands().size() == 1) {
+                return iface ? "j2ll_rt_call_interface_i32" : "j2ll_rt_call_virtual_i32";
+            }
+            if (descriptor.equals("(I)I")
+                    && instruction.operands().size() == 2
+                    && instruction.operands().get(1).type() == xyz.melodysky.ir.model.IrType.I32) {
+                return iface ? "j2ll_rt_call_interface_i32_arg_i32" : "j2ll_rt_call_virtual_i32_arg_i32";
+            }
+        }
+        if (instruction.result().map(IrValue::type).orElseThrow() == xyz.melodysky.ir.model.IrType.REFERENCE) {
+            if (descriptor.startsWith("()L") && descriptor.endsWith(";") && instruction.operands().size() == 1) {
+                return iface ? "j2ll_rt_call_interface_ref" : "j2ll_rt_call_virtual_ref";
+            }
+            if (descriptor.startsWith("(L")
+                    && descriptor.contains(";)L")
+                    && descriptor.endsWith(";")
+                    && instruction.operands().size() == 2
+                    && instruction.operands().get(1).type() == xyz.melodysky.ir.model.IrType.REFERENCE) {
+                return iface ? "j2ll_rt_call_interface_ref_arg_ref" : "j2ll_rt_call_virtual_ref_arg_ref";
+            }
+        }
+        return null;
+    }
+
+    private String dispatchHelperArguments(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            String receiver,
+            String token) {
+        if (instruction.operands().size() == 1) {
+            return receiver + ", " + token + ", ptr null";
+        }
+        return receiver + ", " + token + ", " + typedOperand(instruction.operands().get(1));
+    }
+
+    private Optional<String> methodDescriptor(String methodKey) {
+        int separator = methodKey.indexOf('!');
+        if (separator < 0 || separator == methodKey.length() - 1) {
+            return Optional.empty();
+        }
+        return Optional.of(methodKey.substring(separator + 1));
     }
 
     private boolean isConstructorCallHelperInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1039,7 +1102,7 @@ public final class LlvmModuleLowerer {
         }
     }
 
-    private boolean methodNeedsJniEnv(IrMethod method) {
+    private boolean methodNeedsJniEnv(IrMethod method, Set<String> directCallMethodKeys) {
         return method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
                 || method.blocks().stream()
@@ -1053,6 +1116,9 @@ public final class LlvmModuleLowerer {
                         || isClassInitHelper(instruction.opcode())
                         || isConstructorCallHelperInstruction(instruction)
                         || isDispatchHelperInstruction(instruction)
+                        || ((instruction.opcode() == IrOpcode.CALL_STATIC
+                                        || isDirectSpecialCallInstruction(instruction))
+                                && instruction.symbol().filter(directCallMethodKeys::contains).isPresent())
                         || (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
                                 && instruction.symbol().map(this::isEnvBackedRuntimeHelperSymbol).orElse(false)));
     }

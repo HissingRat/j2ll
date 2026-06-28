@@ -65,6 +65,7 @@ xyz.melodysky.backend.llvm.pass
 xyz.melodysky.backend.llvm.protection
 xyz.melodysky.runtime
 xyz.melodysky.runtime.metadata
+xyz.melodysky.runtime.jdk
 xyz.melodysky.runtime.jni
 xyz.melodysky.runtime.unsafe
 xyz.melodysky.packaging
@@ -97,6 +98,9 @@ xyz.melodysky.toolchain.symbols
 推荐类：
 
 - `J2llCli`：`main` 入口，解析 argv。
+- `build/cli/j2ll.jar`：Gradle `cliJar` / `shadowJar` 产出的 beta CLI artifact；测试用 `java -jar` 直接 smoke `--help` 和 `--version`。
+- `build/dist/j2ll/`：Gradle `distJ2ll` 产出的 beta distribution directory，包含 `j2ll.jar`、`docs/examples`、`docs/samples`、`docs/getting-started.md`、schema 和 contract docs；不内置 Zig archive，首次运行按 managed Zig bootstrap policy 获取或复用 Zig。
+- `betaAcceptance`：Gradle verification task，使用 dist 包中的 `j2ll.jar` 做 help/version、validate、dry-run、build、child JVM differential 和 report/readiness smoke，防止测试 classpath 误替代真实用户入口。
 - `CliCommand`：命令抽象，例如 build/analyze/dump。
 - `CliOptionsParser`：只负责 CLI 参数解析。
 - `CliOutput`：格式化用户可见输出。
@@ -134,7 +138,7 @@ xyz.melodysky.toolchain.symbols
 - `LlvmProtectionConfig`：LLVM module model 保护配置。
 - `BinaryProtectionConfig`：binary visibility/strip 配置。
 - `RewriteOptions`：rewrite-only 选项，例如 dumps、tier gates。
-- `ResolvedConfig`：解析默认值、相对路径、seed、selector 后的稳定配置。
+- `ResolvedConfig`：解析默认值、相对路径、seed、selector 后的稳定配置；`config.resolved.json` 只写 seed hash，不写 raw protection seed。
 
 边界：
 
@@ -176,6 +180,7 @@ xyz.melodysky.toolchain.symbols
 - `DiagnosticLocation`：class/method/instruction/source path。
 - `DiagnosticBag`：稳定排序、去重、聚合。
 - `DiagnosticFormatter`：面向 CLI 或 JSON 的格式化。
+- `DiagnosticHints`：按稳定 reason code 输出短 remediation hint；CLI stderr、`diagnostics.json` 和 `failure-report.json` 共享同一 hint 来源。
 
 应抽工具：
 
@@ -189,16 +194,28 @@ xyz.melodysky.toolchain.symbols
 推荐类：
 
 - `ReportJsonWriter`：`diagnostics.json`、`lowering-report.json` 的稳定 JSON writer。
+- `FailureReportWriter`：失败运行 sidecar writer，记录 error diagnostics 的 stage/reason/message/affected artifact，并固定 `finalArtifactWritten=false`。
+- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、明文 fallback class entry、sensitive plaintext fact gateMode/promotionReason、fallback blob binary metadata/carrier surface，以及 generated C/helper C/per-class LLVM/build.zig/native/JAR/symbol/packaging surfaces。
 - `PackagingReportWriter`：`packaging-report.json` 的稳定 JSON writer。
 - `FrontendSkipReportWriter`：`frontend-skip-report.json` 的稳定 JSON writer。
 - `ResolvedConfigReportWriter`：`config.resolved.json` writer。
 - `SymbolAuditReportWriter`：`symbol-audit.json` writer。
+- `SupportMatrixWriter`：`support-matrix.json` release-readiness matrix writer，按 feature/status/reason/testCoverage 稳定排序，并写出 `coverageLevel` 与 `evidenceCount`。
+- `OpcodeSupportMatrixWriter`：`opcode-support-matrix.json` release-readiness opcode matrix writer，按 category/opcode/status/reason/testCoverage 稳定排序，并写出 `coverageLevel` 与 `evidenceCount`。
+- `KnownBlockersWriter`：`known-blockers.json` writer，用 stable blocker id、reason code、severity、target milestone、report location 和 suggested future path 记录仍保守的 release blocker；standalone/native-image、自有 object model/GC/thread scheduler 等固定为 explicit non-goal，不作为未完成 runtime blocker。
+- `SummaryReportWriter`：`summary.json` writer，从已生成 reports 聚合用户可读状态、method counts、native target status、protection/audit/readiness 摘要和 top blockers；不重新分析 bytecode/IR，也不写 raw seed 或 sensitive plaintext。
+- `SummaryMarkdownWriter`：`summary.md` writer，从 `summary.json` 生成 diff-stable human summary，包含 native target buildable/unbuildable 摘要，不复制 raw seed、sensitive plaintext 或 workspace absolute path。
+- `ReportIndexWriter`：`index.json` writer，扫描 `reports/`、`config.resolved.json` 和 `intermediates/intermediates-manifest.json` 并记录 path、reportVersion、SHA-256、`requiredForReadiness`、`requiredForBeta`、`requiredForRc`、`producedOnFailure` 和粗粒度 status。
+- `ReleaseReadinessGate` / `ReleaseReadinessWriter`：校验 required reports 和关键 top-level fields，包括 artifact audit、packaging、symbol audit、support/opcode matrix 和 known blockers，并写入 `release-readiness.json`；strict suite mode additionally requires `reports/release-suite-summary.json`, validates suite name/case/profile/category/aggregate fields, checks known blocker matrix coverage, verifies beta/rc blocker reasons have release-suite expected-status/diagnostic evidence or weird-bytecode seed coverage while future/non-goal blockers stay visible but non-blocking, requires determinism evidence, and emits readiness fields `missingEvidence`, `suiteCoverageByBlocker`, `blockerEvidenceComplete`, `targetEvidenceComplete`, `finalArtifactWritten`, `determinismEvidenceComplete`, `metadataConsistencyPassed`, `blockingSensitiveFactsPassed`, `targetPackagePlanComplete`, `betaProfilePassed`, `betaMissingEvidence`, `cliArtifactSmokePassed`, `docsExamplesValidated` and `strictModePassed`.
+- `ReleaseReadinessMissingEvidence`：strict/readiness failure 的机器可读摘要，按 missing report、missing blocker evidence、missing suite category、artifact audit not passed、determinism missing、target evidence incomplete 等分类，并带 report path。
 
 边界：
 
 - `report` 只负责把已有 stage facts 序列化为合同 JSON，不重新分析 bytecode、IR 或 LLVM。
 - 字段顺序、wire name 和 nullable 字段策略必须由 golden tests 覆盖。
 - report writer 不决定 lowering/rewrite/protection 策略；策略仍归各 stage 所有。
+
+测试支撑包 `src/test/java/xyz/melodysky/testsupport/corpus` 提供 deterministic corpus runner、release suite runner 和 determinism comparator：构建多个 fixture JAR，按 stable case name 排序，运行 original/output child JVM，比较 exit code/stdout/stderr，收集 release-readiness report paths（包括 `artifact-audit.json`），并写入带 `profile`、`requiredCategories`、`missingCategories`、aggregate 与 `determinismEvidenceComplete` 的 `reports/release-suite-summary.json`。`ReleaseSuiteProfile` 定义 `smoke`、`standard`、`beta` 和 `rc`；beta profile 关注用户可用性，要求 CLI artifact smoke、docs examples validation、report index、minimal LLVM native 和 mixed helper/fallback evidence；RC profile 覆盖 minimal LLVM native、mixed helper/fallback/protection、strip/resign、ServiceLoader/multi-release/module-info、config expected failure、artifact audit expected failure、required non-host target expected failure、determinism、known blocker evidence 和 realistic sample evidence。`CorpusCase` 记录 case name/category/features、expected support statuses、signature policy、signing config、protection variant、optional target JSON override、expected failure stage/reason 和 expected pipeline success；`ReleaseSuiteRunner` 负责 minimal、mixed helper/fallback、safe finally cleanup、签名 fail/strip/resign、service loader/multi-release/module、reflection/MethodHandle/lambda fallback、raw Unsafe boundary、dynamic VarHandle boundary、wait/notify boundary、non-host target preflight failure、artifact audit failure、JDK fallback，以及 realistic CLI app、reflection/dynamic 和 packaging-preservation samples，并把 expected status 展开为带 `reportLocation` 的 `expectedSupportEvidence`。`ReleaseDeterminismComparator` 对同 input/config/seed 双跑的 normalized report set、output JAR entry SHA、native resource path、embedded native SHA evidence 和 fallback/string/symbol/loader tokens 做 smoke。weird-bytecode seed corpus 放在 SSA/frontend 测试包内，用固定 stack permutation、category-2 dup、wide/iinc、switch、unreachable block、exception-state merge、multi-exit finally、monitor-finally、nested finally、legacy jsr/ret fixture 防止 opcode matrix 与实际 lowering 漂移。
 
 ## dump
 
@@ -693,6 +710,7 @@ JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 stub 生
 子包：
 
 - `runtime.metadata`：`RuntimeMetadataIndex`、class/method/field/annotation/signature/record/nest/inner/class-init metadata、validator 和 stable dump writer。
+- `runtime.jdk`：`JdkIntrinsicRegistry` 和 JDK helper/fallback policy。String/StringBuilder/System.arraycopy/Math/boxing/Objects 的 supported helper path 与 ArrayList/HashMap narrow `JDK_HELPER_FALLBACK` policy 都在这里声明，不在 native code 中重建 JDK object layout。
 - `runtime.jni`：`JniTypeMapper`、`JniMethodDescriptor`、`JniReferencePolicy`、`JniLocalFramePlan`、pending exception policy。
 - `runtime.unsafe`：`UnsafePolicy` / `UnsafePlan`，声明 supported Unsafe/VarHandle subset、helper kind、volatile/CAS JMM facts 和 unsupported fallback reason。Unsafe offset values in supported JVM-hosted paths are deterministic metadata tokens resolved by JNI helpers, never raw Java object memory addresses.
 
@@ -735,11 +753,15 @@ JAR rewrite、loader、native registration。
 - `Repackager`
 - `ManifestMerger`
 - `SignaturePolicy`
+- `JarPreservationReport`
+- `SignatureActionReport`
 - `SignatureStripper`
-- `JarSigner`
+- `JarSignatureResigner`
+- `JarSignatureResignResult`
 - `ResourceCopyPolicy`
 - `OutputJarLayout`
 - `EmbeddedLibraryLayout`
+- `J2llMetadataEntries`
 - `GeneratedLoaderNaming`
 - `ClassRewriteReport`
 
@@ -749,6 +771,7 @@ JAR rewrite、loader、native registration。
 - packaging 不生成 LLVM。
 - packaging 只消费 compiler output、JVM/JNI helper metadata 和 native artifact metadata。
 - packaging 必须保证 output jar 中 `embeddedLibraryDirectory` 下存在所有 selected target 动态库。
+- packaging 必须在签名前写入 `META-INF/j2ll/build-info.json`、`META-INF/j2ll/native-libraries.json` 和 `META-INF/j2ll/reports-manifest.json`，只记录 hashes/path/target/schema/tool facts，不泄漏 raw seed 或 sensitive plaintext；artifact audit 校验 metadata 与 packaging report 一致。
 - packaging 必须保留 manifest、services、module-info 和非 class resources，除非有明确 policy。
 - packaging 使用 generated loader + `RegisterNatives`，不导出每个 Java method 的 JNI name symbol。
 - packaging 对 `halfLowered` method 必须按 `fallbackMode` 存储 JVM helper fallback 所需 bytecode target；schema v1 使用 native embedded fallback blob，不输出明文 generated fallback class。
@@ -766,6 +789,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `ZigToolchain`
 - `ZigInstaller`
 - `ManagedZigLocator`
+- `ManagedZigBootstrapEvent`
 - `ZigArchiveResolver`
 - `ZigDownloader`
 - `ZigArchiveExtractor`
@@ -789,13 +813,15 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 
 - process output capture：`ProcessRunner`。
 - target naming：`TargetTriple`。
-- selected/buildable/skipped target capability facts：`NativeBuildTargetPreflight`，并通过 `ToolchainDiagnostics.ZIG_TARGET_PREFLIGHT` 写入 diagnostics/report。
+- selected/buildable/failed required target capability facts：`NativeBuildTargetPreflight`，包含 required、current host、Zig triple、expected library path/name、failure kind、required capability、platform SDK requirement 和 build log tail，并通过 `ToolchainDiagnostics.ZIG_TARGET_PREFLIGHT` 或 `ToolchainDiagnostics.ZIG_TARGET_UNBUILDABLE` 写入 diagnostics/report。
 - workspace paths：`NativeBuildWorkspace`。
 - per-class intermediate paths and collision-safe class directory names：`IntermediateArtifactLayout` / `ClassArtifactPath`。
+- intermediate manifest generation：`IntermediateArtifactIndexWriter` writes `intermediates/intermediates-manifest.json` with config switches, class/method artifact ids and emitted intermediate file SHA-256; it obeys `includeDebugDumps` / `includePerClassIr` / `includePerClassLlvm` / `includePerClassC`.
 - managed Zig home resolution：`ManagedZigLocator`，固定从可执行 `j2ll.jar` 同级目录解析 `<j2ll-home>/zig/zig(.exe)`。
-- Zig archive name/URL resolution：`ZigArchiveResolver`，固定 Zig `0.15.2` 和 `https://ziglang.org/download/0.15.2/`。
-- Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
-- Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected target 和 skipped reason。
+- managed Zig user-flow evidence：`ManagedZigBootstrapEvent` records `FOUND_MANAGED_ZIG`、`WRONG_VERSION_REINSTALL`、`LOCAL_ARCHIVE_USED`、`DOWNLOAD_ATTEMPTED`、`ARCHIVE_CHECKSUM_VERIFIED` 和 `INSTALLED_MANAGED_ZIG`，并由 `PackagingReportWriter` 写入 `zigToolchain.bootstrapEvents`。Archive events include `archiveName`、`archiveSha256`、`checksumStatus`、`signatureStatus` and `source`。
+- Zig archive name/URL/checksum resolution：`ZigArchiveResolver`，固定 Zig `0.15.2`、`https://ziglang.org/download/0.15.2/` 和官方 archive SHA-256 metadata。
+- Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；`ZigArchiveVerifier` 必须在解压前校验 local/downloaded archive SHA-256，失败作为 native/toolchain error；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
+- Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected/required target。当前 preflight 无法构建的 required target 进入 `failedTargets`，reason 使用 `ZIG_TARGET_UNBUILDABLE`，并使 pipeline failed。
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行 managed `<j2ll-home>/zig/zig(.exe) build ...`。
 
 边界：
@@ -803,7 +829,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - toolchain 只负责通过 Zig 生成和链接 JVM-hosted 动态库。
 - schema v1 不提供 toolchain config；Zig version、download URL、install directory 都是固定契约。
 - managed Zig layout 必须规范化为 `<j2ll-home>/zig/zig(.exe)` 和 `<j2ll-home>/zig/lib`。
-- archive extraction 必须防 path traversal；checksum/signature 校验失败必须 preflight error。
+- archive extraction 必须防 path traversal；checksum 校验失败必须 preflight error；signature verification 当前明确记录 `notVerifiedBoundary`，不能静默宣称已验签。
 - toolchain 接收 per-class LLVM `.ll` 和已生成 `.o` 作为输入，但 linking/export/strip/symbol audit 仍由 Zig build plan 统一编排。
 - 外部 `cc` / `clang` / `llc` / platform linker 不暴露为 public toolchain contract；实现不能在 `ZigNativeLibraryBuilder` / `HostNativeLibraryBuilder` 中新增这些直接命令。
 - toolchain 只生成供 JVM loader 加载的动态库，不生成可直接运行的 executable 或独立 Java runtime artifact。

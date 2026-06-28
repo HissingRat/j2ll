@@ -11,6 +11,10 @@ public final class ClassFileEntries {
         return entryName != null && entryName.endsWith(".class") && !entryName.endsWith("/");
     }
 
+    public static boolean isBaseClassEntry(String entryName) {
+        return isClassEntry(entryName) && !entryName.startsWith("META-INF/versions/");
+    }
+
     public static List<ClassFileEntry> stableSorted(List<ClassFileEntry> entries) {
         return entries.stream()
                 .sorted(Comparator.naturalOrder())

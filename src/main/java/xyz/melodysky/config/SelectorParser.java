@@ -26,9 +26,7 @@ public final class SelectorParser {
         String methodName = raw.substring(hash + 1, bang);
         String descriptor = raw.substring(bang + 1);
         validateClassPattern(raw, classPattern);
-        if (methodName.isBlank()) {
-            throw new IllegalArgumentException("method selector has blank method name: " + raw);
-        }
+        validateMethodName(raw, methodName);
         if (!isMethodDescriptor(descriptor)) {
             throw new IllegalArgumentException("method selector has invalid descriptor: " + raw);
         }
@@ -46,6 +44,44 @@ public final class SelectorParser {
             if (segment.contains("**") && !segment.equals("**")) {
                 throw new IllegalArgumentException("** wildcard must be a whole segment: " + raw);
             }
+            validateClassPatternSegment(raw, segment);
+        }
+    }
+
+    private void validateClassPatternSegment(String raw, String segment) {
+        if (segment.equals("*") || segment.equals("**")) {
+            return;
+        }
+        for (int index = 0; index < segment.length(); index++) {
+            char ch = segment.charAt(index);
+            if (ch == '*') {
+                continue;
+            }
+            if (ch == '.') {
+                throw new IllegalArgumentException("selector must use / separated internal names, not dots: " + raw);
+            }
+            if (!isClassNameChar(ch)) {
+                throw new IllegalArgumentException("selector has invalid class name character '" + ch + "': " + raw);
+            }
+        }
+    }
+
+    private boolean isClassNameChar(char ch) {
+        return Character.isLetterOrDigit(ch) || ch == '_' || ch == '$';
+    }
+
+    private void validateMethodName(String raw, String methodName) {
+        if (methodName.isBlank()) {
+            throw new IllegalArgumentException("method selector has blank method name: " + raw);
+        }
+        if (methodName.equals("<init>") || methodName.equals("<clinit>")) {
+            return;
+        }
+        for (int index = 0; index < methodName.length(); index++) {
+            char ch = methodName.charAt(index);
+            if (!(Character.isLetterOrDigit(ch) || ch == '_' || ch == '$')) {
+                throw new IllegalArgumentException("method selector has invalid method name: " + raw);
+            }
         }
     }
 
@@ -53,7 +89,54 @@ public final class SelectorParser {
         if (descriptor == null || !descriptor.startsWith("(")) {
             return false;
         }
-        int end = descriptor.indexOf(')');
-        return end > 0 && end < descriptor.length() - 1;
+        int[] index = {1};
+        while (index[0] < descriptor.length() && descriptor.charAt(index[0]) != ')') {
+            if (!parseFieldType(descriptor, index)) {
+                return false;
+            }
+        }
+        if (index[0] >= descriptor.length() || descriptor.charAt(index[0]) != ')') {
+            return false;
+        }
+        index[0]++;
+        if (index[0] >= descriptor.length()) {
+            return false;
+        }
+        if (descriptor.charAt(index[0]) == 'V') {
+            index[0]++;
+            return index[0] == descriptor.length();
+        }
+        return parseFieldType(descriptor, index) && index[0] == descriptor.length();
+    }
+
+    private boolean parseFieldType(String descriptor, int[] index) {
+        if (index[0] >= descriptor.length()) {
+            return false;
+        }
+        char ch = descriptor.charAt(index[0]++);
+        return switch (ch) {
+            case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z' -> true;
+            case '[' -> parseFieldType(descriptor, index);
+            case 'L' -> parseObjectType(descriptor, index);
+            default -> false;
+        };
+    }
+
+    private boolean parseObjectType(String descriptor, int[] index) {
+        int start = index[0];
+        while (index[0] < descriptor.length() && descriptor.charAt(index[0]) != ';') {
+            char ch = descriptor.charAt(index[0]++);
+            if (ch == '.' || ch == '[' || ch == ')' || ch == '(') {
+                return false;
+            }
+        }
+        if (index[0] >= descriptor.length() || descriptor.charAt(index[0]) != ';') {
+            return false;
+        }
+        if (index[0] == start) {
+            return false;
+        }
+        index[0]++;
+        return true;
     }
 }

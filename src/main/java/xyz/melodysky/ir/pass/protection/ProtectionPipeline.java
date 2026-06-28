@@ -11,6 +11,7 @@ import xyz.melodysky.ir.pass.PassDiagnostics;
 import xyz.melodysky.ir.validate.IrMethodValidator;
 import xyz.melodysky.pipeline.StageResult;
 import xyz.melodysky.report.ProtectionPassReport;
+import xyz.melodysky.report.SensitivePlaintextFact;
 
 public final class ProtectionPipeline {
     private final List<ProtectionPass> passes;
@@ -22,6 +23,7 @@ public final class ProtectionPipeline {
     public static ProtectionPipeline defaultPipeline() {
         return new ProtectionPipeline(List.of(
                 new StringEncryptionPass(),
+                new ControlFlowFlatteningPass(),
                 new BasicBlockSplittingPass(),
                 new PrimitiveConstantEncryptionPass(),
                 new BlockNameObfuscationPass()));
@@ -67,15 +69,39 @@ public final class ProtectionPipeline {
                         .withDecision(pass.skipReasonCode(current)));
                 continue;
             }
+            IrMethod before = current;
             current = pass.run(current, config);
             List<Diagnostic> validation = new IrMethodValidator().validate(current);
             diagnostics.addAll(validation);
             String status = validation.stream().anyMatch(diagnostic -> diagnostic.severity().wireName().equals("error"))
                     ? "FAILED"
                     : "RAN";
-            reports.add(report(pass.name(), status, status.equals("RAN") ? "OK" : "PASS_VALIDATION_FAILED", current, config));
+            reports.add(report(pass.name(), status, status.equals("RAN")
+                    ? ranReasonCode(pass.name(), current)
+                    : "PASS_VALIDATION_FAILED", before, config, sensitivePlaintextFacts(pass, before, status)));
         }
         return new ProtectionPipelineResult(current, diagnostics, reports);
+    }
+
+    private String ranReasonCode(String passName, IrMethod method) {
+        if (passName.equals("CONSTANT_ENCRYPTION")) {
+            boolean hasFloat = method.blocks().stream()
+                    .flatMap(block -> block.instructions().stream())
+                    .anyMatch(instruction -> instruction.opcode() == IrOpcode.BITCAST_I32_TO_F32);
+            boolean hasDouble = method.blocks().stream()
+                    .flatMap(block -> block.instructions().stream())
+                    .anyMatch(instruction -> instruction.opcode() == IrOpcode.BITCAST_I64_TO_F64);
+            if (hasFloat) {
+                return "FLOAT_CONSTANT_ENCRYPTION";
+            }
+            if (hasDouble) {
+                return "DOUBLE_CONSTANT_ENCRYPTION";
+            }
+        }
+        if (passName.equals("CONTROL_FLOW_FLATTENING")) {
+            return "CONTROL_FLOW_FLATTENING";
+        }
+        return "OK";
     }
 
     private ProtectionPassReport report(
@@ -84,6 +110,16 @@ public final class ProtectionPipeline {
             String reasonCode,
             IrMethod method,
             ProtectionConfig config) {
+        return report(passName, status, reasonCode, method, config, List.of());
+    }
+
+    private ProtectionPassReport report(
+            String passName,
+            String status,
+            String reasonCode,
+            IrMethod method,
+            ProtectionConfig config,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts) {
         return new ProtectionPassReport(
                 passName,
                 "IR",
@@ -91,7 +127,18 @@ public final class ProtectionPipeline {
                 reasonCode,
                 List.of(method.methodKey()),
                 List.of(),
-                Long.toString(config.seed()));
+                Long.toString(config.seed()),
+                sensitivePlaintextFacts);
+    }
+
+    private List<SensitivePlaintextFact> sensitivePlaintextFacts(
+            ProtectionPass pass,
+            IrMethod method,
+            String status) {
+        if (!status.equals("RAN") || !(pass instanceof StringEncryptionPass stringEncryptionPass)) {
+            return List.of();
+        }
+        return stringEncryptionPass.sensitivePlaintextFacts(method);
     }
 
     private boolean isMonitorSensitive(IrMethod method) {

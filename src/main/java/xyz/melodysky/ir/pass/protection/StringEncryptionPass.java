@@ -8,9 +8,12 @@ import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
+import xyz.melodysky.report.SensitivePlaintextFact;
 
 public final class StringEncryptionPass implements ProtectionPass {
-    private static final String PREFIX = "j2ll_rt_string_constant|string:";
+    private static final String CARRIER_PREFIX = "j2ll_rt_string_constant|string:";
+    private static final String CONST_STRING_PREFIX = "string:";
+    private static final String ENCRYPTED_PREFIX = "j2ll_rt_string_constant|enc:v1:";
 
     @Override
     public String name() {
@@ -24,14 +27,14 @@ public final class StringEncryptionPass implements ProtectionPass {
 
     @Override
     public boolean applicable(IrMethod method) {
-        return method.blocks().stream()
-                .flatMap(block -> block.instructions().stream())
-                .flatMap(instruction -> instruction.symbol().stream())
-                .anyMatch(symbol -> symbol.startsWith(PREFIX));
+        return hasStringCarrier(method) || (!isReflectionSensitive(method) && hasOrdinaryConstString(method));
     }
 
     @Override
     public String skipReasonCode(IrMethod method) {
+        if (isReflectionSensitive(method) && hasOrdinaryConstString(method) && !hasStringCarrier(method)) {
+            return "STRING_ENCRYPTION_REFLECTION_SENSITIVE";
+        }
         return "NO_STRING_CONSTANT_CARRIER";
     }
 
@@ -42,10 +45,12 @@ public final class StringEncryptionPass implements ProtectionPass {
         }
         ProtectionRandom random = new ProtectionRandom(config.seed());
         ArrayList<IrBlock> blocks = new ArrayList<>();
+        boolean rewriteConstStrings = !isReflectionSensitive(method);
+        int[] constStringIndex = {0};
         for (IrBlock block : method.blocks()) {
             ArrayList<IrInstruction> instructions = new ArrayList<>();
             for (IrInstruction instruction : block.instructions()) {
-                instructions.add(encryptInstruction(method, random, instruction));
+                appendEncryptedInstruction(method, random, rewriteConstStrings, constStringIndex, instructions, instruction);
             }
             blocks.add(new IrBlock(
                     block.name(),
@@ -58,26 +63,71 @@ public final class StringEncryptionPass implements ProtectionPass {
         return new IrMethod(method.owner(), method.name(), method.descriptor(), method.returnType(), method.parameters(), blocks);
     }
 
-    private IrInstruction encryptInstruction(IrMethod method, ProtectionRandom random, IrInstruction instruction) {
-        if (instruction.opcode() != IrOpcode.CALL_RUNTIME_HELPER
-                || instruction.symbol().isEmpty()
-                || !instruction.symbol().orElseThrow().startsWith(PREFIX)) {
-            return instruction;
+    public List<SensitivePlaintextFact> sensitivePlaintextFacts(IrMethod method) {
+        if (!applicable(method)) {
+            return List.of();
         }
-        String value = instruction.symbol().orElseThrow().substring(PREFIX.length());
-        long token = Integer.toUnsignedLong(("string:" + value).hashCode());
-        byte[] plain = value.getBytes(StandardCharsets.UTF_8);
-        byte[] key = HexFormat.of().parseHex(random.token(name(), method.methodKey() + ":" + token, 32));
-        byte[] cipher = new byte[plain.length];
-        for (int index = 0; index < plain.length; index++) {
-            cipher[index] = (byte) (plain[index] ^ key[index % key.length]);
+        ArrayList<SensitivePlaintextFact> facts = new ArrayList<>();
+        boolean rewriteConstStrings = !isReflectionSensitive(method);
+        method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .forEach(instruction -> {
+                    if (isStringCarrier(instruction)) {
+                        facts.add(SensitivePlaintextFact.of(
+                                instruction.symbol().orElseThrow().substring(CARRIER_PREFIX.length()),
+                                method.methodKey(),
+                                name(),
+                                List.of("generated-c", "llvm-ir", "native-library")));
+                    } else if (rewriteConstStrings && isOrdinaryConstString(instruction)) {
+                        facts.add(SensitivePlaintextFact.of(
+                                constStringValue(instruction),
+                                method.methodKey(),
+                                name(),
+                                List.of("generated-c", "llvm-ir", "native-library")));
+                    }
+                });
+        return facts.stream()
+                .distinct()
+                .sorted(java.util.Comparator
+                        .comparing(SensitivePlaintextFact::literalHash)
+                        .thenComparing(SensitivePlaintextFact::sourceMethod))
+                .toList();
+    }
+
+    private void appendEncryptedInstruction(
+            IrMethod method,
+            ProtectionRandom random,
+            boolean rewriteConstStrings,
+            int[] constStringIndex,
+            List<IrInstruction> instructions,
+            IrInstruction instruction) {
+        if (isStringCarrier(instruction)) {
+            String value = instruction.symbol().orElseThrow().substring(CARRIER_PREFIX.length());
+            instructions.add(instructionWithEncryptedSymbol(method, random, instruction, value));
+            return;
         }
-        String symbol = "j2ll_rt_string_constant|enc:v1:"
-                + token
-                + ":"
-                + HexFormat.of().formatHex(key)
-                + ":"
-                + HexFormat.of().formatHex(cipher);
+        if (rewriteConstStrings && isOrdinaryConstString(instruction)) {
+            String value = constStringValue(instruction);
+            long token = token(value);
+            xyz.melodysky.ir.model.IrValue tokenValue = new xyz.melodysky.ir.model.IrValue(
+                    "%j2ll_str_token_" + constStringIndex[0]++, xyz.melodysky.ir.model.IrType.I64);
+            instructions.add(IrInstruction.constLong(tokenValue, token));
+            instructions.add(new IrInstruction(
+                    instruction.result(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    List.of(tokenValue),
+                    instruction.intLiteral(),
+                    instruction.longLiteral(),
+                    instruction.floatLiteral(),
+                    instruction.doubleLiteral(),
+                    java.util.Optional.of(encryptedSymbol(method, random, value)),
+                    instruction.exceptionSites()));
+            return;
+        }
+        instructions.add(instruction);
+    }
+
+    private IrInstruction instructionWithEncryptedSymbol(IrMethod method, ProtectionRandom random, IrInstruction instruction, String value) {
         return new IrInstruction(
                 instruction.result(),
                 instruction.opcode(),
@@ -86,7 +136,71 @@ public final class StringEncryptionPass implements ProtectionPass {
                 instruction.longLiteral(),
                 instruction.floatLiteral(),
                 instruction.doubleLiteral(),
-                java.util.Optional.of(symbol),
+                java.util.Optional.of(encryptedSymbol(method, random, value)),
                 instruction.exceptionSites());
+    }
+
+    private String encryptedSymbol(IrMethod method, ProtectionRandom random, String value) {
+        long token = token(value);
+        byte[] plain = value.getBytes(StandardCharsets.UTF_8);
+        byte[] key = HexFormat.of().parseHex(random.token(name(), method.methodKey() + ":" + token, 32));
+        byte[] cipher = new byte[plain.length];
+        for (int index = 0; index < plain.length; index++) {
+            cipher[index] = (byte) (plain[index] ^ key[index % key.length]);
+        }
+        return ENCRYPTED_PREFIX
+                + token
+                + ":"
+                + HexFormat.of().formatHex(key)
+                + ":"
+                + HexFormat.of().formatHex(cipher);
+    }
+
+    private long token(String value) {
+        return Integer.toUnsignedLong(("string:" + value).hashCode());
+    }
+
+    private boolean hasStringCarrier(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(this::isStringCarrier);
+    }
+
+    private boolean hasOrdinaryConstString(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(this::isOrdinaryConstString);
+    }
+
+    private boolean isStringCarrier(IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                && instruction.symbol().map(symbol -> symbol.startsWith(CARRIER_PREFIX)).orElse(false);
+    }
+
+    private boolean isOrdinaryConstString(IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.CONST_STRING && instruction.symbol().isPresent();
+    }
+
+    private String constStringValue(IrInstruction instruction) {
+        String symbol = instruction.symbol().orElseThrow();
+        return symbol.startsWith(CONST_STRING_PREFIX) ? symbol.substring(CONST_STRING_PREFIX.length()) : symbol;
+    }
+
+    private boolean isReflectionSensitive(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction -> instruction.symbol().stream())
+                .map(this::baseSymbol)
+                .anyMatch(symbol -> symbol.equals("j2ll_rt_class_for_name_static")
+                        || symbol.startsWith("j2ll_rt_get_declared_")
+                        || symbol.startsWith("j2ll_rt_reflect_")
+                        || symbol.startsWith("j2ll_rt_method_handle")
+                        || symbol.startsWith("j2ll_rt_lambda")
+                        || symbol.startsWith("j2ll_rt_constant_dynamic"));
+    }
+
+    private String baseSymbol(String symbol) {
+        int separator = symbol.indexOf('|');
+        return separator < 0 ? symbol : symbol.substring(0, separator);
     }
 }

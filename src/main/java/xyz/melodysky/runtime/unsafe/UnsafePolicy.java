@@ -10,6 +10,10 @@ public final class UnsafePolicy {
         if (!owner.equals("sun/misc/Unsafe") && !owner.equals("jdk/internal/misc/Unsafe")) {
             return UnsafePlan.notUnsafe();
         }
+        if (isRawMemoryUnsafeCall(name, descriptor)) {
+            return UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_FALLBACK: raw/off-heap Unsafe API "
+                    + owner + "#" + name + "!" + descriptor + " remains JVM fallback only");
+        }
         return switch (name) {
             case "objectFieldOffset" -> UnsafePlan.supported(
                     UnsafeOperationKind.OBJECT_FIELD_OFFSET,
@@ -90,7 +94,8 @@ public final class UnsafePolicy {
                     false,
                     false,
                     "unsafe allocateInstance guarded helper");
-            default -> UnsafePlan.unsupported("unsupported Unsafe API " + owner + "#" + name + "!" + descriptor);
+            default -> UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_FALLBACK: unsupported Unsafe API "
+                    + owner + "#" + name + "!" + descriptor);
         };
     }
 
@@ -126,7 +131,24 @@ public final class UnsafePolicy {
                     true,
                     true,
                     "VarHandle compareAndSet helper-backed");
-            default -> UnsafePlan.unsupported("unsupported VarHandle API java/lang/invoke/VarHandle#" + name);
+            default -> UnsafePlan.unsupported("VAR_HANDLE_DYNAMIC_FALLBACK: unsupported VarHandle API java/lang/invoke/VarHandle#" + name);
         };
+    }
+
+    private boolean isRawMemoryUnsafeCall(String name, String descriptor) {
+        if (name.equals("allocateMemory")
+                || name.equals("reallocateMemory")
+                || name.equals("freeMemory")
+                || name.equals("setMemory")
+                || name.equals("copyMemory")
+                || name.equals("park")
+                || name.equals("unpark")) {
+            return true;
+        }
+        if ((name.startsWith("get") || name.startsWith("put"))
+                && descriptor.startsWith("(J")) {
+            return true;
+        }
+        return false;
     }
 }

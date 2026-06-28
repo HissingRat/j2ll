@@ -1,0 +1,765 @@
+package xyz.melodysky.report;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.jar.JarFile;
+import java.util.stream.Stream;
+
+public class ArtifactAudit {
+    public ArtifactAuditResult audit(
+            Path workspaceRoot,
+            Path outputJar,
+            String embeddedLibraryDirectory,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<String> exportedSymbols,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts) throws IOException {
+        ArrayList<ArtifactAuditCheck> checks = new ArrayList<>();
+        List<SensitivePlaintextFact> checkedSensitiveFacts = sensitivePlaintextFacts.stream()
+                .filter(fact -> fact.gateMode().equals("blocking"))
+                .sorted(factComparator())
+                .toList();
+        List<SensitivePlaintextFact> observedOnlySensitiveFacts = sensitivePlaintextFacts.stream()
+                .filter(fact -> fact.gateMode().equals("observedOnly"))
+                .sorted(factComparator())
+                .toList();
+        List<SensitivePlaintextFact> skippedSensitiveFacts = sensitivePlaintextFacts.stream()
+                .filter(fact -> !fact.gateMode().equals("blocking") && !fact.gateMode().equals("observedOnly"))
+                .map(fact -> fact.withAuditClassification(
+                        fact.pathKind(),
+                        fact.gateMode(),
+                        "SENSITIVE_FACT_GATE_MODE_UNSUPPORTED",
+                        "unsupportedGateMode"))
+                .sorted(factComparator())
+                .toList();
+        if (!Files.isRegularFile(outputJar)) {
+            checks.add(ArtifactAuditCheck.failed(
+                    "outputJar.exists",
+                    "FINAL_ARTIFACT_MISSING",
+                    "output JAR is not present for artifact audit: " + outputJar));
+            return result(checks, checkedSensitiveFacts, observedOnlySensitiveFacts, skippedSensitiveFacts);
+        }
+
+        try (JarFile jar = new JarFile(outputJar.toFile())) {
+            Set<String> entries = new HashSet<>();
+            jar.stream().filter(entry -> !entry.isDirectory()).forEach(entry -> entries.add(entry.getName()));
+            checkAuditSurfaces(checks, workspaceRoot, entries, embeddedLibraries, exportedSymbols);
+            checkNoPlainFallbackClasses(checks, entries);
+            checkNoLegacyEntries(checks, entries);
+            checkNoPdbEntries(checks, entries);
+            checkNativeResourcePaths(checks, entries, embeddedLibraryDirectory, embeddedLibraries);
+            checkEmbeddedLibraryHashes(checks, jar, embeddedLibraries);
+            checkJ2llMetadata(checks, workspaceRoot, jar, entries, embeddedLibraries);
+            checkFallbackBlobReport(checks, workspaceRoot);
+            checkPlaintextsInJar(workspaceRoot, jar, checks, checkedSensitiveFacts);
+        }
+        checkExportedSymbols(checks, exportedSymbols);
+        checkPlaintexts(workspaceRoot, checks, checkedSensitiveFacts);
+        checks.add(ArtifactAuditCheck.passed(
+                "plaintext.observedOnlyFacts",
+                observedOnlySensitiveFacts.isEmpty() ? "NO_OBSERVED_ONLY_SENSITIVE_FACTS" : "OBSERVED_ONLY_SENSITIVE_FACTS_REPORTED",
+                "observed-only sensitive facts: " + observedOnlySensitiveFacts.size()));
+        checks.add(ArtifactAuditCheck.passed(
+                "plaintext.skippedFacts",
+                skippedSensitiveFacts.isEmpty() ? "NO_SKIPPED_SENSITIVE_FACTS" : "SKIPPED_SENSITIVE_FACTS_REPORTED",
+                "skipped sensitive facts: " + skippedSensitiveFacts.size()));
+        return result(checks, checkedSensitiveFacts, observedOnlySensitiveFacts, skippedSensitiveFacts);
+    }
+
+    public ArtifactAuditResult skipped(String reasonCode, String message) {
+        return new ArtifactAuditResult(false, List.of(ArtifactAuditCheck.failed(
+                "artifactAudit.skipped",
+                reasonCode,
+                message)));
+    }
+
+    private void checkNoPlainFallbackClasses(List<ArtifactAuditCheck> checks, Set<String> entries) {
+        List<String> forbidden = entries.stream()
+                .filter(entry -> entry.startsWith("j2ll/generated/fallback/") && entry.endsWith(".class"))
+                .sorted()
+                .toList();
+        checks.add(forbidden.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.noPlainFallbackClasses",
+                        "NO_PLAIN_FALLBACK_CLASSES",
+                        "output JAR has no plaintext generated fallback class entries")
+                : ArtifactAuditCheck.failed(
+                        "jar.noPlainFallbackClasses",
+                        "PLAIN_FALLBACK_CLASS_ENTRY",
+                        "plaintext fallback class entries: " + forbidden));
+    }
+
+    private void checkNoLegacyEntries(List<ArtifactAuditCheck> checks, Set<String> entries) {
+        List<String> legacy = entries.stream()
+                .filter(entry -> entry.startsWith("obfuscator/") || entry.contains("/obfuscator/bench/"))
+                .sorted()
+                .toList();
+        checks.add(legacy.isEmpty()
+                ? ArtifactAuditCheck.passed("jar.noLegacyEntries", "NO_LEGACY_OUTPUT_PATHS", "no legacy output paths in JAR")
+                : ArtifactAuditCheck.failed("jar.noLegacyEntries", "LEGACY_OUTPUT_PATH_FOUND", "legacy entries: " + legacy));
+    }
+
+    private void checkNoPdbEntries(List<ArtifactAuditCheck> checks, Set<String> entries) {
+        List<String> pdb = entries.stream()
+                .filter(entry -> entry.toLowerCase(java.util.Locale.ROOT).endsWith(".pdb"))
+                .sorted()
+                .toList();
+        checks.add(pdb.isEmpty()
+                ? ArtifactAuditCheck.passed("jar.noPdb", "WINDOWS_PDB_EXCLUDED", "output JAR has no PDB entries")
+                : ArtifactAuditCheck.failed("jar.noPdb", "WINDOWS_PDB_PACKAGED", "PDB entries: " + pdb));
+    }
+
+    private void checkNativeResourcePaths(
+            List<ArtifactAuditCheck> checks,
+            Set<String> entries,
+            String embeddedLibraryDirectory,
+            List<EmbeddedLibraryReport> embeddedLibraries) {
+        String prefix = embeddedLibraryDirectory.endsWith("/") ? embeddedLibraryDirectory : embeddedLibraryDirectory + "/";
+        List<String> wrong = embeddedLibraries.stream()
+                .map(EmbeddedLibraryReport::jarPath)
+                .filter(path -> !path.startsWith(prefix))
+                .sorted()
+                .toList();
+        List<String> missing = embeddedLibraries.stream()
+                .map(EmbeddedLibraryReport::jarPath)
+                .filter(path -> !entries.contains(path))
+                .sorted()
+                .toList();
+        checks.add(wrong.isEmpty() && missing.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.nativeResourcePaths",
+                        "NATIVE_RESOURCES_UNDER_CONFIGURED_DIRECTORY",
+                        "native resources are under " + prefix)
+                : ArtifactAuditCheck.failed(
+                        "jar.nativeResourcePaths",
+                        "NATIVE_RESOURCE_PATH_INVALID",
+                        "wrong directory: " + wrong + ", missing: " + missing));
+    }
+
+    private void checkEmbeddedLibraryHashes(
+            List<ArtifactAuditCheck> checks,
+            JarFile jar,
+            List<EmbeddedLibraryReport> embeddedLibraries) throws IOException {
+        ArrayList<String> mismatches = new ArrayList<>();
+        for (EmbeddedLibraryReport library : embeddedLibraries) {
+            var entry = jar.getJarEntry(library.jarPath());
+            if (entry == null) {
+                mismatches.add(library.jarPath() + ":missing");
+                continue;
+            }
+            try (InputStream input = jar.getInputStream(entry)) {
+                String actual = sha256(input.readAllBytes());
+                if (!actual.equals(library.sha256())) {
+                    mismatches.add(library.jarPath() + ":sha256");
+                }
+            }
+        }
+        checks.add(mismatches.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.nativeSha256",
+                        "NATIVE_LIBRARY_SHA256_MATCH",
+                        "embedded native library hashes match packaging report")
+                : ArtifactAuditCheck.failed(
+                        "jar.nativeSha256",
+                        "NATIVE_LIBRARY_SHA256_MISMATCH",
+                        "native library hash mismatches: " + mismatches));
+    }
+
+    private void checkJ2llMetadata(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot,
+            JarFile jar,
+            Set<String> entries,
+            List<EmbeddedLibraryReport> embeddedLibraries) throws IOException {
+        List<String> required = List.of(
+                "META-INF/j2ll/build-info.json",
+                "META-INF/j2ll/native-libraries.json",
+                "META-INF/j2ll/reports-manifest.json");
+        List<String> missing = required.stream()
+                .filter(entry -> !entries.contains(entry))
+                .toList();
+        if (!missing.isEmpty()) {
+            checks.add(ArtifactAuditCheck.failed(
+                    "metadata.j2llEntries",
+                    "J2LL_METADATA_MISSING",
+                    "missing j2ll metadata entries: " + missing));
+            return;
+        }
+        JsonObject nativeLibraries = readJson(jar, "META-INF/j2ll/native-libraries.json");
+        java.util.Map<String, String> expected = embeddedLibraries.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        EmbeddedLibraryReport::jarPath,
+                        EmbeddedLibraryReport::sha256,
+                        (left, right) -> left,
+                        java.util.TreeMap::new));
+        java.util.Map<String, String> actual = new java.util.TreeMap<>();
+        nativeLibraries.getAsJsonArray("libraries").forEach(element -> {
+            JsonObject library = element.getAsJsonObject();
+            actual.put(library.get("jarPath").getAsString(), library.get("sha256").getAsString());
+        });
+        boolean matches = expected.equals(actual);
+        checks.add(matches
+                ? ArtifactAuditCheck.passed(
+                        "metadata.nativeLibraries",
+                        "J2LL_NATIVE_METADATA_MATCH",
+                        "native library metadata matches packaging embedded libraries")
+                : ArtifactAuditCheck.failed(
+                        "metadata.nativeLibraries",
+                        "J2LL_NATIVE_METADATA_MISMATCH",
+                        "native library metadata does not match packaging embedded libraries"));
+        checkNativeLibrariesMatchTargetArtifacts(checks, workspaceRoot, actual);
+        JsonObject buildInfo = readJson(jar, "META-INF/j2ll/build-info.json");
+        JsonObject reportsManifest = readJson(jar, "META-INF/j2ll/reports-manifest.json");
+        boolean fieldsPresent = hasText(buildInfo, "configHash")
+                && hasText(buildInfo, "protectionSeedHash")
+                && hasText(reportsManifest, "reportsManifestHash");
+        checks.add(fieldsPresent
+                ? ArtifactAuditCheck.passed(
+                        "metadata.requiredFields",
+                        "J2LL_METADATA_FIELDS_PRESENT",
+                        "j2ll metadata includes config/report/protection hashes")
+                : ArtifactAuditCheck.failed(
+                        "metadata.requiredFields",
+                        "J2LL_METADATA_FIELDS_MISSING",
+                        "j2ll metadata is missing required hash fields"));
+        checkMetadataVersions(checks, buildInfo, nativeLibraries, reportsManifest);
+        checkMetadataHashesAndSeeds(checks, buildInfo);
+        checkReportsManifest(checks, reportsManifest);
+    }
+
+    private void checkMetadataVersions(
+            List<ArtifactAuditCheck> checks,
+            JsonObject buildInfo,
+            JsonObject nativeLibraries,
+            JsonObject reportsManifest) {
+        boolean valid = hasPositiveInt(buildInfo, "schemaVersion")
+                && hasPositiveInt(buildInfo, "reportVersion")
+                && hasPositiveInt(nativeLibraries, "schemaVersion")
+                && hasPositiveInt(nativeLibraries, "reportVersion")
+                && hasPositiveInt(reportsManifest, "schemaVersion")
+                && hasPositiveInt(reportsManifest, "reportVersion");
+        checks.add(valid
+                ? ArtifactAuditCheck.passed(
+                        "metadata.schemaVersions",
+                        "J2LL_METADATA_SCHEMA_VERSIONS_PRESENT",
+                        "all j2ll metadata entries include schemaVersion and reportVersion")
+                : ArtifactAuditCheck.failed(
+                        "metadata.schemaVersions",
+                        "METADATA_CONSISTENCY_FAILED",
+                        "one or more j2ll metadata entries are missing schemaVersion/reportVersion"));
+    }
+
+    private void checkMetadataHashesAndSeeds(List<ArtifactAuditCheck> checks, JsonObject buildInfo) {
+        boolean hashes = isSha256(textOrEmpty(buildInfo, "configHash"))
+                && isSha256(textOrEmpty(buildInfo, "protectionSeedHash"));
+        boolean rawSeed = buildInfo.has("seed")
+                || buildInfo.has("rawSeed")
+                || buildInfo.has("protectionSeed");
+        checks.add(hashes && !rawSeed
+                ? ArtifactAuditCheck.passed(
+                        "metadata.hashesOnly",
+                        "J2LL_METADATA_HASHES_ONLY",
+                        "build-info metadata stores config/protection hashes without raw seed")
+                : ArtifactAuditCheck.failed(
+                        "metadata.hashesOnly",
+                        rawSeed ? "J2LL_METADATA_RAW_SEED" : "METADATA_CONSISTENCY_FAILED",
+                        "build-info metadata must contain only hash-shaped config/protection seed values"));
+    }
+
+    private void checkReportsManifest(List<ArtifactAuditCheck> checks, JsonObject reportsManifest) {
+        if (!reportsManifest.has("reports") || !reportsManifest.get("reports").isJsonArray()) {
+            checks.add(ArtifactAuditCheck.failed(
+                    "metadata.reportsManifest",
+                    "J2LL_REPORTS_MANIFEST_INCOMPLETE",
+                    "reports-manifest metadata is missing reports array"));
+            return;
+        }
+        ArrayList<String> reports = new ArrayList<>();
+        reportsManifest.getAsJsonArray("reports").forEach(element -> reports.add(element.getAsString()));
+        List<String> required = List.of(
+                "diagnostics.json",
+                "artifact-audit.json",
+                "frontend-skip-report.json",
+                "known-blockers.json",
+                "lowering-report.json",
+                "opcode-support-matrix.json",
+                "packaging-report.json",
+                "protection-report.json",
+                "release-readiness.json",
+                "support-matrix.json",
+                "symbol-audit.json");
+        boolean complete = reports.containsAll(required);
+        String expectedHash = sha256(String.join("\n", reports).getBytes(StandardCharsets.UTF_8));
+        boolean hashMatches = expectedHash.equals(textOrEmpty(reportsManifest, "reportsManifestHash"));
+        checks.add(complete && hashMatches
+                ? ArtifactAuditCheck.passed(
+                        "metadata.reportsManifest",
+                        "J2LL_REPORTS_MANIFEST_MATCH",
+                        "reports manifest entries and hash are internally consistent")
+                : ArtifactAuditCheck.failed(
+                        "metadata.reportsManifest",
+                        complete ? "METADATA_CONSISTENCY_FAILED" : "J2LL_REPORTS_MANIFEST_INCOMPLETE",
+                        "reports manifest entries/hash mismatch"));
+    }
+
+    private void checkNativeLibrariesMatchTargetArtifacts(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot,
+            java.util.Map<String, String> nativeLibrariesMetadata) throws IOException {
+        Path packagingReport = workspaceRoot.resolve("reports/packaging-report.json");
+        if (!Files.isRegularFile(packagingReport)) {
+            checks.add(ArtifactAuditCheck.skipped(
+                    "metadata.nativeLibrariesTargetArtifacts",
+                    "surfaceNotGenerated",
+                    "packaging report was not available for native library metadata consistency"));
+            return;
+        }
+        JsonObject root = JsonParser.parseString(Files.readString(packagingReport)).getAsJsonObject();
+        JsonObject zig = root.has("zigToolchain") && root.get("zigToolchain").isJsonObject()
+                ? root.getAsJsonObject("zigToolchain")
+                : new JsonObject();
+        if (!zig.has("targetArtifacts") || !zig.get("targetArtifacts").isJsonArray()) {
+            checks.add(ArtifactAuditCheck.failed(
+                    "metadata.nativeLibrariesTargetArtifacts",
+                    "METADATA_CONSISTENCY_FAILED",
+                    "packaging report has no zigToolchain.targetArtifacts array"));
+            return;
+        }
+        java.util.Map<String, String> targetArtifacts = new java.util.TreeMap<>();
+        ArrayList<String> failedRequiredWithMetadata = new ArrayList<>();
+        for (com.google.gson.JsonElement element : zig.getAsJsonArray("targetArtifacts")) {
+            JsonObject target = element.getAsJsonObject();
+            boolean built = "built".equals(textOrEmpty(target, "status"))
+                    && hasText(target, "actualJarPath")
+                    && hasText(target, "actualSha256");
+            if (built) {
+                targetArtifacts.put(target.get("actualJarPath").getAsString(), target.get("actualSha256").getAsString());
+            }
+            boolean failedRequired = target.has("required")
+                    && target.get("required").getAsBoolean()
+                    && target.has("buildable")
+                    && !target.get("buildable").getAsBoolean();
+            if (failedRequired && hasText(target, "actualJarPath")) {
+                failedRequiredWithMetadata.add(textOrEmpty(target, "target"));
+            }
+        }
+        boolean matches = nativeLibrariesMetadata.equals(targetArtifacts) && failedRequiredWithMetadata.isEmpty();
+        checks.add(matches
+                ? ArtifactAuditCheck.passed(
+                        "metadata.nativeLibrariesTargetArtifacts",
+                        "J2LL_NATIVE_METADATA_TARGET_ARTIFACTS_MATCH",
+                        "native-libraries metadata matches built target artifacts")
+                : ArtifactAuditCheck.failed(
+                        "metadata.nativeLibrariesTargetArtifacts",
+                        "METADATA_CONSISTENCY_FAILED",
+                        "native-libraries metadata mismatch with targetArtifacts; failed required metadata: "
+                                + failedRequiredWithMetadata));
+    }
+
+    private JsonObject readJson(JarFile jar, String entryName) throws IOException {
+        try (InputStream input = jar.getInputStream(jar.getJarEntry(entryName))) {
+            return JsonParser.parseString(new String(input.readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
+        }
+    }
+
+    private void checkFallbackBlobReport(List<ArtifactAuditCheck> checks, Path workspaceRoot) throws IOException {
+        Path packagingReport = workspaceRoot.resolve("reports/packaging-report.json");
+        if (!Files.isRegularFile(packagingReport)) {
+            checks.add(ArtifactAuditCheck.skipped(
+                    "fallbackBlob.binaryAudit",
+                    "surfaceNotGenerated",
+                    "packaging report was not available for fallback blob audit"));
+            return;
+        }
+        JsonObject root = JsonParser.parseString(Files.readString(packagingReport)).getAsJsonObject();
+        if (!root.has("fallbackBlobs") || !root.get("fallbackBlobs").isJsonArray()) {
+            checks.add(ArtifactAuditCheck.skipped(
+                    "fallbackBlob.binaryAudit",
+                    "surfaceNotGenerated",
+                    "packaging report has no fallbackBlobs array"));
+            return;
+        }
+        com.google.gson.JsonArray blobs = root.getAsJsonArray("fallbackBlobs");
+        if (blobs.isEmpty()) {
+            checks.add(ArtifactAuditCheck.passed(
+                    "fallbackBlob.binaryAudit",
+                    "NO_FALLBACK_BLOBS",
+                    "no nativeEmbeddedClassBlob fallback blobs were emitted"));
+            return;
+        }
+        ArrayList<String> metadataFailures = new ArrayList<>();
+        ArrayList<String> carrierPlaintextHits = new ArrayList<>();
+        List<String> carrierTexts = fallbackCarrierTexts(workspaceRoot);
+        for (com.google.gson.JsonElement element : blobs) {
+            JsonObject blob = element.getAsJsonObject();
+            String id = textOrEmpty(blob, "originalMethodId");
+            String methodKey = textOrEmpty(blob, "originalMethodKey");
+            String sha256 = textOrEmpty(blob, "sha256");
+            String encodedSha256 = textOrEmpty(blob, "encodedSha256");
+            String originalSha256 = textOrEmpty(blob, "originalSha256");
+            int originalSize = intOrMinusOne(blob, "originalSize");
+            int encodedSize = intOrMinusOne(blob, "encodedSize");
+            if (!isSha256(sha256) || !isSha256(encodedSha256) || !isSha256(originalSha256)) {
+                metadataFailures.add(id + ":sha256");
+            }
+            if (!sha256.equals(encodedSha256)) {
+                metadataFailures.add(id + ":encodedSha256Alias");
+            }
+            if (originalSize <= 0 || encodedSize <= 0) {
+                metadataFailures.add(id + ":size");
+            }
+            if (!"fallbackBlobEncodingV1".equals(textOrEmpty(blob, "encodingVersion"))
+                    || !"j2ll-rle-byte-pairs-v1".equals(textOrEmpty(blob, "compressionAlgorithm"))
+                    || !"xor-sha256-key-stream-v1".equals(textOrEmpty(blob, "encryptionAlgorithm"))
+                    || !"nativeEmbeddedClassBlob".equals(textOrEmpty(blob, "storageTarget"))) {
+                metadataFailures.add(id + ":encodingPolicy");
+            }
+            List<String> forbidden = List.of(methodKey);
+            for (String text : carrierTexts) {
+                for (String value : forbidden) {
+                    if (!value.isBlank() && text.contains(value)) {
+                        carrierPlaintextHits.add(id + ":sha256="
+                                + sha256(value.getBytes(StandardCharsets.UTF_8)));
+                    }
+                }
+            }
+        }
+        checks.add(metadataFailures.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "fallbackBlob.binaryMetadata",
+                        "FALLBACK_BLOB_BINARY_METADATA_CONSISTENT",
+                        "fallback blob SHA, size, encoding and storage metadata are consistent")
+                : ArtifactAuditCheck.failed(
+                        "fallbackBlob.binaryMetadata",
+                        "FALLBACK_BLOB_BINARY_METADATA_MISMATCH",
+                        "fallback blob metadata failures: " + metadataFailures));
+        checks.add(carrierPlaintextHits.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "fallbackBlob.carrierPlaintext",
+                        "FALLBACK_BLOB_CARRIER_PLAINTEXT_ABSENT",
+                        "fallback carrier C does not expose original method identity plaintext")
+                : ArtifactAuditCheck.failed(
+                        "fallbackBlob.carrierPlaintext",
+                        "FALLBACK_BLOB_CARRIER_PLAINTEXT_FOUND",
+                        "fallback carrier plaintext hits: " + carrierPlaintextHits.stream().sorted().distinct().toList()));
+    }
+
+    private List<String> fallbackCarrierTexts(Path workspaceRoot) throws IOException {
+        ArrayList<String> texts = new ArrayList<>();
+        List<Path> roots = List.of(
+                workspaceRoot.resolve("native/zig-workspace/jni"),
+                workspaceRoot.resolve("native/zig-workspace/fallback"),
+                workspaceRoot.resolve("intermediates/classes"));
+        for (Path root : roots) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> paths = Files.walk(root)) {
+                for (Path path : paths.filter(Files::isRegularFile)
+                        .filter(item -> item.toString().endsWith(".c"))
+                        .sorted()
+                        .toList()) {
+                    texts.add(Files.readString(path, StandardCharsets.ISO_8859_1));
+                }
+            }
+        }
+        return texts;
+    }
+
+    private boolean isSha256(String value) {
+        return value.matches("[0-9a-f]{64}");
+    }
+
+    private int intOrMinusOne(JsonObject object, String field) {
+        return object.has(field) && object.get(field).isJsonPrimitive()
+                ? object.get(field).getAsInt()
+                : -1;
+    }
+
+    private String textOrEmpty(JsonObject object, String field) {
+        return hasText(object, field) ? object.get(field).getAsString() : "";
+    }
+
+    private boolean hasText(JsonObject object, String field) {
+        return object.has(field) && !object.get(field).isJsonNull() && !object.get(field).getAsString().isBlank();
+    }
+
+    private boolean hasPositiveInt(JsonObject object, String field) {
+        return object.has(field) && object.get(field).isJsonPrimitive() && object.get(field).getAsInt() > 0;
+    }
+
+    private void checkExportedSymbols(List<ArtifactAuditCheck> checks, List<String> exportedSymbols) {
+        List<String> hidden = exportedSymbols.stream()
+                .filter(symbol -> symbol.startsWith("j2ll_f_")
+                        || symbol.startsWith("j2ll_cit_")
+                        || symbol.startsWith("j2ll_cid_")
+                        || symbol.startsWith("Java_"))
+                .sorted()
+                .toList();
+        checks.add(hidden.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "symbols.noHiddenExports",
+                        "HIDDEN_SYMBOLS_NOT_EXPORTED",
+                        "hidden Java implementation/protection symbols are not dynamic exports")
+                : ArtifactAuditCheck.failed(
+                        "symbols.noHiddenExports",
+                        "HIDDEN_SYMBOL_EXPORTED",
+                        "hidden symbols exported: " + hidden));
+    }
+
+    private void checkPlaintexts(
+            Path workspaceRoot,
+            List<ArtifactAuditCheck> checks,
+            List<SensitivePlaintextFact> checkedSensitiveFacts)
+            throws IOException {
+        List<Path> roots = List.of(
+                workspaceRoot.resolve("intermediates"),
+                workspaceRoot.resolve("native"),
+                workspaceRoot.resolve("reports"));
+        if (checkedSensitiveFacts.isEmpty() || roots.stream().noneMatch(Files::isDirectory)) {
+            checks.add(ArtifactAuditCheck.passed(
+                    "plaintext.forbiddenStrings",
+                    "PLAINTEXT_AUDIT_NOT_APPLICABLE",
+                    "no forbidden plaintext literals were provided for this audit"));
+            return;
+        }
+        List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
+                .map(SensitivePlaintextFact::plaintext)
+                .filter(value -> !value.isBlank())
+                .sorted()
+                .distinct()
+                .toList();
+        ArrayList<String> hits = new ArrayList<>();
+        for (Path root : roots) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> paths = Files.walk(root)) {
+                for (Path path : paths.filter(Files::isRegularFile).sorted().toList()) {
+                    if (!isPlaintextAuditSurface(workspaceRoot, path)) {
+                        continue;
+                    }
+                    String text = Files.readString(path, StandardCharsets.ISO_8859_1);
+                    collectPlaintextHits(workspaceRoot, path, text, forbiddenPlaintexts, hits);
+                }
+            }
+        }
+        checks.add(hits.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "plaintext.forbiddenStrings",
+                        "FORBIDDEN_PLAINTEXT_ABSENT",
+                        "forbidden plaintext literals are absent from generated C/LLVM/native/report artifacts")
+                : ArtifactAuditCheck.failed(
+                        "plaintext.forbiddenStrings",
+                        "FORBIDDEN_PLAINTEXT_FOUND",
+                        "forbidden plaintext hits: " + hits));
+    }
+
+    private void checkPlaintextsInJar(
+            Path workspaceRoot,
+            JarFile jar,
+            List<ArtifactAuditCheck> checks,
+            List<SensitivePlaintextFact> checkedSensitiveFacts) throws IOException {
+        if (checkedSensitiveFacts.isEmpty()) {
+            checks.add(ArtifactAuditCheck.passed(
+                    "plaintext.jarEntries",
+                    "PLAINTEXT_JAR_AUDIT_NOT_APPLICABLE",
+                    "no blocking plaintext facts were provided for JAR entry audit"));
+            return;
+        }
+        List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
+                .map(SensitivePlaintextFact::plaintext)
+                .filter(value -> !value.isBlank())
+                .sorted()
+                .distinct()
+                .toList();
+        ArrayList<String> hits = new ArrayList<>();
+        for (var entry : jar.stream()
+                .filter(entry -> !entry.isDirectory())
+                .filter(entry -> isJarPlaintextAuditSurface(entry.getName()))
+                .sorted(java.util.Comparator.comparing(java.util.jar.JarEntry::getName))
+                .toList()) {
+            try (InputStream input = jar.getInputStream(entry)) {
+                String text = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
+                collectPlaintextHits(workspaceRoot, Path.of("jar").resolve(entry.getName()), text, forbiddenPlaintexts, hits);
+            }
+        }
+        checks.add(hits.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "plaintext.jarEntries",
+                        "FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR",
+                        "blocking plaintext literals are absent from audited output JAR entries")
+                : ArtifactAuditCheck.failed(
+                        "plaintext.jarEntries",
+                        "FORBIDDEN_PLAINTEXT_JAR_ENTRY",
+                        "forbidden plaintext JAR hits: " + hits));
+    }
+
+    private void collectPlaintextHits(
+            Path workspaceRoot,
+            Path path,
+            String text,
+            List<String> forbiddenPlaintexts,
+            List<String> hits) {
+        for (String forbidden : forbiddenPlaintexts) {
+            if (!forbidden.isEmpty() && text.contains(forbidden)) {
+                hits.add(displayPath(workspaceRoot, path)
+                        + ":sha256="
+                        + sha256(forbidden.getBytes(StandardCharsets.UTF_8)));
+            }
+        }
+    }
+
+    private String displayPath(Path workspaceRoot, Path path) {
+        try {
+            return workspaceRoot.relativize(path).toString().replace('\\', '/');
+        } catch (IllegalArgumentException exception) {
+            return path.toString().replace('\\', '/');
+        }
+    }
+
+    private void checkAuditSurfaces(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot,
+            Set<String> jarEntries,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<String> exportedSymbols) throws IOException {
+        checks.add(surfaceCheck(
+                "surface.generatedC",
+                "GENERATED_C_SURFACE_CHECKED",
+                "surfaceNotGenerated",
+                workspaceRoot.resolve("intermediates/classes"),
+                path -> path.toString().endsWith(".c")));
+        checks.add(surfaceCheck(
+                "surface.perClassLlvm",
+                "PER_CLASS_LLVM_SURFACE_CHECKED",
+                "surfaceNotGenerated",
+                workspaceRoot.resolve("intermediates/classes"),
+                path -> path.toString().endsWith(".ll")));
+        checks.add(Files.isRegularFile(workspaceRoot.resolve("build.zig"))
+                ? ArtifactAuditCheck.passed("surface.buildZig", "BUILD_ZIG_SURFACE_CHECKED", "build.zig workspace manifest checked")
+                : ArtifactAuditCheck.skipped("surface.buildZig", "surfaceNotGenerated", "build.zig was not generated"));
+        checks.add(embeddedLibraries.isEmpty()
+                ? ArtifactAuditCheck.skipped("surface.nativeLibraryResources", "surfaceNotGenerated", "no native resources were embedded")
+                : ArtifactAuditCheck.passed(
+                        "surface.nativeLibraryResources",
+                        "NATIVE_RESOURCE_SURFACE_CHECKED",
+                        "native resource entries checked: " + embeddedLibraries.size()));
+        checks.add(jarEntries.isEmpty()
+                ? ArtifactAuditCheck.skipped("surface.outputJarEntries", "surfaceNotGenerated", "output JAR has no file entries")
+                : ArtifactAuditCheck.passed(
+                        "surface.outputJarEntries",
+                        "OUTPUT_JAR_ENTRY_SURFACE_CHECKED",
+                        "output JAR entries checked: " + jarEntries.size()));
+        checks.add(exportedSymbols.isEmpty()
+                ? ArtifactAuditCheck.skipped("surface.symbolAuditOutput", "unavailableOnTarget", "no exported symbol list was available")
+                : ArtifactAuditCheck.passed(
+                        "surface.symbolAuditOutput",
+                        "SYMBOL_AUDIT_SURFACE_CHECKED",
+                        "exported symbol entries checked: " + exportedSymbols.size()));
+        checks.add(Files.isRegularFile(workspaceRoot.resolve("reports/packaging-report.json"))
+                ? ArtifactAuditCheck.passed(
+                        "surface.packagingReportPaths",
+                        "PACKAGING_REPORT_PATH_SURFACE_CHECKED",
+                        "packaging report paths checked")
+                : ArtifactAuditCheck.skipped(
+                        "surface.packagingReportPaths",
+                        "surfaceNotGenerated",
+                        "packaging report was not available during audit"));
+    }
+
+    private ArtifactAuditCheck surfaceCheck(
+            String name,
+            String checkedReason,
+            String skippedReason,
+            Path root,
+            java.util.function.Predicate<Path> matcher) throws IOException {
+        if (!Files.isDirectory(root)) {
+            return ArtifactAuditCheck.skipped(name, skippedReason, root + " was not generated");
+        }
+        try (Stream<Path> paths = Files.walk(root)) {
+            long count = paths.filter(Files::isRegularFile).filter(matcher).count();
+            return count == 0
+                    ? ArtifactAuditCheck.skipped(name, skippedReason, "matching files were not generated")
+                    : ArtifactAuditCheck.passed(name, checkedReason, "surface files checked: " + count);
+        }
+    }
+
+    private boolean isPlaintextAuditSurface(Path workspaceRoot, Path path) {
+        String relative = workspaceRoot.relativize(path).toString().replace('\\', '/');
+        if (relative.startsWith("intermediates/classes/")) {
+            return (relative.contains("/c/") && relative.endsWith(".c"))
+                    || (relative.contains("/llvm/") && relative.endsWith(".ll"));
+        }
+        if (relative.startsWith("native/")) {
+            return relative.endsWith(".c")
+                    || relative.endsWith(".ll")
+                    || relative.endsWith(".zig")
+                    || relative.endsWith(".dylib")
+                    || relative.endsWith(".so")
+                    || relative.endsWith(".dll");
+        }
+        if (relative.equals("reports/packaging-report.json") || relative.equals("reports/symbol-audit.json")) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isJarPlaintextAuditSurface(String entryName) {
+        String lower = entryName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("native0/")
+                || lower.endsWith(".dylib")
+                || lower.endsWith(".so")
+                || lower.endsWith(".dll")
+                || lower.endsWith(".pdb")) {
+            return false;
+        }
+        return lower.endsWith(".class")
+                || lower.endsWith(".json")
+                || lower.endsWith(".properties")
+                || lower.endsWith(".txt")
+                || lower.endsWith(".xml")
+                || lower.equals("meta-inf/manifest.mf");
+    }
+
+    private ArtifactAuditResult result(
+            List<ArtifactAuditCheck> checks,
+            List<SensitivePlaintextFact> checkedSensitiveFacts,
+            List<SensitivePlaintextFact> observedOnlySensitiveFacts,
+            List<SensitivePlaintextFact> skippedSensitiveFacts) {
+        return new ArtifactAuditResult(
+                checks.stream().noneMatch(check -> check.status().equals("failed")),
+                checks,
+                checkedSensitiveFacts,
+                observedOnlySensitiveFacts,
+                skippedSensitiveFacts);
+    }
+
+    private java.util.Comparator<SensitivePlaintextFact> factComparator() {
+        return java.util.Comparator
+                .comparing(SensitivePlaintextFact::literalHash)
+                .thenComparing(SensitivePlaintextFact::sourceMethod)
+                .thenComparing(SensitivePlaintextFact::pathKind)
+                .thenComparing(SensitivePlaintextFact::gateMode)
+                .thenComparing(SensitivePlaintextFact::promotionReason);
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+}

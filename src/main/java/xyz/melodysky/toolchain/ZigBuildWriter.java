@@ -124,9 +124,10 @@ public final class ZigBuildWriter {
         root.add("objectInputs", pathArray(workspace.buildDirectory(), sources.objectInputs()));
         root.add("includeDirectories", pathArray(sources.includeDirectories()));
         root.add("selectedTargets", targetNameArray(buildPlan.targetPreflights()));
+        root.add("requiredTargets", targetNameArray(buildPlan.targetPreflights()));
         root.add("buildableTargets", targetNameArray(buildPlan.buildableTargetPreflights()));
         root.add("skippedTargets", targetPreflightArray(workspace, buildPlan.skippedTargetPreflights()));
-        root.add("failedTargets", new JsonArray());
+        root.add("failedTargets", targetPreflightArray(workspace, buildPlan.failedTargetPreflights()));
         JsonArray targets = new JsonArray();
         for (NativeBuildTargetPreflight preflight : buildPlan.targetPreflights()) {
             JsonObject target = new JsonObject();
@@ -138,11 +139,14 @@ public final class ZigBuildWriter {
                     .replace('\\', '/'));
             target.addProperty("status", preflight.status());
             target.addProperty("currentHost", preflight.currentHost());
+            target.addProperty("required", preflight.required());
             target.addProperty("buildable", preflight.buildable());
             target.addProperty("reasonCode", preflight.reasonCode());
             target.addProperty("reason", preflight.reason());
             target.addProperty("requiredCapability", preflight.requiredCapability());
             target.addProperty("platformSdkRequirement", preflight.platformSdkRequirement());
+            target.addProperty("failureKind", preflight.failureKind());
+            target.addProperty("buildLogTail", preflight.buildLogTail());
             targets.add(target);
         }
         root.add("targets", targets);
@@ -173,6 +177,9 @@ public final class ZigBuildWriter {
             object.addProperty("reason", preflight.reason());
             object.addProperty("requiredCapability", preflight.requiredCapability());
             object.addProperty("platformSdkRequirement", preflight.platformSdkRequirement());
+            object.addProperty("required", preflight.required());
+            object.addProperty("failureKind", preflight.failureKind());
+            object.addProperty("buildLogTail", preflight.buildLogTail());
             array.add(object);
         }
         return array;

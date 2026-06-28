@@ -15,9 +15,12 @@ import java.util.Map;
 import java.util.Optional;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
+import xyz.melodysky.backend.llvm.model.LlvmModule;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.backend.llvm.model.LlvmVisibility;
+import xyz.melodysky.backend.llvm.protection.LlvmCallIndirectionPass;
+import xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.packaging.EmbeddedLibraryLayout;
@@ -32,12 +35,21 @@ public final class ZigNativeLibraryBuilder {
     private final ZigBuildInvoker buildInvoker;
     private final NativeSymbolInspector symbolInspector;
     private final J2llHomeResolver homeResolver;
+    private final boolean callIndirectionEnabled;
+    private final long protectionSeed;
 
     public ZigNativeLibraryBuilder() {
         this(new LlvmNameMangler());
     }
 
     public ZigNativeLibraryBuilder(LlvmNameMangler llvmNameMangler) {
+        this(llvmNameMangler, false, 0L);
+    }
+
+    public ZigNativeLibraryBuilder(
+            LlvmNameMangler llvmNameMangler,
+            boolean callIndirectionEnabled,
+            long protectionSeed) {
         this(
                 new HostJniCSourceGenerator(),
                 new LlvmModuleLowerer(llvmNameMangler),
@@ -46,7 +58,9 @@ public final class ZigNativeLibraryBuilder {
                 new ZigBuildWriter(),
                 new ZigBuildInvoker(),
                 new NativeSymbolInspector(),
-                new J2llHomeResolver());
+                new J2llHomeResolver(),
+                callIndirectionEnabled,
+                protectionSeed);
     }
 
     public ZigNativeLibraryBuilder(
@@ -58,6 +72,30 @@ public final class ZigNativeLibraryBuilder {
             ZigBuildInvoker buildInvoker,
             NativeSymbolInspector symbolInspector,
             J2llHomeResolver homeResolver) {
+        this(
+                sourceGenerator,
+                llvmLowerer,
+                llvmEmitter,
+                zigLocator,
+                buildWriter,
+                buildInvoker,
+                symbolInspector,
+                homeResolver,
+                false,
+                0L);
+    }
+
+    public ZigNativeLibraryBuilder(
+            HostJniCSourceGenerator sourceGenerator,
+            LlvmModuleLowerer llvmLowerer,
+            LlvmTextEmitter llvmEmitter,
+            ManagedZigLocator zigLocator,
+            ZigBuildWriter buildWriter,
+            ZigBuildInvoker buildInvoker,
+            NativeSymbolInspector symbolInspector,
+            J2llHomeResolver homeResolver,
+            boolean callIndirectionEnabled,
+            long protectionSeed) {
         this.sourceGenerator = sourceGenerator;
         this.llvmLowerer = llvmLowerer;
         this.llvmEmitter = llvmEmitter;
@@ -66,6 +104,8 @@ public final class ZigNativeLibraryBuilder {
         this.buildInvoker = buildInvoker;
         this.symbolInspector = symbolInspector;
         this.homeResolver = homeResolver;
+        this.callIndirectionEnabled = callIndirectionEnabled;
+        this.protectionSeed = protectionSeed;
     }
 
     public Optional<ZigNativeBuildResult> build(
@@ -142,11 +182,17 @@ public final class ZigNativeLibraryBuilder {
         ArrayList<Path> sources = new ArrayList<>();
         for (Map.Entry<String, ArrayList<IrMethod>> entry : methodsByOwner.entrySet()) {
             Path llvmPath = workspace.llvmDirectory().resolve(safeFileName(entry.getKey()) + ".ll");
-            String text = llvmEmitter.emit(llvmLowerer.lowerClass(
+            LlvmModule module = llvmLowerer.lowerClass(
                     new IrClass(entry.getKey(), entry.getValue()),
                     LlvmLinkage.EXTERNAL,
                     LlvmVisibility.HIDDEN,
-                    directCallTargets));
+                    directCallTargets);
+            module = new LlvmCallIndirectionPass()
+                    .run(module, callIndirectionEnabled
+                            ? LlvmProtectionConfig.enabled(protectionSeed)
+                            : LlvmProtectionConfig.disabled(protectionSeed))
+                    .module();
+            String text = llvmEmitter.emit(module);
             Files.writeString(llvmPath, text, StandardCharsets.UTF_8);
             sources.add(llvmPath);
         }

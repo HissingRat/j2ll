@@ -4,11 +4,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import xyz.melodysky.config.IntermediatesConfig;
 import xyz.melodysky.pipeline.LoweringStatus;
 
 class IntermediateArtifactLayoutPlannerTest {
+    @TempDir
+    Path temp;
+
     @Test
     void plansOverloadedMethodIdsFromDescriptorHash() {
         IntermediateArtifactLayout layout = new IntermediateArtifactLayoutPlanner().plan(List.of(
@@ -72,6 +79,31 @@ class IntermediateArtifactLayoutPlannerTest {
         assertTrue(classIndex.contains("\"directory\": \"pkg/Foo$Bar__"));
         assertTrue(methodIndex.contains("\"methodId\": \"_init___"));
         assertTrue(methodIndex.contains("\"status\": \"notApplicable\""));
+    }
+
+    @Test
+    void writesIntermediateManifestWithConfigFlagsAndFileHashes() throws Exception {
+        IntermediateArtifactLayout layout = new IntermediateArtifactLayoutPlanner().plan(List.of(
+                new ClassArtifactInput(
+                        "pkg/Foo",
+                        "pkg/Foo.class",
+                        List.of(method("pkg/Foo", "add", "(II)I", LoweringStatus.LOWERED)))));
+        Path file = temp.resolve("intermediates/classes/pkg_Foo__abc/llvm/class.ll");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "define hidden i32 @f() { ret i32 1 }\n");
+
+        String manifest = new IntermediateArtifactIndexWriter().manifestJson(
+                temp,
+                new IntermediatesConfig(true, false, true, true, false),
+                layout);
+
+        assertTrue(manifest.contains("\"reportVersion\": 1"));
+        assertTrue(manifest.contains("\"includeDebugDumps\": false"));
+        assertTrue(manifest.contains("\"class\": \"pkg/Foo\""));
+        assertTrue(manifest.contains("\"methodId\": \"add__"));
+        assertTrue(manifest.contains("\"path\": \"intermediates/classes/pkg_Foo__abc/llvm/class.ll\""));
+        assertTrue(manifest.contains("\"kind\": \"llvm\""));
+        assertTrue(manifest.contains("\"sha256\""));
     }
 
     private MethodArtifactInput method(String owner, String name, String descriptor, LoweringStatus status) {

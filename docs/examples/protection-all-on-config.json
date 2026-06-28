@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "jarFile": "input.jar",
+  "classPath": [],
+  "javaHome": null,
+  "runtimeImage": null,
+  "worldModel": "PARTIAL_WORLD",
+  "javaSupportTier": "TIER_5",
+  "fallbackMode": "nativeEmbeddedClassBlob",
+  "outputDirectory": "out",
+  "whiteList": [],
+  "blackList": [],
+  "target": {
+    "windowsX64": false,
+    "windowsArm64": false,
+    "linuxX64": false,
+    "linuxArm64": false,
+    "macosX64": false,
+    "macosArm64": true
+  },
+  "libraryName": "j2llprotected",
+  "embeddedLibraryDirectory": "native0",
+  "signaturePolicy": "strip",
+  "signing": null,
+  "intermediates": {
+    "enabled": true,
+    "includeDebugDumps": true,
+    "includePerClassIr": true,
+    "includePerClassLlvm": true,
+    "includePerClassC": true
+  },
+  "protection": {
+    "enabled": true,
+    "seed": "replace-with-release-seed",
+    "intensity": "normal",
+    "ir": {
+      "enabled": true,
+      "controlFlowFlattening": { "enabled": true, "intensity": "normal" },
+      "fakeBranches": { "enabled": true, "intensity": "normal" },
+      "basicBlockSplitting": { "enabled": true, "intensity": "normal" },
+      "constantEncryption": { "enabled": true, "intensity": "normal" },
+      "stringEncryption": { "enabled": true, "intensity": "normal", "cacheStrings": false },
+      "methodInlining": { "enabled": true, "intensity": "normal" },
+      "methodSplitting": { "enabled": true, "intensity": "normal" },
+      "callIndirection": { "enabled": true, "intensity": "normal" },
+      "methodTableHiding": { "enabled": true, "intensity": "normal" }
+    },
+    "llvm": {
+      "enabled": true,
+      "nameObfuscation": { "enabled": true, "intensity": "normal" },
+      "opaquePredicates": { "enabled": true, "intensity": "normal" },
+      "blockLayoutPerturbation": { "enabled": true, "intensity": "normal" },
+      "indirectCalls": { "enabled": true, "intensity": "normal" },
+      "globalLayout": { "enabled": true, "intensity": "normal" },
+      "visibilityHardening": { "enabled": true }
+    },
+    "binary": {
+      "enabled": true,
+      "hideInternalSymbols": true,
+      "strip": true,
+      "removePdb": true,
+      "symbolAudit": true
+    }
+  }
+}

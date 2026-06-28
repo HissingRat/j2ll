@@ -150,6 +150,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     SsaMethodResult.frontendSkipped(method, "STACK_UNDERFLOW", exception.getMessage()),
                     List.of(diagnostic));
         } catch (UnsupportedOperationException exception) {
+            if (isLegacySubroutineUnsupportedOpcode(exception)) {
+                return skipped(method, "UNSUPPORTED_FINALLY_SUBROUTINE", exception.getMessage());
+            }
             return skipped(method, "UNSUPPORTED_OPCODE", exception.getMessage());
         }
 
@@ -182,14 +185,37 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 returnType(method.descriptor()),
                 parameters,
                 blocks);
+        if (hasUnsupportedDefaultInterfaceSuper(diagnostics)) {
+            return StageResult.complete(
+                    DiagnosticStage.LOWERING,
+                    SsaMethodResult.frontendSkipped(
+                            method,
+                            "UNSUPPORTED_DEFAULT_INTERFACE_SUPER",
+                            "default interface super call cannot be copied into a fallback helper class"),
+                    diagnostics);
+        }
         SsaMethodResult artifact = diagnostics.isEmpty()
                 ? SsaMethodResult.lowered(method, irMethod)
                 : SsaMethodResult.halfLowered(
                         method,
                         irMethod,
-                        DiagnosticCode.JVM_HELPER_FALLBACK.value(),
+                        primaryFallbackReasonCode(diagnostics),
                         "one or more call sites require JVM helper fallback");
         return StageResult.complete(DiagnosticStage.LOWERING, artifact, diagnostics);
+    }
+
+    private String primaryFallbackReasonCode(List<Diagnostic> diagnostics) {
+        return diagnostics.stream()
+                .filter(Diagnostic::conservativeFallbackAvailable)
+                .map(Diagnostic::code)
+                .filter(code -> !code.equals(DiagnosticCode.JVM_HELPER_FALLBACK))
+                .findFirst()
+                .or(() -> diagnostics.stream()
+                        .filter(Diagnostic::conservativeFallbackAvailable)
+                        .map(Diagnostic::code)
+                        .findFirst())
+                .map(DiagnosticCode::value)
+                .orElse(DiagnosticCode.JVM_HELPER_FALLBACK.value());
     }
 
     private BlockLowering lowerBlock(
@@ -617,6 +643,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         IrType returnType = returnType(methodInsn.desc);
         String methodKey = methodInsn.owner + "#" + methodInsn.name + "!" + methodInsn.desc;
+        if (opcode == INVOKESPECIAL && methodInsn.itf) {
+            addDefaultInterfaceSuperDiagnostic(
+                    currentMethod,
+                    methodKey,
+                    diagnostics);
+        }
         if (lowerUnsafeCall(
                 currentMethod,
                 methodInsn,
@@ -818,7 +850,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return false;
         }
         if (!plan.supported()) {
-            addJvmHelperFallbackDiagnostic(currentMethod, methodKey, plan.reason(), diagnostics);
+            addFallbackDiagnostic(
+                    currentMethod,
+                    methodKey,
+                    plan.reason(),
+                    DiagnosticCode.UNSAFE_RAW_MEMORY_FALLBACK,
+                    diagnostics);
             appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
             return true;
         }
@@ -955,6 +992,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     instructions);
             removeDefinition(operands.get(0), instructions, IrOpcode.CONST_CLASS);
             removeDefinition(operands.get(1), instructions, IrOpcode.CONST_STRING);
+            removeClassArrayDescriptorDefinitions(operands.get(2), instructions);
             return true;
         }
         if (methodInsn.owner.equals("java/lang/Class")
@@ -1003,6 +1041,17 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     stack,
                     instructions);
             removeDefinition(operands.get(0), instructions, IrOpcode.CONST_CLASS);
+            removeClassArrayDescriptorDefinitions(operands.get(1), instructions);
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/Class")
+                && isReflectionMemberScan(methodInsn.name)) {
+            addJvmHelperFallbackDiagnostic(
+                    currentMethod,
+                    methodKey,
+                    "reflection member scan requires JVM helper fallback",
+                    diagnostics);
+            appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
             return true;
         }
         if (methodInsn.owner.equals("java/lang/reflect/Method")
@@ -1027,6 +1076,19 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     operands,
                     runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_NEW_INSTANCE)));
             stack.push(result);
+            return true;
+        }
+        if ((methodInsn.owner.equals("java/lang/reflect/Method")
+                        || methodInsn.owner.equals("java/lang/reflect/Constructor")
+                        || methodInsn.owner.equals("java/lang/reflect/Field")
+                        || methodInsn.owner.equals("java/lang/reflect/AccessibleObject"))
+                && methodInsn.name.equals("setAccessible")
+                && methodInsn.desc.equals("(Z)V")) {
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.empty(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_SET_ACCESSIBLE)));
             return true;
         }
         if (methodInsn.owner.equals("java/lang/reflect/Field")
@@ -1073,7 +1135,82 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_SET_INT)));
             return true;
         }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("getBoolean")
+                && methodInsn.desc.equals("(Ljava/lang/Object;)Z")) {
+            IrValue result = values.next(IrType.I32);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(result),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_GET_BOOLEAN)));
+            stack.push(result);
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("setBoolean")
+                && methodInsn.desc.equals("(Ljava/lang/Object;Z)V")) {
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.empty(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_SET_BOOLEAN)));
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("getLong")
+                && methodInsn.desc.equals("(Ljava/lang/Object;)J")) {
+            IrValue result = values.next(IrType.I64);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(result),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_GET_LONG)));
+            stack.push(result);
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("setLong")
+                && methodInsn.desc.equals("(Ljava/lang/Object;J)V")) {
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.empty(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_SET_LONG)));
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("getDouble")
+                && methodInsn.desc.equals("(Ljava/lang/Object;)D")) {
+            IrValue result = values.next(IrType.F64);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(result),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_GET_DOUBLE)));
+            stack.push(result);
+            return true;
+        }
+        if (methodInsn.owner.equals("java/lang/reflect/Field")
+                && methodInsn.name.equals("setDouble")
+                && methodInsn.desc.equals("(Ljava/lang/Object;D)V")) {
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.empty(),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    operands,
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.REFLECT_FIELD_SET_DOUBLE)));
+            return true;
+        }
         return false;
+    }
+
+    private boolean isReflectionMemberScan(String methodName) {
+        return methodName.equals("getDeclaredMethods")
+                || methodName.equals("getMethods")
+                || methodName.equals("getDeclaredFields")
+                || methodName.equals("getFields")
+                || methodName.equals("getDeclaredConstructors")
+                || methodName.equals("getConstructors");
     }
 
     private void lowerClassForNameStatic(
@@ -1134,6 +1271,32 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 .map(symbol -> symbol.substring("class:L".length(), symbol.length() - 1));
     }
 
+    private java.util.Optional<String> classDescriptorForClassValue(IrValue value, List<IrInstruction> instructions) {
+        return definingInstruction(value, instructions)
+                .flatMap(instruction -> switch (instruction.opcode()) {
+                    case CONST_CLASS -> instruction.symbol()
+                            .filter(symbol -> symbol.startsWith("class:"))
+                            .map(symbol -> symbol.substring("class:".length()));
+                    case GET_STATIC -> instruction.symbol().flatMap(this::primitiveTypeDescriptorForStaticField);
+                    default -> java.util.Optional.empty();
+                });
+    }
+
+    private java.util.Optional<String> primitiveTypeDescriptorForStaticField(String fieldKey) {
+        return java.util.Optional.ofNullable(switch (fieldKey) {
+            case "java/lang/Boolean#TYPE!Ljava/lang/Class;" -> "Z";
+            case "java/lang/Byte#TYPE!Ljava/lang/Class;" -> "B";
+            case "java/lang/Character#TYPE!Ljava/lang/Class;" -> "C";
+            case "java/lang/Short#TYPE!Ljava/lang/Class;" -> "S";
+            case "java/lang/Integer#TYPE!Ljava/lang/Class;" -> "I";
+            case "java/lang/Long#TYPE!Ljava/lang/Class;" -> "J";
+            case "java/lang/Float#TYPE!Ljava/lang/Class;" -> "F";
+            case "java/lang/Double#TYPE!Ljava/lang/Class;" -> "D";
+            case "java/lang/Void#TYPE!Ljava/lang/Class;" -> "V";
+            default -> null;
+        });
+    }
+
     private java.util.Optional<List<String>> classArrayDescriptors(IrValue value, List<IrInstruction> instructions) {
         java.util.Optional<IrInstruction> allocation = definingInstruction(value, instructions)
                 .filter(instruction -> instruction.opcode() == IrOpcode.NEW_ARRAY)
@@ -1158,15 +1321,15 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 continue;
             }
             java.util.Optional<Integer> index = intLiteral(instruction.operands().get(1), instructions);
-            java.util.Optional<String> className = classInternalNameForValue(instruction.operands().get(2), instructions);
-            if (index.isEmpty() || className.isEmpty()) {
+            java.util.Optional<String> descriptor = classDescriptorForClassValue(instruction.operands().get(2), instructions);
+            if (index.isEmpty() || descriptor.isEmpty()) {
                 return java.util.Optional.empty();
             }
             int slot = index.orElseThrow();
             if (slot < 0 || slot >= descriptors.size()) {
                 return java.util.Optional.empty();
             }
-            descriptors.set(slot, classDescriptor(className.orElseThrow()));
+            descriptors.set(slot, descriptor.orElseThrow());
         }
         if (descriptors.stream().anyMatch(java.util.Objects::isNull)) {
             return java.util.Optional.empty();
@@ -1177,6 +1340,29 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private void removeDefinition(IrValue value, List<IrInstruction> instructions, IrOpcode opcode) {
         instructions.removeIf(instruction -> instruction.opcode() == opcode
                 && instruction.result().map(result -> result.name().equals(value.name())).orElse(false));
+    }
+
+    private void removeClassArrayDescriptorDefinitions(IrValue array, List<IrInstruction> instructions) {
+        ArrayList<IrValue> removableValues = new ArrayList<>();
+        for (IrInstruction instruction : List.copyOf(instructions)) {
+            if (instruction.opcode() == IrOpcode.NEW_ARRAY
+                    && instruction.result().map(result -> result.name().equals(array.name())).orElse(false)) {
+                removableValues.addAll(instruction.operands());
+                instructions.remove(instruction);
+                continue;
+            }
+            if (instruction.opcode() == IrOpcode.ARRAY_STORE_REF
+                    && instruction.operands().size() == 3
+                    && instruction.operands().get(0).equals(array)) {
+                removableValues.add(instruction.operands().get(1));
+                removableValues.add(instruction.operands().get(2));
+                instructions.remove(instruction);
+            }
+        }
+        for (IrValue value : removableValues) {
+            removeDefinition(value, instructions, IrOpcode.CONST_INT);
+            removeDefinition(value, instructions, IrOpcode.CONST_CLASS);
+        }
     }
 
     private java.util.Optional<IrInstruction> definingInstruction(IrValue value, List<IrInstruction> instructions) {
@@ -1242,13 +1428,40 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             String methodKey,
             String reason,
             List<Diagnostic> diagnostics) {
+        addFallbackDiagnostic(currentMethod, methodKey, reason, DiagnosticCode.JVM_HELPER_FALLBACK, diagnostics);
+    }
+
+    private void addFallbackDiagnostic(
+            ParsedMethod currentMethod,
+            String methodKey,
+            String reason,
+            DiagnosticCode code,
+            List<Diagnostic> diagnostics) {
         diagnostics.add(Diagnostic.warning(
                         DiagnosticStage.LOWERING,
-                        DiagnosticCode.JVM_HELPER_FALLBACK,
+                        code,
                         methodKey + " uses JVM helper fallback: " + reason)
                 .at(location(currentMethod))
                 .withDecision(LoweringStatus.HALF_LOWERED.wireName())
                 .withConservativeFallbackAvailable(true));
+    }
+
+    private void addDefaultInterfaceSuperDiagnostic(
+            ParsedMethod currentMethod,
+            String methodKey,
+            List<Diagnostic> diagnostics) {
+        diagnostics.add(Diagnostic.warning(
+                        DiagnosticStage.LOWERING,
+                        LoweringDiagnostics.UNSUPPORTED_DEFAULT_INTERFACE_SUPER,
+                        methodKey
+                                + " uses default interface super; helper-class fallback cannot preserve invokespecial direct-superinterface verification")
+                .at(location(currentMethod))
+                .withDecision(LoweringStatus.FRONTEND_SKIPPED.wireName()));
+    }
+
+    private boolean hasUnsupportedDefaultInterfaceSuper(List<Diagnostic> diagnostics) {
+        return diagnostics.stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(LoweringDiagnostics.UNSUPPORTED_DEFAULT_INTERFACE_SUPER));
     }
 
     private void lowerDynamicCall(
@@ -1587,11 +1800,35 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     }
 
     private String unsupportedCatchAllReasonCode(BytecodeCfg cfg) {
+        if (containsMonitorInstruction(cfg)) {
+            return "UNSUPPORTED_MONITOR_FINALLY_INTERACTION";
+        }
+        if (hasNestedCatchAllRegion(cfg)) {
+            return "UNSUPPORTED_NESTED_FINALLY";
+        }
         boolean hasRethrow = cfg.exceptionRegions().stream()
                 .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
                 .map(region -> blockContainingInstruction(cfg, region.handlerInstructionIndex()))
                 .anyMatch(block -> block != null && handlerHasRethrow(cfg, block));
         return hasRethrow ? "UNSUPPORTED_EXCEPTION_STATE_MERGE" : "UNSUPPORTED_MULTI_EXIT_FINALLY";
+    }
+
+    private boolean hasNestedCatchAllRegion(BytecodeCfg cfg) {
+        List<ExceptionRegion> catchAllRegions = cfg.exceptionRegions().stream()
+                .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
+                .toList();
+        for (ExceptionRegion outer : catchAllRegions) {
+            for (ExceptionRegion inner : catchAllRegions) {
+                if (outer == inner) {
+                    continue;
+                }
+                if (outer.startInstructionIndex() <= inner.handlerInstructionIndex()
+                        && inner.handlerInstructionIndex() < outer.endInstructionIndexExclusive()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean containsMonitorInstruction(BytecodeCfg cfg) {
@@ -2362,6 +2599,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 List.of(diagnostic));
     }
 
+    private boolean isLegacySubroutineUnsupportedOpcode(UnsupportedOperationException exception) {
+        String message = exception.getMessage();
+        return message != null && (message.contains("unsupported opcode " + JSR)
+                || message.contains("unsupported opcode " + RET));
+    }
+
     private xyz.melodysky.diagnostic.DiagnosticCode diagnosticCode(String reasonCode) {
         if (reasonCode.equals("UNSUPPORTED_CFG_SHAPE")) {
             return LoweringDiagnostics.UNSUPPORTED_CFG_SHAPE;
@@ -2377,6 +2620,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         if (reasonCode.equals("UNSUPPORTED_EXCEPTION_STATE_MERGE")) {
             return LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE;
+        }
+        if (reasonCode.equals("UNSUPPORTED_MONITOR_FINALLY_INTERACTION")) {
+            return LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION;
+        }
+        if (reasonCode.equals("UNSUPPORTED_NESTED_FINALLY")) {
+            return LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY;
         }
         if (reasonCode.equals("UNSUPPORTED_SYNCHRONIZED_METHOD")) {
             return LoweringDiagnostics.UNSUPPORTED_SYNCHRONIZED_METHOD;

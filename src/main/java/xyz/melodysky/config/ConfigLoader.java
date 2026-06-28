@@ -20,6 +20,7 @@ import java.util.Set;
 import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticStage;
+import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class ConfigLoader {
@@ -111,7 +112,7 @@ public final class ConfigLoader {
         SignaturePolicy signaturePolicy = parseSignaturePolicy(root, diagnostics);
         List<Selector> whiteList = parseSelectors("whiteList", root.getAsJsonArray("whiteList"), diagnostics);
         List<Selector> blackList = parseSelectors("blackList", root.getAsJsonArray("blackList"), diagnostics);
-        TargetConfig target = parseTarget(root.getAsJsonObject("target"));
+        TargetConfig target = parseTarget(root.getAsJsonObject("target"), diagnostics);
         List<TargetTriple> targets = target.enabledTargets();
         if (targets.isEmpty()) {
             diagnostics.add(Diagnostic.error(
@@ -142,6 +143,7 @@ public final class ConfigLoader {
 
         Path jarFile = resolve(base, root.get("jarFile").getAsString());
         Path outputDirectory = resolve(base, root.get("outputDirectory").getAsString());
+        validatePaths(jarFile, outputDirectory, diagnostics);
         List<Path> classPath = classPath(base, root.getAsJsonArray("classPath"));
         String seed = nullableString(root.getAsJsonObject("protection"), "seed");
         if (seed == null) {
@@ -172,8 +174,8 @@ public final class ConfigLoader {
     }
 
     private void validateShape(JsonObject root, List<Diagnostic> diagnostics) {
-        validateFields(root, TOP_LEVEL_FIELDS, "config", diagnostics);
-        validateObject(root, "target", TARGET_FIELDS, "target", diagnostics);
+        validateFields(root, TOP_LEVEL_FIELDS, Set.of("target"), "config", diagnostics);
+        validateOptionalObject(root, "target", TARGET_FIELDS, "target", diagnostics);
         validateNullableObject(root, "signing", SIGNING_FIELDS, "signing", diagnostics);
         validateObject(root, "intermediates", INTERMEDIATE_FIELDS, "intermediates", diagnostics);
         JsonObject protection = validateObject(root, "protection", PROTECTION_FIELDS, "protection", diagnostics);
@@ -210,6 +212,15 @@ public final class ConfigLoader {
     }
 
     private void validateFields(JsonObject object, Set<String> expected, String path, List<Diagnostic> diagnostics) {
+        validateFields(object, expected, Set.of(), path, diagnostics);
+    }
+
+    private void validateFields(
+            JsonObject object,
+            Set<String> expected,
+            Set<String> optional,
+            String path,
+            List<Diagnostic> diagnostics) {
         for (String field : object.keySet()) {
             if (!expected.contains(field)) {
                 diagnostics.add(Diagnostic.warning(
@@ -219,7 +230,7 @@ public final class ConfigLoader {
             }
         }
         for (String field : expected) {
-            if (!object.has(field)) {
+            if (!optional.contains(field) && !object.has(field)) {
                 diagnostics.add(Diagnostic.error(
                         DiagnosticStage.CONFIG,
                         ConfigDiagnostics.MISSING_REQUIRED_FIELD,
@@ -248,6 +259,18 @@ public final class ConfigLoader {
         JsonObject object = value.getAsJsonObject();
         validateFields(object, expected, path, diagnostics);
         return object;
+    }
+
+    private JsonObject validateOptionalObject(
+            JsonObject owner,
+            String field,
+            Set<String> expected,
+            String path,
+            List<Diagnostic> diagnostics) {
+        if (!owner.has(field)) {
+            return null;
+        }
+        return validateObject(owner, field, expected, path, diagnostics);
     }
 
     private JsonObject validateNullableObject(
@@ -323,7 +346,18 @@ public final class ConfigLoader {
         return List.copyOf(selectors);
     }
 
-    private TargetConfig parseTarget(JsonObject target) {
+    private TargetConfig parseTarget(JsonObject target, List<Diagnostic> diagnostics) {
+        if (target == null) {
+            return HostPlatform.detect()
+                    .map(host -> TargetConfig.single(host.target()))
+                    .orElseGet(() -> {
+                        diagnostics.add(Diagnostic.error(
+                                DiagnosticStage.CONFIG,
+                                ConfigDiagnostics.HOST_TARGET_UNAVAILABLE,
+                                "target is missing and the current host target could not be detected"));
+                        return new TargetConfig(false, false, false, false, false, false);
+                    });
+        }
         return new TargetConfig(
                 target.get("windowsX64").getAsBoolean(),
                 target.get("windowsArm64").getAsBoolean(),
@@ -331,6 +365,22 @@ public final class ConfigLoader {
                 target.get("linuxArm64").getAsBoolean(),
                 target.get("macosX64").getAsBoolean(),
                 target.get("macosArm64").getAsBoolean());
+    }
+
+    private void validatePaths(Path jarFile, Path outputDirectory, List<Diagnostic> diagnostics) {
+        String jar = jarFile.toString();
+        if (jar.isBlank() || !jar.endsWith(".jar")) {
+            diagnostics.add(Diagnostic.error(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.INVALID_PATH,
+                    "jarFile must resolve to a .jar path: " + jar));
+        }
+        if (outputDirectory.toString().isBlank()) {
+            diagnostics.add(Diagnostic.error(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.INVALID_PATH,
+                    "outputDirectory must not be blank"));
+        }
     }
 
     private SigningConfig parseSigning(Path baseDirectory, JsonElement signingElement, List<Diagnostic> diagnostics) {

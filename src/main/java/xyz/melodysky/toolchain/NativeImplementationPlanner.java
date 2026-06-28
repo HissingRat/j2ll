@@ -40,6 +40,14 @@ public final class NativeImplementationPlanner {
             NativeRegistrationPlan registrationPlan,
             List<MethodRewriteDecision> decisions,
             Map<String, IrMethod> irMethods) {
+        return plan(registrationPlan, decisions, irMethods, Set.of());
+    }
+
+    public NativeImplementationPlan plan(
+            NativeRegistrationPlan registrationPlan,
+            List<MethodRewriteDecision> decisions,
+            Map<String, IrMethod> irMethods,
+            Set<String> nativeEmbeddedFallbackMethodKeys) {
         ArrayList<NativeMethodImplementation> implementations = new ArrayList<>();
         Map<String, NativeRegistrationEntry> entriesByMethod = new LinkedHashMap<>();
         Map<String, MethodRewriteDecision> decisionsByMethod = new LinkedHashMap<>();
@@ -91,6 +99,7 @@ public final class NativeImplementationPlanner {
                 boolean typeHelper = containsTypeHelper(irMethod);
                 boolean constructorCallHelper = containsConstructorCallHelper(irMethod);
                 boolean arithmeticExceptionHelper = containsArithmeticExceptionHelper(irMethod);
+                boolean jvmNumericHelper = containsJvmNumericHelper(irMethod);
                 boolean arrayHelper = containsArrayHelper(irMethod);
                 boolean arraycopyHelper = containsArraycopyHelper(irMethod);
                 boolean unsafeHelper = containsUnsafeHelper(irMethod);
@@ -100,6 +109,8 @@ public final class NativeImplementationPlanner {
                 boolean exceptionHelper = containsThrowTerminator(irMethod);
                 boolean runtimeMetadataHelper = containsRuntimeMetadataHelper(irMethod);
                 boolean classInitHelper = containsClassInitHelper(irMethod);
+                boolean passesJniEnv = needsJniEnv(irMethod, directCallTargets);
+                boolean passesOwnerClass = needsOwnerClass(irMethod);
                 implementations.add(new NativeMethodImplementation(
                         entry,
                         decision,
@@ -118,6 +129,7 @@ public final class NativeImplementationPlanner {
                                 typeHelper,
                                 constructorCallHelper,
                                 arithmeticExceptionHelper,
+                                jvmNumericHelper,
                                 arrayHelper,
                                 arraycopyHelper,
                                 varHandleHelper,
@@ -127,24 +139,8 @@ public final class NativeImplementationPlanner {
                                 exceptionHelper,
                                 runtimeMetadataHelper,
                                 decision.method().accessFlags().isSynchronized()),
-                        !fieldKeys.isEmpty()
-                                || allocationHelper
-                                || typeHelper
-                                || constructorCallHelper
-                                || !dispatchKeys.isEmpty()
-                                || !stringHelperSymbols.isEmpty()
-                                || jdkScalarHelper
-                                || arithmeticExceptionHelper
-                                || arrayHelper
-                                || arraycopyHelper
-                                || varHandleHelper
-                                || lambdaHelper
-                                || unsafeHelper
-                                || monitorHelper
-                                || exceptionHelper
-                                || runtimeMetadataHelper
-                                || classInitHelper,
-                        decision.method().accessFlags().isStatic() && containsStaticFieldAccess(irMethod),
+                        passesJniEnv,
+                        passesOwnerClass,
                         fieldKeys,
                         directCallTargets,
                         allocationKeys,
@@ -176,6 +172,26 @@ public final class NativeImplementationPlanner {
                         List.of(),
                         List.of(),
                         maybeIr));
+            } else if (nativeEmbeddedFallbackMethodKeys.contains(decision.method().methodKey())
+                    && supportsNativeEmbeddedFallback(decision)) {
+                implementations.add(new NativeMethodImplementation(
+                        entry,
+                        decision,
+                        NativeImplementationPath.TEMPLATE_JNI_PATH,
+                        Optional.empty(),
+                        "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK",
+                        false,
+                        false,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        maybeIr));
             } else if (templateGenerator.supportsTemplate(decision)) {
                 implementations.add(new NativeMethodImplementation(
                         entry,
@@ -186,6 +202,19 @@ public final class NativeImplementationPlanner {
             }
         }
         return new NativeImplementationPlan(implementations);
+    }
+
+    private boolean supportsNativeEmbeddedFallback(MethodRewriteDecision decision) {
+        if (decision.strategy() != MethodRewriteStrategy.NATIVE_ORIGINAL) {
+            return false;
+        }
+        if (!decision.method().hasCode()
+                || decision.method().name().equals("<init>")
+                || decision.method().name().equals("<clinit>")
+                || decision.method().accessFlags().isInterface()) {
+            return false;
+        }
+        return supportsJvmHostedDescriptor(decision.method().descriptor());
     }
 
     private boolean supportsGenericBodyHelper(MethodRewriteDecision decision, IrMethod method) {
@@ -242,6 +271,9 @@ public final class NativeImplementationPlanner {
         }
         if (instruction.opcode() == IrOpcode.CONST_STRING || instruction.opcode() == IrOpcode.CONST_NULL) {
             return true;
+        }
+        if (isStringHelperInstruction(instruction)) {
+            return supportsStringHelperInstruction(instruction);
         }
         if (instruction.opcode() == IrOpcode.NEW_ARRAY) {
             return instruction.symbol().map(symbol -> symbol.equals("primitiveArray:int")).orElse(false);
@@ -419,6 +451,10 @@ public final class NativeImplementationPlanner {
             return instruction.result().map(IrValue::type).filter(this::isPrimitiveScalar).isPresent()
                     && instruction.operands().stream().map(IrValue::type).allMatch(this::isPrimitiveScalar);
         }
+        if (isJvmNumericHelperInstruction(instruction)) {
+            return instruction.result().map(IrValue::type).filter(this::isPrimitiveScalar).isPresent()
+                    && instruction.operands().stream().map(IrValue::type).allMatch(this::isPrimitiveScalar);
+        }
         if (isMemoryFenceInstruction(instruction)) {
             return instruction.result().isEmpty()
                     && instruction.operands().stream().map(IrValue::type).allMatch(this::isSupportedValueType);
@@ -434,6 +470,7 @@ public final class NativeImplementationPlanner {
                     ADD_I32, SUB_I32, MUL_I32,
                     ADD_I64, SUB_I64, MUL_I64,
                     XOR_I32, XOR_I64,
+                    BITCAST_I32_TO_F32, BITCAST_I64_TO_F64,
                     ADD_F32, SUB_F32, MUL_F32, DIV_F32, REM_F32, NEG_F32,
                     ADD_F64, SUB_F64, MUL_F64, DIV_F64, REM_F64, NEG_F64,
                     NEG_I32, NEG_I64,
@@ -444,9 +481,6 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean supportsTerminator(IrTerminator terminator) {
-        if (terminator.kind() == IrTerminatorKind.SWITCH) {
-            return false;
-        }
         if (terminator.kind() == IrTerminatorKind.THROW) {
             return terminator.value().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent();
         }
@@ -623,6 +657,21 @@ public final class NativeImplementationPlanner {
                 || instruction.opcode() == IrOpcode.REM_I32
                 || instruction.opcode() == IrOpcode.DIV_I64
                 || instruction.opcode() == IrOpcode.REM_I64;
+    }
+
+    private boolean isJvmNumericHelperInstruction(IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.I2B
+                || instruction.opcode() == IrOpcode.I2C
+                || instruction.opcode() == IrOpcode.I2S
+                || instruction.opcode() == IrOpcode.F2I
+                || instruction.opcode() == IrOpcode.F2L
+                || instruction.opcode() == IrOpcode.D2I
+                || instruction.opcode() == IrOpcode.D2L
+                || instruction.opcode() == IrOpcode.LCMP
+                || instruction.opcode() == IrOpcode.FCMPL
+                || instruction.opcode() == IrOpcode.FCMPG
+                || instruction.opcode() == IrOpcode.DCMPL
+                || instruction.opcode() == IrOpcode.DCMPG;
     }
 
     private boolean isMemoryFenceInstruction(IrInstruction instruction) {
@@ -1108,6 +1157,7 @@ public final class NativeImplementationPlanner {
                                     || base.equals("j2ll_rt_get_declared_constructor")
                                     || base.equals("j2ll_rt_reflect_invoke")
                                     || base.equals("j2ll_rt_reflect_new_instance")
+                                    || base.equals("j2ll_rt_reflect_set_accessible")
                                     || base.startsWith("j2ll_rt_reflect_field_");
                         })
                         .orElse(false);
@@ -1137,12 +1187,13 @@ public final class NativeImplementationPlanner {
                             .map(key -> {
                                 if (key.startsWith("method:")) {
                                     int descriptorStart = key.indexOf('!');
-                                    return descriptorStart >= 0 && key.substring(descriptorStart + 1).startsWith("()");
+                                    return descriptorStart >= 0 && key.substring(descriptorStart + 1).startsWith("(");
                                 }
                                 if (key.startsWith("constructor:")) {
                                     int descriptorStart = key.indexOf('!');
                                     return descriptorStart >= 0
-                                            && key.substring(descriptorStart + 1).equals("()V");
+                                            && key.substring(descriptorStart + 1).startsWith("(")
+                                            && key.substring(descriptorStart + 1).endsWith("V");
                                 }
                                 return false;
                             })
@@ -1157,6 +1208,12 @@ public final class NativeImplementationPlanner {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
                     && instruction.operands().size() == 2
                     && instruction.operands().stream().map(IrValue::type).allMatch(type -> type == IrType.REFERENCE);
+        }
+        if (symbol.equals("j2ll_rt_reflect_set_accessible")) {
+            return instruction.result().isEmpty()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.I32;
         }
         if (symbol.equals("j2ll_rt_reflect_field_get")) {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
@@ -1180,6 +1237,42 @@ public final class NativeImplementationPlanner {
                     && instruction.operands().get(1).type() == IrType.REFERENCE
                     && instruction.operands().get(2).type() == IrType.I32;
         }
+        if (symbol.equals("j2ll_rt_reflect_field_get_boolean")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.I32).isPresent()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().stream().map(IrValue::type).allMatch(type -> type == IrType.REFERENCE);
+        }
+        if (symbol.equals("j2ll_rt_reflect_field_set_boolean")) {
+            return instruction.result().isEmpty()
+                    && instruction.operands().size() == 3
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.REFERENCE
+                    && instruction.operands().get(2).type() == IrType.I32;
+        }
+        if (symbol.equals("j2ll_rt_reflect_field_get_long")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.I64).isPresent()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().stream().map(IrValue::type).allMatch(type -> type == IrType.REFERENCE);
+        }
+        if (symbol.equals("j2ll_rt_reflect_field_set_long")) {
+            return instruction.result().isEmpty()
+                    && instruction.operands().size() == 3
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.REFERENCE
+                    && instruction.operands().get(2).type() == IrType.I64;
+        }
+        if (symbol.equals("j2ll_rt_reflect_field_get_double")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.F64).isPresent()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().stream().map(IrValue::type).allMatch(type -> type == IrType.REFERENCE);
+        }
+        if (symbol.equals("j2ll_rt_reflect_field_set_double")) {
+            return instruction.result().isEmpty()
+                    && instruction.operands().size() == 3
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.REFERENCE
+                    && instruction.operands().get(2).type() == IrType.F64;
+        }
         return false;
     }
 
@@ -1188,10 +1281,36 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean supportsDispatchHelperInstruction(IrInstruction instruction) {
-        return instruction.result().map(IrValue::type).filter(type -> type == IrType.I32).isPresent()
-                && instruction.operands().size() == 1
-                && instruction.operands().get(0).type() == IrType.REFERENCE
-                && instruction.symbol().map(symbol -> symbol.endsWith("!()I")).orElse(false);
+        if (instruction.result().isEmpty()
+                || instruction.operands().isEmpty()
+                || instruction.operands().get(0).type() != IrType.REFERENCE) {
+            return false;
+        }
+        String descriptor = instruction.symbol().flatMap(this::methodDescriptor).orElse("");
+        IrType returnType = instruction.result().orElseThrow().type();
+        if (returnType == IrType.I32) {
+            return (descriptor.equals("()I") && instruction.operands().size() == 1)
+                    || (descriptor.equals("(I)I")
+                            && instruction.operands().size() == 2
+                            && instruction.operands().get(1).type() == IrType.I32);
+        }
+        if (returnType == IrType.REFERENCE) {
+            return (descriptor.startsWith("()L") && descriptor.endsWith(";") && instruction.operands().size() == 1)
+                    || (descriptor.startsWith("(L")
+                            && descriptor.contains(";)L")
+                            && descriptor.endsWith(";")
+                            && instruction.operands().size() == 2
+                            && instruction.operands().get(1).type() == IrType.REFERENCE);
+        }
+        return false;
+    }
+
+    private Optional<String> methodDescriptor(String methodKey) {
+        int separator = methodKey.indexOf('!');
+        if (separator < 0 || separator == methodKey.length() - 1) {
+            return Optional.empty();
+        }
+        return Optional.of(methodKey.substring(separator + 1));
     }
 
     private boolean isMonitorHelperInstruction(IrInstruction instruction) {
@@ -1323,17 +1442,16 @@ public final class NativeImplementationPlanner {
                 .anyMatch(this::isLambdaHelperInstruction);
     }
 
-    private boolean containsStaticFieldAccess(IrMethod method) {
-        return method.blocks().stream()
-                .flatMap(block -> block.instructions().stream())
-                .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
-                        || instruction.opcode() == IrOpcode.PUT_STATIC);
-    }
-
     private boolean containsArithmeticExceptionHelper(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(this::isArithmeticExceptionHelperInstruction);
+    }
+
+    private boolean containsJvmNumericHelper(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(this::isJvmNumericHelperInstruction);
     }
 
     private boolean containsArrayHelper(IrMethod method) {
@@ -1384,6 +1502,65 @@ public final class NativeImplementationPlanner {
                 .anyMatch(this::isClassInitGuardInstruction);
     }
 
+    private boolean needsJniEnv(IrMethod method, List<String> directCallTargets) {
+        return method.blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
+                || method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> isFieldAccess(instruction.opcode())
+                        || isArithmeticExceptionHelperInstruction(instruction)
+                        || isArrayHelperInstruction(instruction)
+                        || isAllocationHelperInstruction(instruction)
+                        || isTypeHelperInstruction(instruction)
+                        || isMonitorHelperInstruction(instruction)
+                        || isClassInitGuardInstruction(instruction)
+                        || isConstructorCallHelperInstruction(instruction)
+                        || isDispatchHelperInstruction(instruction)
+                        || ((instruction.opcode() == IrOpcode.CALL_STATIC
+                                        || isDirectSpecialCallInstruction(instruction))
+                                && instruction.symbol().filter(directCallTargets::contains).isPresent())
+                        || (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                                && instruction.symbol().map(this::isEnvBackedRuntimeHelperSymbol).orElse(false)));
+    }
+
+    private boolean needsOwnerClass(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
+                        || instruction.opcode() == IrOpcode.PUT_STATIC);
+    }
+
+    private boolean isEnvBackedRuntimeHelperSymbol(String symbol) {
+        String base = runtimeHelperBaseSymbol(symbol);
+        return base.equals("j2ll_rt_string_length")
+                || base.equals("j2ll_rt_string_equals")
+                || base.equals("j2ll_rt_string_is_empty")
+                || base.equals("j2ll_rt_string_char_at")
+                || base.equals("j2ll_rt_string_starts_with")
+                || base.equals("j2ll_rt_string_ends_with")
+                || base.equals("j2ll_rt_string_substring")
+                || base.equals("j2ll_rt_string_substring_range")
+                || base.equals("j2ll_rt_string_constant")
+                || base.startsWith("j2ll_rt_string_builder_")
+                || base.equals("j2ll_rt_system_arraycopy")
+                || base.startsWith("j2ll_rt_integer_")
+                || base.startsWith("j2ll_rt_long_")
+                || base.startsWith("j2ll_rt_boolean_")
+                || base.startsWith("j2ll_rt_double_")
+                || base.startsWith("j2ll_rt_objects_")
+                || base.equals("j2ll_rt_lambda_new")
+                || base.equals("j2ll_rt_class_for_name_static")
+                || base.equals("j2ll_rt_get_declared_method")
+                || base.equals("j2ll_rt_get_declared_field")
+                || base.equals("j2ll_rt_get_declared_constructor")
+                || base.equals("j2ll_rt_reflect_invoke")
+                || base.equals("j2ll_rt_reflect_new_instance")
+                || base.equals("j2ll_rt_reflect_set_accessible")
+                || base.startsWith("j2ll_rt_reflect_field_")
+                || base.startsWith("j2ll_rt_unsafe_")
+                || base.startsWith("j2ll_rt_var_handle_");
+    }
+
     private boolean containsThrowTerminator(IrMethod method) {
         return method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW);
@@ -1402,6 +1579,7 @@ public final class NativeImplementationPlanner {
             boolean typeHelper,
             boolean constructorCallHelper,
             boolean arithmeticExceptionHelper,
+            boolean jvmNumericHelper,
             boolean arrayHelper,
             boolean arraycopyHelper,
             boolean varHandleHelper,
@@ -1461,6 +1639,9 @@ public final class NativeImplementationPlanner {
         }
         if (arithmeticExceptionHelper) {
             return "LLVM_DIV_REM_EXCEPTION_HELPER_IR";
+        }
+        if (jvmNumericHelper) {
+            return "LLVM_JVM_NUMERIC_HELPER_IR";
         }
         if (monitorHelper) {
             return "LLVM_MONITOR_HELPER_IR";

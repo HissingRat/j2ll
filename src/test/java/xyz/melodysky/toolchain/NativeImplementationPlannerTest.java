@@ -248,14 +248,14 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void reflectionMetadataHelperPathRequiresStaticallyResolvedNoArgMember() {
+    void reflectionMetadataHelperPathAllowsStaticallyResolvedParameterizedMember() {
         ParsedClass parsedClass = parse("pkg/ReflectionPlan.class", reflectionPlanClass());
         MethodRewriteDecision decision = decision(parsedClass, "member");
         NativeImplementationPlanner planner = new NativeImplementationPlanner();
 
         assertTrue(planner.supportsLlvmNativePath(decision, reflectionMemberIr(
                 "j2ll_rt_get_declared_method|method:pkg/Target#value!()I")));
-        assertTrue(!planner.supportsLlvmNativePath(decision, reflectionMemberIr(
+        assertTrue(planner.supportsLlvmNativePath(decision, reflectionMemberIr(
                 "j2ll_rt_get_declared_method|method:pkg/Target#value!(I)I")));
     }
 
@@ -548,6 +548,25 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
         assertEquals("LLVM_DISPATCH_HELPER_IR", implementation.reasonCode());
         assertEquals(List.of("pkg/Base#value!()I"), implementation.dispatchKeys());
+        assertTrue(implementation.passesJniEnv());
+    }
+
+    @Test
+    void selectsLlvmPathForVirtualDispatchHelperWithPrimitiveArgument() {
+        ParsedClass parsedClass = parse("pkg/DispatchOps.class", dispatchOpsClass());
+        MethodRewriteDecision decision = decision(parsedClass, "virtualAdd");
+        IrMethod irMethod = irMethod(parsedClass, "virtualAdd");
+        NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                Map.of(decision.method().methodKey(), irMethod));
+
+        NativeMethodImplementation implementation = plan.implementationFor(decision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_DISPATCH_HELPER_IR", implementation.reasonCode());
+        assertEquals(List.of("pkg/Base#add!(I)I"), implementation.dispatchKeys());
         assertTrue(implementation.passesJniEnv());
     }
 
@@ -947,6 +966,19 @@ class NativeImplementationPlannerTest implements Opcodes {
         method.visitInsn(IRETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
+        MethodVisitor virtualAdd = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "virtualAdd",
+                "(Lpkg/Base;I)I",
+                null,
+                null);
+        virtualAdd.visitCode();
+        virtualAdd.visitVarInsn(ALOAD, 0);
+        virtualAdd.visitVarInsn(ILOAD, 1);
+        virtualAdd.visitMethodInsn(INVOKEVIRTUAL, "pkg/Base", "add", "(I)I", false);
+        virtualAdd.visitInsn(IRETURN);
+        virtualAdd.visitMaxs(0, 0);
+        virtualAdd.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -1008,6 +1040,19 @@ class NativeImplementationPlannerTest implements Opcodes {
         method.visitInsn(IRETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
+        MethodVisitor virtualAdd = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "virtualAdd",
+                "(Lpkg/Base;I)I",
+                null,
+                null);
+        virtualAdd.visitCode();
+        virtualAdd.visitVarInsn(ALOAD, 0);
+        virtualAdd.visitVarInsn(ILOAD, 1);
+        virtualAdd.visitMethodInsn(INVOKEVIRTUAL, "pkg/Base", "add", "(I)I", false);
+        virtualAdd.visitInsn(IRETURN);
+        virtualAdd.visitMaxs(0, 0);
+        virtualAdd.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }

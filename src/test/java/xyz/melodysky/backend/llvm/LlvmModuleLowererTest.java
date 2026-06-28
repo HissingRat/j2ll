@@ -221,6 +221,56 @@ class LlvmModuleLowererTest {
     }
 
     @Test
+    void lowersProtectedFloatAndDoubleBitcastsFromIntegerBits() {
+        IrValue floatEncoded = new IrValue("%float_encoded", IrType.I32);
+        IrValue floatKey = new IrValue("%float_key", IrType.I32);
+        IrValue floatBits = new IrValue("%float_bits", IrType.I32);
+        IrValue floatValue = new IrValue("%float_value", IrType.F32);
+        IrMethod floatMethod = new IrMethod(
+                "pkg/ProtectedConstants",
+                "floatValue",
+                "()F",
+                IrType.F32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.constInt(floatEncoded, 0x12345678),
+                                IrInstruction.constInt(floatKey, 0x0f0f0f0f),
+                                IrInstruction.binary(floatBits, IrOpcode.XOR_I32, floatEncoded, floatKey),
+                                IrInstruction.unary(floatValue, IrOpcode.BITCAST_I32_TO_F32, floatBits)),
+                        IrTerminator.returnValue(floatValue))));
+        IrValue doubleEncoded = new IrValue("%double_encoded", IrType.I64);
+        IrValue doubleKey = new IrValue("%double_key", IrType.I64);
+        IrValue doubleBits = new IrValue("%double_bits", IrType.I64);
+        IrValue doubleValue = new IrValue("%double_value", IrType.F64);
+        IrMethod doubleMethod = new IrMethod(
+                "pkg/ProtectedConstants",
+                "doubleValue",
+                "()D",
+                IrType.F64,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.constLong(doubleEncoded, 0x123456789abcdef0L),
+                                IrInstruction.constLong(doubleKey, 0x0f0f0f0f0f0f0f0fL),
+                                IrInstruction.binary(doubleBits, IrOpcode.XOR_I64, doubleEncoded, doubleKey),
+                                IrInstruction.unary(doubleValue, IrOpcode.BITCAST_I64_TO_F64, doubleBits)),
+                        IrTerminator.returnValue(doubleValue))));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+                new IrClass("pkg/ProtectedConstants", List.of(floatMethod, doubleMethod))));
+
+        assertTrue(text.contains("%float_bits = xor i32 %float_encoded, %float_key"));
+        assertTrue(text.contains("%float_value = bitcast i32 %float_bits to float"));
+        assertTrue(text.contains("ret float %float_value"));
+        assertTrue(text.contains("%double_bits = xor i64 %double_encoded, %double_key"));
+        assertTrue(text.contains("%double_value = bitcast i64 %double_bits to double"));
+        assertTrue(text.contains("ret double %double_value"));
+    }
+
+    @Test
     void lowersMonitorHelpersThroughJniEnvBackedRuntimeCalls() {
         IrValue monitor = new IrValue("%p0", IrType.REFERENCE);
         IrMethod method = new IrMethod(
@@ -481,5 +531,41 @@ class LlvmModuleLowererTest {
         assertTrue(text.contains("call i32 @j2ll_pkg_Calls_privateValue_"));
         assertTrue(text.contains("(ptr %p0, i32 %p1)"));
         assertTrue(!text.contains("@j2ll_call_pkg_Calls_privateValue"));
+    }
+
+    @Test
+    void lowersVirtualAndInterfaceDispatchWithArgumentsThroughTokenizedJvmHelpers() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue intArg = new IrValue("%p1", IrType.I32);
+        IrValue intResult = new IrValue("%int_result", IrType.I32);
+        IrValue refArg = new IrValue("%p2", IrType.REFERENCE);
+        IrValue refResult = new IrValue("%ref_result", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Dispatch",
+                "call",
+                "(Lpkg/Base;ILjava/lang/String;)Ljava/lang/String;",
+                IrType.REFERENCE,
+                List.of(receiver, intArg, refArg),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.call(
+                                        Optional.of(intResult),
+                                        IrOpcode.CALL_VIRTUAL,
+                                        List.of(receiver, intArg),
+                                        "pkg/Base#add!(I)I"),
+                                IrInstruction.call(
+                                        Optional.of(refResult),
+                                        IrOpcode.CALL_INTERFACE,
+                                        List.of(receiver, refArg),
+                                        "pkg/I#name!(Ljava/lang/String;)Ljava/lang/String;")),
+                        IrTerminator.returnValue(refResult))));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+                new IrClass("pkg/Dispatch", List.of(method))));
+
+        assertTrue(text.contains("@j2ll_rt_call_virtual_i32_arg_i32(ptr %j2ll_env, ptr %p0, i64 "));
+        assertTrue(text.contains("@j2ll_rt_call_interface_ref_arg_ref(ptr %j2ll_env, ptr %p0, i64 "));
+        assertFalse(text.contains("vtable"));
     }
 }

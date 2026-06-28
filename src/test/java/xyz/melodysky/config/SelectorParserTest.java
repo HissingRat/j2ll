@@ -19,6 +19,14 @@ class SelectorParserTest {
     }
 
     @Test
+    void parsesInnerClassAndReferenceDescriptor() {
+        Selector selector = parser.parse("my/pkg/Foo$Bar#doIt!(Ljava/lang/String;[I)Ljava/lang/Object;");
+
+        assertTrue(selector.isMethodSelector());
+        assertTrue(selector.matchesClass("my/pkg/Foo$Bar"));
+    }
+
+    @Test
     void rejectsMethodSelectorWithoutDescriptor() {
         assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo#add"));
     }
@@ -37,5 +45,19 @@ class SelectorParserTest {
     @Test
     void rejectsDoubleStarInsideSegment() {
         assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo**"));
+    }
+
+    @Test
+    void rejectsInvalidDescriptorAndWildcardMethodNames() {
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo#doIt!(V)V"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo#do*!()V"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo#doIt!(Ljava/lang/String)V"));
+    }
+
+    @Test
+    void rejectsInvalidClassNamesAndWildcards() {
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg.Foo"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/Foo-Bar"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("pkg/**Foo"));
     }
 }

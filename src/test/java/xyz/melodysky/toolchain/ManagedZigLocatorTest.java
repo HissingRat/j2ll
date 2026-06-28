@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +35,8 @@ class ManagedZigLocatorTest {
 
         assertEquals(executable, zig.executable());
         assertEquals("0.15.2", zig.version());
+        assertTrue(zig.bootstrapEvents().stream()
+                .anyMatch(event -> event.code().equals("FOUND_MANAGED_ZIG")));
         assertFalse(runner.commands().isEmpty());
     }
 
@@ -41,8 +45,9 @@ class ManagedZigLocatorTest {
         Path executable = temp.resolve("zig/zig");
         Files.createDirectories(executable.getParent());
         Files.writeString(executable, "");
-        ZigArchiveMetadata archive = archive();
-        Files.writeString(temp.resolve(archive.archiveName()), "local archive");
+        byte[] archiveBytes = "local archive".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        ZigArchiveMetadata archive = archive(archiveBytes);
+        Files.write(temp.resolve(archive.archiveName()), archiveBytes);
         RecordingRunner runner = new RecordingRunner(List.of("0.16.0", "0.15.2"));
         AtomicInteger downloads = new AtomicInteger();
         ZigArchiveExtractor extractor = new ZigArchiveExtractor(runner) {
@@ -61,6 +66,10 @@ class ManagedZigLocatorTest {
                 .ensure(temp);
 
         assertEquals("0.15.2", zig.version());
+        assertTrue(zig.bootstrapEvents().stream()
+                .anyMatch(event -> event.code().equals("WRONG_VERSION_REINSTALL")));
+        assertTrue(zig.bootstrapEvents().stream()
+                .anyMatch(event -> event.code().equals("LOCAL_ARCHIVE_USED")));
         assertEquals(0, downloads.get());
     }
 
@@ -76,6 +85,87 @@ class ManagedZigLocatorTest {
                 .ensure(temp));
 
         assertTrue(error.getMessage().contains("failed to download managed Zig 0.15.2"));
+    }
+
+    @Test
+    void corruptLocalArchiveChecksumFailsBeforeExtraction() throws Exception {
+        ZigArchiveMetadata archive = archive("expected archive".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Files.writeString(temp.resolve(archive.archiveName()), "corrupt archive");
+
+        IOException error = assertThrows(IOException.class, () -> locator(
+                        new RecordingRunner(List.of("0.16.0")),
+                        failingDownloader(),
+                        failingExtractor(),
+                        archive,
+                        ZigArchiveVerifier.sha256())
+                .ensure(temp));
+
+        assertTrue(error.getMessage().contains("checksum mismatch"));
+    }
+
+    @Test
+    void downloadedArchiveChecksumFailureDoesNotExtract() throws Exception {
+        byte[] expected = "expected archive".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        ZigArchiveMetadata archive = archive(expected);
+
+        IOException error = assertThrows(IOException.class, () -> locator(
+                        new RecordingRunner(List.of("0.16.0")),
+                        (uri, destination) -> Files.writeString(destination, "downloaded corrupt archive"),
+                        failingExtractor(),
+                        archive,
+                        ZigArchiveVerifier.sha256())
+                .ensure(temp));
+
+        assertTrue(error.getMessage().contains("checksum mismatch"));
+    }
+
+    @Test
+    void correctLocalArchiveChecksumInstallsAndReportsArchiveEvents() throws Exception {
+        byte[] archiveBytes = "valid local archive".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        ZigArchiveMetadata archive = archive(archiveBytes);
+        Files.write(temp.resolve(archive.archiveName()), archiveBytes);
+        RecordingRunner runner = new RecordingRunner(List.of("0.15.2"));
+        ZigArchiveExtractor extractor = new ZigArchiveExtractor(runner) {
+            @Override
+            public void extractNormalized(ZigArchiveMetadata metadata, Path archivePath, Path destination) throws IOException {
+                Files.createDirectories(destination);
+                Files.writeString(destination.resolve("zig"), "");
+            }
+        };
+
+        ManagedZig zig = locator(runner, failingDownloader(), extractor, archive, ZigArchiveVerifier.sha256())
+                .ensure(temp);
+
+        assertEquals("0.15.2", zig.version());
+        ManagedZigBootstrapEvent verified = zig.bootstrapEvents().stream()
+                .filter(event -> event.code().equals("ARCHIVE_CHECKSUM_VERIFIED"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(archive.archiveName(), verified.archiveName());
+        assertEquals(archive.expectedSha256(), verified.archiveSha256());
+        assertEquals("verified", verified.checksumStatus());
+        assertEquals("notVerifiedBoundary", verified.signatureStatus());
+        assertEquals("localArchive", verified.source());
+    }
+
+    @Test
+    void unsupportedHostArchiveMetadataFailsClearly() {
+        IOException error = assertThrows(IOException.class, () -> new ManagedZigLocator(
+                        new ZigArchiveResolver() {
+                            @Override
+                            public ZigArchiveMetadata currentHostArchive() {
+                                throw new IllegalStateException("unsupported host OS for managed Zig: plan9");
+                            }
+                        },
+                        failingDownloader(),
+                        failingExtractor(),
+                        ZigArchiveVerifier.sha256(),
+                        new RecordingRunner(List.of("0.16.0")),
+                        false)
+                .ensure(temp));
+
+        assertTrue(error.getMessage().contains("unsupported host archive metadata"));
+        assertTrue(error.getMessage().contains("plan9"));
     }
 
     @Test
@@ -115,12 +205,45 @@ class ManagedZigLocatorTest {
                 false);
     }
 
+    private ManagedZigLocator locator(
+            RecordingRunner runner,
+            ZigDownloader downloader,
+            ZigArchiveExtractor extractor,
+            ZigArchiveMetadata metadata,
+            ZigArchiveVerifier verifier) {
+        return new ManagedZigLocator(
+                new ZigArchiveResolver() {
+                    @Override
+                    public ZigArchiveMetadata currentHostArchive() {
+                        return metadata;
+                    }
+                },
+                downloader,
+                extractor,
+                verifier,
+                runner,
+                false);
+    }
+
     private ZigArchiveMetadata archive() {
+        return archive("boundary archive".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private ZigArchiveMetadata archive(byte[] bytes) {
         return new ZigArchiveMetadata(
                 "zig-x86_64-linux-0.15.2.tar.xz",
                 URI.create("https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"),
                 false,
-                ZigArchiveResolver.CHECKSUM_BOUNDARY);
+                sha256(bytes),
+                "notVerifiedBoundary");
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private ZigDownloader failingDownloader() {

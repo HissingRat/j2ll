@@ -20,6 +20,14 @@ public final class LlvmTextEmitter {
             }
             output.append('\n');
         }
+        for (LlvmGlobal global : module.globals()) {
+            output.append('\n')
+                    .append('@')
+                    .append(global.name())
+                    .append(" = ")
+                    .append(global.definition())
+                    .append('\n');
+        }
         for (LlvmFunction function : module.functions()) {
             output.append('\n').append("define ")
                     .append(function.linkage().text()).append(' ')

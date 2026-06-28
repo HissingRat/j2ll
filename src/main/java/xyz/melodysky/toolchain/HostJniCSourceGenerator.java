@@ -45,6 +45,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
         StringBuilder builder = new StringBuilder();
         builder.append("""
                 #include <jni.h>
+                #include <limits.h>
+                #include <math.h>
                 #include <stdarg.h>
                 #include <stdint.h>
                 #include <stdlib.h>
@@ -56,6 +58,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             appendAllocationHelperSource(builder, bindings);
             builder.append(classInitHelperSource());
             builder.append(arithmeticExceptionHelperSource());
+            builder.append(jvmNumericHelperSource());
             builder.append(exceptionHelperSource());
             builder.append(mathHelperSource());
             builder.append(jdkObjectHelperSource());
@@ -63,17 +66,18 @@ public final class HostJniCSourceGenerator implements Opcodes {
             builder.append(arrayHelperSource());
             builder.append(typeHelperSource());
             builder.append(stringHelperSource());
-            appendStringConstantHelperSource(builder, bindings);
             appendLambdaHelperSource(builder, bindings);
             builder.append(varHandleHelperSource());
             appendReflectionHelperSource(builder, bindings);
             appendDispatchHelperSource(builder, bindings);
         }
+        if (needsStringConstantHelper(bindings)) {
+            appendStringConstantHelperSource(builder, bindings);
+        }
         appendFieldHelperSource(builder, bindings);
         for (Binding binding : bindings) {
-            if (binding.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
-                    && binding.decision().method().name().equals("substring")) {
-                builder.append(fallbackSubstringClass(binding).extraSource());
+            if (isNativeEmbeddedFallbackBinding(binding)) {
+                builder.append(fallbackClass(binding).extraSource());
             }
         }
         for (Binding binding : bindings) {
@@ -136,6 +140,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     List.of(),
                     List.of(),
                     Optional.empty(),
+                    "TEMPLATE_JNI_SEMANTICS",
                     bindingDescriptor(entry, decision)));
         }
         return bindings.stream().sorted(Comparator.comparing(Binding::entry)).toList();
@@ -160,6 +165,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     implementation.dispatchKeys(),
                         implementation.stringHelperSymbols(),
                         implementation.templateIrMethod(),
+                        implementation.reasonCode(),
                         bindingDescriptor(implementation.entry(), implementation.decision())))
                 .sorted(Comparator.comparing(Binding::entry))
                 .toList();
@@ -359,6 +365,10 @@ public final class HostJniCSourceGenerator implements Opcodes {
             }
             return;
         }
+        if (isNativeEmbeddedFallbackBinding(binding)) {
+            appendNativeEmbeddedFallbackInvoke(builder, binding);
+            return;
+        }
         switch (name) {
             case "add" -> builder.append("    (void)env;\n")
                     .append(binding.descriptor().staticMethod() ? "    (void)owner;\n" : "    (void)self;\n")
@@ -394,9 +404,27 @@ public final class HostJniCSourceGenerator implements Opcodes {
             case "sum" -> appendIntArraySum(builder);
             case "copyPlusOne" -> appendCopyPlusOne(builder);
             case "failIfNegative" -> appendFailIfNegative(builder);
-            case "substring" -> appendFallbackSubstring(builder, binding);
+            case "substring" -> appendTemplateSubstring(builder);
             default -> throw new IllegalArgumentException("unsupported host JNI method: " + name);
         }
+    }
+
+    private void appendTemplateSubstring(StringBuilder builder) {
+        builder.append("    (void)owner;\n")
+                .append("    if (arg0 == NULL) {\n")
+                .append("        j2ll_throw_new(env, \"java/lang/NullPointerException\", \"substring receiver is null\");\n")
+                .append("        return NULL;\n")
+                .append("    }\n")
+                .append("    jclass cls = (*env)->GetObjectClass(env, arg0);\n")
+                .append("    if (cls == NULL) {\n")
+                .append("        return NULL;\n")
+                .append("    }\n")
+                .append("    jmethodID method = (*env)->GetMethodID(env, cls, \"substring\", \"(I)Ljava/lang/String;\");\n")
+                .append("    (*env)->DeleteLocalRef(env, cls);\n")
+                .append("    if (method == NULL) {\n")
+                .append("        return NULL;\n")
+                .append("    }\n")
+                .append("    return (jstring)(*env)->CallObjectMethod(env, arg0, method, 1);\n");
     }
 
     private void appendLlvmWrapperBody(StringBuilder builder, Binding binding) {
@@ -648,6 +676,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     "jobject",
                     "NULL");
             case CONST_STRING -> appendGenericConstString(builder, values, instruction);
+            case CALL_RUNTIME_HELPER -> appendGenericRuntimeHelper(builder, values, instruction);
             case ADD_I32 -> declareGenericLocal(
                     builder,
                     values,
@@ -755,6 +784,29 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append(escapeCString(value))
                 .append("\");\n")
                 .append("    if (")
+                .append(local)
+                .append(" == NULL) {\n")
+                .append("        return;\n")
+                .append("    }\n");
+    }
+
+    private void appendGenericRuntimeHelper(
+            StringBuilder builder,
+            Map<String, String> values,
+            IrInstruction instruction) {
+        String symbol = runtimeHelperBaseSymbol(instruction.symbol().orElseThrow());
+        if (!symbol.equals("j2ll_rt_string_constant")) {
+            throw new IllegalArgumentException("unsupported generic body runtime helper: " + instruction.symbol());
+        }
+        IrValue result = instruction.result().orElseThrow();
+        String local = genericLocalName(result);
+        values.put(result.name(), local);
+        builder.append("    jobject ")
+                .append(local)
+                .append(" = j2ll_rt_string_constant(env, (int64_t)")
+                .append(genericValue(values, instruction.operands().get(0)))
+                .append(");\n")
+                .append("    if ((*env)->ExceptionCheck(env) || ")
                 .append(local)
                 .append(" == NULL) {\n")
                 .append("        return;\n")
@@ -1031,19 +1083,96 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("    }\n");
     }
 
-    private void appendFallbackSubstring(StringBuilder builder, Binding binding) {
-        builder.append("    (void)owner;\n")
-                .append("    jclass helper = j2ll_define_fallback_")
+    private void appendNativeEmbeddedFallbackInvoke(StringBuilder builder, Binding binding) {
+        if (!binding.descriptor().staticMethod()) {
+            builder.append("    jclass owner = (*env)->GetObjectClass(env, self);\n")
+                    .append("    if (owner == NULL) {\n");
+            appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
+            builder.append("    }\n");
+        }
+        builder.append("    jclass helper = j2ll_define_fallback_")
                 .append(safeSymbol(binding.entry().nativeSymbol()))
                 .append("(env, owner);\n")
-                .append("    if (helper == NULL) {\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    jmethodID method = (*env)->GetStaticMethodID(env, helper, \"substring\", \"(Ljava/lang/String;)Ljava/lang/String;\");\n")
-                .append("    if (method == NULL) {\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    return (jstring)(*env)->CallStaticObjectMethod(env, helper, method, arg0);\n");
+                .append(binding.descriptor().staticMethod() ? "" : "    (*env)->DeleteLocalRef(env, owner);\n")
+                .append("    if (helper == NULL) {\n");
+        appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
+        builder.append("    }\n")
+                .append("    jmethodID method = (*env)->GetStaticMethodID(env, helper, \"")
+                .append(FallbackHelperClassFactory.HELPER_METHOD_NAME)
+                .append("\", \"")
+                .append(escapeCString(fallbackHelperDescriptor(binding)))
+                .append("\");\n")
+                .append("    if (method == NULL) {\n");
+        appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
+        builder.append("    }\n");
+        appendFallbackCall(builder, binding);
+    }
+
+    private void appendFallbackCall(StringBuilder builder, Binding binding) {
+        String call = "(*env)->" + jniStaticCall(binding.descriptor().javaReturnDescriptor())
+                + "(env, helper, method" + fallbackArguments(binding) + ")";
+        String returnDescriptor = binding.descriptor().javaReturnDescriptor();
+        if (returnDescriptor.equals("V")) {
+            builder.append("    ").append(call).append(";\n")
+                    .append("    return;\n");
+        } else {
+            builder.append("    return (")
+                    .append(binding.descriptor().jniReturnType())
+                    .append(")")
+                    .append(call)
+                    .append(";\n");
+        }
+    }
+
+    private String fallbackArguments(Binding binding) {
+        ArrayList<String> arguments = new ArrayList<>();
+        if (!binding.descriptor().staticMethod()) {
+            arguments.add("self");
+        }
+        for (int index = 0; index < binding.descriptor().javaParameterDescriptors().size(); index++) {
+            arguments.add("arg" + index);
+        }
+        return arguments.isEmpty() ? "" : ", " + String.join(", ", arguments);
+    }
+
+    private String fallbackHelperDescriptor(Binding binding) {
+        return fallbackHelperClassFactory.helperDescriptor(
+                binding.decision().method().owner(),
+                binding.decision().method().descriptor(),
+                binding.decision().method().accessFlags().isStatic());
+    }
+
+    private String jniStaticCall(String returnDescriptor) {
+        return switch (returnDescriptor) {
+            case "V" -> "CallStaticVoidMethod";
+            case "Z" -> "CallStaticBooleanMethod";
+            case "I" -> "CallStaticIntMethod";
+            case "J" -> "CallStaticLongMethod";
+            case "F" -> "CallStaticFloatMethod";
+            case "D" -> "CallStaticDoubleMethod";
+            default -> "CallStaticObjectMethod";
+        };
+    }
+
+    private void appendDefaultReturn(StringBuilder builder, String returnDescriptor) {
+        if (returnDescriptor.equals("V")) {
+            builder.append("        return;\n");
+        } else if (returnDescriptor.equals("Z")) {
+            builder.append("        return JNI_FALSE;\n");
+        } else if (returnDescriptor.equals("F")) {
+            builder.append("        return 0.0f;\n");
+        } else if (returnDescriptor.equals("D")) {
+            builder.append("        return 0.0;\n");
+        } else if (returnDescriptor.equals("I") || returnDescriptor.equals("J")) {
+            builder.append("        return 0;\n");
+        } else {
+            builder.append("        return NULL;\n");
+        }
+    }
+
+    private boolean isNativeEmbeddedFallbackBinding(Binding binding) {
+        return binding.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
+                && binding.reasonCode().equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK");
     }
 
     private String helperSource() {
@@ -1141,6 +1270,56 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         return NULL;
                     }
                     return (*env)->CallObjectMethod(env, owner, get_class_loader);
+                }
+
+                static jclass j2ll_try_define_hidden_fallback(JNIEnv* env, jclass owner, const unsigned char* bytes, size_t length) {
+                    if (length > 2147483647u) {
+                        return NULL;
+                    }
+                    jclass support = (*env)->FindClass(env, "xyz/melodysky/runtime/fallback/J2llFallbackSupport");
+                    if (support == NULL) {
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionClear(env);
+                        }
+                        return NULL;
+                    }
+                    jmethodID define_hidden = (*env)->GetStaticMethodID(
+                            env,
+                            support,
+                            "defineHiddenFallback",
+                            "(Ljava/lang/Class;[B)Ljava/lang/Class;");
+                    if (define_hidden == NULL) {
+                        (*env)->DeleteLocalRef(env, support);
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionClear(env);
+                        }
+                        return NULL;
+                    }
+                    jbyteArray bytecode = (*env)->NewByteArray(env, (jsize)length);
+                    if (bytecode == NULL) {
+                        (*env)->DeleteLocalRef(env, support);
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionClear(env);
+                        }
+                        return NULL;
+                    }
+                    if (length > 0) {
+                        (*env)->SetByteArrayRegion(env, bytecode, 0, (jsize)length, (const jbyte*)bytes);
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionClear(env);
+                            (*env)->DeleteLocalRef(env, bytecode);
+                            (*env)->DeleteLocalRef(env, support);
+                            return NULL;
+                        }
+                    }
+                    jclass hidden = (jclass)(*env)->CallStaticObjectMethod(env, support, define_hidden, owner, bytecode);
+                    (*env)->DeleteLocalRef(env, bytecode);
+                    (*env)->DeleteLocalRef(env, support);
+                    if ((*env)->ExceptionCheck(env)) {
+                        (*env)->ExceptionClear(env);
+                        return NULL;
+                    }
+                    return hidden;
                 }
 
                 static char* j2ll_dotted_class_name(const char* internal_name) {
@@ -1317,6 +1496,107 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         return 0;
                     }
                     return left % right;
+                }
+
+                """;
+    }
+
+    private String jvmNumericHelperSource() {
+        return """
+                int32_t j2ll_rt_i2b(int32_t value) {
+                    return (int32_t)(int8_t)value;
+                }
+
+                int32_t j2ll_rt_i2c(int32_t value) {
+                    return (int32_t)(uint16_t)value;
+                }
+
+                int32_t j2ll_rt_i2s(int32_t value) {
+                    return (int32_t)(int16_t)value;
+                }
+
+                int32_t j2ll_rt_f2i(float value) {
+                    if (isnan(value)) {
+                        return 0;
+                    }
+                    if (value >= (float)INT32_MAX) {
+                        return INT32_MAX;
+                    }
+                    if (value <= (float)INT32_MIN) {
+                        return INT32_MIN;
+                    }
+                    return (int32_t)value;
+                }
+
+                int64_t j2ll_rt_f2l(float value) {
+                    if (isnan(value)) {
+                        return 0;
+                    }
+                    if (value >= (float)INT64_MAX) {
+                        return INT64_MAX;
+                    }
+                    if (value <= (float)INT64_MIN) {
+                        return INT64_MIN;
+                    }
+                    return (int64_t)value;
+                }
+
+                int32_t j2ll_rt_d2i(double value) {
+                    if (isnan(value)) {
+                        return 0;
+                    }
+                    if (value >= (double)INT32_MAX) {
+                        return INT32_MAX;
+                    }
+                    if (value <= (double)INT32_MIN) {
+                        return INT32_MIN;
+                    }
+                    return (int32_t)value;
+                }
+
+                int64_t j2ll_rt_d2l(double value) {
+                    if (isnan(value)) {
+                        return 0;
+                    }
+                    if (value >= (double)INT64_MAX) {
+                        return INT64_MAX;
+                    }
+                    if (value <= (double)INT64_MIN) {
+                        return INT64_MIN;
+                    }
+                    return (int64_t)value;
+                }
+
+                int32_t j2ll_rt_lcmp(int64_t left, int64_t right) {
+                    return left < right ? -1 : (left > right ? 1 : 0);
+                }
+
+                int32_t j2ll_rt_fcmpl(float left, float right) {
+                    if (isnan(left) || isnan(right)) {
+                        return -1;
+                    }
+                    return left < right ? -1 : (left > right ? 1 : 0);
+                }
+
+                int32_t j2ll_rt_fcmpg(float left, float right) {
+                    if (isnan(left) || isnan(right)) {
+                        return 1;
+                    }
+                    return left < right ? -1 : (left > right ? 1 : 0);
+                }
+
+                int32_t j2ll_rt_dcmpl(double left, double right) {
+                    if (isnan(left) || isnan(right)) {
+                        return -1;
+                    }
+                    return left < right ? -1 : (left > right ? 1 : 0);
+                }
+
+                int32_t j2ll_rt_dcmpg(double left, double right) {
+                    if (isnan(left) || isnan(right)) {
+                        return 1;
+                    }
+                    return left < right ? -1 : (left > right ? 1 : 0);
                 }
 
                 """;
@@ -2293,7 +2573,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
         Map<Long, String> constants = new TreeMap<>();
         Map<Long, EncryptedStringConstant> encryptedConstants = new TreeMap<>();
         for (Binding binding : bindings) {
-            if (binding.path() != NativeImplementationPath.LLVM_NATIVE_PATH || binding.templateIrMethod().isEmpty()) {
+            if (binding.templateIrMethod().isEmpty()) {
                 continue;
             }
             binding.templateIrMethod().orElseThrow().blocks().stream()
@@ -2430,6 +2710,22 @@ public final class HostJniCSourceGenerator implements Opcodes {
     }
 
     private record EncryptedStringConstant(long token, String keyHex, String cipherHex, int length) {
+    }
+
+    private boolean needsStringConstantHelper(List<Binding> bindings) {
+        return bindings.stream()
+                .flatMap(binding -> binding.templateIrMethod().stream())
+                .flatMap(method -> method.blocks().stream())
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                        && instruction.symbol()
+                                .map(symbol -> runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_string_constant"))
+                                .orElse(false));
+    }
+
+    private String runtimeHelperBaseSymbol(String symbol) {
+        int separator = symbol.indexOf('|');
+        return separator < 0 ? symbol : symbol.substring(0, separator);
     }
 
     private void appendLambdaHelperSource(StringBuilder builder, List<Binding> bindings) {
@@ -3115,6 +3411,80 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     return array;
                 }
 
+                static jobjectArray j2ll_parameter_array_for_descriptor(JNIEnv* env, const char* descriptor) {
+                    if (descriptor[0] == '(' && descriptor[1] == ')') {
+                        return j2ll_empty_class_array(env);
+                    }
+                    jclass method_type_class = (*env)->FindClass(env, "java/lang/invoke/MethodType");
+                    if (method_type_class == NULL) {
+                        return NULL;
+                    }
+                    jmethodID from_descriptor = (*env)->GetStaticMethodID(
+                            env,
+                            method_type_class,
+                            "fromMethodDescriptorString",
+                            "(Ljava/lang/String;Ljava/lang/ClassLoader;)Ljava/lang/invoke/MethodType;");
+                    jmethodID parameter_array = (*env)->GetMethodID(
+                            env,
+                            method_type_class,
+                            "parameterArray",
+                            "()[Ljava/lang/Class;");
+                    if (from_descriptor == NULL || parameter_array == NULL) {
+                        (*env)->DeleteLocalRef(env, method_type_class);
+                        return NULL;
+                    }
+                    size_t descriptor_length = strlen(descriptor);
+                    char* normalized_descriptor = NULL;
+                    const char* descriptor_for_method_type = descriptor;
+                    if (descriptor_length > 0 && descriptor[descriptor_length - 1] == ')') {
+                        normalized_descriptor = (char*)malloc(descriptor_length + 2);
+                        if (normalized_descriptor == NULL) {
+                            (*env)->DeleteLocalRef(env, method_type_class);
+                            j2ll_throw_new(env, "java/lang/OutOfMemoryError", "failed to normalize reflection descriptor");
+                            return NULL;
+                        }
+                        memcpy(normalized_descriptor, descriptor, descriptor_length);
+                        normalized_descriptor[descriptor_length] = 'V';
+                        normalized_descriptor[descriptor_length + 1] = '\\0';
+                        descriptor_for_method_type = normalized_descriptor;
+                    }
+                    jstring descriptor_string = (*env)->NewStringUTF(env, descriptor_for_method_type);
+                    if (normalized_descriptor != NULL) {
+                        free(normalized_descriptor);
+                    }
+                    if (descriptor_string == NULL) {
+                        (*env)->DeleteLocalRef(env, method_type_class);
+                        return NULL;
+                    }
+                    jobject loader = j2ll_context_class_loader(env);
+                    if ((*env)->ExceptionCheck(env)) {
+                        (*env)->DeleteLocalRef(env, method_type_class);
+                        (*env)->DeleteLocalRef(env, descriptor_string);
+                        if (loader != NULL) {
+                            (*env)->DeleteLocalRef(env, loader);
+                        }
+                        return NULL;
+                    }
+                    jobject method_type = (*env)->CallStaticObjectMethod(
+                            env,
+                            method_type_class,
+                            from_descriptor,
+                            descriptor_string,
+                            loader);
+                    (*env)->DeleteLocalRef(env, descriptor_string);
+                    if (loader != NULL) {
+                        (*env)->DeleteLocalRef(env, loader);
+                    }
+                    if (method_type == NULL) {
+                        (*env)->DeleteLocalRef(env, method_type_class);
+                        return NULL;
+                    }
+                    jobjectArray parameters = (jobjectArray)(*env)->CallObjectMethod(env, method_type, parameter_array);
+                    (*env)->DeleteLocalRef(env, method_type);
+                    (*env)->DeleteLocalRef(env, method_type_class);
+                    return parameters;
+                }
+
                 jclass j2ll_rt_class_for_name_static(JNIEnv* env, int64_t class_token, int32_t initialize) {
                     const char* class_name = j2ll_find_class_object_name(class_token);
                     if (class_name == NULL) {
@@ -3150,7 +3520,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         return NULL;
                     }
                     jstring name = (*env)->NewStringUTF(env, entry->name);
-                    jobjectArray parameters = j2ll_empty_class_array(env);
+                    jobjectArray parameters = j2ll_parameter_array_for_descriptor(env, entry->descriptor);
                     if (name == NULL || parameters == NULL) {
                         (*env)->DeleteLocalRef(env, owner);
                         if (name != NULL) {
@@ -3226,7 +3596,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         (*env)->DeleteLocalRef(env, owner);
                         return NULL;
                     }
-                    jobjectArray parameters = j2ll_empty_class_array(env);
+                    jobjectArray parameters = j2ll_parameter_array_for_descriptor(env, entry->descriptor);
                     if (parameters == NULL) {
                         (*env)->DeleteLocalRef(env, owner);
                         return NULL;
@@ -3239,6 +3609,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
 
                 jobject j2ll_rt_reflect_invoke(JNIEnv* env, jobject method, jobject target, jobject args) {
                     if (method == NULL) {
+                        if ((*env)->ExceptionCheck(env)) {
+                            return NULL;
+                        }
                         j2ll_throw_new(env, "java/lang/NullPointerException", "Method.invoke receiver is null");
                         return NULL;
                     }
@@ -3260,6 +3633,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
 
                 jobject j2ll_rt_reflect_new_instance(JNIEnv* env, jobject constructor, jobject args) {
                     if (constructor == NULL) {
+                        if ((*env)->ExceptionCheck(env)) {
+                            return NULL;
+                        }
                         j2ll_throw_new(env, "java/lang/NullPointerException", "Constructor.newInstance receiver is null");
                         return NULL;
                     }
@@ -3277,6 +3653,30 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         return NULL;
                     }
                     return (*env)->CallObjectMethod(env, constructor, new_instance, args);
+                }
+
+                void j2ll_rt_reflect_set_accessible(JNIEnv* env, jobject accessible, jint flag) {
+                    if (accessible == NULL) {
+                        if ((*env)->ExceptionCheck(env)) {
+                            return;
+                        }
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "AccessibleObject.setAccessible receiver is null");
+                        return;
+                    }
+                    jclass accessible_class = (*env)->FindClass(env, "java/lang/reflect/AccessibleObject");
+                    if (accessible_class == NULL) {
+                        return;
+                    }
+                    jmethodID set_accessible = (*env)->GetMethodID(
+                            env,
+                            accessible_class,
+                            "setAccessible",
+                            "(Z)V");
+                    (*env)->DeleteLocalRef(env, accessible_class);
+                    if (set_accessible == NULL) {
+                        return;
+                    }
+                    (*env)->CallVoidMethod(env, accessible, set_accessible, flag ? JNI_TRUE : JNI_FALSE);
                 }
 
                 static jclass j2ll_reflection_field_class(JNIEnv* env) {
@@ -3365,6 +3765,132 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         return;
                     }
                     (*env)->CallVoidMethod(env, field, set_int, target, (jint)value);
+                }
+
+                int32_t j2ll_rt_reflect_field_get_boolean(JNIEnv* env, jobject field, jobject target) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.getBoolean receiver is null");
+                        return 0;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return 0;
+                    }
+                    jmethodID get_boolean = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "getBoolean",
+                            "(Ljava/lang/Object;)Z");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (get_boolean == NULL) {
+                        return 0;
+                    }
+                    return (*env)->CallBooleanMethod(env, field, get_boolean, target) == JNI_TRUE ? 1 : 0;
+                }
+
+                void j2ll_rt_reflect_field_set_boolean(JNIEnv* env, jobject field, jobject target, int32_t value) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.setBoolean receiver is null");
+                        return;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return;
+                    }
+                    jmethodID set_boolean = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "setBoolean",
+                            "(Ljava/lang/Object;Z)V");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (set_boolean == NULL) {
+                        return;
+                    }
+                    (*env)->CallVoidMethod(env, field, set_boolean, target, value ? JNI_TRUE : JNI_FALSE);
+                }
+
+                int64_t j2ll_rt_reflect_field_get_long(JNIEnv* env, jobject field, jobject target) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.getLong receiver is null");
+                        return 0;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return 0;
+                    }
+                    jmethodID get_long = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "getLong",
+                            "(Ljava/lang/Object;)J");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (get_long == NULL) {
+                        return 0;
+                    }
+                    return (int64_t)(*env)->CallLongMethod(env, field, get_long, target);
+                }
+
+                void j2ll_rt_reflect_field_set_long(JNIEnv* env, jobject field, jobject target, int64_t value) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.setLong receiver is null");
+                        return;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return;
+                    }
+                    jmethodID set_long = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "setLong",
+                            "(Ljava/lang/Object;J)V");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (set_long == NULL) {
+                        return;
+                    }
+                    (*env)->CallVoidMethod(env, field, set_long, target, (jlong)value);
+                }
+
+                double j2ll_rt_reflect_field_get_double(JNIEnv* env, jobject field, jobject target) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.getDouble receiver is null");
+                        return 0.0;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return 0.0;
+                    }
+                    jmethodID get_double = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "getDouble",
+                            "(Ljava/lang/Object;)D");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (get_double == NULL) {
+                        return 0.0;
+                    }
+                    return (double)(*env)->CallDoubleMethod(env, field, get_double, target);
+                }
+
+                void j2ll_rt_reflect_field_set_double(JNIEnv* env, jobject field, jobject target, double value) {
+                    if (field == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Field.setDouble receiver is null");
+                        return;
+                    }
+                    jclass field_class = j2ll_reflection_field_class(env);
+                    if (field_class == NULL) {
+                        return;
+                    }
+                    jmethodID set_double = (*env)->GetMethodID(
+                            env,
+                            field_class,
+                            "setDouble",
+                            "(Ljava/lang/Object;D)V");
+                    (*env)->DeleteLocalRef(env, field_class);
+                    if (set_double == NULL) {
+                        return;
+                    }
+                    (*env)->CallVoidMethod(env, field, set_double, target, (jdouble)value);
                 }
 
                 static int j2ll_jstring_equals_utf(JNIEnv* env, jstring value, const char* expected) {
@@ -3614,6 +4140,72 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     return (*env)->CallIntMethod(env, receiver, method);
                 }
 
+                static int32_t j2ll_call_i32_arg_i32(JNIEnv* env, jobject receiver, int64_t token, int32_t arg0) {
+                    if (receiver == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "call receiver is null");
+                        return 0;
+                    }
+                    const j2ll_method_entry* entry = j2ll_find_method(token);
+                    if (entry == NULL) {
+                        j2ll_throw_new(env, "java/lang/NoSuchMethodError", "unknown j2ll method token");
+                        return 0;
+                    }
+                    jclass cls = (*env)->GetObjectClass(env, receiver);
+                    if (cls == NULL) {
+                        return 0;
+                    }
+                    jmethodID method = (*env)->GetMethodID(env, cls, entry->name, entry->descriptor);
+                    (*env)->DeleteLocalRef(env, cls);
+                    if (method == NULL) {
+                        return 0;
+                    }
+                    return (*env)->CallIntMethod(env, receiver, method, (jint)arg0);
+                }
+
+                static jobject j2ll_call_no_arg_ref(JNIEnv* env, jobject receiver, int64_t token) {
+                    if (receiver == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "call receiver is null");
+                        return NULL;
+                    }
+                    const j2ll_method_entry* entry = j2ll_find_method(token);
+                    if (entry == NULL) {
+                        j2ll_throw_new(env, "java/lang/NoSuchMethodError", "unknown j2ll method token");
+                        return NULL;
+                    }
+                    jclass cls = (*env)->GetObjectClass(env, receiver);
+                    if (cls == NULL) {
+                        return NULL;
+                    }
+                    jmethodID method = (*env)->GetMethodID(env, cls, entry->name, entry->descriptor);
+                    (*env)->DeleteLocalRef(env, cls);
+                    if (method == NULL) {
+                        return NULL;
+                    }
+                    return (*env)->CallObjectMethod(env, receiver, method);
+                }
+
+                static jobject j2ll_call_ref_arg_ref(JNIEnv* env, jobject receiver, int64_t token, jobject arg0) {
+                    if (receiver == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "call receiver is null");
+                        return NULL;
+                    }
+                    const j2ll_method_entry* entry = j2ll_find_method(token);
+                    if (entry == NULL) {
+                        j2ll_throw_new(env, "java/lang/NoSuchMethodError", "unknown j2ll method token");
+                        return NULL;
+                    }
+                    jclass cls = (*env)->GetObjectClass(env, receiver);
+                    if (cls == NULL) {
+                        return NULL;
+                    }
+                    jmethodID method = (*env)->GetMethodID(env, cls, entry->name, entry->descriptor);
+                    (*env)->DeleteLocalRef(env, cls);
+                    if (method == NULL) {
+                        return NULL;
+                    }
+                    return (*env)->CallObjectMethod(env, receiver, method, arg0);
+                }
+
                 int32_t j2ll_rt_call_virtual_i32(JNIEnv* env, jobject receiver, int64_t token, jobject args) {
                     (void)args;
                     return j2ll_call_no_arg_i32(env, receiver, token);
@@ -3622,6 +4214,32 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 int32_t j2ll_rt_call_interface_i32(JNIEnv* env, jobject receiver, int64_t token, jobject args) {
                     (void)args;
                     return j2ll_call_no_arg_i32(env, receiver, token);
+                }
+
+                int32_t j2ll_rt_call_virtual_i32_arg_i32(JNIEnv* env, jobject receiver, int64_t token, int32_t arg0) {
+                    return j2ll_call_i32_arg_i32(env, receiver, token, arg0);
+                }
+
+                int32_t j2ll_rt_call_interface_i32_arg_i32(JNIEnv* env, jobject receiver, int64_t token, int32_t arg0) {
+                    return j2ll_call_i32_arg_i32(env, receiver, token, arg0);
+                }
+
+                jobject j2ll_rt_call_virtual_ref(JNIEnv* env, jobject receiver, int64_t token, jobject args) {
+                    (void)args;
+                    return j2ll_call_no_arg_ref(env, receiver, token);
+                }
+
+                jobject j2ll_rt_call_interface_ref(JNIEnv* env, jobject receiver, int64_t token, jobject args) {
+                    (void)args;
+                    return j2ll_call_no_arg_ref(env, receiver, token);
+                }
+
+                jobject j2ll_rt_call_virtual_ref_arg_ref(JNIEnv* env, jobject receiver, int64_t token, jobject arg0) {
+                    return j2ll_call_ref_arg_ref(env, receiver, token, arg0);
+                }
+
+                jobject j2ll_rt_call_interface_ref_arg_ref(JNIEnv* env, jobject receiver, int64_t token, jobject arg0) {
+                    return j2ll_call_ref_arg_ref(env, receiver, token, arg0);
                 }
 
                 void j2ll_rt_call_constructor_void(JNIEnv* env, jobject receiver, int64_t token) {
@@ -3945,15 +4563,12 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("}\n");
     }
 
-    private FallbackClass fallbackSubstringClass(Binding binding) {
+    private FallbackClass fallbackClass(Binding binding) {
         String originalMethodId = artifactPath.methodId(
                 binding.decision().method().owner(),
                 binding.decision().method().name(),
                 binding.decision().method().descriptor());
-        FallbackHelperClass helperClass = fallbackHelperClassFactory.create(
-                originalMethodId,
-                binding.decision().method().methodKey(),
-                binding.decision().method().owner());
+        FallbackHelperClass helperClass = fallbackHelperClassFactory.create(originalMethodId, binding.decision().method());
         EncodedFallbackBlob encoded = fallbackBlobCodec.encode(
                 helperClass.bytes(),
                 originalMethodId + "\n" + binding.decision().method().methodKey());
@@ -3969,12 +4584,22 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("_key[] = {");
         appendCByteArray(extra, encoded.keyBytes());
         extra.append("\n};\n")
-                .append("static jobject ")
+                .append("typedef struct ")
                 .append(symbol)
-                .append("_loaders[16] = { NULL };\n")
-                .append("static jclass ")
+                .append("_cache_entry {\n")
+                .append("    jobject loader;\n")
+                .append("    jclass clazz;\n")
+                .append("    struct ")
                 .append(symbol)
-                .append("_classes[16] = { NULL };\n")
+                .append("_cache_entry* next;\n")
+                .append("} ")
+                .append(symbol)
+                .append("_cache_entry;\n")
+                .append("static ")
+                .append(symbol)
+                .append("_cache_entry* ")
+                .append(symbol)
+                .append("_cache = NULL;\n")
                 .append("static unsigned char* ")
                 .append(symbol)
                 .append("_decode(JNIEnv* env, size_t* decoded_length) {\n")
@@ -4054,18 +4679,16 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("    if ((*env)->ExceptionCheck(env)) {\n")
                 .append("        return NULL;\n")
                 .append("    }\n")
-                .append("    for (size_t index = 0; index < 16; index++) {\n")
-                .append("        if (")
+                .append("    for (")
                 .append(symbol)
-                .append("_classes[index] != NULL && (*env)->IsSameObject(env, ")
+                .append("_cache_entry* entry = ")
                 .append(symbol)
-                .append("_loaders[index], loader)) {\n")
+                .append("_cache; entry != NULL; entry = entry->next) {\n")
+                .append("        if ((*env)->IsSameObject(env, entry->loader, loader)) {\n")
                 .append("            if (loader != NULL) {\n")
                 .append("                (*env)->DeleteLocalRef(env, loader);\n")
                 .append("            }\n")
-                .append("            return ")
-                .append(symbol)
-                .append("_classes[index];\n")
+                .append("            return entry->clazz;\n")
                 .append("        }\n")
                 .append("    }\n")
                 .append("    size_t decoded_length = 0;\n")
@@ -4078,9 +4701,12 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("        }\n")
                 .append("        return NULL;\n")
                 .append("    }\n")
-                .append("    jclass local = (*env)->DefineClass(env, \"")
+                .append("    jclass local = j2ll_try_define_hidden_fallback(env, owner, decoded, decoded_length);\n")
+                .append("    if (local == NULL) {\n")
+                .append("        local = (*env)->DefineClass(env, \"")
                 .append(helperClass.internalName())
                 .append("\", loader, (const jbyte*)decoded, (jsize)decoded_length);\n")
+                .append("    }\n")
                 .append("    free(decoded);\n")
                 .append("    if (local == NULL) {\n")
                 .append("        if (loader != NULL) {\n")
@@ -4099,19 +4725,30 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("        (*env)->DeleteLocalRef(env, local);\n")
                 .append("        return NULL;\n")
                 .append("    }\n")
-                .append("    for (size_t index = 0; index < 16; index++) {\n")
-                .append("        if (")
+                .append("    ")
                 .append(symbol)
-                .append("_classes[index] == NULL) {\n")
-                .append("            ")
+                .append("_cache_entry* entry = (")
                 .append(symbol)
-                .append("_loaders[index] = global_loader;\n")
-                .append("            ")
+                .append("_cache_entry*)malloc(sizeof(")
                 .append(symbol)
-                .append("_classes[index] = global_class;\n")
-                .append("            break;\n")
+                .append("_cache_entry));\n")
+                .append("    if (entry == NULL) {\n")
+                .append("        if (global_loader != NULL) {\n")
+                .append("            (*env)->DeleteGlobalRef(env, global_loader);\n")
                 .append("        }\n")
+                .append("        (*env)->DeleteGlobalRef(env, global_class);\n")
+                .append("        (*env)->DeleteLocalRef(env, local);\n")
+                .append("        j2ll_throw_new(env, \"java/lang/OutOfMemoryError\", \"fallback cache allocation failed\");\n")
+                .append("        return NULL;\n")
                 .append("    }\n")
+                .append("    entry->loader = global_loader;\n")
+                .append("    entry->clazz = global_class;\n")
+                .append("    entry->next = ")
+                .append(symbol)
+                .append("_cache;\n")
+                .append("    ")
+                .append(symbol)
+                .append("_cache = entry;\n")
                 .append("    (*env)->DeleteLocalRef(env, local);\n")
                 .append("    if (loader != NULL) {\n")
                 .append("        (*env)->DeleteLocalRef(env, loader);\n")
@@ -4292,6 +4929,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             List<String> dispatchKeys,
             List<String> stringHelperSymbols,
             Optional<IrMethod> templateIrMethod,
+            String reasonCode,
             JniMethodDescriptor descriptor) {
     }
 

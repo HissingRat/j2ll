@@ -36,6 +36,10 @@ public record NativeBuildPlan(List<NativeBuildUnit> units, List<NativeBuildTarge
     }
 
     public List<NativeBuildTargetPreflight> skippedTargetPreflights() {
+        return List.of();
+    }
+
+    public List<NativeBuildTargetPreflight> failedTargetPreflights() {
         return targetPreflights.stream().filter(preflight -> !preflight.buildable()).toList();
     }
 

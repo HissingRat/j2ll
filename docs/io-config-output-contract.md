@@ -133,13 +133,93 @@ config.json
 
 ### Top-Level Fields
 
-所有 schema 声明的 fields 都必须出现在 `config.json` 中，包括 nested config object 的 fields。允许为 `null` 的字段会在下文明确写出；除此之外，缺字段是 config error，j2ll 在进入主 pipeline 前退出。
+除明确标注有默认值的字段外，schema 声明的 fields 都必须出现在 `config.json` 中，包括 nested config object 的 fields。允许为 `null` 的字段会在下文明确写出；除此之外，缺字段是 config error，j2ll 在进入主 pipeline 前退出。schema v1 的 `target` 是当前唯一可省略 top-level object；省略时 resolved config 使用当前 host target。
 
 未知字段策略：
 
 - 未知 top-level field 或未知 nested field 会产生 warning，但不会阻止构建。
-- warning 必须写入 `reports/diagnostics.json` 和 `config.resolved.json`。
+- warning 必须写入 `reports/diagnostics.json` 和 release suite diagnostics evidence；已解析配置仍写入 `config.resolved.json`。
 - 未知字段不会参与 resolved config、selector、seed 或 artifact hash 计算。
+
+### CLI Exit Codes And Console Output
+
+The user-facing config schema lives at `docs/config.schema.json`. Schema v1 also ships examples under `docs/examples/`: `minimal-config.json`, `protection-all-on-config.json`, `signed-strip-resign-config.json`, `target-matrix-config.json` and `debug-dumps-config.json`. The JSON Schema is append-compatible and permits unknown future fields; the runtime loader still reports unknown fields as warnings.
+
+From source, the beta CLI artifact is built with:
+
+```bash
+bash ./gradlew cliJar
+```
+
+The runnable artifact path is stable: `build/cli/j2ll.jar`. The jar manifest points at the CLI main class, so user smoke commands are:
+
+```bash
+java -jar build/cli/j2ll.jar --help
+java -jar build/cli/j2ll.jar --version
+java -jar build/cli/j2ll.jar validate docs/examples/minimal-config.json
+```
+
+For a beta distribution directory, build:
+
+```bash
+bash ./gradlew distJ2ll
+```
+
+The distribution is written to `build/dist/j2ll/` and contains `j2ll.jar`, `docs/examples`, `docs/samples`, `docs/getting-started.md`, `docs/config.schema.json` and the I/O contract docs. It intentionally does not vendor a Zig archive; first run follows the managed Zig bootstrap policy below.
+
+The beta acceptance command is:
+
+```bash
+bash ./gradlew betaAcceptance
+```
+
+It uses the distribution JAR, not the test classpath, to run help/version, validation, dry-run, sample build, child JVM differential and report/readiness/privacy checks.
+
+CLI commands:
+
+- `j2ll --help`
+- `j2ll --version`
+- `j2ll validate <config.json>`
+- `j2ll dry-run <config.json> <workspace>`
+- `j2ll build <config.json> <workspace>`
+
+`validate` only checks config and does not create pipeline artifacts. `dry-run` writes reports for config, selector expansion and target preflight, but never invokes managed Zig/native build and never writes a final JAR.
+
+`j2ll build <config.json> <workspace>` and the failure-producing commands use stable exit codes:
+
+- `0`: success.
+- `2`: config validation failure.
+- `3`: frontend, parse, CFG, lowering, validation or LLVM emission failure.
+- `4`: toolchain, native build or symbol audit failure.
+- `5`: packaging or signing failure.
+- `6`: artifact audit failure.
+- `7`: strict release-readiness failure.
+- `1`: unexpected internal error or an uncategorized fatal diagnostic.
+
+On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. On failure stderr includes the primary human-readable failure, one short `hint=...` line when available, reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
+
+Minimal command:
+
+```bash
+j2ll build config.json /tmp/j2ll-workspace
+```
+
+On success stdout contains stable `outputJar=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...` lines. On config/toolchain/signing/artifact-audit/readiness failure the final JAR is not retained; inspect `reports/index.json`, `reports/summary.md`, `reports/summary.json`, `reports/diagnostics.json`, `reports/failure-report.json` and the stage-specific report named by stderr.
+
+### Zig Toolchain Layout
+
+Schema v1 uses managed Zig `0.15.2` only. The executable lives beside the runnable `j2ll.jar`:
+
+```text
+<j2ll-home>/
+  j2ll.jar
+  zig/
+    zig
+```
+
+On startup j2ll first reuses `zig/zig(.exe)` if it reports exactly `0.15.2`. If the executable is missing or has the wrong version, j2ll looks for the official current-host Zig archive in `<j2ll-home>`. A local archive is verified against built-in official Zig `0.15.2` SHA-256 metadata before extraction. If no local archive exists, j2ll downloads from `https://ziglang.org/download/0.15.2/`, verifies the downloaded archive SHA-256, and only then normalizes the extracted official directory into `zig/`. SHA mismatch fails the native/toolchain stage and must not fall back to using the archive or writing a final JAR. The extraction path rejects archive entries that escape the destination. Signature verification is not yet enforced; reports must say `signatureStatus=notVerifiedBoundary` rather than silently claiming full signature verification.
+
+`packaging-report.json` records managed Zig path/version, `build.zig`, target preflight/package plan, build command, selected target artifacts and `bootstrapEvents` such as `FOUND_MANAGED_ZIG`, `WRONG_VERSION_REINSTALL`, `LOCAL_ARCHIVE_USED`, `DOWNLOAD_ATTEMPTED`, `ARCHIVE_CHECKSUM_VERIFIED` and `INSTALLED_MANAGED_ZIG`. Archive-related events include `archiveName`, `archiveSha256`, `checksumStatus`, `signatureStatus` and `source` (`existingInstall`, `localArchive` or `download`). Dry-run reports target preflight/package plan without invoking Zig.
 
 `schemaVersion`
 
@@ -267,7 +347,7 @@ List of class or method selectors excluded from native lowering. `blackList` ove
 
 `target`
 
-Target dynamic library matrix. At least one target must be true.
+Target dynamic library matrix. If the field is absent, schema v1 defaults to the current host target detected from the running JVM. If the field is present, all target booleans below are required and at least one target must be true. Every explicitly selected target is required in schema v1; if preflight cannot build it, the pipeline fails and does not write the final output JAR.
 
 Fields:
 
@@ -330,14 +410,14 @@ Managed Zig rules：
 - managed Zig 目录内必须直接包含 `zig` 或 `zig.exe` 可执行文件。
 - 下载前必须优先使用 `<j2ll-home>` 下已存在的对应压缩包。
 - 下载来源固定为 Zig 官方 download path，不使用 `latest`。
+- local/downloaded archive 必须按内置官方 Zig `0.15.2` SHA-256 metadata 校验；checksum mismatch 是 native/toolchain failure，不能继续解压或 fallback 成成功。
+- signature verification 当前是显式边界，report 使用 `signatureStatus=notVerifiedBoundary`。
 - archive extraction 必须防 zip-slip / path traversal，不能写出 `<j2ll-home>/zig`。
-- archive checksum / signature policy 应由 hardcoded Zig `0.15.2` artifact metadata 驱动；校验失败必须 preflight error。
-- 当前实现必须至少保留 checksum/signature verifier interface 和明确的 boundary diagnostic/report policy；在 hardcoded artifact checksum metadata 未完整落地前，不得把校验状态描述为完整强校验。
-- Zig compiles/links all buildable selected target dynamic libraries. Schema v1 records every selected target in preflight/report; non-host targets may be marked skipped with a stable reason until their cross-target SDK/toolchain capability is implemented.
+- Zig compiles/links all buildable selected target dynamic libraries. Schema v1 records every selected target in preflight/report, and selected targets are required by default. A selected target that preflight cannot build is reported in `failedTargets` with `ZIG_TARGET_UNBUILDABLE`, includes required/optional state, Zig target triple, expected library path/name, failure kind, exact reason and build log tail, and makes the pipeline fail; optional/report-only target simulation belongs only in focused toolchain tests.
 - Per-class `.ll`, Zig-managed `.o`, JNI wrapper C, runtime helper C and fallback blob carrier sources are all Zig toolchain inputs.
 - j2ll generates one `build.zig` workspace per build. The Java side invokes managed `zig build` once for the selected target matrix; it must not issue ad-hoc per-target `zig cc`, host `cc`, `clang`, `llc` or platform linker commands.
 - j2ll must not silently fall back to host `cc`, platform linker, external `clang` or external `llc` outside the managed `ZigToolchain` capability contract.
-- If Zig cannot compile/link a required `.ll` / `.o` / C input for a buildable selected target, preflight/build fails with a diagnostic that names the missing toolchain capability and the affected target. A non-host selected target that is explicitly marked `NON_HOST_TARGET_PREFLIGHT_ONLY` is a reported skip, not a fake success.
+- If Zig cannot compile/link a required `.ll` / `.o` / C input for a selected target, preflight/build fails with a diagnostic that names the missing toolchain capability and the affected target. The stable reason for selected required targets that cannot be built in the current environment is `ZIG_TARGET_UNBUILDABLE`.
 
 `signaturePolicy`
 
@@ -345,7 +425,7 @@ Signed input JAR handling. Required. Allowed values:
 
 - `fail`: default/recommended v1 behavior. If input contains Java signature files, j2ll exits before rewriting because signatures would become invalid.
 - `strip`: remove existing `META-INF/*.SF`, `META-INF/*.RSA`, `META-INF/*.DSA` and `META-INF/*.EC`, emit a warning, and record the action in `reports/packaging-report.json`.
-- `resign`: remove old signatures and sign the output JAR using `signing`.
+- `resign`: remove old signatures and sign the output JAR using `signing`. Current implementation runs signing config/keystore/password/alias preflight before rewrite, then invokes the current JDK `jarsigner` on the generated output JAR. Preflight or signer failure records a precise diagnostic and does not keep a final JAR; success records `SIGNATURE_RESIGNED`.
 
 `signing`
 
@@ -378,7 +458,7 @@ Controls SSA IR protection, LLVM module model protection and binary hardening. R
 Fields:
 
 - `enabled`: master switch for all protection layers.
-- `seed`: optional fixed seed. If `null`, j2ll derives and records a deterministic seed in `config.resolved.json`.
+- `seed`: optional fixed seed. If `null`, j2ll derives a deterministic seed. Reports and final JAR metadata record only SHA-256 seed hashes, never the raw configured or derived seed.
 - `intensity`: default intensity for protection passes. Allowed values: `light`, `normal`, `strong`.
 - `ir`: SSA IR protection settings.
 - `llvm`: LLVM module model protection settings.
@@ -434,6 +514,8 @@ Pass fields:
 
 LLVM protection operates on `backend.llvm.model`. It must not mutate `.ll` text using string replacement.
 
+Current schema v1 implements `indirectCalls` for same-class selected static/private direct LLVM calls by inserting hidden signature-group function-pointer tables named `j2ll_cit_<sha256>` into the LLVM module model and the Zig workspace `.ll` input. The protection report uses reason code `CALL_INDIRECTION_TABLE` when a table is emitted and `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE` when table mode has no eligible direct call. A hidden dispatcher switch fallback named `j2ll_cid_<sha256>` remains available and reports `CALL_INDIRECTION_DISPATCHER`. Table, dispatcher and Java implementation symbols are internal/native hidden symbols and must not appear in `reports/symbol-audit.json` as dynamic exports.
+
 ### Protection Binary Fields
 
 `protection.binary.enabled`
@@ -463,11 +545,21 @@ build_YYYY-MM-DD_HH-mm-ss/
   output/
     <input-jar-file-name>
   reports/
+    artifact-audit.json
     diagnostics.json
+    failure-report.json
     frontend-skip-report.json
+    known-blockers.json
     lowering-report.json
+    opcode-support-matrix.json
     packaging-report.json
     protection-report.json
+    index.json
+    release-readiness.json
+    release-suite-summary.json
+    summary.json
+    summary.md
+    support-matrix.json
     symbol-audit.json
   native/
     windows-x64/
@@ -485,15 +577,31 @@ build_YYYY-MM-DD_HH-mm-ss/
 
 `config.resolved.json`
 
-Fully resolved config with defaults, absolute paths, derived seed, resolved target list and normalized selectors.
+Fully resolved config with defaults, absolute paths, a hash-only protection seed identity, resolved target list and normalized selectors. The raw protection seed is not written to this report.
 
 `output/<input-jar-file-name>`
 
 Final repacked JAR. This is the primary output artifact.
 
+The final JAR also contains j2ll metadata entries written before signing/resigning:
+
+- `META-INF/j2ll/build-info.json`: tool/schema version, config hash, selected targets, managed Zig version and protection seed hash.
+- `META-INF/j2ll/native-libraries.json`: embedded native library target, JAR path and SHA-256.
+- `META-INF/j2ll/reports-manifest.json`: report manifest hash, report names, `reportIndex=reports/index.json` and `reportHashSource=workspaceReportIndexSha256`.
+
+These metadata entries must not contain sensitive plaintext or a raw protection seed.
+
 `reports/diagnostics.json`
 
-All diagnostics with stable ordering.
+All diagnostics with stable ordering. Each entry includes a short user-facing `hint` when the reason code has a stable remediation path, for example selector grammar, missing `schemaVersion`, Zig target preflight, signed input policy or artifact-audit plaintext leak.
+
+`reports/failure-report.json`
+
+Written for failed config or pipeline runs. It summarizes error diagnostics with stable `primaryDiagnosticId`, `stage`, `reasonCode`, `message`, `hint`, affected selector/method/target fields where available, and `finalArtifactWritten=false`. It is a failure hygiene sidecar; successful runs may omit it.
+
+`reports/artifact-audit.json`
+
+Artifact audit v2.2 result. Successful pipeline runs audit the output JAR and embedded native resources for plaintext generated fallback `.class` entries, legacy output paths, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH` connected surfaces, `TEMPLATE_JNI_PATH_STABLE_SURFACE` constructor/body helper string surfaces and StringConcat constant carrier stable generated-C surfaces are blocking when the literal is long enough to be a stable audit signal. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names are recorded as hash-only `observedOnly` with `PLAINTEXT_LITERAL_TOO_SHORT_FOR_BLOCKING_GATE`. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`; complex fallback blob facts remain observed-only for plaintext literal gating but have blocking binary metadata/carrier checks. The checks array also records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths, fallback blob binary metadata and final JAR metadata; skipped surfaces must include `surfaceNotGenerated`, `nonBlockingPathKind` or `unavailableOnTarget` style reasons. Failed runs write a no-final-artifact audit result so readiness reports do not confuse a missing final JAR with a successful artifact. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
 
 `reports/frontend-skip-report.json`
 
@@ -503,13 +611,71 @@ Every requested method that became `frontendSkipped`, including selector, class,
 
 Requested lowering set, `lowered` methods, `halfLowered` methods, `frontendSkipped` methods, `notApplicable` selector matches, excluded methods and failures.
 
+`reports/opcode-support-matrix.json`
+
+Deterministic opcode/category/status/reason/test coverage matrix used by release readiness gates. Each row includes `testCoverage`, `coverageLevel` (`unit`, `integration`, `childJvmE2e`, or `releaseSuite`) and `evidenceCount`. It covers supported direct lowering, helper-backed opcodes, fallback opcodes and precise frontend skip boundaries such as legacy subroutines/finally shapes.
+
 `reports/packaging-report.json`
 
 Manifest/resource/signature handling, generated loader classes, native registration summary and output jar validation result.
 
 `reports/protection-report.json`
 
-Protection passes that ran, seed, intensity, per-method skipped pass reasons and fallback reasons.
+Protection passes that ran, hash-only seed identity, intensity, per-method skipped pass reasons and fallback reasons. Reports may include root and per-pass `sensitivePlaintextFacts`; each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason`, `promotionReason` and `artifactSurfaces`, never the original plaintext. The pipeline may keep plaintext in memory long enough to feed artifact audit, but report JSON remains hash-only.
+
+`reports/support-matrix.json`
+
+Deterministic feature/status/reason/test coverage matrix for Java/JVM support tiers, helper/fallback boundaries, signing, managed Zig build and packaging behavior. Each row includes `testCoverage`, machine-readable `coverageLevel` and `evidenceCount`.
+
+`reports/known-blockers.json`
+
+Known release blockers that remain intentionally conservative. Each row has stable id, reason code, severity, target milestone, current behavior, report location and suggested future path. `severity` uses `beta-blocker`, `rc-blocker`, `future-blocker` or `non-goal`; `targetMilestone` uses values such as `beta`, `rc`, `post-rc` or `explicit-nongoal`. Explicit non-goals record JVM-hosted boundaries such as no standalone/native-image output and no native object model/GC/thread scheduler.
+
+`reports/summary.json`
+
+User-readable machine-parseable summary report written for build, dry-run and config-failure CLI workspaces. It aggregates final status, final artifact state, output JAR path, diagnostics counts/top errors, method status counts, native target status/resource/SHA summary, protection/audit counts, artifact-audit status, readiness status/top missing evidence and top blocker ids. It is derived from existing reports and does not include sensitive plaintext or raw protection seeds.
+
+`reports/summary.md`
+
+Diff-stable human summary derived from `reports/summary.json`. It lists final status, final artifact state, output JAR path, diagnostics counts, method status counts, native target buildable/unbuildable summary and gate status without copying raw protection seeds, sensitive plaintext or local workspace paths.
+
+`reports/index.json`
+
+Stable report manifest for the workspace. It lists every generated `.json` / `.md` report except itself, plus `config.resolved.json` and `intermediates/intermediates-manifest.json` when present. Each entry includes `path`, `reportVersion`, `sha256`, `requiredForReadiness`, `requiredForBeta`, `requiredForRc`, `producedOnFailure` and coarse `status`. Final JAR `META-INF/j2ll/reports-manifest.json` includes the expected report names, including `index.json` and `summary.md`, plus `reportIndex` / `reportHashSource`; the workspace index is the authoritative source for emitted report hashes, and readiness validates required report existence/hash plus final JAR report-manifest consistency.
+
+`reports/release-readiness.json`
+
+Release readiness gate result. The gate validates that required reports exist and that artifact audit, packaging, symbol audit, support matrix, opcode matrix and known blockers contain their contract fields. A failed gate is a report/preflight signal, not a standalone runtime mode. Schema v1 currently includes v3 readiness evidence fields:
+
+- `missingEvidence`: machine-readable failed-evidence summary with `type`, `name`, `reasonCode`, `detail` and `reportPath`. Types include `missingReport`, `missingBlockerEvidence`, `missingSuiteCategory`, `artifactAuditNotPassed`, `metadataConsistencyMissing`, `blockingSensitivePlaintextLeak`, `determinismMissing`, `targetEvidenceIncomplete` and `failedCheck`.
+- `suiteCoverageByBlocker`: one entry per known blocker with blocker id, reason code, report location, coverage state, evidence type (`releaseSuiteCase`, `weirdBytecodeSeed`, or `missing`), case name when applicable and expected status.
+- `blockerEvidenceComplete`: true only when every known blocker has release suite or explicit seed evidence in strict suite mode.
+- `targetEvidenceComplete`: true when every selected target artifact entry records required/buildable state, Zig triple, expected library path/name, reason, capability, SDK requirement, failure kind, build log tail and correct actual-artifact nullability.
+- `finalArtifactWritten`: true only when the final output JAR exists. A failed required target must leave this false.
+- `determinismEvidenceComplete`: true when strict suite summary includes stable case/report ordering and determinism evidence.
+- `metadataConsistencyPassed`: true only when artifact audit reports final JAR metadata/schema/report-version/report-manifest/native-library consistency.
+- `blockingSensitiveFactsPassed`: true only when blocking sensitive plaintext facts have no generated artifact or JAR plaintext leak.
+- `targetPackagePlanComplete`: true only when selected target package planning evidence is complete.
+- `betaProfilePassed`: true when strict suite mode uses `profile=beta` and has CLI artifact smoke, docs example validation and report-index evidence.
+- `betaMissingEvidence`: short machine-readable beta evidence gaps.
+- `cliArtifactSmokePassed`: true when beta suite evidence includes `java -jar j2ll.jar --help/--version` smoke coverage.
+- `docsExamplesValidated`: true when beta suite evidence includes docs examples validation coverage.
+- `strictModePassed`: true only when strict suite mode was requested and all checks passed.
+
+`reports/release-suite-summary.json`
+
+Strict readiness consumes release suite summaries by profile:
+
+- `smoke`: narrow compiler/runtime sanity evidence.
+- `standard`: regular helper/fallback/protection regression evidence.
+- `beta`: user-facing usability evidence. Requires CLI jar smoke, docs examples validation, report index evidence, minimal LLVM native evidence and mixed helper/fallback evidence. `beta-blocker` rows must be covered by suite evidence or accepted workaround evidence; otherwise `betaProfilePassed=false`. Future or explicit non-goal blockers remain visible but do not block beta when they have evidence/future path.
+- `rc`: release-candidate evidence. Requires all RC categories, blocker evidence, determinism, signing/packaging preservation, artifact audit failure evidence and required non-host target failure evidence.
+
+Sample project docs live under `docs/samples/`, currently `basic-cli-app.md` and `reflection-service-app.md`. They include source snippets, config shape, commands, expected output and report highlights, and are tested so they do not drift away from `docs/examples/*.json`.
+
+Release suite summary written by the deterministic test harness, not by ordinary CLI pipeline runs. Strict readiness mode requires this file for suite workspaces. It records `schemaVersion`, `reportVersion`, `suiteName`, `profile` (`smoke`, `standard`, `beta` or `rc`), `requiredCategories`, `missingCategories`, stable `cases` ordering, `aggregate` (`totalCases`, `successCases`, `expectedFailureCases`, `casesByCategory`, `casesByFeature`, `strictEvidenceComplete`, `determinismEvidenceComplete`), root `determinismEvidenceComplete`, each case `name`, `category`, `features`, expected support statuses, original/output child JVM exit/stdout/stderr when child JVM differential is applicable, collected produced report paths, diagnostics, protection setting, signature policy and whether pipeline success was expected. Expected config/toolchain/artifact failures may omit original/output child JVM runs, but must record `expectedFailure=true`, `expectedFailureStage`, `expectedFailureReasonCode`, `finalArtifactWritten=false`, a matching diagnostic and `failure-report.json`. Beta profile strict readiness requires CLI artifact smoke, docs example validation and report-index evidence; RC profile strict readiness requires `missingCategories` to be empty.
+
+Strict readiness gate v6 treats `expectedSupportStatuses` and `expectedSupportEvidence` as release blocker coverage evidence. `beta-blocker` and `rc-blocker` known-blocker reasons must be covered either by a suite case expected status/diagnostic or by a documented weird-bytecode seed reason. `future-blocker` and explicit `non-goal` rows remain visible in coverage output but do not block RC strict readiness. Expected failure cases, such as invalid config, signed input rejected by `signaturePolicy: "fail"`, artifact audit failure or a required non-host target with `ZIG_TARGET_UNBUILDABLE`, must have `output: null`, `finalArtifactWritten=false`, `failure-report.json` and a matching diagnostic/stage/reason; successful cases must include output child JVM results, passed artifact audit and the required report set.
 
 `reports/symbol-audit.json`
 
@@ -519,11 +685,14 @@ Exported symbol allowlist, actual exported symbols and audit result for each dyn
 
 All report arrays must use stable ordering: class internal name, method name, descriptor, stage, then deterministic artifact id.
 
+Every primary report JSON object writes `schemaVersion` and `reportVersion`. Unknown config fields are warnings; reports are append-compatible, but existing field wire names should not be renamed casually.
+
 `reports/diagnostics.json` minimum shape:
 
 ```json
 {
   "schemaVersion": 1,
+  "reportVersion": 1,
   "diagnostics": [
     {
       "severity": "warning",
@@ -634,7 +803,7 @@ Location fields are nullable only when the diagnostic is not tied to a method or
 
 `accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip.
 `nativeImplementationPath` records whether the registered native body is `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH`, or `null` when no executable native body was produced for that requested method.
-`helperBackedSites` must include helper-backed metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic lowering sites when the operation is preserved by a runtime helper rather than direct native IR. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/monitor/exception/call/stub decisions: `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Dynamic reflection strings, parameterized reflection metadata outside the current static subset, unsupported MethodHandle chains, unsupported Unsafe raw memory APIs, unsupported ConstantDynamic bootstraps and remaining finally holes must appear in diagnostics/fallback sites with stable reason codes rather than being silently skipped. In schema v1, `Unsafe.objectFieldOffset`/`staticFieldOffset` reports describe deterministic metadata tokens, not native object layout offsets.
+`helperBackedSites` must include helper-backed metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic lowering sites when the operation is preserved by a runtime helper rather than direct native IR. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions: `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `WAIT_NOTIFY_FALLBACK`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_FALLBACK`, `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT`, `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects; dynamic reflection strings, dynamic parameter arrays, scan-style reflection (`getDeclaredMethods/getMethods/getDeclaredFields/getFields/getDeclaredConstructors/getConstructors`), unsupported MethodHandle chains/adapters, unsupported Unsafe raw memory APIs, unsupported ConstantDynamic bootstraps and remaining finally holes must appear in diagnostics/fallback sites with stable reason codes such as `REFLECTION_DYNAMIC_FALLBACK`, `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_FALLBACK`, `METHOD_HANDLE_CHAIN_FALLBACK`, `METHOD_HANDLE_PERMUTE_FALLBACK`, `METHOD_HANDLE_FILTER_FALLBACK`, `METHOD_HANDLE_FOLD_FALLBACK`, `METHOD_HANDLE_COLLECTOR_UNSUPPORTED`, `ALT_METAFACTORY_FALLBACK`, `UNSUPPORTED_NESTED_FINALLY` or `UNSUPPORTED_EXCEPTION_STATE_MERGE` rather than being silently skipped. `I.super.m()` default-interface super invokespecial is currently `frontendSkipped` with `UNSUPPORTED_DEFAULT_INTERFACE_SUPER` because copying it into a helper class violates direct-superinterface verification. `JDK_COLLECTION_HELPER` records ArrayList/HashMap/Arrays/Collections/Optional/String.format sites whose JVM library semantics are intentionally not lowered through native object layout; `JDK_HELPER_FALLBACK` records the corresponding explicit bytecode-preserving `nativeEmbeddedClassBlob` fallback, including narrow `java.util.Arrays.copyOf/equals/fill/asList`, `Collections.emptyList/singletonList`, `Optional` and `String.format` JVM library semantics. `THROWABLE_HELPER_FALLBACK` records Throwable message/cause/constructor semantics that remain JVM-owned, `THREAD_HELPER_FALLBACK` records Thread constructor/start/join semantics that remain JVM-scheduler-owned, and `WAIT_NOTIFY_FALLBACK` records wait/notify monitor-queue semantics that are not implemented in native code. In schema v1, `Unsafe.objectFieldOffset`/`staticFieldOffset` reports describe deterministic metadata tokens, not native object layout offsets.
 
 Runtime metadata dumps are stable sidecars when enabled by intermediates/debug dumps. They may include a `reflectionReachability` section with resolved class/method/field targets and reflection fallback sites. The dump is an observability artifact; lowering status remains governed by `reports/lowering-report.json`.
 
@@ -646,6 +815,22 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
   "outputJar": "output/input.jar",
   "manifestPolicy": "preserved",
   "signaturePolicy": "fail",
+  "preservationSummary": {
+    "manifestPreserved": true,
+    "serviceEntriesPreserved": 1,
+    "moduleInfoPreserved": true,
+    "multiRelease": true,
+    "versionedEntriesPreserved": 1,
+    "versionedClassPolicy": "baseClassesOnlyPreserveVersionedEntries"
+  },
+  "signatureAction": {
+    "inputSigned": false,
+    "policy": "fail",
+    "action": "none",
+    "signatureEntries": [],
+    "warning": null,
+    "error": null
+  },
   "generatedLoaders": ["j2ll/generated/abc123/NativeLoader"],
   "rewrittenClasses": [
     {
@@ -673,31 +858,44 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
     "executable": "<j2ll-home>/zig/zig",
     "buildZig": "native/zig-workspace/build.zig",
     "manifest": "native/zig-workspace/j2ll-build-manifest.json",
-    "verificationPolicy": "checksumSignatureInterfacePresent:notYetHardcoded",
+    "verificationPolicy": "sha256Required:signatureNotVerifiedBoundary",
+    "bootstrapEvents": [
+      {
+        "code": "ARCHIVE_CHECKSUM_VERIFIED",
+        "archiveName": "zig-aarch64-macos-0.15.2.tar.xz",
+        "archiveSha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+        "checksumStatus": "verified",
+        "signatureStatus": "notVerifiedBoundary",
+        "source": "localArchive"
+      }
+    ],
     "buildCommand": ["<j2ll-home>/zig/zig", "build", "--prefix", "..."],
     "selectedTargets": ["linux-x64", "macos-arm64"],
+    "requiredTargets": ["linux-x64", "macos-arm64"],
     "buildableTargets": ["macos-arm64"],
-    "skippedTargets": [
+    "skippedTargets": [],
+    "failedTargets": [
       {
         "target": "linux-x64",
         "zigTarget": "x86_64-linux",
         "output": "native/linux-x64/x64-linux.so",
-        "status": "skipped",
+        "status": "failed",
         "currentHost": false,
         "buildable": false,
-        "reasonCode": "NON_HOST_TARGET_PREFLIGHT_ONLY",
-        "reason": "selected target linux-x64 is recorded in the build plan, but this slice only builds the current host target",
+        "reasonCode": "ZIG_TARGET_UNBUILDABLE",
+        "reason": "selected required target linux-x64 is not buildable by the current managed Zig workspace preflight",
         "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
         "platformSdkRequirement": "Zig Linux libc/linker support for selected target"
       }
-    ],
-    "failedTargets": []
+    ]
   },
   "fallbackBlobs": [
     {
       "originalMethodId": "run__8f3a21c0d4e5f607",
       "originalMethodKey": "pkg/Foo#run!()V",
-      "helperClassName": "j2ll/generated/fallback/pkg_Foo/Fallback$run__8f3a21c0d4e5f607",
+      "helperClassName": "pkg/J2llFallback$run__8f3a21c0d4e5f607",
+      "fallbackInvokeDescriptor": "()V",
+      "fallbackReasonCode": "JVM_HELPER_FALLBACK",
       "sha256": "...",
       "originalSha256": "...",
       "encodedSha256": "...",
@@ -708,9 +906,17 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
       "encryptionAlgorithm": "xor-sha256-key-stream-v1",
       "requiredJavaVersion": "8",
       "storageTarget": "nativeEmbeddedClassBlob",
-      "definitionMechanism": "DefineClass",
-      "definitionMechanismReasonCode": "FALLBACK_DEFINE_CLASS",
-      "classloaderReusePolicy": "lazyPerClassLoaderReuse"
+      "definitionMechanism": "HiddenClass",
+      "definitionMechanismReasonCode": "FALLBACK_HIDDEN_CLASS",
+      "hiddenClassApiAvailable": true,
+      "ownerLookupSupported": true,
+      "definitionMechanismReason": "owner-private Lookup can define hidden fallback helper class",
+      "cacheReasonCode": "FALLBACK_CACHE_REUSE",
+      "classloaderReusePolicy": "lazyPerClassLoaderReuse",
+      "cacheScope": "process",
+      "cacheKey": "fallbackId+definingClassLoaderIdentity",
+      "cacheLifetime": "processLifetime",
+      "globalReferencePolicy": "globalRefPerFallbackClassAndClassLoader"
     }
   ]
 }
@@ -721,7 +927,8 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
 ```json
 {
   "schemaVersion": 1,
-  "seed": "derived-or-configured-seed",
+  "reportVersion": 1,
+  "seedHash": "sha256-of-derived-or-configured-seed",
   "passes": [
     {
       "passName": "STRING_ENCRYPTION",
@@ -732,13 +939,13 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
         "pkg/Foo#run!()V"
       ],
       "affectedSymbols": [],
-      "seed": "1234"
+      "seedHash": "sha256-of-pass-seed"
     }
   ]
 }
 ```
 
-Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Disabled pass and per-method inapplicability both use `SKIPPED` with a stable `reasonCode` such as `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `NO_PRIMITIVE_CONSTANTS`, `PROTECTION_CFG_SHAPE_NOT_SUPPORTED`, `PROTECTION_STUB_BACKED_METHOD` or `PROTECTION_MONITOR_SENSITIVE_SKIP`. Configured but unimplemented pass warnings also appear in diagnostics and must not silently change a method lowering status.
+Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result records a stable `reasonCode`; examples include `OK`, `FLOAT_CONSTANT_ENCRYPTION`, `DOUBLE_CONSTANT_ENCRYPTION`, `CONTROL_FLOW_FLATTENING`, `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`, `CALL_INDIRECTION_TABLE`, `CALL_INDIRECTION_DISPATCHER`, `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE`, `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `NO_PRIMITIVE_CONSTANTS`, `PROTECTION_CFG_SHAPE_NOT_SUPPORTED`, `PROTECTION_STUB_BACKED_METHOD`, `PROTECTION_MONITOR_SENSITIVE_SKIP` and `CALL_INDIRECTION_UNSUPPORTED_SHAPE`. Disabled pass and per-method inapplicability both use `SKIPPED`. Configured but unimplemented pass warnings also appear in diagnostics and must not silently change a method lowering status.
 
 `reports/symbol-audit.json` minimum shape:
 
@@ -863,6 +1070,12 @@ Signature rules:
 - `signaturePolicy: "strip"` removes old signature files and produces an unsigned runnable jar.
 - `signaturePolicy: "resign"` removes old signature files and signs the output jar with the configured key.
 - Every signature decision must be recorded in `reports/packaging-report.json`.
+- `reports/packaging-report.json` also records `zigToolchain.targetArtifacts`, including selected/required target, current-host/buildable state, OS/arch classifier, library extension, Zig target triple, expected artifact path/name/resource path, loader extraction path policy, symbol visibility policy, actual artifact SHA-256 for built current-host targets, exported symbols, required capability, platform SDK requirement, failure kind, build log tail and Windows PDB exclusion policy.
+- `reports/support-matrix.json` is a stable release-readiness artifact listing feature, support status (`LLVM_NATIVE_PATH`, `HELPER_BACKED`, `FALLBACK`, `FRONTEND_SKIPPED`, `NOT_APPLICABLE`), reason code and test coverage pointer.
+- `reports/opcode-support-matrix.json` is the matching opcode-level release-readiness artifact listing opcode bucket, category, status, reason code and test coverage pointer.
+- `reports/known-blockers.json` tracks remaining conservative boundaries with stable blocker id, reason code, severity, target milestone, report location and suggested future path.
+- `reports/release-readiness.json` records the gate checks over required reports and their required top-level fields plus readiness fields `suiteCoverageByBlocker`, `blockerEvidenceComplete`, `targetEvidenceComplete`, `finalArtifactWritten`, `determinismEvidenceComplete`, `metadataConsistencyPassed`, `blockingSensitiveFactsPassed`, `targetPackagePlanComplete` and `strictModePassed`.
+- `reports/release-suite-summary.json` is emitted by release suite tests and is required only by strict suite readiness mode. It records suite/case metadata, expected support statuses, expected support evidence with report locations, child JVM differential results and collected report paths. In strict v3, known blocker reasons must be covered by suite expected statuses/diagnostics or by weird-bytecode seed coverage, and expected failure cases must not produce output runs.
 
 ## Runtime, World, Loader, And Signature Policy
 
@@ -876,7 +1089,7 @@ Runtime helper 是随 native library 一起编译进去的 j2ll 小运行时。�
 
 - null check、array bounds check、checkcast、instanceof。
 - object/array allocation、class initialization、static field access guard。
-- tokenized field get/put helper, allocation helper, String helper and helper-backed call dispatch.
+- tokenized field get/put helper, allocation helper, String helper and helper-backed call dispatch. Current dispatch helper subset uses JNI `GetObjectClass` / `GetMethodID` / `Call<Type>Method` for no-arg int, int-arg int, reference return and single-reference-argument/reference-return virtual/interface calls; it is not a native vtable/object-layout mechanism.
 - exception create/throw/catch bridge。
 - monitor enter/exit 和 synchronized 相关状态维护。
 - string/constant decrypt helper、protection dispatch helper、method table helper。
@@ -897,7 +1110,7 @@ JVM helper fallback 是 native-lowered method 在某个 operation 或 call site 
 典型场景：
 
 - unresolved virtual/interface call。
-- JDK/library method 暂未 native lowering。
+- JDK/library method 暂未 native lowering，例如 ArrayList/HashMap narrow collection policy 当前以 `JDK_COLLECTION_HELPER` 标注 call site，并以 `JDK_HELPER_FALLBACK` 回到 bytecode-preserving fallback。
 - reflection、dynamic class loading 或 classpath 不完整导致 call target 不确定。
 - 某个 skipped method 被 lowered method 调用。
 
@@ -908,16 +1121,18 @@ JVM helper fallback 是 native-lowered method 在某个 operation 或 call site 
 - lowering report 必须记录 fallback call sites、fallback target 和 fallback reason。
 - 需要原 bytecode 或可调用 Java target 通过 `fallbackMode` 指定的方式可达。
 - 性能较差，保护强度较弱，但语义更稳。
-- 如果 fallback 需要原 method body，packaging 必须生成 fallback bytecode target，并按 `fallbackMode` 存储它，同时在 sidecar/report 中记录它和原 method 的映射。
+- 如果 fallback 需要原 method body，packaging 必须生成 fallback bytecode target，并按 `fallbackMode` 存储它，同时在 sidecar/report 中记录它和原 method 的映射。schema v1 的 ordinary method body fallback 使用同 owner package helper class 的 static synthetic `invoke` 方法；instance original method 的 helper descriptor 会把 owner instance 作为第一个参数。packaging report 必须记录 `fallbackInvokeDescriptor` 和 `fallbackReasonCode`，用于把 encoded helper ABI 与 lowering fallback reason 关联起来。
 - JVM helper fallback 不导致构建失败。只有 output jar 无法保持可运行语义时，才允许把该 method 转为 `frontendSkipped` 或 `failed`。
 
 `nativeEmbeddedClassBlob` 要求：
 
 - fallback class bytes 不以明文 `.class` entry 形式写入 output JAR。
 - fallback class bytes 被压缩、加密或至少不可直接作为 Java class resource 读取，并嵌入每个 selected target dynamic library。
-- native library 包含 fallback blob manifest，记录 original method id、fallback helper class name、original SHA-256、encoded SHA-256、encoding version、加密/压缩算法和 required Java version。
-- runtime helper 按 classloader 懒加载 fallback helper；同一 classloader 内重复调用必须复用已定义 helper。
+- native library 包含 fallback blob manifest，记录 original method id、fallback helper class name、fallback invoke descriptor、fallback reason code、original SHA-256、encoded SHA-256、encoding version、加密/压缩算法和 required Java version。
+- decoder 必须在分配 decoded class buffer 前校验 encoded SHA-256 和 compressed payload capacity；wrong fallback id/key、corrupted encoded payload、truncated RLE payload 或 hash mismatch 必须抛出清晰错误，不能导致 unbounded allocation / OOM。
+- runtime helper 按 classloader 懒加载 fallback helper；同一 classloader 内重复调用必须复用已定义 helper。schema v1 cache policy 是 process-lifetime global reference cache，key 为 fallback id + defining classloader identity；当前没有 unload hook。
 - helper definition 可以使用 JNI `DefineClass`、`MethodHandles.Lookup#defineHiddenClass` 或后续等价机制，具体机制必须记录在 packaging report。
+- packaging report 必须记录 definition capability：`definitionMechanismReasonCode` 使用 `FALLBACK_HIDDEN_CLASS`、`FALLBACK_DEFINE_CLASS`、`FALLBACK_HIDDEN_CLASS_UNAVAILABLE` 或 `FALLBACK_HIDDEN_CLASS_UNSUPPORTED_ACCESS`；cache policy 使用 `FALLBACK_CACHE_REUSE` / `FALLBACK_CACHE_ISOLATED` 等稳定 reason code，并记录 `cacheScope`、`cacheKey`、`cacheLifetime`、`globalReferencePolicy`、`unloadAware=false` 和后续 unload-aware cache lifecycle `futurePath`。
 - 如果当前目标 JDK 不支持所选 helper definition 机制，preflight 必须报错或选择已实现的兼容机制；不能退回明文 generated class。
 
 ### World Model
@@ -1044,6 +1259,8 @@ intermediates/classes/<safe-internal-class-name>__<class-hash-prefix>/
 Rules:
 
 - IR, LLVM IR, Zig-produced object files and class-specific C files should be emitted per original class.
+- `intermediates/intermediates-manifest.json` records `schemaVersion`, `reportVersion`, the five `intermediates` config switches, class/method artifact ids and every emitted intermediate file with relative path, kind and SHA-256. The manifest excludes itself from its file list so repeated writes remain stable.
+- `includeDebugDumps`, `includePerClassIr`, `includePerClassLlvm` and `includePerClassC` control whether CFG/runtime debug dumps, SSA IR, LLVM IR and class C wrapper files are written. Class/method indexes and per-class report stubs may still be written when `intermediates.enabled=true`.
 - `<class-hash-prefix>` is the first 16 hex characters of SHA-256 over the original internal class name. If two class artifact directories collide, extend both prefixes to 24 hex characters, then 32, and continue in 8-hex increments.
 - `<safe-internal-class-name>` preserves `/` as path separators and escapes each segment for filesystem safety.
 - Segment escaping keeps ASCII letters, digits, `_`, `$`, `-` and `.`. Any other UTF-16 code unit is escaped as `_uXXXX_`.
@@ -1102,7 +1319,7 @@ intermediates/runtime/
   fallback-blob-manifest.json
 ```
 
-`fallback-blob-manifest.json` records generated fallback helper classes, owning methods, SHA-256 values, storage target and definition mechanism. It must not contain decrypted class bytes.
+`fallback-blob-manifest.json` records generated fallback helper classes, owning methods, SHA-256 values, storage target, definition mechanism, definition capability reason and classloader cache lifecycle policy. It must not contain decrypted class bytes.
 
 ## Dynamic Library Output
 
@@ -1144,11 +1361,19 @@ On failure, the workspace remains for debugging. Expected files:
 
 ```text
 config.resolved.json
+reports/artifact-audit.json
 reports/diagnostics.json
+reports/failure-report.json
 reports/frontend-skip-report.json
+reports/known-blockers.json
 reports/lowering-report.json
+reports/opcode-support-matrix.json
 reports/packaging-report.json
 reports/protection-report.json
+reports/release-readiness.json
+reports/release-suite-summary.json
+reports/support-matrix.json
+reports/symbol-audit.json
 logs/
 intermediates/
 ```

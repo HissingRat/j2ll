@@ -30,6 +30,26 @@ public enum TargetTriple {
         return windows;
     }
 
+    public String osClassifier() {
+        return switch (this) {
+            case WINDOWS_X64, WINDOWS_ARM64 -> "windows";
+            case LINUX_X64, LINUX_ARM64 -> "linux";
+            case MACOS_X64, MACOS_ARM64 -> "macos";
+        };
+    }
+
+    public String archClassifier() {
+        return switch (this) {
+            case WINDOWS_X64, LINUX_X64, MACOS_X64 -> "x64";
+            case WINDOWS_ARM64, LINUX_ARM64, MACOS_ARM64 -> "arm64";
+        };
+    }
+
+    public String libraryExtension() {
+        int dot = libraryFileName.lastIndexOf('.');
+        return dot < 0 ? "" : libraryFileName.substring(dot + 1);
+    }
+
     public String zigCpuArch() {
         return switch (this) {
             case WINDOWS_X64, LINUX_X64, MACOS_X64 -> "x86_64";
@@ -38,11 +58,7 @@ public enum TargetTriple {
     }
 
     public String zigOsTag() {
-        return switch (this) {
-            case WINDOWS_X64, WINDOWS_ARM64 -> "windows";
-            case LINUX_X64, LINUX_ARM64 -> "linux";
-            case MACOS_X64, MACOS_ARM64 -> "macos";
-        };
+        return osClassifier();
     }
 
     public String zigTarget() {

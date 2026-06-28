@@ -140,10 +140,13 @@ class ZigBuildWriterTest {
         assertTrue(!buildZig.contains("const target_linux_x64"));
         String manifest = Files.readString(workspace.manifest());
         assertTrue(manifest.contains("\"selectedTargets\""));
+        assertTrue(manifest.contains("\"requiredTargets\""));
         assertTrue(manifest.contains("\"linux-x64\""));
         assertTrue(manifest.contains("\"buildableTargets\""));
         assertTrue(manifest.contains("\"skippedTargets\""));
-        assertTrue(manifest.contains("\"reasonCode\": \"NON_HOST_TARGET_PREFLIGHT_ONLY\""));
+        assertTrue(manifest.contains("\"failedTargets\""));
+        assertTrue(manifest.contains("\"status\": \"failed\""));
+        assertTrue(manifest.contains("\"reasonCode\": \"ZIG_TARGET_UNBUILDABLE\""));
         assertTrue(manifest.contains("\"requiredCapability\": \"managedZig0.15.2BuildZigSharedLibrary\""));
     }
 

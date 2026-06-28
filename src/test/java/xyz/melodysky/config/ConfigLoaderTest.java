@@ -32,6 +32,26 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void defaultsMissingTargetToCurrentHostTarget() {
+        JsonObject json = JsonParser.parseString(baseJson().replace("""
+                  "target": {
+                    "windowsX64": false,
+                    "windowsArm64": false,
+                    "linuxX64": true,
+                    "linuxArm64": false,
+                    "macosX64": false,
+                    "macosArm64": false
+                  },
+                """, ""))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertEquals(1, result.config().orElseThrow().targets().size());
+    }
+
+    @Test
     void warnsForUnknownTopLevelAndNestedFields() {
         JsonObject json = JsonParser.parseString(baseJson()
                         .replace("\"protection\": {", "\"extra\": true, \"protection\": {")
@@ -71,6 +91,37 @@ class ConfigLoaderTest {
         assertTrue(result.diagnostics().stream()
                 .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
                         && diagnostic.message().contains("intermediates.includePerClassC")));
+    }
+
+    @Test
+    void rejectsJarPathThatIsNotJar() {
+        JsonObject json = JsonParser.parseString(baseJson().replace("\"jarFile\": \"input.jar\"", "\"jarFile\": \"input.txt\""))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_PATH)
+                        && diagnostic.message().contains("jarFile")));
+    }
+
+    @Test
+    void rejectsStrictSelectorValidationFailures() {
+        JsonObject json = JsonParser.parseString(baseJson().replace("\"whiteList\": []", """
+                "whiteList": [
+                    "my.pkg/Foo",
+                    "my/pkg/Foo#doIt!(V)V",
+                    "my/pkg/Foo#do-It!()V"
+                  ]"""))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertEquals(3, result.diagnostics().stream()
+                .filter(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_SELECTOR))
+                .count());
     }
 
     @Test

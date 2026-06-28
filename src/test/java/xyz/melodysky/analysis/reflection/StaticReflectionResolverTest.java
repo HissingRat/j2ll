@@ -72,6 +72,16 @@ class StaticReflectionResolverTest {
     }
 
     @Test
+    void reflectionMemberScanProducesStableUnsupportedScanFallback() {
+        Fixture fixture = fixture();
+        ReflectionPlan plan = new StaticReflectionResolver().resolve(fixture.program(), fixture.metadataIndex());
+
+        assertTrue(plan.fallbackSites().stream().anyMatch(fallback ->
+                fallback.method().equals("declaredMethods")
+                        && fallback.reasonCode().equals(StaticReflectionDiagnostics.REFLECTION_UNSUPPORTED_SCAN)));
+    }
+
+    @Test
     void callGraphIncludesStaticallyResolvedReflectiveTarget() {
         Fixture fixture = fixture();
         ClassHierarchy hierarchy = new ClassHierarchyBuilder()

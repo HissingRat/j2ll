@@ -17,5 +17,7 @@ public enum DiagnosticStage {
     LLVM_EMISSION,
     NATIVE_LINK,
     SYMBOL_AUDIT,
-    PACKAGING
+    ARTIFACT_AUDIT,
+    PACKAGING,
+    RELEASE_READINESS
 }

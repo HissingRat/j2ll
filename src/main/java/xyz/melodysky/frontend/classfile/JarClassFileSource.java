@@ -26,7 +26,7 @@ public final class JarClassFileSource implements ClassFileSource {
         ArrayList<ClassFileEntry> entries = new ArrayList<>();
         try (JarFile jarFile = new JarFile(jarPath.toFile())) {
             for (JarEntry jarEntry : jarFile.stream().toList()) {
-                if (!ClassFileEntries.isClassEntry(jarEntry.getName())) {
+                if (!ClassFileEntries.isBaseClassEntry(jarEntry.getName())) {
                     continue;
                 }
                 try (InputStream input = jarFile.getInputStream(jarEntry)) {

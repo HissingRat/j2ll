@@ -56,12 +56,18 @@ xyz.melodysky.ir.pass.protection
 
 当前 v1 已实现并默认启用的 IR protection 子集：
 
-- `StringEncryptionPass`：加密 `j2ll_rt_string_constant|string:<literal>` carrier，输出 encrypted native constant carrier。
+- `ControlFlowFlatteningPass`：对安全 multi-block primitive LLVM-native method 生成 dispatcher state switch；monitor/exception/block-parameter/helper-sensitive shape 保守跳过。
+- `StringEncryptionPass`：加密 `j2ll_rt_string_constant|string:<literal>` carrier、普通 `CONST_STRING` / `ldc String`，以及安全 TEMPLATE constructor body string literal，输出 encrypted native `j2ll_rt_string_constant|enc:v1:<token>:<keyHex>:<cipherHex>` helper call；reflection / lambda / MethodHandle bootstrap metadata 相关 method 保守记录 skip。
 - `BasicBlockSplittingPass`：对安全单 block method 插入 deterministic opaque predicate + fake branch。
-- `PrimitiveConstantEncryptionPass`：对安全 method 的 `CONST_INT` / `CONST_LONG` 生成 deterministic XOR decode sequence。
+- `PrimitiveConstantEncryptionPass`：对安全 method 的 `CONST_INT` / `CONST_LONG` 生成 deterministic XOR decode sequence；对 `CONST_FLOAT` / `CONST_DOUBLE` 加密 raw bit pattern，再通过 LLVM bitcast 恢复 JVM 浮点值。
 - `BlockNameObfuscationPass`：按 seed 稳定重命名 block。
 
 尚未实现的 pass 继续 warning + ignore；单 method 不适用只跳过该 pass 并写入 protection report，不改变 lowering status。
+
+当前 v1 已实现的 LLVM protection 子集：
+
+- `CALL_INDIRECTION`：对 same-class selected static/private direct LLVM call，在 `LlvmModule` model 中默认生成 deterministic hidden signature-group function-pointer table `j2ll_cit_<sha256>`，caller load function pointer 后 indirect call；成功记录 `CALL_INDIRECTION_TABLE`，无适用 table shape 记录 `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE` skip。dispatcher switch `j2ll_cid_<sha256>` 仍作为 fallback 形态，成功记录 `CALL_INDIRECTION_DISPATCHER`。
+- `LLVM_NAME_OBFUSCATION`：由共享 `LlvmNameMangler` 在 planner/lowerer/Zig workspace/JNI wrapper 之间提供 deterministic hidden function symbol。
 
 ## 顺序建议
 

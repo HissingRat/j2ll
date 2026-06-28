@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://melodysky.xyz/j2ll/config.schema.json",
+  "title": "j2ll config schema v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "jarFile",
+    "classPath",
+    "javaHome",
+    "runtimeImage",
+    "worldModel",
+    "javaSupportTier",
+    "fallbackMode",
+    "outputDirectory",
+    "whiteList",
+    "blackList",
+    "libraryName",
+    "embeddedLibraryDirectory",
+    "signaturePolicy",
+    "signing",
+    "intermediates",
+    "protection"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "jarFile": { "type": "string", "pattern": "\\.jar$" },
+    "classPath": { "type": "array", "items": { "type": "string" } },
+    "javaHome": { "type": ["string", "null"] },
+    "runtimeImage": { "type": ["string", "null"] },
+    "worldModel": {
+      "type": "string",
+      "enum": ["CLOSED_WORLD", "PARTIAL_WORLD", "JDK_EXTERNAL_WORLD", "UNKNOWN_DYNAMIC_WORLD"]
+    },
+    "javaSupportTier": {
+      "type": "string",
+      "enum": ["TIER_0", "TIER_1", "TIER_2", "TIER_3", "TIER_4", "TIER_5"]
+    },
+    "fallbackMode": { "const": "nativeEmbeddedClassBlob" },
+    "outputDirectory": { "type": "string", "minLength": 1 },
+    "whiteList": { "type": "array", "items": { "type": "string" } },
+    "blackList": { "type": "array", "items": { "type": "string" } },
+    "target": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["windowsX64", "windowsArm64", "linuxX64", "linuxArm64", "macosX64", "macosArm64"],
+      "properties": {
+        "windowsX64": { "type": "boolean" },
+        "windowsArm64": { "type": "boolean" },
+        "linuxX64": { "type": "boolean" },
+        "linuxArm64": { "type": "boolean" },
+        "macosX64": { "type": "boolean" },
+        "macosArm64": { "type": "boolean" }
+      }
+    },
+    "libraryName": { "type": ["string", "null"] },
+    "embeddedLibraryDirectory": { "type": "string", "minLength": 1 },
+    "signaturePolicy": { "type": "string", "enum": ["fail", "strip", "resign"] },
+    "signing": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["keystorePath", "storePasswordEnv", "keyAlias", "keyPasswordEnv", "tsaUrl"],
+      "properties": {
+        "keystorePath": { "type": "string" },
+        "storePasswordEnv": { "type": "string" },
+        "keyAlias": { "type": "string" },
+        "keyPasswordEnv": { "type": "string" },
+        "tsaUrl": { "type": ["string", "null"] }
+      }
+    },
+    "intermediates": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "includeDebugDumps", "includePerClassIr", "includePerClassLlvm", "includePerClassC"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "includeDebugDumps": { "type": "boolean" },
+        "includePerClassIr": { "type": "boolean" },
+        "includePerClassLlvm": { "type": "boolean" },
+        "includePerClassC": { "type": "boolean" }
+      }
+    },
+    "protection": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "seed", "intensity", "ir", "llvm", "binary"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "seed": { "type": ["string", "null"] },
+        "intensity": { "$ref": "#/$defs/intensity" },
+        "ir": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "enabled",
+            "controlFlowFlattening",
+            "fakeBranches",
+            "basicBlockSplitting",
+            "constantEncryption",
+            "stringEncryption",
+            "methodInlining",
+            "methodSplitting",
+            "callIndirection",
+            "methodTableHiding"
+          ],
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "controlFlowFlattening": { "$ref": "#/$defs/pass" },
+            "fakeBranches": { "$ref": "#/$defs/pass" },
+            "basicBlockSplitting": { "$ref": "#/$defs/pass" },
+            "constantEncryption": { "$ref": "#/$defs/pass" },
+            "stringEncryption": { "$ref": "#/$defs/stringPass" },
+            "methodInlining": { "$ref": "#/$defs/pass" },
+            "methodSplitting": { "$ref": "#/$defs/pass" },
+            "callIndirection": { "$ref": "#/$defs/pass" },
+            "methodTableHiding": { "$ref": "#/$defs/pass" }
+          }
+        },
+        "llvm": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "enabled",
+            "nameObfuscation",
+            "opaquePredicates",
+            "blockLayoutPerturbation",
+            "indirectCalls",
+            "globalLayout",
+            "visibilityHardening"
+          ],
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "nameObfuscation": { "$ref": "#/$defs/pass" },
+            "opaquePredicates": { "$ref": "#/$defs/pass" },
+            "blockLayoutPerturbation": { "$ref": "#/$defs/pass" },
+            "indirectCalls": { "$ref": "#/$defs/pass" },
+            "globalLayout": { "$ref": "#/$defs/pass" },
+            "visibilityHardening": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["enabled"],
+              "properties": { "enabled": { "type": "boolean", "default": true } }
+            }
+          }
+        },
+        "binary": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit"],
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "hideInternalSymbols": { "type": "boolean", "default": true },
+            "strip": { "type": "boolean", "default": true },
+            "removePdb": { "type": "boolean", "default": true },
+            "symbolAudit": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "intensity": { "type": "string", "enum": ["low", "normal", "high"] },
+    "pass": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "intensity"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "intensity": { "$ref": "#/$defs/intensity" }
+      }
+    },
+    "stringPass": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "intensity", "cacheStrings"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "intensity": { "$ref": "#/$defs/intensity" },
+        "cacheStrings": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

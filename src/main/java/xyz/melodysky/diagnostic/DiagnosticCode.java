@@ -6,6 +6,12 @@ public record DiagnosticCode(String value) implements Comparable<DiagnosticCode>
     public static final DiagnosticCode BOOTSTRAP_STAGE_RAN = new DiagnosticCode("BOOTSTRAP_STAGE_RAN");
     public static final DiagnosticCode BOOTSTRAP_VALIDATION = new DiagnosticCode("BOOTSTRAP_VALIDATION");
     public static final DiagnosticCode JVM_HELPER_FALLBACK = new DiagnosticCode("JVM_HELPER_FALLBACK");
+    public static final DiagnosticCode UNSAFE_RAW_MEMORY_FALLBACK = new DiagnosticCode("UNSAFE_RAW_MEMORY_FALLBACK");
+    public static final DiagnosticCode SIGNED_INPUT_REJECTED = new DiagnosticCode("SIGNED_INPUT_REJECTED");
+    public static final DiagnosticCode SIGNATURE_STRIPPED = new DiagnosticCode("SIGNATURE_STRIPPED");
+    public static final DiagnosticCode SIGNATURE_RESIGN_FAILED = new DiagnosticCode("SIGNATURE_RESIGN_FAILED");
+    public static final DiagnosticCode ARTIFACT_AUDIT_FAILED = new DiagnosticCode("ARTIFACT_AUDIT_FAILED");
+    public static final DiagnosticCode RELEASE_READINESS_FAILED = new DiagnosticCode("RELEASE_READINESS_FAILED");
 
     public DiagnosticCode {
         Objects.requireNonNull(value, "value");

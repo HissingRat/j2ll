@@ -19,6 +19,7 @@ public final class SymbolAuditReportWriter {
     public String json(List<LibraryAuditReport> libraries) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
+        root.addProperty("reportVersion", 1);
         JsonArray array = new JsonArray();
         for (LibraryAuditReport library : libraries) {
             JsonObject object = new JsonObject();
