@@ -31,9 +31,9 @@ java --enable-native-access=ALL-UNNAMED \
   -jar build/dummy/Dummy.jar all
 ```
 
-`basic` covers stable primitive, array, control-flow, typed-catch, String/JDK, lambda, reflection, resource, ServiceLoader and multi-release JAR smoke paths.
+`basic` covers stable primitive, array, control-flow, typed-catch, String/JDK, lambda, class/interface polymorphism, reflection, resource, ServiceLoader and manifest smoke paths.
 
-`advanced` covers conservative JVM boundaries such as reflection scans, MethodHandle adapters, raw Unsafe memory, VarHandle, threads/monitors, wait/notify, default-interface super calls, complex finally shapes, annotations, enums, records and inner classes.
+`advanced` covers conservative JVM boundaries such as reflection scans, MethodHandle adapters, raw Unsafe memory, VarHandle, threads/monitors, wait/notify, default-interface super calls, complex finally shapes, annotations, enums, records, inner classes, sealed classes, multi-dimensional arrays, text blocks, pattern matching, record patterns, pattern switches, try-with-resources suppressed exceptions, serialization, dynamic proxies, custom class loaders, resource bundles, fixed-locale formatting, NIO file APIs and module metadata.
 
 ## j2ll Smoke Tasks
 

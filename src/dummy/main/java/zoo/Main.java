@@ -5,6 +5,8 @@ import java.util.List;
 import zoo.advanced.AnnotationEnumRecordAdvancedCase;
 import zoo.advanced.ComplexFinallyBoundaryCase;
 import zoo.advanced.InterfaceBoundaryAdvancedCase;
+import zoo.advanced.JdkSurfaceAdvancedCase;
+import zoo.advanced.LanguageSurfaceAdvancedCase;
 import zoo.advanced.MethodHandleAdvancedCase;
 import zoo.advanced.ReflectionAdvancedCase;
 import zoo.advanced.ThreadMonitorAdvancedCase;
@@ -15,6 +17,7 @@ import zoo.basic.ExceptionBasicCase;
 import zoo.basic.InterfaceLambdaConcatBasicCase;
 import zoo.basic.ObjectBasicCase;
 import zoo.basic.PackagingBasicCase;
+import zoo.basic.PolymorphismBasicCase;
 import zoo.basic.PrimitiveBasicCase;
 import zoo.basic.ReflectionBasicCase;
 import zoo.basic.StringJdkBasicCase;
@@ -51,6 +54,7 @@ public final class Main {
         cases.add(new ObjectBasicCase());
         cases.add(new StringJdkBasicCase());
         cases.add(new InterfaceLambdaConcatBasicCase());
+        cases.add(new PolymorphismBasicCase());
         cases.add(new ReflectionBasicCase());
         cases.add(new PackagingBasicCase());
         return cases;
@@ -65,6 +69,8 @@ public final class Main {
         cases.add(new InterfaceBoundaryAdvancedCase());
         cases.add(new ComplexFinallyBoundaryCase());
         cases.add(new AnnotationEnumRecordAdvancedCase());
+        cases.add(new LanguageSurfaceAdvancedCase());
+        cases.add(new JdkSurfaceAdvancedCase());
         return cases;
     }
 

@@ -31,10 +31,6 @@ sourceSets {
         java.srcDirs = ['src/dummy/main/java']
         resources.srcDirs = ['src/dummy/main/resources']
     }
-    dummyVersion17 {
-        java.srcDirs = ['src/dummy/versioned17/java']
-        resources.srcDirs = []
-    }
     bench {
         java.srcDirs = ['obfuscator/bench/src/main/java']
         resources.srcDirs = ['obfuscator/bench/src/main/resources']
@@ -116,28 +112,19 @@ tasks.register('distJ2ll', Sync) {
 
 tasks.named('compileDummyJava', JavaCompile) {
     options.encoding = 'UTF-8'
-    options.release = 17
-}
-
-tasks.named('compileDummyVersion17Java', JavaCompile) {
-    options.encoding = 'UTF-8'
-    options.release = 17
+    options.release = 25
 }
 
 tasks.register('buildDummy', Jar) {
     group = 'verification'
     description = 'Builds the Dummy feature-zoo fixture JAR at build/dummy/Dummy.jar.'
-    dependsOn('dummyClasses', 'dummyVersion17Classes')
+    dependsOn('dummyClasses')
     archiveFileName.set('Dummy.jar')
     destinationDirectory.set(layout.buildDirectory.dir('dummy'))
     from sourceSets.dummy.output
-    into('META-INF/versions/17') {
-        from sourceSets.dummyVersion17.output
-    }
     manifest {
         attributes(
-                'Main-Class': 'zoo.Main',
-                'Multi-Release': 'true'
+                'Main-Class': 'zoo.Main'
         )
     }
 }
@@ -189,7 +176,9 @@ tasks.register('dummyTest', Test) {
         testLogging {
             events 'failed'
             exceptionFormat 'full'
+            showStandardStreams = true
         }
+        systemProperty 'j2ll.dummy.workspaceRoot', layout.buildDirectory.dir('dummy/j2ll').get().asFile.absolutePath
         afterTest { descriptor, result ->
             if (result.resultType == TestResult.ResultType.FAILURE && result.exception != null) {
                 println(result.exception.message)
