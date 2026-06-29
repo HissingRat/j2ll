@@ -264,7 +264,11 @@ public final class MainlinePipeline {
                 registrationPlan,
                 rewriteDecisions,
                 protectedIr,
-                nativeEmbeddedFallbackMethodKeys(ssaResults));
+                nativeEmbeddedFallbackMethodKeys(ssaResults),
+                program.classes().stream()
+                        .flatMap(parsedClass -> parsedClass.methods().stream())
+                        .map(ParsedMethod::methodKey)
+                        .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new)));
         implementationPlan = protectTemplateStringConstants(
                 implementationPlan,
                 diagnostics,
@@ -273,6 +277,9 @@ public final class MainlinePipeline {
                 seed);
         Set<String> directCallTargets = implementationPlan.llvmImplementations().stream()
                 .flatMap(implementation -> implementation.directCallTargets().stream())
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> staticCallTargets = implementationPlan.llvmImplementations().stream()
+                .flatMap(implementation -> implementation.staticCallKeys().stream())
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
 
         Map<String, List<IrMethod>> protectedMethodsByClass = groupMethodsByClass(protectedIr.values().stream().toList());
@@ -286,7 +293,8 @@ public final class MainlinePipeline {
             LlvmModule module = llvmLowerer.lowerClass(new IrClass(parsedClass.internalName(), methods),
                     xyz.melodysky.backend.llvm.model.LlvmLinkage.EXTERNAL,
                     xyz.melodysky.backend.llvm.model.LlvmVisibility.HIDDEN,
-                    directCallTargets);
+                    directCallTargets,
+                    staticCallTargets);
             LlvmModule protectedModule = llvmProtectionPipeline.run(
                     module,
                     xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig.disabled(seed));
@@ -520,6 +528,7 @@ public final class MainlinePipeline {
                     implementation.classObjectKeys(),
                     implementation.runtimeMetadataKeys(),
                     implementation.constructorCallKeys(),
+                    implementation.staticCallKeys(),
                     implementation.dispatchKeys(),
                     implementation.stringHelperSymbols(),
                     Optional.of(protectionResult.method())));

@@ -22,6 +22,7 @@ public record NativeMethodImplementation(
         List<String> classObjectKeys,
         List<String> runtimeMetadataKeys,
         List<String> constructorCallKeys,
+        List<String> staticCallKeys,
         List<String> dispatchKeys,
         List<String> stringHelperSymbols,
         Optional<IrMethod> templateIrMethod) implements Comparable<NativeMethodImplementation> {
@@ -38,6 +39,7 @@ public record NativeMethodImplementation(
         classObjectKeys = List.copyOf(Objects.requireNonNull(classObjectKeys, "classObjectKeys"));
         runtimeMetadataKeys = List.copyOf(Objects.requireNonNull(runtimeMetadataKeys, "runtimeMetadataKeys"));
         constructorCallKeys = List.copyOf(Objects.requireNonNull(constructorCallKeys, "constructorCallKeys"));
+        staticCallKeys = List.copyOf(Objects.requireNonNull(staticCallKeys, "staticCallKeys"));
         dispatchKeys = List.copyOf(Objects.requireNonNull(dispatchKeys, "dispatchKeys"));
         stringHelperSymbols = List.copyOf(Objects.requireNonNull(stringHelperSymbols, "stringHelperSymbols"));
         Objects.requireNonNull(templateIrMethod, "templateIrMethod");
@@ -57,6 +59,7 @@ public record NativeMethodImplementation(
                 reasonCode,
                 false,
                 false,
+                List.of(),
                 List.of(),
                 List.of(),
                 List.of(),

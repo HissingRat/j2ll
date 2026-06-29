@@ -139,6 +139,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     List.of(),
                     List.of(),
                     List.of(),
+                    List.of(),
                     Optional.empty(),
                     "TEMPLATE_JNI_SEMANTICS",
                     bindingDescriptor(entry, decision)));
@@ -156,13 +157,14 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         implementation.passesJniEnv(),
                         implementation.passesOwnerClass(),
                         implementation.fieldKeys(),
-                    implementation.directCallTargets(),
-                    implementation.allocationKeys(),
-                    implementation.typeCheckKeys(),
-                    implementation.classObjectKeys(),
-                    implementation.runtimeMetadataKeys(),
-                    implementation.constructorCallKeys(),
-                    implementation.dispatchKeys(),
+                        implementation.directCallTargets(),
+                        implementation.allocationKeys(),
+                        implementation.typeCheckKeys(),
+                        implementation.classObjectKeys(),
+                        implementation.runtimeMetadataKeys(),
+                        implementation.constructorCallKeys(),
+                        implementation.staticCallKeys(),
+                        implementation.dispatchKeys(),
                         implementation.stringHelperSymbols(),
                         implementation.templateIrMethod(),
                         implementation.reasonCode(),
@@ -4079,7 +4081,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .filter(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
                 .flatMap(binding -> java.util.stream.Stream.concat(
                         binding.dispatchKeys().stream(),
-                        binding.constructorCallKeys().stream()))
+                        java.util.stream.Stream.concat(
+                                binding.constructorCallKeys().stream(),
+                                binding.staticCallKeys().stream())))
                 .distinct()
                 .sorted()
                 .toList();
@@ -4206,6 +4210,105 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     return (*env)->CallObjectMethod(env, receiver, method, arg0);
                 }
 
+                static const j2ll_method_entry* j2ll_resolve_static_method(JNIEnv* env, int64_t token, jclass* resolved_class, jmethodID* resolved_method) {
+                    const j2ll_method_entry* entry = j2ll_find_method(token);
+                    if (entry == NULL) {
+                        j2ll_throw_new(env, "java/lang/NoSuchMethodError", "unknown j2ll static method token");
+                        return NULL;
+                    }
+                    jclass cls = (*env)->FindClass(env, entry->owner);
+                    if (cls == NULL) {
+                        return NULL;
+                    }
+                    jmethodID method = (*env)->GetStaticMethodID(env, cls, entry->name, entry->descriptor);
+                    if (method == NULL) {
+                        (*env)->DeleteLocalRef(env, cls);
+                        return NULL;
+                    }
+                    *resolved_class = cls;
+                    *resolved_method = method;
+                    return entry;
+                }
+
+                void j2ll_rt_call_static_void_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    if (j2ll_resolve_static_method(env, token, &cls, &method) == NULL) {
+                        return;
+                    }
+                    (*env)->CallStaticVoidMethodA(env, cls, method, args);
+                    (*env)->DeleteLocalRef(env, cls);
+                }
+
+                int32_t j2ll_rt_call_static_i32_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    const j2ll_method_entry* entry = j2ll_resolve_static_method(env, token, &cls, &method);
+                    if (entry == NULL) {
+                        return 0;
+                    }
+                    const char* close = strchr(entry->descriptor, ')');
+                    char kind = close == NULL ? 'I' : close[1];
+                    int32_t result = 0;
+                    if (kind == 'Z') {
+                        result = (*env)->CallStaticBooleanMethodA(env, cls, method, args) ? 1 : 0;
+                    } else if (kind == 'B') {
+                        result = (int32_t)(*env)->CallStaticByteMethodA(env, cls, method, args);
+                    } else if (kind == 'C') {
+                        result = (int32_t)(*env)->CallStaticCharMethodA(env, cls, method, args);
+                    } else if (kind == 'S') {
+                        result = (int32_t)(*env)->CallStaticShortMethodA(env, cls, method, args);
+                    } else {
+                        result = (int32_t)(*env)->CallStaticIntMethodA(env, cls, method, args);
+                    }
+                    (*env)->DeleteLocalRef(env, cls);
+                    return result;
+                }
+
+                int64_t j2ll_rt_call_static_i64_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    if (j2ll_resolve_static_method(env, token, &cls, &method) == NULL) {
+                        return 0;
+                    }
+                    int64_t result = (int64_t)(*env)->CallStaticLongMethodA(env, cls, method, args);
+                    (*env)->DeleteLocalRef(env, cls);
+                    return result;
+                }
+
+                float j2ll_rt_call_static_f32_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    if (j2ll_resolve_static_method(env, token, &cls, &method) == NULL) {
+                        return 0.0f;
+                    }
+                    float result = (float)(*env)->CallStaticFloatMethodA(env, cls, method, args);
+                    (*env)->DeleteLocalRef(env, cls);
+                    return result;
+                }
+
+                double j2ll_rt_call_static_f64_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    if (j2ll_resolve_static_method(env, token, &cls, &method) == NULL) {
+                        return 0.0;
+                    }
+                    double result = (double)(*env)->CallStaticDoubleMethodA(env, cls, method, args);
+                    (*env)->DeleteLocalRef(env, cls);
+                    return result;
+                }
+
+                jobject j2ll_rt_call_static_ref_a(JNIEnv* env, int64_t token, jvalue* args) {
+                    jclass cls = NULL;
+                    jmethodID method = NULL;
+                    if (j2ll_resolve_static_method(env, token, &cls, &method) == NULL) {
+                        return NULL;
+                    }
+                    jobject result = (*env)->CallStaticObjectMethodA(env, cls, method, args);
+                    (*env)->DeleteLocalRef(env, cls);
+                    return result;
+                }
+
                 int32_t j2ll_rt_call_virtual_i32(JNIEnv* env, jobject receiver, int64_t token, jobject args) {
                     (void)args;
                     return j2ll_call_no_arg_i32(env, receiver, token);
@@ -4242,7 +4345,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     return j2ll_call_ref_arg_ref(env, receiver, token, arg0);
                 }
 
-                void j2ll_rt_call_constructor_void(JNIEnv* env, jobject receiver, int64_t token) {
+                void j2ll_rt_call_constructor_void_a(JNIEnv* env, jobject receiver, int64_t token, jvalue* args) {
                     if (receiver == NULL) {
                         j2ll_throw_new(env, "java/lang/NullPointerException", "constructor receiver is null");
                         return;
@@ -4261,31 +4364,19 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         (*env)->DeleteLocalRef(env, cls);
                         return;
                     }
-                    (*env)->CallNonvirtualVoidMethod(env, receiver, cls, method);
+                    (*env)->CallNonvirtualVoidMethodA(env, receiver, cls, method, args);
                     (*env)->DeleteLocalRef(env, cls);
                 }
 
+                void j2ll_rt_call_constructor_void(JNIEnv* env, jobject receiver, int64_t token) {
+                    j2ll_rt_call_constructor_void_a(env, receiver, token, NULL);
+                }
+
                 void j2ll_rt_call_constructor_void_i32_i32(JNIEnv* env, jobject receiver, int64_t token, int32_t arg0, int32_t arg1) {
-                    if (receiver == NULL) {
-                        j2ll_throw_new(env, "java/lang/NullPointerException", "constructor receiver is null");
-                        return;
-                    }
-                    const j2ll_method_entry* entry = j2ll_find_method(token);
-                    if (entry == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoSuchMethodError", "unknown j2ll constructor token");
-                        return;
-                    }
-                    jclass cls = (*env)->FindClass(env, entry->owner);
-                    if (cls == NULL) {
-                        return;
-                    }
-                    jmethodID method = (*env)->GetMethodID(env, cls, entry->name, entry->descriptor);
-                    if (method == NULL) {
-                        (*env)->DeleteLocalRef(env, cls);
-                        return;
-                    }
-                    (*env)->CallNonvirtualVoidMethod(env, receiver, cls, method, (jint)arg0, (jint)arg1);
-                    (*env)->DeleteLocalRef(env, cls);
+                    jvalue args[2];
+                    args[0].i = (jint)arg0;
+                    args[1].i = (jint)arg1;
+                    j2ll_rt_call_constructor_void_a(env, receiver, token, args);
                 }
 
                 """);
@@ -4336,10 +4427,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 }
 
                 static jclass j2ll_static_field_class(JNIEnv* env, jclass owner, const j2ll_field_entry* entry, int* local_ref) {
+                    (void)owner;
                     *local_ref = 0;
-                    if (owner != NULL) {
-                        return owner;
-                    }
                     jclass cls = (*env)->FindClass(env, entry->owner);
                     if (cls != NULL) {
                         *local_ref = 1;
@@ -4926,6 +5015,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             List<String> classObjectKeys,
             List<String> runtimeMetadataKeys,
             List<String> constructorCallKeys,
+            List<String> staticCallKeys,
             List<String> dispatchKeys,
             List<String> stringHelperSymbols,
             Optional<IrMethod> templateIrMethod,

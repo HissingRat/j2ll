@@ -168,8 +168,10 @@ public final class ZigNativeLibraryBuilder {
             return List.of();
         }
         LinkedHashSet<String> directCallTargets = new LinkedHashSet<>();
+        LinkedHashSet<String> staticCallTargets = new LinkedHashSet<>();
         for (NativeMethodImplementation implementation : implementationPlan.llvmImplementations()) {
             directCallTargets.addAll(implementation.directCallTargets());
+            staticCallTargets.addAll(implementation.staticCallKeys());
         }
         Map<String, ArrayList<IrMethod>> methodsByOwner = new LinkedHashMap<>();
         for (NativeMethodImplementation implementation : implementationPlan.llvmImplementations()) {
@@ -186,7 +188,8 @@ public final class ZigNativeLibraryBuilder {
                     new IrClass(entry.getKey(), entry.getValue()),
                     LlvmLinkage.EXTERNAL,
                     LlvmVisibility.HIDDEN,
-                    directCallTargets);
+                    directCallTargets,
+                    staticCallTargets);
             module = new LlvmCallIndirectionPass()
                     .run(module, callIndirectionEnabled
                             ? LlvmProtectionConfig.enabled(protectionSeed)

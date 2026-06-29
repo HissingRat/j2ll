@@ -48,6 +48,20 @@ public final class NativeImplementationPlanner {
             List<MethodRewriteDecision> decisions,
             Map<String, IrMethod> irMethods,
             Set<String> nativeEmbeddedFallbackMethodKeys) {
+        return plan(
+                registrationPlan,
+                decisions,
+                irMethods,
+                nativeEmbeddedFallbackMethodKeys,
+                irMethods.keySet());
+    }
+
+    public NativeImplementationPlan plan(
+            NativeRegistrationPlan registrationPlan,
+            List<MethodRewriteDecision> decisions,
+            Map<String, IrMethod> irMethods,
+            Set<String> nativeEmbeddedFallbackMethodKeys,
+            Set<String> availableProgramMethodKeys) {
         ArrayList<NativeMethodImplementation> implementations = new ArrayList<>();
         Map<String, NativeRegistrationEntry> entriesByMethod = new LinkedHashMap<>();
         Map<String, MethodRewriteDecision> decisionsByMethod = new LinkedHashMap<>();
@@ -73,7 +87,11 @@ public final class NativeImplementationPlanner {
                     continue;
                 }
                 IrMethod irMethod = irMethods.get(entry.getKey());
-                if (irMethod != null && supportsLlvmNativePath(entry.getValue(), irMethod, supportedLlvmMethods)) {
+                if (irMethod != null && supportsLlvmNativePath(
+                        entry.getValue(),
+                        irMethod,
+                        supportedLlvmMethods,
+                        availableProgramMethodKeys)) {
                     supportedLlvmMethods.add(entry.getKey());
                     changed = true;
                 }
@@ -92,6 +110,7 @@ public final class NativeImplementationPlanner {
                 List<String> classObjectKeys = classObjectKeys(irMethod);
                 List<String> runtimeMetadataKeys = runtimeMetadataKeys(irMethod);
                 List<String> constructorCallKeys = constructorCallKeys(irMethod);
+                List<String> staticCallKeys = staticCallKeys(irMethod, supportedLlvmMethods, availableProgramMethodKeys);
                 List<String> dispatchKeys = dispatchKeys(irMethod);
                 List<String> stringHelperSymbols = stringHelperSymbols(irMethod);
                 boolean jdkScalarHelper = containsJdkScalarHelper(irMethod);
@@ -109,7 +128,7 @@ public final class NativeImplementationPlanner {
                 boolean exceptionHelper = containsThrowTerminator(irMethod);
                 boolean runtimeMetadataHelper = containsRuntimeMetadataHelper(irMethod);
                 boolean classInitHelper = containsClassInitHelper(irMethod);
-                boolean passesJniEnv = needsJniEnv(irMethod, directCallTargets);
+                boolean passesJniEnv = needsJniEnv(irMethod, directCallTargets, staticCallKeys);
                 boolean passesOwnerClass = needsOwnerClass(irMethod);
                 implementations.add(new NativeMethodImplementation(
                         entry,
@@ -122,6 +141,7 @@ public final class NativeImplementationPlanner {
                                 allocationKeys,
                                 typeCheckKeys,
                                 constructorCallKeys,
+                                staticCallKeys,
                                 dispatchKeys,
                                 stringHelperSymbols,
                                 jdkScalarHelper,
@@ -148,6 +168,7 @@ public final class NativeImplementationPlanner {
                         classObjectKeys,
                         runtimeMetadataKeys,
                         constructorCallKeys,
+                        staticCallKeys,
                         dispatchKeys,
                         stringHelperSymbols,
                         Optional.of(irMethod)));
@@ -171,6 +192,7 @@ public final class NativeImplementationPlanner {
                         List.of(),
                         List.of(),
                         List.of(),
+                        List.of(),
                         maybeIr));
             } else if (nativeEmbeddedFallbackMethodKeys.contains(decision.method().methodKey())
                     && supportsNativeEmbeddedFallback(decision)) {
@@ -182,6 +204,7 @@ public final class NativeImplementationPlanner {
                         "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK",
                         false,
                         false,
+                        List.of(),
                         List.of(),
                         List.of(),
                         List.of(),
@@ -296,10 +319,14 @@ public final class NativeImplementationPlanner {
     }
 
     public boolean supportsLlvmNativePath(MethodRewriteDecision decision, IrMethod method) {
-        return supportsLlvmNativePath(decision, method, Set.of());
+        return supportsLlvmNativePath(decision, method, Set.of(), Set.of());
     }
 
-    private boolean supportsLlvmNativePath(MethodRewriteDecision decision, IrMethod method, Set<String> directCallTargets) {
+    private boolean supportsLlvmNativePath(
+            MethodRewriteDecision decision,
+            IrMethod method,
+            Set<String> directCallTargets,
+            Set<String> availableProgramMethods) {
         if (decision.method().name().equals("<init>")
                 || decision.method().name().equals("<clinit>")
                 || decision.method().accessFlags().isInterface()) {
@@ -330,7 +357,7 @@ public final class NativeImplementationPlanner {
                         && !isExceptionAwareHelperInstruction(instruction)) {
                     return false;
                 }
-                if (!supportsLlvmInstruction(instruction, directCallTargets)) {
+                if (!supportsLlvmInstruction(instruction, directCallTargets, availableProgramMethods, methodHasExceptionShape(method))) {
                     return false;
                 }
             }
@@ -385,7 +412,14 @@ public final class NativeImplementationPlanner {
                 || descriptor.startsWith("L");
     }
 
-    private boolean supportsLlvmInstruction(IrInstruction instruction, Set<String> directCallTargets) {
+    private boolean supportsLlvmInstruction(
+            IrInstruction instruction,
+            Set<String> directCallTargets,
+            Set<String> availableProgramMethods,
+            boolean methodHasExceptionShape) {
+        if (isThrowableSemanticFallbackCall(instruction)) {
+            return false;
+        }
         if (isFieldAccess(instruction.opcode())) {
             return supportsFieldInstruction(instruction);
         }
@@ -402,7 +436,7 @@ public final class NativeImplementationPlanner {
             return supportsTypeInstruction(instruction);
         }
         if (isConstructorCallHelperInstruction(instruction)) {
-            return supportsConstructorCallInstruction(instruction);
+            return !methodHasExceptionShape && supportsConstructorCallInstruction(instruction);
         }
         if (isStringHelperInstruction(instruction)) {
             return supportsStringHelperInstruction(instruction);
@@ -434,7 +468,13 @@ public final class NativeImplementationPlanner {
         if (isMonitorHelperInstruction(instruction)) {
             return supportsMonitorHelperInstruction(instruction);
         }
-        if (instruction.opcode() == IrOpcode.CALL_STATIC || isDirectSpecialCallInstruction(instruction)) {
+        if (instruction.opcode() == IrOpcode.CALL_STATIC) {
+            return instruction.symbol().filter(directCallTargets::contains).isPresent()
+                    && instruction.result().map(IrValue::type).filter(type -> !isSupportedValueType(type)).isEmpty()
+                    && instruction.operands().stream().map(IrValue::type).allMatch(this::isSupportedValueType)
+                    || supportsStaticCallBridgeInstruction(instruction, availableProgramMethods);
+        }
+        if (isDirectSpecialCallInstruction(instruction)) {
             return instruction.symbol().filter(directCallTargets::contains).isPresent()
                     && instruction.result().map(IrValue::type).filter(type -> !isSupportedValueType(type)).isEmpty()
                     && instruction.operands().stream().map(IrValue::type).allMatch(this::isSupportedValueType);
@@ -816,15 +856,55 @@ public final class NativeImplementationPlanner {
             return false;
         }
         String descriptor = constructorDescriptor(instruction.symbol().orElseThrow());
-        if (descriptor.equals("()V")) {
-            return instruction.operands().size() == 1;
+        if (!descriptor.equals("()V") && isJdkThrowableFamilyConstructor(instruction.symbol().orElseThrow())) {
+            return false;
         }
-        if (descriptor.equals("(II)V")) {
-            return instruction.operands().size() == 3
-                    && instruction.operands().get(1).type() == IrType.I32
-                    && instruction.operands().get(2).type() == IrType.I32;
+        return typeMapper.returnDescriptor(descriptor).equals("V")
+                && operandsMatchDescriptor(descriptor, instruction.operands().subList(1, instruction.operands().size()));
+    }
+
+    private boolean supportsStaticCallBridgeInstruction(IrInstruction instruction, Set<String> availableProgramMethods) {
+        if (instruction.symbol().filter(availableProgramMethods::contains).isEmpty()) {
+            return false;
         }
-        return false;
+        String descriptor = instruction.symbol().flatMap(this::methodDescriptor).orElse("");
+        if (descriptor.isEmpty() || !supportsJvmHostedDescriptor(descriptor)) {
+            return false;
+        }
+        String returnDescriptor = typeMapper.returnDescriptor(descriptor);
+        if (returnDescriptor.equals("V")) {
+            if (instruction.result().isPresent()) {
+                return false;
+            }
+        } else if (instruction.result().isEmpty()
+                || descriptorType(returnDescriptor) != instruction.result().orElseThrow().type()) {
+            return false;
+        }
+        return operandsMatchDescriptor(descriptor, instruction.operands());
+    }
+
+    private boolean operandsMatchDescriptor(String descriptor, List<IrValue> operands) {
+        List<String> parameterDescriptors = typeMapper.parameterDescriptors(descriptor);
+        if (parameterDescriptors.size() != operands.size()) {
+            return false;
+        }
+        for (int index = 0; index < parameterDescriptors.size(); index++) {
+            if (descriptorType(parameterDescriptors.get(index)) != operands.get(index).type()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private IrType descriptorType(String descriptor) {
+        return switch (descriptor.charAt(0)) {
+            case 'Z', 'B', 'C', 'S', 'I' -> IrType.I32;
+            case 'J' -> IrType.I64;
+            case 'F' -> IrType.F32;
+            case 'D' -> IrType.F64;
+            case '[', 'L' -> IrType.REFERENCE;
+            default -> throw new IllegalArgumentException("unsupported descriptor type: " + descriptor);
+        };
     }
 
     private boolean isStringHelperInstruction(IrInstruction instruction) {
@@ -1398,6 +1478,21 @@ public final class NativeImplementationPlanner {
                 .toList();
     }
 
+    private List<String> staticCallKeys(
+            IrMethod method,
+            Set<String> supportedLlvmMethods,
+            Set<String> availableProgramMethods) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC)
+                .filter(instruction -> instruction.symbol().filter(symbol -> !supportedLlvmMethods.contains(symbol)).isPresent())
+                .filter(instruction -> supportsStaticCallBridgeInstruction(instruction, availableProgramMethods))
+                .map(instruction -> instruction.symbol().orElseThrow())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
     private List<String> dispatchKeys(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
@@ -1502,7 +1597,7 @@ public final class NativeImplementationPlanner {
                 .anyMatch(this::isClassInitGuardInstruction);
     }
 
-    private boolean needsJniEnv(IrMethod method, List<String> directCallTargets) {
+    private boolean needsJniEnv(IrMethod method, List<String> directCallTargets, List<String> staticCallKeys) {
         return method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
                 || method.blocks().stream()
@@ -1519,6 +1614,8 @@ public final class NativeImplementationPlanner {
                         || ((instruction.opcode() == IrOpcode.CALL_STATIC
                                         || isDirectSpecialCallInstruction(instruction))
                                 && instruction.symbol().filter(directCallTargets::contains).isPresent())
+                        || (instruction.opcode() == IrOpcode.CALL_STATIC
+                                && instruction.symbol().filter(staticCallKeys::contains).isPresent())
                         || (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
                                 && instruction.symbol().map(this::isEnvBackedRuntimeHelperSymbol).orElse(false)));
     }
@@ -1566,12 +1663,39 @@ public final class NativeImplementationPlanner {
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW);
     }
 
+    private boolean methodHasExceptionShape(IrMethod method) {
+        return method.blocks().stream().anyMatch(block ->
+                        block.isExceptionHandler() || !block.exceptionEdges().isEmpty());
+    }
+
+    private boolean isThrowableSemanticFallbackCall(IrInstruction instruction) {
+        if (instruction.symbol().isEmpty()) {
+            return false;
+        }
+        String symbol = instruction.symbol().orElseThrow();
+        return symbol.equals("java/lang/Throwable#getMessage!()Ljava/lang/String;")
+                || symbol.equals("java/lang/Throwable#getCause!()Ljava/lang/Throwable;")
+                || symbol.equals("java/lang/Throwable#initCause!(Ljava/lang/Throwable;)Ljava/lang/Throwable;");
+    }
+
+    private boolean isJdkThrowableFamilyConstructor(String symbol) {
+        int separator = symbol.indexOf("#<init>!");
+        if (separator < 0) {
+            return false;
+        }
+        String owner = symbol.substring(0, separator);
+        return owner.equals("java/lang/Throwable")
+                || owner.endsWith("Exception")
+                || owner.endsWith("Error");
+    }
+
     private String reasonCode(
             List<String> fieldKeys,
             List<String> directCallTargets,
             List<String> allocationKeys,
             List<String> typeCheckKeys,
             List<String> constructorCallKeys,
+            List<String> staticCallKeys,
             List<String> dispatchKeys,
             List<String> stringHelperSymbols,
             boolean jdkScalarHelper,
@@ -1594,6 +1718,9 @@ public final class NativeImplementationPlanner {
         }
         if (!directCallTargets.isEmpty()) {
             return "LLVM_DIRECT_CALL_IR";
+        }
+        if (!staticCallKeys.isEmpty()) {
+            return "LLVM_STATIC_CALL_HELPER_IR";
         }
         if (!dispatchKeys.isEmpty()) {
             return "LLVM_DISPATCH_HELPER_IR";

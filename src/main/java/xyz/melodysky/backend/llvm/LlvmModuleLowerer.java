@@ -58,11 +58,20 @@ public final class LlvmModuleLowerer {
             LlvmLinkage linkage,
             LlvmVisibility visibility,
             Set<String> directCallMethodKeys) {
+        return lowerClass(irClass, linkage, visibility, directCallMethodKeys, Set.of());
+    }
+
+    public LlvmModule lowerClass(
+            IrClass irClass,
+            LlvmLinkage linkage,
+            LlvmVisibility visibility,
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys) {
         return new LlvmModule(
                 irClass.internalName(),
                 runtimeHelperDeclarations(),
                 irClass.methods().stream()
-                        .map(method -> lowerMethod(method, linkage, visibility, directCallMethodKeys))
+                        .map(method -> lowerMethod(method, linkage, visibility, directCallMethodKeys, staticCallMethodKeys))
                         .toList());
     }
 
@@ -80,9 +89,10 @@ public final class LlvmModuleLowerer {
             IrMethod method,
             LlvmLinkage linkage,
             LlvmVisibility visibility,
-            Set<String> directCallMethodKeys) {
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys) {
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
-        if (methodNeedsJniEnv(method, directCallMethodKeys)) {
+        if (methodNeedsJniEnv(method, directCallMethodKeys, staticCallMethodKeys)) {
             parameters.add(new LlvmParameter(LlvmType.PTR, "%j2ll_env"));
         }
         if (methodNeedsOwnerClass(method)) {
@@ -96,7 +106,8 @@ public final class LlvmModuleLowerer {
                 .map(block -> lowerBlock(
                         block,
                         phiIncoming.getOrDefault(block.name(), List.of()),
-                        directCallMethodKeys))
+                        directCallMethodKeys,
+                        staticCallMethodKeys))
                 .toList();
         return new LlvmFunction(
                 nameMangler.functionName(method),
@@ -110,7 +121,8 @@ public final class LlvmModuleLowerer {
     private LlvmBasicBlock lowerBlock(
             IrBlock block,
             List<PhiIncoming> phiIncoming,
-            Set<String> directCallMethodKeys) {
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys) {
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
         for (int index = 0; index < block.parameters().size(); index++) {
             IrValue parameter = block.parameters().get(index);
@@ -124,8 +136,14 @@ public final class LlvmModuleLowerer {
                     "phi " + typeLowerer.lower(parameter.type()).text() + " "
                             + String.join(", ", incoming)));
         }
-        for (xyz.melodysky.ir.model.IrInstruction instruction : block.instructions()) {
-            instructions.add(lowerInstruction(instruction, directCallMethodKeys));
+        for (int instructionIndex = 0; instructionIndex < block.instructions().size(); instructionIndex++) {
+            xyz.melodysky.ir.model.IrInstruction instruction = block.instructions().get(instructionIndex);
+            instructions.addAll(lowerInstructions(
+                    instruction,
+                    directCallMethodKeys,
+                    staticCallMethodKeys,
+                    block.name(),
+                    instructionIndex));
         }
         LlvmTerminator terminator = lowerTerminator(block);
         return new LlvmBasicBlock(
@@ -211,6 +229,22 @@ public final class LlvmModuleLowerer {
                 .map(value -> typeLowerer.lower(value.type()))
                 .orElse(LlvmType.VOID);
         return new LlvmTerminator(returnType, block.terminator().value().map(IrValue::name));
+    }
+
+    private List<LlvmInstruction> lowerInstructions(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys,
+            String blockName,
+            int instructionIndex) {
+        if (isCall(instruction.opcode())) {
+            return lowerCallInstructions(
+                    instruction,
+                    directCallMethodKeys,
+                    staticCallMethodKeys,
+                    stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
+        }
+        return List.of(lowerInstruction(instruction, directCallMethodKeys));
     }
 
     private LlvmInstruction lowerInstruction(
@@ -604,6 +638,105 @@ public final class LlvmModuleLowerer {
                     "call " + type + " @" + prefix + symbol + "(" + args + ")");
         }
         return LlvmInstruction.raw(Optional.empty(), "call void @" + prefix + symbol + "(" + args + ")");
+    }
+
+    private List<LlvmInstruction> lowerCallInstructions(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys,
+            String scratchSuffix) {
+        if (isConstructorCallHelperInstruction(instruction)) {
+            return lowerConstructorCallBridge(instruction, scratchSuffix);
+        }
+        if (isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)) {
+            return lowerStaticCallBridge(instruction, scratchSuffix);
+        }
+        return List.of(lowerCall(instruction, directCallMethodKeys));
+    }
+
+    private List<LlvmInstruction> lowerConstructorCallBridge(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            String scratchSuffix) {
+        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
+        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+        if (descriptor.equals("()V")) {
+            return List.of(LlvmInstruction.raw(
+                    Optional.empty(),
+                    "call void @j2ll_rt_call_constructor_void(ptr %j2ll_env, "
+                            + typedOperand(instruction.operands().get(0)) + ", " + token + ")"));
+        }
+        if (descriptor.equals("(II)V")) {
+            return List.of(LlvmInstruction.raw(
+                    Optional.empty(),
+                    "call void @j2ll_rt_call_constructor_void_i32_i32(ptr %j2ll_env, "
+                            + typedOperand(instruction.operands().get(0)) + ", " + token + ", "
+                            + typedOperand(instruction.operands().get(1)) + ", "
+                            + typedOperand(instruction.operands().get(2)) + ")"));
+        }
+        ArrayList<LlvmInstruction> lowered = new ArrayList<>();
+        String argsPointer = appendJvalueScratch(
+                lowered,
+                instruction.operands().subList(1, instruction.operands().size()),
+                scratchSuffix);
+        lowered.add(LlvmInstruction.raw(
+                Optional.empty(),
+                "call void @j2ll_rt_call_constructor_void_a(ptr %j2ll_env, "
+                        + typedOperand(instruction.operands().get(0)) + ", " + token + ", " + argsPointer + ")"));
+        return List.copyOf(lowered);
+    }
+
+    private List<LlvmInstruction> lowerStaticCallBridge(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            String scratchSuffix) {
+        ArrayList<LlvmInstruction> lowered = new ArrayList<>();
+        String argsPointer = appendJvalueScratch(lowered, instruction.operands(), scratchSuffix);
+        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
+        String helper = staticCallBridgeHelper(descriptor);
+        String returnType = staticCallBridgeReturnType(descriptor);
+        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+        String call = "call " + returnType + " @" + helper + "(ptr %j2ll_env, " + token + ", " + argsPointer + ")";
+        lowered.add(LlvmInstruction.raw(
+                instruction.result().map(IrValue::name),
+                call));
+        return List.copyOf(lowered);
+    }
+
+    private String appendJvalueScratch(
+            List<LlvmInstruction> lowered,
+            List<IrValue> arguments,
+            String scratchSuffix) {
+        if (arguments.isEmpty()) {
+            return "ptr null";
+        }
+        String arrayName = "%j2ll_args_" + scratchSuffix;
+        String baseName = "%j2ll_args_base_" + scratchSuffix;
+        String arrayType = "[" + arguments.size() + " x i64]";
+        lowered.add(LlvmInstruction.raw(
+                Optional.of(arrayName),
+                "alloca " + arrayType + ", align 8"));
+        lowered.add(LlvmInstruction.raw(
+                Optional.of(baseName),
+                "getelementptr inbounds " + arrayType + ", ptr " + arrayName + ", i32 0, i32 0"));
+        for (int index = 0; index < arguments.size(); index++) {
+            IrValue argument = arguments.get(index);
+            String slotName = "%j2ll_arg_" + scratchSuffix + "_" + index;
+            lowered.add(LlvmInstruction.raw(
+                    Optional.of(slotName),
+                    "getelementptr inbounds i64, ptr " + baseName + ", i32 " + index));
+            lowered.add(LlvmInstruction.raw(
+                    Optional.empty(),
+                    "store " + typedOperand(argument) + ", ptr " + slotName + ", align " + jvalueStoreAlign(argument)));
+        }
+        return "ptr " + baseName;
+    }
+
+    private int jvalueStoreAlign(IrValue argument) {
+        return switch (argument.type()) {
+            case I64, F64, REFERENCE -> 8;
+            case I32, F32 -> 4;
+            case I1 -> 1;
+            case VOID -> throw new IllegalArgumentException("void cannot be a jvalue argument");
+        };
     }
 
     private LlvmInstruction lowerAllocationHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1033,14 +1166,124 @@ public final class LlvmModuleLowerer {
     }
 
     private boolean isConstructorCallHelperInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
-        return instruction.opcode() == IrOpcode.CALL_SPECIAL
-                && instruction.symbol().map(symbol -> symbol.contains("#<init>!")).orElse(false)
-                && (instruction.operands().size() == 1 || instruction.operands().size() == 3);
+        if (instruction.opcode() != IrOpcode.CALL_SPECIAL
+                || instruction.symbol().map(symbol -> !symbol.contains("#<init>!")).orElse(true)
+                || instruction.operands().isEmpty()) {
+            return false;
+        }
+        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElse("");
+        return descriptor.endsWith("V")
+                && instruction.operands().get(0).type() == xyz.melodysky.ir.model.IrType.REFERENCE
+                && operandsMatchDescriptor(descriptor, instruction.operands().subList(1, instruction.operands().size()));
+    }
+
+    private boolean isStaticCallBridgeInstruction(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            Set<String> staticCallMethodKeys) {
+        return instruction.opcode() == IrOpcode.CALL_STATIC
+                && instruction.symbol().filter(staticCallMethodKeys::contains).isPresent()
+                && instruction.symbol()
+                        .flatMap(this::methodDescriptor)
+                        .map(descriptor -> operandsMatchDescriptor(descriptor, instruction.operands()))
+                        .orElse(false);
     }
 
     private boolean isDirectSpecialCallInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
         return instruction.opcode() == IrOpcode.CALL_SPECIAL
                 && instruction.symbol().map(symbol -> !symbol.contains("#<init>!")).orElse(false);
+    }
+
+    private boolean operandsMatchDescriptor(String descriptor, List<IrValue> operands) {
+        if (!descriptor.startsWith("(")) {
+            return false;
+        }
+        ArrayList<xyz.melodysky.ir.model.IrType> parameterTypes = new ArrayList<>();
+        int index = 1;
+        while (index < descriptor.length() && descriptor.charAt(index) != ')') {
+            ParseResult parsed = parseDescriptorType(descriptor, index);
+            if (parsed == null || parsed.type() == xyz.melodysky.ir.model.IrType.VOID) {
+                return false;
+            }
+            parameterTypes.add(parsed.type());
+            index = parsed.nextIndex();
+        }
+        if (index >= descriptor.length() || descriptor.charAt(index) != ')' || parameterTypes.size() != operands.size()) {
+            return false;
+        }
+        ParseResult returnType = parseDescriptorType(descriptor, index + 1);
+        if (returnType == null || returnType.nextIndex() != descriptor.length()) {
+            return false;
+        }
+        for (int operandIndex = 0; operandIndex < operands.size(); operandIndex++) {
+            if (operands.get(operandIndex).type() != parameterTypes.get(operandIndex)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private ParseResult parseDescriptorType(String descriptor, int start) {
+        if (start >= descriptor.length()) {
+            return null;
+        }
+        char type = descriptor.charAt(start);
+        return switch (type) {
+            case 'V' -> new ParseResult(xyz.melodysky.ir.model.IrType.VOID, start + 1);
+            case 'Z', 'B', 'C', 'S', 'I' -> new ParseResult(xyz.melodysky.ir.model.IrType.I32, start + 1);
+            case 'J' -> new ParseResult(xyz.melodysky.ir.model.IrType.I64, start + 1);
+            case 'F' -> new ParseResult(xyz.melodysky.ir.model.IrType.F32, start + 1);
+            case 'D' -> new ParseResult(xyz.melodysky.ir.model.IrType.F64, start + 1);
+            case 'L' -> {
+                int end = descriptor.indexOf(';', start);
+                yield end < 0 ? null : new ParseResult(xyz.melodysky.ir.model.IrType.REFERENCE, end + 1);
+            }
+            case '[' -> {
+                int index = start;
+                while (index < descriptor.length() && descriptor.charAt(index) == '[') {
+                    index++;
+                }
+                ParseResult component = parseDescriptorType(descriptor, index);
+                yield component == null || component.type() == xyz.melodysky.ir.model.IrType.VOID
+                        ? null
+                        : new ParseResult(xyz.melodysky.ir.model.IrType.REFERENCE, component.nextIndex());
+            }
+            default -> null;
+        };
+    }
+
+    private String staticCallBridgeHelper(String descriptor) {
+        return switch (descriptorReturnChar(descriptor)) {
+            case 'V' -> "j2ll_rt_call_static_void_a";
+            case 'Z', 'B', 'C', 'S', 'I' -> "j2ll_rt_call_static_i32_a";
+            case 'J' -> "j2ll_rt_call_static_i64_a";
+            case 'F' -> "j2ll_rt_call_static_f32_a";
+            case 'D' -> "j2ll_rt_call_static_f64_a";
+            case 'L', '[' -> "j2ll_rt_call_static_ref_a";
+            default -> throw new IllegalArgumentException("unsupported static call return descriptor: " + descriptor);
+        };
+    }
+
+    private String staticCallBridgeReturnType(String descriptor) {
+        return switch (descriptorReturnChar(descriptor)) {
+            case 'V' -> "void";
+            case 'Z', 'B', 'C', 'S', 'I' -> "i32";
+            case 'J' -> "i64";
+            case 'F' -> "float";
+            case 'D' -> "double";
+            case 'L', '[' -> "ptr";
+            default -> throw new IllegalArgumentException("unsupported static call return descriptor: " + descriptor);
+        };
+    }
+
+    private char descriptorReturnChar(String descriptor) {
+        int close = descriptor.indexOf(')');
+        if (close < 0 || close == descriptor.length() - 1) {
+            throw new IllegalArgumentException("invalid method descriptor: " + descriptor);
+        }
+        return descriptor.charAt(close + 1);
+    }
+
+    private record ParseResult(xyz.melodysky.ir.model.IrType type, int nextIndex) {
     }
 
     private boolean isTypeHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1102,7 +1345,10 @@ public final class LlvmModuleLowerer {
         }
     }
 
-    private boolean methodNeedsJniEnv(IrMethod method, Set<String> directCallMethodKeys) {
+    private boolean methodNeedsJniEnv(
+            IrMethod method,
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys) {
         return method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
                 || method.blocks().stream()
@@ -1115,6 +1361,7 @@ public final class LlvmModuleLowerer {
                         || isMonitorHelper(instruction.opcode())
                         || isClassInitHelper(instruction.opcode())
                         || isConstructorCallHelperInstruction(instruction)
+                        || isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)
                         || isDispatchHelperInstruction(instruction)
                         || ((instruction.opcode() == IrOpcode.CALL_STATIC
                                         || isDirectSpecialCallInstruction(instruction))
