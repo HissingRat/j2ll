@@ -22,7 +22,7 @@ import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
 
 public final class NativeImplementationPlanner {
-    private static final Set<String> LLVM_SCALAR_DESCRIPTORS = Set.of("Z", "I", "J", "F", "D");
+    private static final Set<String> LLVM_SCALAR_DESCRIPTORS = Set.of("Z", "B", "C", "S", "I", "J", "F", "D");
 
     private final LlvmNameMangler llvmNameMangler;
     private final HostJniCSourceGenerator templateGenerator = new HostJniCSourceGenerator();
@@ -436,7 +436,7 @@ public final class NativeImplementationPlanner {
             return supportsTypeInstruction(instruction);
         }
         if (isConstructorCallHelperInstruction(instruction)) {
-            return !methodHasExceptionShape && supportsConstructorCallInstruction(instruction);
+            return supportsConstructorCallInstruction(instruction);
         }
         if (isStringHelperInstruction(instruction)) {
             return supportsStringHelperInstruction(instruction);
@@ -468,6 +468,15 @@ public final class NativeImplementationPlanner {
         if (isMonitorHelperInstruction(instruction)) {
             return supportsMonitorHelperInstruction(instruction);
         }
+        if (instruction.opcode() == IrOpcode.CONST_NULL) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
+                    && instruction.operands().isEmpty();
+        }
+        if (isSymbolicConstantInstruction(instruction)) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
+                    && instruction.operands().isEmpty()
+                    && instruction.symbol().isPresent();
+        }
         if (instruction.opcode() == IrOpcode.CALL_STATIC) {
             return instruction.symbol().filter(directCallTargets::contains).isPresent()
                     && instruction.result().map(IrValue::type).filter(type -> !isSupportedValueType(type)).isEmpty()
@@ -478,10 +487,6 @@ public final class NativeImplementationPlanner {
             return instruction.symbol().filter(directCallTargets::contains).isPresent()
                     && instruction.result().map(IrValue::type).filter(type -> !isSupportedValueType(type)).isEmpty()
                     && instruction.operands().stream().map(IrValue::type).allMatch(this::isSupportedValueType);
-        }
-        if (instruction.opcode() == IrOpcode.CONST_NULL) {
-            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
-                    && instruction.operands().isEmpty();
         }
         if (instruction.opcode() == IrOpcode.CMP_EQ_REF || instruction.opcode() == IrOpcode.CMP_NE_REF) {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.I1).isPresent()
@@ -761,6 +766,11 @@ public final class NativeImplementationPlanner {
                 || instruction.opcode() == IrOpcode.NEW_MULTI_ARRAY;
     }
 
+    private boolean isSymbolicConstantInstruction(IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.CONST_STRING
+                || instruction.opcode() == IrOpcode.CONST_CLASS;
+    }
+
     private boolean supportsAllocationInstruction(IrInstruction instruction) {
         if (instruction.opcode() == IrOpcode.NEW_MULTI_ARRAY) {
             return false;
@@ -856,19 +866,13 @@ public final class NativeImplementationPlanner {
             return false;
         }
         String descriptor = constructorDescriptor(instruction.symbol().orElseThrow());
-        if (!descriptor.equals("()V") && isJdkThrowableFamilyConstructor(instruction.symbol().orElseThrow())) {
-            return false;
-        }
         return typeMapper.returnDescriptor(descriptor).equals("V")
                 && operandsMatchDescriptor(descriptor, instruction.operands().subList(1, instruction.operands().size()));
     }
 
     private boolean supportsStaticCallBridgeInstruction(IrInstruction instruction, Set<String> availableProgramMethods) {
-        if (instruction.symbol().filter(availableProgramMethods::contains).isEmpty()) {
-            return false;
-        }
         String descriptor = instruction.symbol().flatMap(this::methodDescriptor).orElse("");
-        if (descriptor.isEmpty() || !supportsJvmHostedDescriptor(descriptor)) {
+        if (!descriptor.startsWith("(") || !supportsJvmHostedDescriptor(descriptor)) {
             return false;
         }
         String returnDescriptor = typeMapper.returnDescriptor(descriptor);
@@ -1128,6 +1132,12 @@ public final class NativeImplementationPlanner {
                     && instruction.operands().get(0).type() == IrType.REFERENCE
                     && instruction.operands().get(1).type() == IrType.I64;
         }
+        if (symbol.equals("j2ll_rt_unsafe_get") || symbol.equals("j2ll_rt_unsafe_get_volatile")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.REFERENCE;
+        }
         if (symbol.equals("j2ll_rt_unsafe_put_int")) {
             return instruction.result().isEmpty()
                     && instruction.operands().size() == 3
@@ -1361,28 +1371,24 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean supportsDispatchHelperInstruction(IrInstruction instruction) {
-        if (instruction.result().isEmpty()
-                || instruction.operands().isEmpty()
+        if (instruction.operands().isEmpty()
                 || instruction.operands().get(0).type() != IrType.REFERENCE) {
             return false;
         }
         String descriptor = instruction.symbol().flatMap(this::methodDescriptor).orElse("");
-        IrType returnType = instruction.result().orElseThrow().type();
-        if (returnType == IrType.I32) {
-            return (descriptor.equals("()I") && instruction.operands().size() == 1)
-                    || (descriptor.equals("(I)I")
-                            && instruction.operands().size() == 2
-                            && instruction.operands().get(1).type() == IrType.I32);
+        if (!descriptor.startsWith("(") || !supportsJvmHostedDescriptor(descriptor)) {
+            return false;
         }
-        if (returnType == IrType.REFERENCE) {
-            return (descriptor.startsWith("()L") && descriptor.endsWith(";") && instruction.operands().size() == 1)
-                    || (descriptor.startsWith("(L")
-                            && descriptor.contains(";)L")
-                            && descriptor.endsWith(";")
-                            && instruction.operands().size() == 2
-                            && instruction.operands().get(1).type() == IrType.REFERENCE);
+        String returnDescriptor = typeMapper.returnDescriptor(descriptor);
+        if (returnDescriptor.equals("V")) {
+            if (instruction.result().isPresent()) {
+                return false;
+            }
+        } else if (instruction.result().isEmpty()
+                || descriptorType(returnDescriptor) != instruction.result().orElseThrow().type()) {
+            return false;
         }
-        return false;
+        return operandsMatchDescriptor(descriptor, instruction.operands().subList(1, instruction.operands().size()));
     }
 
     private Optional<String> methodDescriptor(String methodKey) {
@@ -1451,7 +1457,8 @@ public final class NativeImplementationPlanner {
     private List<String> classObjectKeys(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
-                .filter(instruction -> instruction.opcode() == IrOpcode.CLASS_OBJECT)
+                .filter(instruction -> instruction.opcode() == IrOpcode.CLASS_OBJECT
+                        || instruction.opcode() == IrOpcode.CONST_CLASS)
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .distinct()
                 .sorted()
@@ -1603,6 +1610,7 @@ public final class NativeImplementationPlanner {
                 || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> isFieldAccess(instruction.opcode())
+                        || instruction.opcode() == IrOpcode.CONST_STRING
                         || isArithmeticExceptionHelperInstruction(instruction)
                         || isArrayHelperInstruction(instruction)
                         || isAllocationHelperInstruction(instruction)

@@ -161,6 +161,15 @@ public final class LlvmModuleLowerer {
                         block.terminator().target().orElseThrow(),
                         block.name(),
                         block.terminator().targetArguments());
+                case THROW -> {
+                    if (block.exceptionEdges().size() == 1 && block.terminator().value().isPresent()) {
+                        addPhiIncoming(
+                                incoming,
+                                block.exceptionEdges().get(0).target(),
+                                block.name(),
+                                List.of(block.terminator().value().orElseThrow()));
+                    }
+                }
                 case BRANCH -> {
                     addPhiIncoming(
                             incoming,
@@ -183,7 +192,7 @@ public final class LlvmModuleLowerer {
                         addPhiIncoming(incoming, switchCase.target(), block.name(), switchCase.arguments());
                     }
                 }
-                case RETURN, THROW -> {
+                case RETURN -> {
                 }
             }
         }
@@ -223,6 +232,9 @@ public final class LlvmModuleLowerer {
                             .toList());
         }
         if (block.terminator().kind() == IrTerminatorKind.THROW) {
+            if (block.exceptionEdges().size() == 1) {
+                return LlvmTerminator.gotoBlock(block.exceptionEdges().get(0).target());
+            }
             return LlvmTerminator.throwValue(block.terminator().value().orElseThrow().name());
         }
         LlvmType returnType = block.terminator().value()
@@ -651,6 +663,9 @@ public final class LlvmModuleLowerer {
         if (isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)) {
             return lowerStaticCallBridge(instruction, scratchSuffix);
         }
+        if (isDispatchHelperInstruction(instruction)) {
+            return lowerDispatchCallBridge(instruction, scratchSuffix);
+        }
         return List.of(lowerCall(instruction, directCallMethodKeys));
     }
 
@@ -698,6 +713,25 @@ public final class LlvmModuleLowerer {
         lowered.add(LlvmInstruction.raw(
                 instruction.result().map(IrValue::name),
                 call));
+        return List.copyOf(lowered);
+    }
+
+    private List<LlvmInstruction> lowerDispatchCallBridge(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            String scratchSuffix) {
+        ArrayList<LlvmInstruction> lowered = new ArrayList<>();
+        String argsPointer = appendJvalueScratch(
+                lowered,
+                instruction.operands().subList(1, instruction.operands().size()),
+                scratchSuffix);
+        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
+        String helper = dispatchHelperName(instruction);
+        String returnType = staticCallBridgeReturnType(descriptor);
+        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+        String receiver = typedOperand(instruction.operands().get(0));
+        String call = "call " + returnType + " @" + helper + "(ptr %j2ll_env, "
+                + receiver + ", " + token + ", " + argsPointer + ")";
+        lowered.add(LlvmInstruction.raw(instruction.result().map(IrValue::name), call));
         return List.copyOf(lowered);
     }
 
@@ -839,6 +873,21 @@ public final class LlvmModuleLowerer {
     }
 
     private LlvmInstruction lowerSymbolicConstant(xyz.melodysky.ir.model.IrInstruction instruction) {
+        if (instruction.opcode() == IrOpcode.CONST_STRING) {
+            String symbol = instruction.symbol().orElseThrow();
+            String value = symbol.startsWith("string:") ? symbol.substring("string:".length()) : symbol;
+            long token = Integer.toUnsignedLong(("string:" + value).hashCode());
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "call ptr @j2ll_rt_string_constant(ptr %j2ll_env, i64 " + token + ")");
+        }
+        if (instruction.opcode() == IrOpcode.CONST_CLASS) {
+            String identity = classIdentityFromConstSymbol(instruction.symbol().orElseThrow());
+            long token = stableClassObjectToken(identity);
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 " + token + ")");
+        }
         String helper = "j2ll_const_" + constantKind(instruction.opcode()) + "_" + stableHash(instruction.symbol().orElseThrow());
         return LlvmInstruction.raw(
                 Optional.of(instruction.result().orElseThrow().name()),
@@ -1113,38 +1162,44 @@ public final class LlvmModuleLowerer {
     }
 
     private String dispatchHelperName(xyz.melodysky.ir.model.IrInstruction instruction) {
-        if (instruction.result().isEmpty()
-                || instruction.operands().isEmpty()
+        if (instruction.operands().isEmpty()
                 || instruction.operands().get(0).type() != xyz.melodysky.ir.model.IrType.REFERENCE) {
             return null;
         }
         String descriptor = instruction.symbol()
                 .flatMap(this::methodDescriptor)
                 .orElse("");
+        if (!descriptor.startsWith("(")
+                || !operandsMatchDescriptor(descriptor, instruction.operands().subList(1, instruction.operands().size()))) {
+            return null;
+        }
         boolean iface = instruction.opcode() == IrOpcode.CALL_INTERFACE;
-        if (instruction.result().map(IrValue::type).orElseThrow() == xyz.melodysky.ir.model.IrType.I32) {
-            if (descriptor.equals("()I") && instruction.operands().size() == 1) {
-                return iface ? "j2ll_rt_call_interface_i32" : "j2ll_rt_call_virtual_i32";
-            }
-            if (descriptor.equals("(I)I")
-                    && instruction.operands().size() == 2
-                    && instruction.operands().get(1).type() == xyz.melodysky.ir.model.IrType.I32) {
-                return iface ? "j2ll_rt_call_interface_i32_arg_i32" : "j2ll_rt_call_virtual_i32_arg_i32";
-            }
-        }
-        if (instruction.result().map(IrValue::type).orElseThrow() == xyz.melodysky.ir.model.IrType.REFERENCE) {
-            if (descriptor.startsWith("()L") && descriptor.endsWith(";") && instruction.operands().size() == 1) {
-                return iface ? "j2ll_rt_call_interface_ref" : "j2ll_rt_call_virtual_ref";
-            }
-            if (descriptor.startsWith("(L")
-                    && descriptor.contains(";)L")
-                    && descriptor.endsWith(";")
-                    && instruction.operands().size() == 2
-                    && instruction.operands().get(1).type() == xyz.melodysky.ir.model.IrType.REFERENCE) {
-                return iface ? "j2ll_rt_call_interface_ref_arg_ref" : "j2ll_rt_call_virtual_ref_arg_ref";
-            }
-        }
-        return null;
+        return switch (descriptorReturnChar(descriptor)) {
+            case 'V' -> instruction.result().isEmpty()
+                    ? (iface ? "j2ll_rt_call_interface_void_a" : "j2ll_rt_call_virtual_void_a")
+                    : null;
+            case 'Z', 'B', 'C', 'S', 'I' -> instruction.result()
+                    .filter(result -> result.type() == xyz.melodysky.ir.model.IrType.I32)
+                    .map(_result -> iface ? "j2ll_rt_call_interface_i32_a" : "j2ll_rt_call_virtual_i32_a")
+                    .orElse(null);
+            case 'J' -> instruction.result()
+                    .filter(result -> result.type() == xyz.melodysky.ir.model.IrType.I64)
+                    .map(_result -> iface ? "j2ll_rt_call_interface_i64_a" : "j2ll_rt_call_virtual_i64_a")
+                    .orElse(null);
+            case 'F' -> instruction.result()
+                    .filter(result -> result.type() == xyz.melodysky.ir.model.IrType.F32)
+                    .map(_result -> iface ? "j2ll_rt_call_interface_f32_a" : "j2ll_rt_call_virtual_f32_a")
+                    .orElse(null);
+            case 'D' -> instruction.result()
+                    .filter(result -> result.type() == xyz.melodysky.ir.model.IrType.F64)
+                    .map(_result -> iface ? "j2ll_rt_call_interface_f64_a" : "j2ll_rt_call_virtual_f64_a")
+                    .orElse(null);
+            case 'L', '[' -> instruction.result()
+                    .filter(result -> result.type() == xyz.melodysky.ir.model.IrType.REFERENCE)
+                    .map(_result -> iface ? "j2ll_rt_call_interface_ref_a" : "j2ll_rt_call_virtual_ref_a")
+                    .orElse(null);
+            default -> null;
+        };
     }
 
     private String dispatchHelperArguments(
@@ -1321,6 +1376,15 @@ public final class LlvmModuleLowerer {
         return "L" + internalOrDescriptor + ";";
     }
 
+    private String classIdentityFromConstSymbol(String symbol) {
+        String identity = symbol.startsWith("class:") ? symbol.substring("class:".length()) : symbol;
+        return classIdentity(identity);
+    }
+
+    private long stableClassObjectToken(String classDescriptor) {
+        return Integer.toUnsignedLong(classDescriptor.hashCode());
+    }
+
     private String constantKind(IrOpcode opcode) {
         return switch (opcode) {
             case CONST_STRING -> "string";
@@ -1360,6 +1424,7 @@ public final class LlvmModuleLowerer {
                         || isTypeHelper(instruction)
                         || isMonitorHelper(instruction.opcode())
                         || isClassInitHelper(instruction.opcode())
+                        || isSymbolicConstant(instruction.opcode())
                         || isConstructorCallHelperInstruction(instruction)
                         || isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)
                         || isDispatchHelperInstruction(instruction)

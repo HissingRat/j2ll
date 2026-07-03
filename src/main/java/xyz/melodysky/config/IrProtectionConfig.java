@@ -8,7 +8,7 @@ public record IrProtectionConfig(
         PassConfig fakeBranches,
         PassConfig basicBlockSplitting,
         PassConfig constantEncryption,
-        StringEncryptionConfig stringEncryption,
+        PassConfig stringEncryption,
         PassConfig methodInlining,
         PassConfig methodSplitting,
         PassConfig callIndirection,

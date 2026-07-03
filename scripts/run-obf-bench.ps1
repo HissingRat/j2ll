@@ -354,7 +354,6 @@ $config = @{
     embeddedLibraryDirectory = "native0"
     stringObfuscation = @{
         enabled = $true
-        cacheStrings = $false
     }
 }
 $config | ConvertTo-Json -Depth 6 | Set-Content -Path $configPath -Encoding UTF8

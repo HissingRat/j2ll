@@ -219,9 +219,9 @@ class RuntimeHelperCatalogTest {
         assertTrue(declarations.contains("declare i32 @j2ll_rt_unsafe_get_int(ptr, ptr, i64) ; unsafeGetInt"));
         assertTrue(declarations.contains("declare void @j2ll_rt_unsafe_put_int(ptr, ptr, i64, i32) ; unsafePutInt"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_unsafe_compare_and_swap_int(ptr, ptr, i64, i32, i32) ; unsafeCompareAndSwapInt"));
-        assertTrue(declarations.contains("declare ptr @j2ll_rt_unsafe_get(ptr, ptr, ptr, i64) ; unsafeGet"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_unsafe_get(ptr, ptr, ptr) ; unsafeGet"));
         assertTrue(declarations.contains("declare void @j2ll_rt_unsafe_put(ptr, ptr, ptr, i64, ptr) ; unsafePut"));
-        assertTrue(declarations.contains("declare ptr @j2ll_rt_unsafe_get_volatile(ptr, ptr, ptr, i64) ; unsafeGetVolatile"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_unsafe_get_volatile(ptr, ptr, ptr) ; unsafeGetVolatile"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_unsafe_compare_and_swap(ptr, ptr, ptr, i64, ptr, ptr) ; unsafeCompareAndSwap"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_var_handle_get_int(ptr, ptr, ptr) ; varHandleGetInt"));
         assertTrue(declarations.contains("declare void @j2ll_rt_var_handle_set_int(ptr, ptr, ptr, i32) ; varHandleSetInt"));

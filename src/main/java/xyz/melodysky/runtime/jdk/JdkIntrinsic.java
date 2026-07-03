@@ -43,4 +43,12 @@ public record JdkIntrinsic(
                 Optional.empty(),
                 reason);
     }
+
+    public static JdkIntrinsic bridge(String owner, String name, String descriptor, String reason) {
+        return new JdkIntrinsic(
+                new JdkMethodId(owner, name, descriptor),
+                JdkMethodPolicy.JVM_HELPER_BRIDGE,
+                Optional.empty(),
+                reason);
+    }
 }

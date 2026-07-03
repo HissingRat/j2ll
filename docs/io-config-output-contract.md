@@ -98,26 +98,25 @@ config.json
   "protection": {
     "enabled": true,
     "seed": null,
-    "intensity": "normal",
     "ir": {
       "enabled": true,
-      "controlFlowFlattening": { "enabled": true, "intensity": "normal" },
-      "fakeBranches": { "enabled": true, "intensity": "normal" },
-      "basicBlockSplitting": { "enabled": true, "intensity": "normal" },
-      "constantEncryption": { "enabled": true, "intensity": "normal" },
-      "stringEncryption": { "enabled": true, "intensity": "normal", "cacheStrings": false },
-      "methodInlining": { "enabled": true, "intensity": "normal" },
-      "methodSplitting": { "enabled": true, "intensity": "normal" },
-      "callIndirection": { "enabled": true, "intensity": "normal" },
-      "methodTableHiding": { "enabled": true, "intensity": "normal" }
+      "controlFlowFlattening": { "enabled": true },
+      "fakeBranches": { "enabled": true },
+      "basicBlockSplitting": { "enabled": true },
+      "constantEncryption": { "enabled": true },
+      "stringEncryption": { "enabled": true },
+      "methodInlining": { "enabled": true },
+      "methodSplitting": { "enabled": true },
+      "callIndirection": { "enabled": true },
+      "methodTableHiding": { "enabled": true }
     },
     "llvm": {
       "enabled": true,
-      "nameObfuscation": { "enabled": true, "intensity": "normal" },
-      "opaquePredicates": { "enabled": true, "intensity": "normal" },
-      "blockLayoutPerturbation": { "enabled": true, "intensity": "normal" },
-      "indirectCalls": { "enabled": true, "intensity": "normal" },
-      "globalLayout": { "enabled": true, "intensity": "normal" },
+      "nameObfuscation": { "enabled": true },
+      "opaquePredicates": { "enabled": true },
+      "blockLayoutPerturbation": { "enabled": true },
+      "indirectCalls": { "enabled": true },
+      "globalLayout": { "enabled": true },
       "visibilityHardening": { "enabled": true }
     },
     "binary": {
@@ -453,13 +452,12 @@ Fields:
 
 `protection`
 
-Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and enables all implemented protection passes with `normal` intensity.
+Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and enables all implemented protection passes.
 
 Fields:
 
 - `enabled`: master switch for all protection layers.
 - `seed`: optional fixed seed. If `null`, j2ll derives a deterministic seed. Reports and final JAR metadata record only SHA-256 seed hashes, never the raw configured or derived seed.
-- `intensity`: default intensity for protection passes. Allowed values: `light`, `normal`, `strong`.
 - `ir`: SSA IR protection settings.
 - `llvm`: LLVM module model protection settings.
 - `binary`: binary visibility/strip settings.
@@ -491,11 +489,6 @@ Pass fields:
 Each pass has:
 
 - `enabled`: enable this pass.
-- `intensity`: `light`, `normal` or `strong`.
-
-`stringEncryption.cacheStrings`
-
-If true, decoded strings may be cached according to the runtime string policy. If false, decode paths do not retain a reusable cache unless required for correctness.
 
 ### Protection LLVM Fields
 
@@ -621,7 +614,7 @@ Manifest/resource/signature handling, generated loader classes, native registrat
 
 `reports/protection-report.json`
 
-Protection passes that ran, hash-only seed identity, intensity, per-method skipped pass reasons and fallback reasons. Reports may include root and per-pass `sensitivePlaintextFacts`; each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason`, `promotionReason` and `artifactSurfaces`, never the original plaintext. The pipeline may keep plaintext in memory long enough to feed artifact audit, but report JSON remains hash-only.
+Protection passes that ran, hash-only seed identity, per-method skipped pass reasons and fallback reasons. Reports may include root and per-pass `sensitivePlaintextFacts`; each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason`, `promotionReason` and `artifactSurfaces`, never the original plaintext. The pipeline may keep plaintext in memory long enough to feed artifact audit, but report JSON remains hash-only.
 
 `reports/support-matrix.json`
 
@@ -803,7 +796,7 @@ Location fields are nullable only when the diagnostic is not tied to a method or
 
 `accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip.
 `nativeImplementationPath` records whether the registered native body is `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH`, or `null` when no executable native body was produced for that requested method.
-`helperBackedSites` must include helper-backed metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic lowering sites when the operation is preserved by a runtime helper rather than direct native IR. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions: `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `WAIT_NOTIFY_FALLBACK`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_FALLBACK`, `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT`, `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects; dynamic reflection strings, dynamic parameter arrays, scan-style reflection (`getDeclaredMethods/getMethods/getDeclaredFields/getFields/getDeclaredConstructors/getConstructors`), unsupported MethodHandle chains/adapters, unsupported Unsafe raw memory APIs, unsupported ConstantDynamic bootstraps and remaining finally holes must appear in diagnostics/fallback sites with stable reason codes such as `REFLECTION_DYNAMIC_FALLBACK`, `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_FALLBACK`, `METHOD_HANDLE_CHAIN_FALLBACK`, `METHOD_HANDLE_PERMUTE_FALLBACK`, `METHOD_HANDLE_FILTER_FALLBACK`, `METHOD_HANDLE_FOLD_FALLBACK`, `METHOD_HANDLE_COLLECTOR_UNSUPPORTED`, `ALT_METAFACTORY_FALLBACK`, `UNSUPPORTED_NESTED_FINALLY` or `UNSUPPORTED_EXCEPTION_STATE_MERGE` rather than being silently skipped. `I.super.m()` default-interface super invokespecial is currently `frontendSkipped` with `UNSUPPORTED_DEFAULT_INTERFACE_SUPER` because copying it into a helper class violates direct-superinterface verification. `JDK_COLLECTION_HELPER` records ArrayList/HashMap/Arrays/Collections/Optional/String.format sites whose JVM library semantics are intentionally not lowered through native object layout; `JDK_HELPER_FALLBACK` records the corresponding explicit bytecode-preserving `nativeEmbeddedClassBlob` fallback, including narrow `java.util.Arrays.copyOf/equals/fill/asList`, `Collections.emptyList/singletonList`, `Optional` and `String.format` JVM library semantics. `THROWABLE_HELPER_FALLBACK` records Throwable message/cause/constructor semantics that remain JVM-owned, `THREAD_HELPER_FALLBACK` records Thread constructor/start/join semantics that remain JVM-scheduler-owned, and `WAIT_NOTIFY_FALLBACK` records wait/notify monitor-queue semantics that are not implemented in native code. In schema v1, `Unsafe.objectFieldOffset`/`staticFieldOffset` reports describe deterministic metadata tokens, not native object layout offsets.
+`helperBackedSites` must include helper-backed metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic lowering sites when the operation is preserved by a runtime helper rather than direct native IR. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions: `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `WAIT_NOTIFY_FALLBACK`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_FALLBACK`, `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT`, `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects. Dynamic reflection strings, dynamic parameter arrays, and scan-style reflection (`getDeclaredMethods/getMethods/getDeclaredFields/getFields/getDeclaredConstructors/getConstructors`) ordinary calls use JVM dispatch bridge when the descriptor fits the supported JNI bridge matrix, with `DEFERRED_DISPATCH_HELPER` / `JVM_CALL_HELPER` evidence rather than native reflection metadata interpretation. MethodHandle common adapter chains use JVM `MethodHandle.invokeWithArguments` bridge; this avoids copying signature-polymorphic `invokeExact` bytecode into fallback helper classes and is not a generic native MethodHandle interpreter. Unsupported Unsafe raw memory APIs, unsupported ConstantDynamic bootstraps, reflection shapes beyond the bridge matrix, unsupported altMetafactory/lambda shapes, and remaining finally holes must appear in diagnostics/fallback sites with stable reason codes such as `REFLECTION_DYNAMIC_FALLBACK`, `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_FALLBACK`, `ALT_METAFACTORY_FALLBACK`, `UNSUPPORTED_NESTED_FINALLY` or `UNSUPPORTED_EXCEPTION_STATE_MERGE` rather than being silently skipped. `I.super.m()` default-interface super invokespecial is currently `frontendSkipped` with `UNSUPPORTED_DEFAULT_INTERFACE_SUPER` because copying it into a helper class violates direct-superinterface verification. `JDK_COLLECTION_HELPER` records ArrayList/HashMap/Arrays/Collections/Optional/String.format sites whose JVM library semantics are intentionally not lowered through native object layout; `JDK_HELPER_FALLBACK` records the corresponding explicit bytecode-preserving `nativeEmbeddedClassBlob` fallback, including narrow `java.util.Arrays.copyOf/equals/fill/asList`, `Collections.emptyList/singletonList`, `Optional` and `String.format` JVM library semantics. `THROWABLE_HELPER_FALLBACK` records Throwable message/cause/constructor semantics that remain JVM-owned, `THREAD_HELPER_FALLBACK` records Thread constructor/start/join semantics that remain JVM-scheduler-owned, and `WAIT_NOTIFY_FALLBACK` records wait/notify monitor-queue semantics that are not implemented in native code. In schema v1, `Unsafe.objectFieldOffset`/`staticFieldOffset` reports describe deterministic metadata tokens, not native object layout offsets.
 
 Runtime metadata dumps are stable sidecars when enabled by intermediates/debug dumps. They may include a `reflectionReachability` section with resolved class/method/field targets and reflection fallback sites. The dump is an observability artifact; lowering status remains governed by `reports/lowering-report.json`.
 

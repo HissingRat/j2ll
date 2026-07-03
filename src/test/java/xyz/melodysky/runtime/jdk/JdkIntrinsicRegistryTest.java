@@ -59,8 +59,8 @@ class JdkIntrinsicRegistryTest {
         assertEquals("JDK_FORMAT_HELPER_FALLBACK: String.format uses JVM formatter semantics", stringFormat.reason());
 
         var runtimeMessage = registry.lookup("java/lang/RuntimeException", "<init>", "(Ljava/lang/String;)V").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, runtimeMessage.policy());
-        assertEquals("THROWABLE_HELPER_FALLBACK: RuntimeException(String) keeps JVM Throwable semantics", runtimeMessage.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, runtimeMessage.policy());
+        assertEquals("JDK_BRIDGE: RuntimeException(String) keeps JVM Throwable semantics", runtimeMessage.reason());
 
         var getCause = registry.lookup("java/lang/Throwable", "getCause", "()Ljava/lang/Throwable;").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, getCause.policy());

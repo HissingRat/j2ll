@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.ClassWriter;
@@ -225,7 +226,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(convertLlvm.contains("call i32 @j2ll_rt_i2b"));
         assertTrue(compareLlvm.contains("call i32 @j2ll_rt_lcmp"));
         assertTrue(compareLlvm.contains("call i32 @j2ll_rt_fcmpl"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("int32_t j2ll_rt_i2b"));
         assertTrue(source.contains("int32_t j2ll_rt_lcmp"));
         assertTrue(source.contains("int32_t j2ll_rt_fcmpl"));
@@ -267,7 +268,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"FIELD_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"DIRECT_LLVM_CALL\""));
         assertTrue(report.contains("\"helper\": \"direct:pkg/FieldCallOps#callee!(I)I\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_field_table"));
         assertTrue(source.contains("GetStaticIntField"));
         assertTrue(source.contains("SetStaticIntField"));
@@ -406,7 +407,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(llvm.contains("fence release"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_field_get_field_i32(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_field_put_field_i32(ptr %j2ll_env"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetIntField"));
         assertTrue(source.contains("SetIntField"));
     }
@@ -438,7 +439,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_MonitorOps.ll"));
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_enter(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit(ptr %j2ll_env"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("MonitorEnter"));
         assertTrue(source.contains("MonitorExit"));
     }
@@ -482,7 +483,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit_on_exception(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_class_object(JNIEnv* env, int64_t class_token)"));
         assertTrue(source.contains("MonitorEnter"));
         assertTrue(source.contains("MonitorExit"));
@@ -522,7 +523,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env"));
         assertTrue(llvm.contains("ret void"));
         assertFalse(llvm.contains("unreachable"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("void j2ll_rt_throw(JNIEnv* env, jobject throwable)"));
         assertTrue(source.contains("(*env)->Throw(env, (jthrowable)throwable)"));
     }
@@ -596,7 +597,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"REFLECTION_CONSTRUCTOR_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"REFLECTION_ACCESSIBLE_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"TYPE_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_reflection_method_table"));
         assertTrue(source.contains("j2ll_reflection_field_table"));
         assertTrue(source.contains("j2ll_rt_class_for_name_static"));
@@ -675,7 +676,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(5, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"UNSAFE_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_unsafe_object_field_offset"));
         assertTrue(source.contains("j2ll_rt_unsafe_get_int"));
         assertTrue(source.contains("j2ll_rt_unsafe_put_int"));
@@ -733,7 +734,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(5, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"VARHANDLE_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_var_handle_get_int"));
         assertTrue(source.contains("j2ll_rt_var_handle_set_int"));
         assertTrue(source.contains("j2ll_rt_var_handle_get_volatile_int"));
@@ -783,7 +784,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(4, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"DIV_REM_EXCEPTION_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_div_i32"));
         assertTrue(source.contains("java/lang/ArithmeticException"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DivRemOps.ll"));
@@ -828,7 +829,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(3, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"FIELD_HELPER\""));
         assertTrue(report.contains("Ljava/lang/String;"));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetObjectField"));
         assertTrue(source.contains("SetObjectField"));
         assertTrue(source.contains("field receiver is null"));
@@ -867,7 +868,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(2, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"ARRAY_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetArrayLength"));
         assertTrue(source.contains("GetIntArrayRegion"));
         assertTrue(source.contains("SetIntArrayRegion"));
@@ -920,7 +921,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(8, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"ARRAY_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"ALLOCATION_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetByteArrayRegion"));
         assertTrue(source.contains("SetByteArrayRegion"));
         assertTrue(source.contains("GetObjectArrayElement"));
@@ -983,7 +984,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(11, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"ARRAY_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"ALLOCATION_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("NewByteArray"));
         assertTrue(source.contains("NewShortArray"));
         assertTrue(source.contains("NewCharArray"));
@@ -1063,7 +1064,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(9, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"ARRAYCOPY_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("void j2ll_rt_system_arraycopy(JNIEnv* env"));
         assertTrue(source.contains("CallStaticVoidMethod"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ArraycopyOps.ll"));
@@ -1119,7 +1120,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"ALLOCATION_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"STRING_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"STRING_BUILDER_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("NewIntArray"));
         assertTrue(source.contains("NewObjectArray"));
         assertTrue(source.contains("GetStringLength"));
@@ -1170,7 +1171,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(4, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"JDK_INTRINSIC_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_math_abs_i32"));
         assertTrue(source.contains("j2ll_rt_math_min_i64"));
         assertTrue(source.contains("j2ll_rt_math_max_i64"));
@@ -1224,7 +1225,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(6, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"JDK_INTRINSIC_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_integer_value_of"));
         assertTrue(source.contains("j2ll_rt_double_double_value"));
         assertTrue(source.contains("j2ll_rt_objects_require_non_null"));
@@ -1290,7 +1291,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(1, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"STRING_CONCAT_CONSTANTS_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_string_constant"));
         assertTrue(source.contains("j2ll_encrypted_string_constant_table"), source);
         assertFalse(source.contains("static const struct j2ll_string_constant_entry j2ll_string_constant_table"));
@@ -1327,7 +1328,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 ordinary-secret
                 ctor-secret
                 """, differential.outputRun().stdout());
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_encrypted_string_constant_table"));
         assertTrue(source.contains("j2ll_rt_string_constant(env"));
         assertFalse(source.contains("ordinary-secret"));
@@ -1384,7 +1385,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(5, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"LAMBDA_METAFACTORY_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_lambda_new"));
         assertTrue(source.contains("LambdaMetafactory"));
         assertTrue(source.contains("privateLookupIn"));
@@ -1432,7 +1433,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"ALLOCATION_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"TYPE_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_alloc_object"));
         assertTrue(source.contains("CallNonvirtualVoidMethod"));
         assertTrue(source.contains("IsInstanceOf"));
@@ -1521,15 +1522,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 .orElseThrow();
         assertFalse(defaultSuperValue.accessFlags().isNative());
         assertTrue(defaultSuperValue.hasCode());
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_method_table"));
         assertTrue(source.contains("CallIntMethod"));
         assertFalse(source.contains("vtable"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DispatchOps.ll"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_call_interface_i32(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32_arg_i32(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_call_interface_ref_arg_ref(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32_a(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call i32 @j2ll_rt_call_interface_i32_a(ptr %j2ll_env"));
+        assertTrue(llvm.contains("call ptr @j2ll_rt_call_interface_ref_a(ptr %j2ll_env"));
     }
 
     @Test
@@ -1564,7 +1564,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
         assertTrue(report.contains("\"nativeImplementationPath\": \"TEMPLATE_JNI_PATH\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
         assertTrue(source.contains("\"x\", \"I\""));
         assertTrue(source.contains("\"y\", \"I\""));
@@ -1603,7 +1603,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
         assertTrue(source.contains("\"total\", \"I\""));
         assertTrue(source.contains("\"label\", \"Ljava/lang/String;\""));
@@ -1641,7 +1641,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
         assertTrue(source.contains("goto j2ll_block_"));
         assertTrue(source.contains("if (j2ll_v_"));
@@ -1745,7 +1745,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("hello\n4\nbox\ntrue\nNPE\n", differential.outputRun().stdout());
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetStringUTFChars"));
         assertTrue(source.contains("NewStringUTF"));
     }
@@ -1771,7 +1771,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("6\n0\n[2, 3]\nNPE\n", differential.outputRun().stdout());
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("GetArrayLength"));
         assertTrue(source.contains("GetIntArrayRegion"));
         assertTrue(source.contains("SetIntArrayRegion"));
@@ -1798,8 +1798,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("7\nIllegalArgumentException:negative\n", differential.outputRun().stdout());
-        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"))
-                .contains("ThrowNew"));
+        assertTrue(generatedJniSource(workspace).contains("ThrowNew"));
     }
 
     @Test
@@ -1863,7 +1862,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THREAD_HELPER_FALLBACK\""));
         assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertFalse(source.contains("pthread_cond"));
         assertFalse(source.contains("pthread_create"));
         assertFalse(source.contains("MonitorQueue"));
@@ -1914,21 +1913,6 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(packagingReport.contains("\"encodedSha256\""));
         assertTrue(packagingReport.contains("\"compressionAlgorithm\": \"j2ll-rle-byte-pairs-v1\""));
         assertTrue(packagingReport.contains("\"encryptionAlgorithm\": \"xor-sha256-key-stream-v1\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
-        assertTrue(source.contains("DefineClass"));
-        assertTrue(source.contains("j2ll_try_define_hidden_fallback"));
-        assertTrue(source.contains("J2llFallbackSupport"));
-        assertTrue(source.contains("defineHiddenFallback"));
-        assertTrue(source.contains("j2ll_verify_sha256_hex"));
-        assertTrue(source.contains("fallback encoded SHA-256 mismatch"));
-        assertTrue(source.contains("fallback decoded SHA-256 mismatch"));
-        assertTrue(source.contains("_cache_entry"));
-        assertTrue(source.contains("_cache = entry"));
-        assertFalse(source.contains("_loaders[16]"));
-        assertTrue(source.contains("IsSameObject"));
-        assertTrue(source.contains("_encoded[]"));
-        assertTrue(source.contains("_decode(JNIEnv* env"));
-        assertFalse(source.contains("_bytes[]"));
     }
 
     @Test
@@ -1975,7 +1959,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
                             && entry.getName().endsWith(".class")));
         }
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertFalse(source.contains("ArrayList.elementData"));
         assertFalse(source.contains("HashMap.table"));
         assertFalse(source.contains("ArraysSupport.native"));
@@ -2100,7 +2084,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 wait-boundary
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(34, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
+        assertEquals(39, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertEquals(7, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"REFLECTION_FIELD_HELPER\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"ARRAYCOPY_HELPER\""));
@@ -2125,13 +2109,13 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
                             && entry.getName().endsWith(".class")));
         }
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
+        String source = generatedJniSource(workspace);
         assertTrue(source.contains("_encoded[]"));
         assertFalse(source.contains("_bytes[]"));
     }
 
     @Test
-    void dynamicReflectionFallbackRunsFromEncodedHiddenHelperInChildJvm() throws Exception {
+    void dynamicReflectionBridgeRunsInChildJvm() throws Exception {
         Path inputJar = temp.resolve("reflection-fallback.jar");
         writeJar(inputJar, Map.of(
                 "pkg/ReflectFallback.class", reflectionDynamicFallbackClass(),
@@ -2157,27 +2141,24 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 reflection-ok
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(3, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
-        assertEquals(3, countOccurrences(loweringReport, "\"reasonCode\": \"REFLECTION_DYNAMIC_FALLBACK\""));
-        assertEquals(3, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"REFLECTION_DYNAMIC_FALLBACK\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertTrue(loweringReport.contains("\"status\": \"lowered\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\"")
+                || loweringReport.contains("\"reasonCode\": \"JVM_CALL_HELPER\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicForName!(Ljava/lang/String;)V"));
-        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicMethodName!(Ljava/lang/String;)Ljava/lang/String;"));
-        assertTrue(packagingReport.contains("pkg/ReflectFallback#dynamicParameterArray!([Ljava/lang/Class;)Ljava/lang/String;"));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)V\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"([Ljava/lang/Class;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains("\"definitionMechanism\": \"HiddenClass\""));
-        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
-        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
+        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)V\""));
+        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
+        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"([Ljava/lang/Class;)Ljava/lang/String;\""));
         try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
             assertFalse(jarFile.stream()
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
                             && entry.getName().endsWith(".class")));
         }
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
-        assertTrue(source.contains("CallStaticVoidMethod"));
-        assertTrue(source.contains("\"invoke\""));
+        String source = generatedJniSource(workspace);
+        assertTrue(source.contains("CallStaticObjectMethodA"));
+        assertTrue(source.contains("CallObjectMethodA"));
     }
 
     @Test
@@ -2203,13 +2184,12 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
         assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
-        assertTrue(source.contains("GetObjectClass(env, self)"));
-        assertTrue(source.contains("CallStaticObjectMethod(env, helper, method, self, arg0)"));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\""));
     }
 
     @Test
-    void methodHandleAdapterChainFallbackRunsFromEncodedHelperInChildJvm() throws Exception {
+    void methodHandleAdapterChainBridgeRunsInChildJvm() throws Exception {
         Path inputJar = temp.resolve("method-handle-fallback.jar");
         writeJar(inputJar, Map.of(
                 "pkg/MethodHandleAdapterFallback.class", methodHandleAdapterFallbackClass(),
@@ -2245,28 +2225,22 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 bang
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(4, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
-        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
-        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
-        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
-        assertEquals(1, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
-        assertEquals(8, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)I\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\""));
+        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
+        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
+        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
+        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
+        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
         assertNoPlainFallbackClassEntry(pipeline.outputJar());
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
-        assertTrue(source.contains("CallStaticObjectMethod"));
-        assertTrue(source.contains("CallStaticIntMethod"));
-        assertTrue(source.contains("\"invoke\""));
+        assertTrue(loweringReport.contains("\"status\": \"lowered\""));
+        assertTrue(loweringReport.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\"")
+                || loweringReport.contains("\"reasonCode\": \"JVM_CALL_HELPER\""));
     }
 
     @Test
@@ -2331,9 +2305,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(packagingReport.contains("\"cacheKey\": \"fallbackId+definingClassLoaderIdentity\""));
         assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
         assertTrue(packagingReport.contains("\"globalReferencePolicy\": \"globalRefPerFallbackClassAndClassLoader\""));
-        String source = Files.readString(workspace.resolve("native/zig-workspace/jni/j2lle2e.c"));
-        assertTrue(source.contains("IsSameObject(env, entry->loader, loader)"));
-        assertTrue(source.contains("_cache_entry"));
+        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
     }
 
     private int countEntries(Path jar, String suffix) throws IOException {
@@ -2418,26 +2390,25 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                   "protection": {
                     "enabled": true,
                     "seed": null,
-                    "intensity": "normal",
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true, "intensity": "normal" },
-                      "fakeBranches": { "enabled": true, "intensity": "normal" },
-                      "basicBlockSplitting": { "enabled": true, "intensity": "normal" },
-                      "constantEncryption": { "enabled": true, "intensity": "normal" },
-                      "stringEncryption": { "enabled": true, "intensity": "normal", "cacheStrings": false },
-                      "methodInlining": { "enabled": true, "intensity": "normal" },
-                      "methodSplitting": { "enabled": true, "intensity": "normal" },
-                      "callIndirection": { "enabled": true, "intensity": "normal" },
-                      "methodTableHiding": { "enabled": true, "intensity": "normal" }
+                      "controlFlowFlattening": { "enabled": true },
+                      "fakeBranches": { "enabled": true },
+                      "basicBlockSplitting": { "enabled": true },
+                      "constantEncryption": { "enabled": true },
+                      "stringEncryption": { "enabled": true },
+                      "methodInlining": { "enabled": true },
+                      "methodSplitting": { "enabled": true },
+                      "callIndirection": { "enabled": true },
+                      "methodTableHiding": { "enabled": true }
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true, "intensity": "normal" },
-                      "opaquePredicates": { "enabled": true, "intensity": "normal" },
-                      "blockLayoutPerturbation": { "enabled": true, "intensity": "normal" },
-                      "indirectCalls": { "enabled": true, "intensity": "normal" },
-                      "globalLayout": { "enabled": true, "intensity": "normal" },
+                      "nameObfuscation": { "enabled": true },
+                      "opaquePredicates": { "enabled": true },
+                      "blockLayoutPerturbation": { "enabled": true },
+                      "indirectCalls": { "enabled": true },
+                      "globalLayout": { "enabled": true },
                       "visibilityHardening": { "enabled": true }
                     },
                     "binary": {
@@ -9813,5 +9784,20 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitLdcInsn("AIOOBE");
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitLabel(done);
+    }
+
+    private String generatedJniSource(Path workspace) throws IOException {
+        Path jniDirectory = workspace.resolve("native/zig-workspace/jni");
+        try (Stream<Path> paths = Files.walk(jniDirectory)) {
+            StringBuilder builder = new StringBuilder();
+            for (Path path : paths
+                    .filter(Files::isRegularFile)
+                    .filter(item -> item.toString().endsWith(".c"))
+                    .sorted()
+                    .toList()) {
+                builder.append(Files.readString(path)).append('\n');
+            }
+            return builder.toString();
+        }
     }
 }

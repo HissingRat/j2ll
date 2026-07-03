@@ -395,12 +395,12 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 
 - `StaticReflectionResolver`：识别 class literal、常量 `Class.forName`、常量 `getDeclaredMethod` / `getDeclaredField` / `getDeclaredConstructor`、`Method.invoke` 和 `Constructor.newInstance`。
 - `ReflectionPlan`：resolved class/method/field/constructor target、metadata reachability、fallback site。
-- `ReflectionFallbackSite`：动态字符串、动态参数数组、未解析 member 的 reason code。
+- `ReflectionFallbackSite`：超出 JNI bridge descriptor matrix、无法安全保留 owner bytecode context、或未解析 member 的 reason code；动态字符串/动态参数数组普通调用优先走 JVM dispatch bridge。
 
 边界：
 
 - 不执行 Java 代码，不扫描任意 classpath。
-- 只在常量形态或安全 over-approx 下加入 reachability；动态 reflection 必须给 fallback reason。
+- 只在常量形态或安全 over-approx 下加入 reachability；动态 reflection 普通调用可走 JVM dispatch bridge，超出 bridge 边界时必须给 fallback/skip reason。
 - Bytecode lowering 仍单独负责 helper-backed IR emission。
 
 ## ir.model
@@ -557,7 +557,7 @@ SSA IR 级保护/混淆 pass。完整策略见 `docs/protection-obfuscation.md`�
 - `ProtectionPipeline`：按配置运行保护 pass。
 - `ProtectionPass`：保护 pass 接口，声明 contract。
 - `ProtectionPassContract`：输入/输出 IR 形态、是否保持 SSA、是否改 CFG、是否需要 runtime helper。
-- `ProtectionConfig`：enabled、seed、intensity，以及 schema v1 中每个 pass 的 enabled/intensity。
+- `ProtectionConfig`：enabled、seed，以及 schema v1 中每个 pass 的 enabled 开关。
 - `ProtectionRandom`：seeded deterministic random source。
 - `ControlFlowFlatteningPass`
 - `OpaquePredicatePass`

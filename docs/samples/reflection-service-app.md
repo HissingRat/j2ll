@@ -72,7 +72,7 @@ Use the same fields as `docs/examples/protection-all-on-config.json`; keep sensi
   "blackList": [],
   "target": {"macosArm64": true},
   "signaturePolicy": "fail",
-  "protection": {"enabled": true, "seed": "hash-this-seed", "intensity": "normal"}
+  "protection": {"enabled": true, "seed": "hash-this-seed"}
 }
 ```
 

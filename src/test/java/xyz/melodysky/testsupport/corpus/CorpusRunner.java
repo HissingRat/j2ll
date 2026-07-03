@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
@@ -47,8 +48,9 @@ public final class CorpusRunner {
         if (!corpusCase.jarEntries().isEmpty()) {
             writeJar(inputJar, corpusCase.jarEntries());
         }
+        Path baselineJar = baselineJarForOriginalRun(inputJar, corpusCase, root);
         var originalRun = corpusCase.runChildDifferential()
-                ? new JvmRunner().run(inputJar, corpusCase.mainClass(), List.of())
+                ? new JvmRunner().run(baselineJar, corpusCase.mainClass(), List.of())
                 : null;
         Path workspace = root.resolve("workspace").resolve(corpusCase.name());
         MainlinePipelineResult pipelineResult;
@@ -127,26 +129,25 @@ public final class CorpusRunner {
                   "protection": {
                     "enabled": %s,
                     "seed": "corpus-seed",
-                    "intensity": "normal",
                     "ir": {
                       "enabled": %s,
-                      "controlFlowFlattening": { "enabled": true, "intensity": "normal" },
-                      "fakeBranches": { "enabled": true, "intensity": "normal" },
-                      "basicBlockSplitting": { "enabled": true, "intensity": "normal" },
-                      "constantEncryption": { "enabled": true, "intensity": "normal" },
-                      "stringEncryption": { "enabled": true, "intensity": "normal", "cacheStrings": false },
-                      "methodInlining": { "enabled": true, "intensity": "normal" },
-                      "methodSplitting": { "enabled": true, "intensity": "normal" },
-                      "callIndirection": { "enabled": true, "intensity": "normal" },
-                      "methodTableHiding": { "enabled": true, "intensity": "normal" }
+                      "controlFlowFlattening": { "enabled": true },
+                      "fakeBranches": { "enabled": true },
+                      "basicBlockSplitting": { "enabled": true },
+                      "constantEncryption": { "enabled": true },
+                      "stringEncryption": { "enabled": true },
+                      "methodInlining": { "enabled": true },
+                      "methodSplitting": { "enabled": true },
+                      "callIndirection": { "enabled": true },
+                      "methodTableHiding": { "enabled": true }
                     },
                     "llvm": {
                       "enabled": %s,
-                      "nameObfuscation": { "enabled": true, "intensity": "normal" },
-                      "opaquePredicates": { "enabled": true, "intensity": "normal" },
-                      "blockLayoutPerturbation": { "enabled": true, "intensity": "normal" },
-                      "indirectCalls": { "enabled": true, "intensity": "normal" },
-                      "globalLayout": { "enabled": true, "intensity": "normal" },
+                      "nameObfuscation": { "enabled": true },
+                      "opaquePredicates": { "enabled": true },
+                      "blockLayoutPerturbation": { "enabled": true },
+                      "indirectCalls": { "enabled": true },
+                      "globalLayout": { "enabled": true },
                       "visibilityHardening": { "enabled": true }
                     },
                     "binary": {
@@ -260,5 +261,38 @@ public final class CorpusRunner {
                 output.closeEntry();
             }
         }
+    }
+
+    private Path baselineJarForOriginalRun(Path inputJar, CorpusCase corpusCase, Path root) throws IOException {
+        if (!corpusCase.signaturePolicy().equals("strip") && !corpusCase.signaturePolicy().equals("resign")) {
+            return inputJar;
+        }
+        Path baseline = root.resolve("input").resolve(corpusCase.name() + "-unsigned-baseline.jar");
+        Files.createDirectories(baseline.getParent());
+        try (JarFile input = new JarFile(inputJar.toFile(), false);
+                JarOutputStream output = new JarOutputStream(Files.newOutputStream(baseline))) {
+            for (JarEntry entry : input.stream().toList()) {
+                if (isSignatureMetadata(entry.getName())) {
+                    continue;
+                }
+                output.putNextEntry(new JarEntry(entry.getName()));
+                if (!entry.isDirectory()) {
+                    output.write(input.getInputStream(entry).readAllBytes());
+                }
+                output.closeEntry();
+            }
+        }
+        return baseline;
+    }
+
+    private boolean isSignatureMetadata(String name) {
+        if (!name.startsWith("META-INF/")) {
+            return false;
+        }
+        String upper = name.toUpperCase(java.util.Locale.ROOT);
+        return upper.endsWith(".SF")
+                || upper.endsWith(".RSA")
+                || upper.endsWith(".DSA")
+                || upper.endsWith(".EC");
     }
 }

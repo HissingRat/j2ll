@@ -69,15 +69,16 @@ class HostJniCSourceGeneratorTest {
         assertTrue(source.contains("extern jint "
                 + staticImplementation.llvmFunctionSymbol().orElseThrow()
                 + "(JNIEnv* env, jclass owner);"));
-        assertTrue(source.contains("return (jint)"
+        assertTrue(source.contains("jint result = (jint)"
                 + staticImplementation.llvmFunctionSymbol().orElseThrow()
                 + "(env, owner);"));
         assertTrue(source.contains("extern jint "
                 + instanceImplementation.llvmFunctionSymbol().orElseThrow()
                 + "(JNIEnv* env, jobject self);"));
-        assertTrue(source.contains("return (jint)"
+        assertTrue(source.contains("jint result = (jint)"
                 + instanceImplementation.llvmFunctionSymbol().orElseThrow()
                 + "(env, self);"));
+        assertTrue(source.contains("return result;"));
         assertFalse(source.contains("j2ll_get_field_pkg_Fields_value_I"));
         assertFalse(source.contains("j2ll_get_static_pkg_StaticFields_VALUE_I"));
         assertFalse(source.contains("self->"));

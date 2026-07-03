@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.jar.JarFile;
 import xyz.melodysky.analysis.callgraph.CallGraph;
 import xyz.melodysky.analysis.callgraph.CallGraphBuilder;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
@@ -201,6 +202,7 @@ public final class MainlinePipeline {
         ParsedProgram program = parseResult.artifact().map(ClassParseResult::program).orElseThrow();
 
         SelectorMatchResult selection = selectorMatcher.expand(program, config.whiteList(), config.blackList());
+        selection = excludeVersionedMultiReleaseBaseMethods(selection, versionedClassNames(config.jarFile()));
         diagnostics.addAll(selection.diagnostics());
 
         var hierarchyResult = new ClassHierarchyBuilder().build(program, config.worldModel());
@@ -493,7 +495,6 @@ public final class MainlinePipeline {
                 new xyz.melodysky.ir.pass.protection.ProtectionConfig(
                         resolved.enabled(),
                         seed,
-                        resolved.intensity(),
                         false,
                         resolved.stringEncryption(),
                         false,
@@ -770,9 +771,11 @@ public final class MainlinePipeline {
                 .filter(implementation -> implementation.stringHelperSymbols().isEmpty())
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> semanticSensitiveMethods = semanticSensitiveMethods(protectionReports);
         return protectionReports.stream()
                 .flatMap(report -> report.sensitivePlaintextFacts().stream())
-                .map(fact -> classifiedSensitiveFact(fact, llvmNativeMethods, implementationsByMethod))
+                .map(fact -> classifiedSensitiveFact(
+                        fact, llvmNativeMethods, semanticSensitiveMethods, implementationsByMethod))
                 .sorted(java.util.Comparator
                         .comparing(SensitivePlaintextFact::literalHash)
                         .thenComparing(SensitivePlaintextFact::sourceMethod)
@@ -780,6 +783,51 @@ public final class MainlinePipeline {
                         .thenComparing(SensitivePlaintextFact::gateMode)
                         .thenComparing(SensitivePlaintextFact::promotionReason))
                 .toList();
+    }
+
+    private SelectorMatchResult excludeVersionedMultiReleaseBaseMethods(
+            SelectorMatchResult selection,
+            Set<String> versionedClassNames) {
+        if (versionedClassNames.isEmpty()) {
+            return selection;
+        }
+        ArrayList<ParsedMethod> requested = new ArrayList<>();
+        ArrayList<MethodEligibility> notApplicable = new ArrayList<>(selection.notApplicable());
+        for (ParsedMethod method : selection.requestedMethods()) {
+            if (!versionedClassNames.contains(method.owner())) {
+                requested.add(method);
+                continue;
+            }
+            notApplicable.add(MethodEligibility.notApplicable(
+                    method.owner(),
+                    method.name(),
+                    method.descriptor(),
+                    "<multi-release-versioned-class>",
+                    "MULTI_RELEASE_VERSIONED_CLASS",
+                    "base class has a META-INF/versions counterpart; preserving original bytecode avoids registering natives on the runtime-selected versioned class"));
+        }
+        return new SelectorMatchResult(
+                requested,
+                notApplicable.stream()
+                        .sorted(java.util.Comparator
+                                .comparing(MethodEligibility::owner)
+                                .thenComparing(MethodEligibility::name)
+                                .thenComparing(MethodEligibility::descriptor))
+                        .toList(),
+                selection.excluded(),
+                selection.diagnostics());
+    }
+
+    private Set<String> versionedClassNames(Path jarFile) throws IOException {
+        try (JarFile jar = new JarFile(jarFile.toFile(), false)) {
+            return jar.stream()
+                    .map(java.util.jar.JarEntry::getName)
+                    .filter(name -> name.startsWith("META-INF/versions/"))
+                    .filter(name -> name.endsWith(".class"))
+                    .map(name -> name.substring(name.indexOf('/', "META-INF/versions/".length()) + 1))
+                    .map(name -> name.substring(0, name.length() - ".class".length()))
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        }
     }
 
     private List<ProtectionPassReport> classifiedProtectionReports(
@@ -796,6 +844,7 @@ public final class MainlinePipeline {
                 .filter(implementation -> implementation.stringHelperSymbols().isEmpty())
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> semanticSensitiveMethods = semanticSensitiveMethods(protectionReports);
         return protectionReports.stream()
                 .map(report -> new ProtectionPassReport(
                         report.passName(),
@@ -806,14 +855,23 @@ public final class MainlinePipeline {
                         report.affectedSymbols(),
                         report.seed(),
                         report.sensitivePlaintextFacts().stream()
-                                .map(fact -> classifiedSensitiveFact(fact, llvmNativeMethods, implementationsByMethod))
+                                .map(fact -> classifiedSensitiveFact(
+                                        fact, llvmNativeMethods, semanticSensitiveMethods, implementationsByMethod))
                                 .toList()))
                 .toList();
+    }
+
+    private Set<String> semanticSensitiveMethods(List<ProtectionPassReport> protectionReports) {
+        return protectionReports.stream()
+                .filter(report -> report.reasonCode().equals("PROTECTION_SEMANTICALLY_SENSITIVE_METHOD"))
+                .flatMap(report -> report.affectedMethods().stream())
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
     }
 
     private SensitivePlaintextFact classifiedSensitiveFact(
             SensitivePlaintextFact fact,
             Set<String> llvmNativeMethods,
+            Set<String> semanticSensitiveMethods,
             Map<String, NativeMethodImplementation> implementationsByMethod) {
         if (!isStableBlockingPlaintext(fact.plaintext())) {
             NativeMethodImplementation implementation = implementationsByMethod.get(fact.sourceMethod());
@@ -823,6 +881,28 @@ public final class MainlinePipeline {
                     "PLAINTEXT_LITERAL_TOO_SHORT_FOR_BLOCKING_GATE",
                     "metadataSensitiveObservedOnly");
         }
+        NativeMethodImplementation implementation = implementationsByMethod.get(fact.sourceMethod());
+        if (isJvmMetadataBridgePlaintext(implementation)) {
+            return fact.withAuditClassification(
+                    implementation == null ? "HELPER_PATH" : implementation.path().name(),
+                    "observedOnly",
+                    "JVM_METADATA_BRIDGE_PLAINTEXT",
+                    "metadataSensitiveObservedOnly");
+        }
+        if (semanticSensitiveMethods.contains(fact.sourceMethod())) {
+            return fact.withAuditClassification(
+                    implementation == null ? "HELPER_PATH" : implementation.path().name(),
+                    "observedOnly",
+                    "PROTECTION_SEMANTICALLY_SENSITIVE_METHOD",
+                    "metadataSensitiveObservedOnly");
+        }
+        if (implementation != null && implementation.reasonCode().equals("LLVM_EXCEPTION_HELPER_IR")) {
+            return fact.withAuditClassification(
+                    implementation.path().name(),
+                    "observedOnly",
+                    "EXCEPTION_HELPER_PLAINTEXT",
+                    "metadataSensitiveObservedOnly");
+        }
         if (llvmNativeMethods.contains(fact.sourceMethod())) {
             return fact.withAuditClassification(
                     "LLVM_NATIVE_PATH",
@@ -830,7 +910,6 @@ public final class MainlinePipeline {
                     "LLVM_NATIVE_PATH_CONNECTED_SURFACE",
                     "llvmNativeSurface");
         }
-        NativeMethodImplementation implementation = implementationsByMethod.get(fact.sourceMethod());
         if (implementation != null
                 && implementation.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
                 && implementation.reasonCode().equals("GENERIC_CONSTRUCTOR_BODY_HELPER")) {
@@ -867,6 +946,21 @@ public final class MainlinePipeline {
 
     private boolean isStableBlockingPlaintext(String plaintext) {
         return plaintext != null && plaintext.length() >= 8;
+    }
+
+    private boolean isJvmMetadataBridgePlaintext(NativeMethodImplementation implementation) {
+        if (implementation == null) {
+            return false;
+        }
+        return java.util.stream.Stream.of(
+                        implementation.staticCallKeys(),
+                        implementation.dispatchKeys(),
+                        implementation.stringHelperSymbols())
+                .flatMap(java.util.Collection::stream)
+                .anyMatch(symbol -> symbol.contains("java/lang/invoke/MethodHandles")
+                        || symbol.contains("java/lang/invoke/MethodType")
+                        || symbol.contains("java/lang/invoke/MethodHandle")
+                        || symbol.contains("java/util/ResourceBundle"));
     }
 
     private String runtimeHelperBaseSymbol(String symbol) {

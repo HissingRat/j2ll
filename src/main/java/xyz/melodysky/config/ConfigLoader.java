@@ -50,7 +50,7 @@ public final class ConfigLoader {
             "keystorePath", "storePasswordEnv", "keyAlias", "keyPasswordEnv", "tsaUrl");
     private static final Set<String> INTERMEDIATE_FIELDS = Set.of(
             "enabled", "includeDebugDumps", "includePerClassIr", "includePerClassLlvm", "includePerClassC");
-    private static final Set<String> PROTECTION_FIELDS = Set.of("enabled", "seed", "intensity", "ir", "llvm", "binary");
+    private static final Set<String> PROTECTION_FIELDS = Set.of("enabled", "seed", "ir", "llvm", "binary");
     private static final Set<String> IR_FIELDS = Set.of(
             "enabled",
             "controlFlowFlattening",
@@ -72,8 +72,7 @@ public final class ConfigLoader {
             "visibilityHardening");
     private static final Set<String> BINARY_FIELDS = Set.of(
             "enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit");
-    private static final Set<String> PASS_FIELDS = Set.of("enabled", "intensity");
-    private static final Set<String> STRING_ENCRYPTION_FIELDS = Set.of("enabled", "intensity", "cacheStrings");
+    private static final Set<String> PASS_FIELDS = Set.of("enabled");
     private static final Set<String> VISIBILITY_HARDENING_FIELDS = Set.of("enabled");
 
     public ConfigLoadResult load(Path configPath) throws IOException {
@@ -188,7 +187,7 @@ public final class ConfigLoader {
             validatePass(ir, "fakeBranches", "protection.ir.fakeBranches", diagnostics);
             validatePass(ir, "basicBlockSplitting", "protection.ir.basicBlockSplitting", diagnostics);
             validatePass(ir, "constantEncryption", "protection.ir.constantEncryption", diagnostics);
-            validateObject(ir, "stringEncryption", STRING_ENCRYPTION_FIELDS, "protection.ir.stringEncryption", diagnostics);
+            validatePass(ir, "stringEncryption", "protection.ir.stringEncryption", diagnostics);
             validatePass(ir, "methodInlining", "protection.ir.methodInlining", diagnostics);
             validatePass(ir, "methodSplitting", "protection.ir.methodSplitting", diagnostics);
             validatePass(ir, "callIndirection", "protection.ir.callIndirection", diagnostics);
@@ -409,7 +408,6 @@ public final class ConfigLoader {
         return new ProtectionConfig(
                 protection.get("enabled").getAsBoolean(),
                 seed,
-                ProtectionIntensity.parse(protection.get("intensity").getAsString()),
                 parseIrProtection(protection.getAsJsonObject("ir")),
                 parseLlvmProtection(protection.getAsJsonObject("llvm")),
                 parseBinaryProtection(protection.getAsJsonObject("binary")));
@@ -422,7 +420,7 @@ public final class ConfigLoader {
                 parsePass(ir.getAsJsonObject("fakeBranches")),
                 parsePass(ir.getAsJsonObject("basicBlockSplitting")),
                 parsePass(ir.getAsJsonObject("constantEncryption")),
-                parseStringEncryption(ir.getAsJsonObject("stringEncryption")),
+                parsePass(ir.getAsJsonObject("stringEncryption")),
                 parsePass(ir.getAsJsonObject("methodInlining")),
                 parsePass(ir.getAsJsonObject("methodSplitting")),
                 parsePass(ir.getAsJsonObject("callIndirection")),
@@ -452,16 +450,7 @@ public final class ConfigLoader {
     }
 
     private PassConfig parsePass(JsonObject pass) {
-        return new PassConfig(
-                pass.get("enabled").getAsBoolean(),
-                ProtectionIntensity.parse(pass.get("intensity").getAsString()));
-    }
-
-    private StringEncryptionConfig parseStringEncryption(JsonObject pass) {
-        return new StringEncryptionConfig(
-                pass.get("enabled").getAsBoolean(),
-                ProtectionIntensity.parse(pass.get("intensity").getAsString()),
-                pass.get("cacheStrings").getAsBoolean());
+        return new PassConfig(pass.get("enabled").getAsBoolean());
     }
 
     private List<Path> classPath(Path baseDirectory, JsonArray entries) {

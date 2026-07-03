@@ -9,8 +9,6 @@ import xyz.melodysky.config.BinaryProtectionConfig;
 import xyz.melodysky.config.IrProtectionConfig;
 import xyz.melodysky.config.LlvmProtectionConfig;
 import xyz.melodysky.config.PassConfig;
-import xyz.melodysky.config.ProtectionIntensity;
-import xyz.melodysky.config.StringEncryptionConfig;
 import xyz.melodysky.config.VisibilityHardeningConfig;
 import xyz.melodysky.ir.pass.PassDiagnostics;
 
@@ -36,7 +34,6 @@ class ProtectionAvailabilityReporterTest {
         var disabled = new xyz.melodysky.config.ProtectionConfig(
                 false,
                 "seed",
-                ProtectionIntensity.NORMAL,
                 config().ir(),
                 config().llvm(),
                 config().binary());
@@ -48,14 +45,13 @@ class ProtectionAvailabilityReporterTest {
         return new xyz.melodysky.config.ProtectionConfig(
                 true,
                 "seed",
-                ProtectionIntensity.NORMAL,
                 new IrProtectionConfig(
                         true,
                         pass(),
                         pass(),
                         pass(),
                         pass(),
-                        new StringEncryptionConfig(true, ProtectionIntensity.NORMAL, false),
+                        pass(),
                         pass(),
                         pass(),
                         pass(),
@@ -72,6 +68,6 @@ class ProtectionAvailabilityReporterTest {
     }
 
     private PassConfig pass() {
-        return new PassConfig(true, ProtectionIntensity.NORMAL);
+        return new PassConfig(true);
     }
 }

@@ -84,11 +84,10 @@
     "protection": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["enabled", "seed", "intensity", "ir", "llvm", "binary"],
+      "required": ["enabled", "seed", "ir", "llvm", "binary"],
       "properties": {
         "enabled": { "type": "boolean", "default": true },
         "seed": { "type": ["string", "null"] },
-        "intensity": { "$ref": "#/$defs/intensity" },
         "ir": {
           "type": "object",
           "additionalProperties": true,
@@ -160,24 +159,20 @@
     }
   },
   "$defs": {
-    "intensity": { "type": "string", "enum": ["low", "normal", "high"] },
     "pass": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["enabled", "intensity"],
+      "required": ["enabled"],
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "intensity": { "$ref": "#/$defs/intensity" }
+        "enabled": { "type": "boolean", "default": true }
       }
     },
     "stringPass": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["enabled", "intensity", "cacheStrings"],
+      "required": ["enabled"],
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "intensity": { "$ref": "#/$defs/intensity" },
-        "cacheStrings": { "type": "boolean", "default": false }
+        "enabled": { "type": "boolean", "default": true }
       }
     }
   }

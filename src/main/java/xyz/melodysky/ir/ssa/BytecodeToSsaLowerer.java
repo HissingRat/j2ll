@@ -785,6 +785,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     diagnostics);
             return false;
         }
+        if (intrinsic.policy() == JdkMethodPolicy.JVM_HELPER_BRIDGE) {
+            return false;
+        }
         return false;
     }
 
@@ -814,12 +817,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         java.util.Optional<MethodHandleConstant> constant = methodHandleConstant(operands.get(0), instructions);
         if (constant.isEmpty()) {
-            addJvmHelperFallbackDiagnostic(
-                    currentMethod,
-                    methodKey,
-                    "unsupported MethodHandle chain requires JVM helper fallback",
-                    diagnostics);
-            appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+            appendMethodHandleInvokeWithArguments(methodInsn.desc, operands, returnType, values, stack, instructions);
             return true;
         }
         MethodHandleConstant handle = constant.orElseThrow();
@@ -832,6 +830,104 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 instructions,
                 handle.owner() + "#" + handle.name() + "!" + handle.descriptor());
         return true;
+    }
+
+    private void appendMethodHandleInvokeWithArguments(
+            String invokeDescriptor,
+            List<IrValue> operands,
+            IrType returnType,
+            ValueFactory values,
+            StackState stack,
+            List<IrInstruction> instructions) {
+        Type[] argumentTypes = Type.getArgumentTypes(invokeDescriptor);
+        List<IrValue> arguments = operands.subList(1, operands.size());
+        if (argumentTypes.length != arguments.size()) {
+            appendOrdinaryCall(
+                    IrOpcode.CALL_VIRTUAL,
+                    operands,
+                    returnType,
+                    values,
+                    stack,
+                    instructions,
+                    "java/lang/invoke/MethodHandle#invokeWithArguments!([Ljava/lang/Object;)Ljava/lang/Object;");
+            return;
+        }
+        IrValue count = values.next(IrType.I32);
+        instructions.add(IrInstruction.constInt(count, arguments.size()));
+        IrValue boxedArguments = values.next(IrType.REFERENCE);
+        instructions.add(IrInstruction.operation(
+                java.util.Optional.of(boxedArguments),
+                IrOpcode.NEW_ARRAY,
+                List.of(count),
+                "referenceArray:java/lang/Object"));
+        for (int index = 0; index < arguments.size(); index++) {
+            IrValue boxed = boxMethodHandleArgument(arguments.get(index), argumentTypes[index], values, instructions);
+            IrValue slot = values.next(IrType.I32);
+            instructions.add(IrInstruction.constInt(slot, index));
+            instructions.add(IrInstruction.operation(
+                    java.util.Optional.empty(),
+                    IrOpcode.ARRAY_STORE_REF,
+                    List.of(boxedArguments, slot, boxed),
+                    "reference"));
+        }
+        IrValue rawResult = returnType == IrType.VOID ? null : values.next(IrType.REFERENCE);
+        instructions.add(IrInstruction.call(
+                java.util.Optional.ofNullable(rawResult),
+                IrOpcode.CALL_VIRTUAL,
+                List.of(operands.get(0), boxedArguments),
+                "java/lang/invoke/MethodHandle#invokeWithArguments!([Ljava/lang/Object;)Ljava/lang/Object;"));
+        if (returnType == IrType.VOID) {
+            return;
+        }
+        IrValue finalResult = unboxMethodHandleResult(rawResult, Type.getReturnType(invokeDescriptor), returnType, values, instructions);
+        stack.push(finalResult);
+    }
+
+    private IrValue boxMethodHandleArgument(
+            IrValue argument,
+            Type argumentType,
+            ValueFactory values,
+            List<IrInstruction> instructions) {
+        if (argument.type() == IrType.REFERENCE) {
+            return argument;
+        }
+        xyz.melodysky.runtime.RuntimeHelperKind helperKind = switch (argumentType.getSort()) {
+            case Type.BOOLEAN -> xyz.melodysky.runtime.RuntimeHelperKind.BOOLEAN_VALUE_OF;
+            case Type.LONG -> xyz.melodysky.runtime.RuntimeHelperKind.LONG_VALUE_OF;
+            case Type.DOUBLE -> xyz.melodysky.runtime.RuntimeHelperKind.DOUBLE_VALUE_OF;
+            default -> xyz.melodysky.runtime.RuntimeHelperKind.INTEGER_VALUE_OF;
+        };
+        IrValue boxed = values.next(IrType.REFERENCE);
+        instructions.add(IrInstruction.call(
+                java.util.Optional.of(boxed),
+                IrOpcode.CALL_RUNTIME_HELPER,
+                List.of(argument),
+                runtimeHelperSymbol(helperKind)));
+        return boxed;
+    }
+
+    private IrValue unboxMethodHandleResult(
+            IrValue rawResult,
+            Type resultType,
+            IrType returnType,
+            ValueFactory values,
+            List<IrInstruction> instructions) {
+        if (returnType == IrType.REFERENCE) {
+            return rawResult;
+        }
+        xyz.melodysky.runtime.RuntimeHelperKind helperKind = switch (resultType.getSort()) {
+            case Type.BOOLEAN -> xyz.melodysky.runtime.RuntimeHelperKind.BOOLEAN_BOOLEAN_VALUE;
+            case Type.LONG -> xyz.melodysky.runtime.RuntimeHelperKind.LONG_LONG_VALUE;
+            case Type.DOUBLE -> xyz.melodysky.runtime.RuntimeHelperKind.DOUBLE_DOUBLE_VALUE;
+            default -> xyz.melodysky.runtime.RuntimeHelperKind.INTEGER_INT_VALUE;
+        };
+        IrValue unboxed = values.next(returnType);
+        instructions.add(IrInstruction.call(
+                java.util.Optional.of(unboxed),
+                IrOpcode.CALL_RUNTIME_HELPER,
+                List.of(rawResult),
+                runtimeHelperSymbol(helperKind)));
+        return unboxed;
     }
 
     private boolean lowerUnsafeCall(
@@ -937,11 +1033,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 && methodInsn.desc.equals("(Ljava/lang/String;)Ljava/lang/Class;")) {
             java.util.Optional<String> className = stringLiteral(operands.get(0), instructions);
             if (className.isEmpty()) {
-                addJvmHelperFallbackDiagnostic(
-                        currentMethod,
-                        methodKey,
-                        "dynamic Class.forName string requires JVM helper fallback",
-                        diagnostics);
                 appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
                 return true;
             }
@@ -956,11 +1047,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 && methodInsn.desc.equals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;")) {
             java.util.Optional<String> className = stringLiteral(operands.get(0), instructions);
             if (className.isEmpty()) {
-                addJvmHelperFallbackDiagnostic(
-                        currentMethod,
-                        methodKey,
-                        "dynamic Class.forName string requires JVM helper fallback",
-                        diagnostics);
                 appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
                 return true;
             }
@@ -975,11 +1061,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> name = stringLiteral(operands.get(1), instructions);
             java.util.Optional<List<String>> parameters = classArrayDescriptors(operands.get(2), instructions);
             if (owner.isEmpty() || name.isEmpty() || parameters.isEmpty()) {
-                addJvmHelperFallbackDiagnostic(
-                        currentMethod,
-                        methodKey,
-                        "dynamic getDeclaredMethod target requires JVM helper fallback",
-                        diagnostics);
                 appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
                 return true;
             }
@@ -1001,11 +1082,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> owner = classInternalNameForValue(operands.get(0), instructions);
             java.util.Optional<String> name = stringLiteral(operands.get(1), instructions);
             if (owner.isEmpty() || name.isEmpty()) {
-                addJvmHelperFallbackDiagnostic(
-                        currentMethod,
-                        methodKey,
-                        "dynamic getDeclaredField target requires JVM helper fallback",
-                        diagnostics);
                 appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
                 return true;
             }
@@ -1025,11 +1101,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> owner = classInternalNameForValue(operands.get(0), instructions);
             java.util.Optional<List<String>> parameters = classArrayDescriptors(operands.get(1), instructions);
             if (owner.isEmpty() || parameters.isEmpty()) {
-                addJvmHelperFallbackDiagnostic(
-                        currentMethod,
-                        methodKey,
-                        "dynamic getDeclaredConstructor target requires JVM helper fallback",
-                        diagnostics);
                 appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
                 return true;
             }
@@ -1046,11 +1117,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         if (methodInsn.owner.equals("java/lang/Class")
                 && isReflectionMemberScan(methodInsn.name)) {
-            addJvmHelperFallbackDiagnostic(
-                    currentMethod,
-                    methodKey,
-                    "reflection member scan requires JVM helper fallback",
-                    diagnostics);
             appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
             return true;
         }
@@ -1483,7 +1549,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 invokeDynamicInsn.bsmArgs);
         if (concatPlan.stringConcatFactory()) {
             if (concatPlan.supported() && returnType == IrType.REFERENCE) {
-                lowerStringConcat(concatPlan, parameterTypes, operands, values, stack, instructions);
+                lowerStringConcat(concatPlan, parameterTypes, parameterDescriptors(invokeDynamicInsn.desc), operands, values, stack, instructions);
                 return;
             }
             addJvmHelperFallbackDiagnostic(
@@ -1533,6 +1599,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private void lowerStringConcat(
             StringConcatBootstrapPlan concatPlan,
             List<IrType> parameterTypes,
+            List<String> parameterDescriptors,
             List<IrValue> operands,
             ValueFactory values,
             StackState stack,
@@ -1553,6 +1620,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         builder,
                         operands.get(token.operandIndex()),
                         operandType,
+                        parameterDescriptors.get(token.operandIndex()),
                         values,
                         instructions);
             } else {
@@ -1565,7 +1633,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         List.of(constantId),
                         runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.STRING_CONSTANT)
                                 + "|string:" + token.constant()));
-                builder = appendStringBuilderValue(builder, constant, IrType.REFERENCE, values, instructions);
+                builder = appendStringBuilderValue(builder, constant, IrType.REFERENCE, "Ljava/lang/String;", values, instructions);
             }
         }
         IrValue result = values.next(IrType.REFERENCE);
@@ -1589,8 +1657,18 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             IrValue builder,
             IrValue value,
             IrType type,
+            String descriptor,
             ValueFactory values,
             List<IrInstruction> instructions) {
+        if (descriptor.equals("Z") || descriptor.equals("C")) {
+            IrValue nextBuilder = values.next(IrType.REFERENCE);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(nextBuilder),
+                    IrOpcode.CALL_VIRTUAL,
+                    List.of(builder, value),
+                    "java/lang/StringBuilder#append!(" + descriptor + ")Ljava/lang/StringBuilder;"));
+            return nextBuilder;
+        }
         xyz.melodysky.runtime.RuntimeHelperKind helperKind = switch (type) {
             case I64 -> xyz.melodysky.runtime.RuntimeHelperKind.STRING_BUILDER_APPEND_I64;
             case F32 -> xyz.melodysky.runtime.RuntimeHelperKind.STRING_BUILDER_APPEND_F32;
@@ -1610,7 +1688,8 @@ public final class BytecodeToSsaLowerer implements Opcodes {
 
     private boolean lambdaCapturesAreSupported(List<IrValue> operands) {
         return operands.size() <= 1
-                && operands.stream().allMatch(operand -> operand.type() == IrType.REFERENCE);
+                && operands.stream().allMatch(operand -> operand.type() == IrType.REFERENCE
+                        || operand.type() == IrType.I32);
     }
 
     private void lowerLambdaMetafactory(
@@ -1626,7 +1705,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         instructions.add(IrInstruction.constLong(
                 targetId,
                 stableClassId("lambda:" + lambdaSpec)));
-        IrValue capture = operands.isEmpty() ? values.next(IrType.REFERENCE) : operands.get(0);
+        IrValue capture = operands.isEmpty() ? values.next(IrType.REFERENCE) : boxedLambdaCapture(operands.get(0), values, instructions);
         if (operands.isEmpty()) {
             instructions.add(IrInstruction.constNull(capture));
         }
@@ -1641,6 +1720,25 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                                 .withoutPadding()
                                 .encodeToString(lambdaSpec.getBytes(StandardCharsets.UTF_8))));
         stack.push(lambdaObject);
+    }
+
+    private IrValue boxedLambdaCapture(
+            IrValue capture,
+            ValueFactory values,
+            List<IrInstruction> instructions) {
+        if (capture.type() == IrType.REFERENCE) {
+            return capture;
+        }
+        if (capture.type() == IrType.I32) {
+            IrValue boxed = values.next(IrType.REFERENCE);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(boxed),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    List.of(capture),
+                    runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind.INTEGER_VALUE_OF)));
+            return boxed;
+        }
+        throw new IllegalArgumentException("unsupported lambda capture type " + capture.type());
     }
 
     private String lambdaSpec(
@@ -2666,6 +2764,18 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             index = parsed.nextIndex();
         }
         return types;
+    }
+
+    private List<String> parameterDescriptors(String descriptor) {
+        ArrayList<String> descriptors = new ArrayList<>();
+        int index = 1;
+        while (descriptor.charAt(index) != ')') {
+            int start = index;
+            ParsedType parsed = typeAt(descriptor, index);
+            descriptors.add(descriptor.substring(start, parsed.nextIndex()));
+            index = parsed.nextIndex();
+        }
+        return descriptors;
     }
 
     private ParsedType typeAt(String descriptor, int index) {

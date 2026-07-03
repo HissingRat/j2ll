@@ -528,7 +528,6 @@ class BytecodeToSsaLowererTest {
         assertEquals(IrTerminatorKind.THROW, method.blocks().get(0).terminator().kind());
         String llvm = llvm(method);
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit_on_exception(ptr %j2ll_env, ptr %p0)"));
-        assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env, ptr %p1)"));
     }
 
     @Test
@@ -680,7 +679,7 @@ class BytecodeToSsaLowererTest {
         assertTrue(result.diagnostics().get(0).message().contains("java/lang/String#substring"));
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
         assertTrue(hasOpcode(method, IrOpcode.CALL_VIRTUAL));
-        assertTrue(llvm(method).contains("@j2ll_call_virtual_java_lang_String_substring"));
+        assertTrue(llvm(method).contains("@j2ll_rt_call_virtual_ref_a(ptr %j2ll_env"));
     }
 
     @Test
@@ -899,14 +898,14 @@ class BytecodeToSsaLowererTest {
         var stringInstruction = stringConst.blocks().get(0).instructions().get(0);
         assertEquals(IrOpcode.CONST_STRING, stringInstruction.opcode());
         assertEquals("string:secret-value", stringInstruction.symbol().orElseThrow());
-        assertTrue(llvm(stringConst).contains("call ptr @j2ll_const_string_"));
+        assertTrue(llvm(stringConst).contains("call ptr @j2ll_rt_string_constant(ptr %j2ll_env, i64 "));
         assertFalse(llvm(stringConst).contains("secret-value"));
 
         var classConst = lower(classBytes, "classConst").irMethod().orElseThrow();
         var classInstruction = classConst.blocks().get(0).instructions().get(0);
         assertEquals(IrOpcode.CONST_CLASS, classInstruction.opcode());
         assertEquals("class:Ljava/lang/String;", classInstruction.symbol().orElseThrow());
-        assertTrue(llvm(classConst).contains("call ptr @j2ll_const_class_"));
+        assertTrue(llvm(classConst).contains("call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 "));
 
         var methodTypeConst = lower(classBytes, "methodTypeConst").irMethod().orElseThrow();
         var methodTypeInstruction = methodTypeConst.blocks().get(0).instructions().get(0);
@@ -1068,13 +1067,13 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithVirtualCall("pkg/VirtualCalls", "pkg/RunnableThing"),
                 "call").irMethod().orElseThrow();
         assertEquals(IrOpcode.CALL_VIRTUAL, virtualCall.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(virtualCall).contains("@j2ll_call_virtual_pkg_RunnableThing_run"));
+        assertTrue(llvm(virtualCall).contains("@j2ll_rt_call_virtual_void_a(ptr %j2ll_env"));
 
         var interfaceCall = lower(
                 AsmFixtureBuilder.classWithInterfaceCall("pkg/InterfaceCalls", "pkg/Task"),
                 "call").irMethod().orElseThrow();
         assertEquals(IrOpcode.CALL_INTERFACE, interfaceCall.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(interfaceCall).contains("@j2ll_call_interface_pkg_Task_run"));
+        assertTrue(llvm(interfaceCall).contains("@j2ll_rt_call_interface_void_a(ptr %j2ll_env"));
 
         var dynamicCall = lower(
                 AsmFixtureBuilder.classWithInvokeDynamic("pkg/DynamicCalls"),
@@ -1106,7 +1105,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void dynamicReflectionStringUsesJvmHelperFallbackReport() {
+    void dynamicReflectionStringUsesJvmBridge() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithStaticReflectionMethods("pkg/ReflectCaller", "pkg/ReflectTarget"),
                 "dynamicForName");
@@ -1114,13 +1113,13 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).message().contains("dynamic Class.forName string"));
+        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.diagnostics().isEmpty());
+        assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_STATIC));
     }
 
     @Test
-    void reflectionMemberScanUsesJvmHelperFallbackReport() {
+    void reflectionMemberScanUsesJvmBridge() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithStaticReflectionMethods("pkg/ReflectCaller", "pkg/ReflectTarget"),
                 "declaredMethods");
@@ -1128,9 +1127,9 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).message().contains("reflection member scan"));
+        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.diagnostics().isEmpty());
+        assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_VIRTUAL));
     }
 
     @Test
@@ -1144,7 +1143,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersMethodHandleInvokeExactDirectTargetAndFallbacksDynamicReceiver() {
+    void lowersMethodHandleInvokeExactDirectTargetAndDynamicReceiverBridge() {
         byte[] classBytes = AsmFixtureBuilder.classWithMethodHandleInvokeExact("pkg/Handles");
 
         var direct = lower(classBytes, "direct").irMethod().orElseThrow();
@@ -1156,8 +1155,13 @@ class BytecodeToSsaLowererTest {
         ParsedMethod parsedMethod = parseMethod(classBytes, "dynamic");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
         var result = new BytecodeToSsaLowerer().lower(cfg);
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertTrue(result.diagnostics().get(0).message().contains("unsupported MethodHandle chain"));
+        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.diagnostics().isEmpty());
+        var dynamic = result.artifact().orElseThrow().irMethod().orElseThrow();
+        assertTrue(hasOpcode(dynamic, IrOpcode.NEW_ARRAY));
+        assertTrue(hasHelper(dynamic, "j2ll_rt_integer_int_value"));
+        assertTrue(hasOpcode(dynamic, IrOpcode.CALL_VIRTUAL));
+        assertTrue(llvm(dynamic).contains("@j2ll_rt_call_virtual_ref_a(ptr %j2ll_env"));
     }
 
     @Test

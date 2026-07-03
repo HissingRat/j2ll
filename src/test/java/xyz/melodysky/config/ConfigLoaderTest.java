@@ -183,26 +183,25 @@ class ConfigLoaderTest {
                   "protection": {
                     "enabled": true,
                     "seed": null,
-                    "intensity": "normal",
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true, "intensity": "normal" },
-                      "fakeBranches": { "enabled": true, "intensity": "normal" },
-                      "basicBlockSplitting": { "enabled": true, "intensity": "normal" },
-                      "constantEncryption": { "enabled": true, "intensity": "normal" },
-                      "stringEncryption": { "enabled": true, "intensity": "normal", "cacheStrings": false },
-                      "methodInlining": { "enabled": true, "intensity": "normal" },
-                      "methodSplitting": { "enabled": true, "intensity": "normal" },
-                      "callIndirection": { "enabled": true, "intensity": "normal" },
-                      "methodTableHiding": { "enabled": true, "intensity": "normal" }
+                      "controlFlowFlattening": { "enabled": true },
+                      "fakeBranches": { "enabled": true },
+                      "basicBlockSplitting": { "enabled": true },
+                      "constantEncryption": { "enabled": true },
+                      "stringEncryption": { "enabled": true },
+                      "methodInlining": { "enabled": true },
+                      "methodSplitting": { "enabled": true },
+                      "callIndirection": { "enabled": true },
+                      "methodTableHiding": { "enabled": true }
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true, "intensity": "normal" },
-                      "opaquePredicates": { "enabled": true, "intensity": "normal" },
-                      "blockLayoutPerturbation": { "enabled": true, "intensity": "normal" },
-                      "indirectCalls": { "enabled": true, "intensity": "normal" },
-                      "globalLayout": { "enabled": true, "intensity": "normal" },
+                      "nameObfuscation": { "enabled": true },
+                      "opaquePredicates": { "enabled": true },
+                      "blockLayoutPerturbation": { "enabled": true },
+                      "indirectCalls": { "enabled": true },
+                      "globalLayout": { "enabled": true },
                       "visibilityHardening": { "enabled": true }
                     },
                     "binary": {

@@ -386,7 +386,7 @@ class NativeImplementationPlannerTest implements Opcodes {
 
         NativeMethodImplementation implementation = plan.implementationFor(decision.method().methodKey()).orElseThrow();
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
-        assertEquals("LLVM_CONSTRUCTOR_CALL_HELPER_IR", implementation.reasonCode());
+        assertEquals("LLVM_DISPATCH_HELPER_IR", implementation.reasonCode());
         assertEquals(List.of("object:pkg/Thing"), implementation.allocationKeys());
         assertEquals(List.of("pkg/Thing#<init>!()V"), implementation.constructorCallKeys());
         assertTrue(implementation.passesJniEnv());
@@ -619,7 +619,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void doesNotSelectLlvmPathForVirtualOrInterfaceDispatch() {
+    void selectsLlvmPathForVirtualOrInterfaceDispatchHelpers() {
         ParsedClass virtualClass = parse(
                 "pkg/VirtualCalls.class",
                 AsmFixtureBuilder.classWithVirtualCall("pkg/VirtualCalls", "pkg/RunnableThing"));
@@ -631,7 +631,11 @@ class NativeImplementationPlannerTest implements Opcodes {
                 List.of(virtualDecision),
                 Map.of(virtualDecision.method().methodKey(), irMethod(virtualClass, "call")));
 
-        assertTrue(virtualPlan.implementationFor(virtualDecision.method().methodKey()).isEmpty());
+        NativeMethodImplementation virtualImplementation =
+                virtualPlan.implementationFor(virtualDecision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, virtualImplementation.path());
+        assertEquals("LLVM_DISPATCH_HELPER_IR", virtualImplementation.reasonCode());
+        assertTrue(virtualImplementation.passesJniEnv());
 
         ParsedClass interfaceClass = parse(
                 "pkg/InterfaceCalls.class",
@@ -644,7 +648,11 @@ class NativeImplementationPlannerTest implements Opcodes {
                 List.of(interfaceDecision),
                 Map.of(interfaceDecision.method().methodKey(), irMethod(interfaceClass, "call")));
 
-        assertTrue(interfacePlan.implementationFor(interfaceDecision.method().methodKey()).isEmpty());
+        NativeMethodImplementation interfaceImplementation =
+                interfacePlan.implementationFor(interfaceDecision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, interfaceImplementation.path());
+        assertEquals("LLVM_DISPATCH_HELPER_IR", interfaceImplementation.reasonCode());
+        assertTrue(interfaceImplementation.passesJniEnv());
     }
 
     @Test

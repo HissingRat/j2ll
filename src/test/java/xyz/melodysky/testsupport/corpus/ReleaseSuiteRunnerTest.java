@@ -104,7 +104,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
 
         CorpusRunResult run = result.cases().get(0);
         assertTrue(run.pipelineResult().successful(), run.pipelineResult().diagnostics().toString());
-        assertTrue(run.normalizedOutputMatches(), run.outputRun().stderr());
+        assertTrue(run.normalizedOutputMatches(), runMismatch(run));
         String summary = Files.readString(result.summary());
         assertTrue(summary.contains("\"profile\": \"beta\""));
         assertTrue(summary.contains("\"missingCategories\": []"), summary);
@@ -223,7 +223,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
 
         CorpusRunResult run = result.cases().get(0);
         assertTrue(run.pipelineResult().successful(), run.pipelineResult().diagnostics().toString());
-        assertTrue(run.normalizedOutputMatches(), run.outputRun().stderr());
+        assertTrue(run.normalizedOutputMatches(), runMismatch(run));
         try (JarFile jarFile = new JarFile(run.pipelineResult().outputJar().toFile(), false)) {
             assertTrue(jarFile.getJarEntry("META-INF/TEST.SF") == null);
             assertTrue(jarFile.getJarEntry("META-INF/TEST.RSA") == null);
@@ -250,7 +250,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
 
         CorpusRunResult run = result.cases().get(0);
         assertTrue(run.pipelineResult().successful(), run.pipelineResult().diagnostics().toString());
-        assertTrue(run.normalizedOutputMatches(), run.outputRun().stderr());
+        assertTrue(run.normalizedOutputMatches(), runMismatch(run));
         assertEquals(0, verifyJar(jarsigner, run.pipelineResult().outputJar()));
         String packagingReport = Files.readString(run.reportPaths().reports().get("packaging-report.json"));
         assertTrue(packagingReport.contains("\"action\": \"resign\""));
@@ -343,7 +343,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
 
         for (CorpusRunResult run : result.cases()) {
             assertTrue(run.pipelineResult().successful(), run.corpusCase().name() + run.pipelineResult().diagnostics());
-            assertTrue(run.normalizedOutputMatches(), run.corpusCase().name());
+            assertTrue(run.normalizedOutputMatches(), run.corpusCase().name() + " " + runMismatch(run));
             assertReadinessPassed(run);
         }
         CorpusRunResult cli = result.cases().stream()
@@ -844,26 +844,25 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                   "protection": {
                     "enabled": false,
                     "seed": "corpus-seed",
-                    "intensity": "normal",
                     "ir": {
                       "enabled": false,
-                      "controlFlowFlattening": { "enabled": false, "intensity": "normal" },
-                      "fakeBranches": { "enabled": false, "intensity": "normal" },
-                      "basicBlockSplitting": { "enabled": false, "intensity": "normal" },
-                      "constantEncryption": { "enabled": false, "intensity": "normal" },
-                      "stringEncryption": { "enabled": false, "intensity": "normal", "cacheStrings": false },
-                      "methodInlining": { "enabled": false, "intensity": "normal" },
-                      "methodSplitting": { "enabled": false, "intensity": "normal" },
-                      "callIndirection": { "enabled": false, "intensity": "normal" },
-                      "methodTableHiding": { "enabled": false, "intensity": "normal" }
+                      "controlFlowFlattening": { "enabled": false },
+                      "fakeBranches": { "enabled": false },
+                      "basicBlockSplitting": { "enabled": false },
+                      "constantEncryption": { "enabled": false },
+                      "stringEncryption": { "enabled": false },
+                      "methodInlining": { "enabled": false },
+                      "methodSplitting": { "enabled": false },
+                      "callIndirection": { "enabled": false },
+                      "methodTableHiding": { "enabled": false }
                     },
                     "llvm": {
                       "enabled": false,
-                      "nameObfuscation": { "enabled": false, "intensity": "normal" },
-                      "opaquePredicates": { "enabled": false, "intensity": "normal" },
-                      "blockLayoutPerturbation": { "enabled": false, "intensity": "normal" },
-                      "indirectCalls": { "enabled": false, "intensity": "normal" },
-                      "globalLayout": { "enabled": false, "intensity": "normal" },
+                      "nameObfuscation": { "enabled": false },
+                      "opaquePredicates": { "enabled": false },
+                      "blockLayoutPerturbation": { "enabled": false },
+                      "indirectCalls": { "enabled": false },
+                      "globalLayout": { "enabled": false },
                       "visibilityHardening": { "enabled": false }
                     },
                     "binary": {
@@ -1381,6 +1380,24 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         String packagingReport = Files.readString(run.reportPaths().reports().get("packaging-report.json"));
         assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
         assertFalse(packagingReport.contains("\"storageTarget\": \"generatedClass\""));
+    }
+
+    private String runMismatch(CorpusRunResult run) {
+        if (run.originalRun() == null || run.outputRun() == null) {
+            return "missing child JVM run";
+        }
+        return "originalExit=%d outputExit=%d originalStdout=%s outputStdout=%s originalStderr=%s outputStderr=%s"
+                .formatted(
+                        run.originalRun().exitCode(),
+                        run.outputRun().exitCode(),
+                        quote(run.originalRun().stdout()),
+                        quote(run.outputRun().stdout()),
+                        quote(run.originalRun().stderr()),
+                        quote(run.outputRun().stderr()));
+    }
+
+    private String quote(String value) {
+        return value.replace("\r\n", "\n").replace('\r', '\n').replace("\n", "\\n");
     }
 
     private void endMain(MethodVisitor main) {

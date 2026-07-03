@@ -83,7 +83,8 @@ class HostNativeLibraryBuilderTest {
         assertTrue(source.contains("RegisterNatives"));
         assertTrue(source.contains("JNI_OnLoad"));
         assertTrue(source.contains("extern jint " + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
-        assertTrue(source.contains("return (jint)" + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
+        assertTrue(source.contains("jint result = (jint)" + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
+        assertTrue(source.contains("return result;"));
         assertFalse(source.contains("return arg0 + arg1;"));
         assertTrue(llvm.contains("define external hidden i32 @"
                 + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));

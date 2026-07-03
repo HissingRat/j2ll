@@ -564,8 +564,8 @@ class LlvmModuleLowererTest {
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
                 new IrClass("pkg/Dispatch", List.of(method))));
 
-        assertTrue(text.contains("@j2ll_rt_call_virtual_i32_arg_i32(ptr %j2ll_env, ptr %p0, i64 "));
-        assertTrue(text.contains("@j2ll_rt_call_interface_ref_arg_ref(ptr %j2ll_env, ptr %p0, i64 "));
+        assertTrue(text.contains("@j2ll_rt_call_virtual_i32_a(ptr %j2ll_env, ptr %p0, i64 "));
+        assertTrue(text.contains("@j2ll_rt_call_interface_ref_a(ptr %j2ll_env, ptr %p0, i64 "));
         assertFalse(text.contains("vtable"));
     }
 }

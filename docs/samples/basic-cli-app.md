@@ -39,7 +39,7 @@ Use the same schema shape as `docs/examples/minimal-config.json`:
   "blackList": [],
   "target": {"macosArm64": true},
   "signaturePolicy": "fail",
-  "protection": {"enabled": true, "seed": "hash-this-seed", "intensity": "normal"}
+  "protection": {"enabled": true, "seed": "hash-this-seed"}
 }
 ```
 
