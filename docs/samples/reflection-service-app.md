@@ -79,9 +79,11 @@ Use the same fields as `docs/examples/protection-all-on-config.json`; keep sensi
 ## Command
 
 ```sh
-java -jar build/dist/j2ll/j2ll.jar build config/reflection-service-app.json build/j2ll-reflection-workspace
-java -jar build/j2ll-reflection-workspace/output/reflection-service-app.jar sample.reflect.Main
+java -jar build/dist/j2ll/j2ll.jar --config config/reflection-service-app.json
+java -jar <outputJar-path-printed-by-j2ll> sample.reflect.Main
 ```
+
+j2ll creates `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/` automatically and writes `reflection-service-app.jar` directly in that workspace.
 
 Expected output:
 
@@ -97,4 +99,4 @@ Expected report highlights:
 - Constant reflection can use helper-backed lowering; dynamic names stay fallback-backed with explicit reason codes.
 - `protection-report.json` and `artifact-audit.json` remain hash-only for sensitive plaintext.
 
-Set exactly one `target` flag for the current host when running this sample.
+Enable the current host target when you want to run this sample locally. You may also enable any of the other five fixed targets in the same build; managed Zig produces the selected DLL/SO/dylib matrix in one invocation, while only the host artifact is exercised by the local child JVM.

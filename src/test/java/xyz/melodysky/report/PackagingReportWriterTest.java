@@ -43,7 +43,7 @@ class PackagingReportWriterTest {
                 {
                   "schemaVersion": 1,
                   "reportVersion": 1,
-                  "outputJar": "output/input.jar",
+                  "outputJar": "input.jar",
                   "manifestPolicy": "preserved",
                   "signaturePolicy": "fail",
                   "preservationSummary": {
@@ -62,7 +62,7 @@ class PackagingReportWriterTest {
                     "reason": "input JAR is not signed"
                   },
                   "generatedLoaders": [
-                    "j2ll/generated/abc123/NativeLoader"
+                    "native0/Loader"
                   ],
                   "rewrittenClasses": [
                     {
@@ -125,9 +125,9 @@ class PackagingReportWriterTest {
                   "fallbackBlobs": []
                 }
                 """, new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+                Path.of("input.jar"),
                 SignaturePolicy.FAIL,
-                List.of("j2ll/generated/abc123/NativeLoader"),
+                List.of("native0/Loader"),
                 List.of(decision),
                 List.of(new EmbeddedLibraryReport("linux-x64", "native0/x64-linux.so", "012345")),
                 List.of(new NativeRegistrationEntry("pkg/Mathy", "add", "(II)I", "j2ll_pkg_Mathy_add_0123")),
@@ -170,7 +170,7 @@ class PackagingReportWriterTest {
                 {
                   "schemaVersion": 1,
                   "reportVersion": 1,
-                  "outputJar": "output/input.jar",
+                  "outputJar": "input.jar",
                   "manifestPolicy": "preserved",
                   "signaturePolicy": "fail",
                   "preservationSummary": {
@@ -242,7 +242,7 @@ class PackagingReportWriterTest {
                   ]
                 }
                 """, new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+                Path.of("input.jar"),
                 SignaturePolicy.FAIL,
                 List.of(),
                 List.of(),
@@ -261,7 +261,7 @@ class PackagingReportWriterTest {
                 List.of(TargetTriple.WINDOWS_X64, TargetTriple.LINUX_X64, TargetTriple.MACOS_ARM64));
 
         String json = new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+                Path.of("input.jar"),
                 SignaturePolicy.FAIL,
                 List.of(),
                 List.of(),
@@ -273,11 +273,14 @@ class PackagingReportWriterTest {
                 List.of());
 
         assertTrue(json.contains("\"target\": \"linux-x64\""), json);
-        assertTrue(json.contains("\"expectedResourcePath\": \"native/linux-x64/x64-linux.so\""), json);
+        assertTrue(json.contains("\"expectedArtifactPath\": \"workspace/native/x64-linux.so\""), json);
+        assertTrue(json.contains("\"expectedResourcePath\": \"native/x64-linux.so\""), json);
         assertTrue(json.contains("\"target\": \"macos-arm64\""), json);
-        assertTrue(json.contains("\"expectedResourcePath\": \"native/macos-arm64/arm64-macos.dylib\""), json);
+        assertTrue(json.contains("\"expectedArtifactPath\": \"workspace/native/arm64-macos.dylib\""), json);
+        assertTrue(json.contains("\"expectedResourcePath\": \"native/arm64-macos.dylib\""), json);
         assertTrue(json.contains("\"target\": \"windows-x64\""), json);
-        assertTrue(json.contains("\"expectedResourcePath\": \"native/windows-x64/x64-windows.dll\""), json);
+        assertTrue(json.contains("\"expectedArtifactPath\": \"workspace/native/x64-windows.dll\""), json);
+        assertTrue(json.contains("\"expectedResourcePath\": \"native/x64-windows.dll\""), json);
         assertTrue(json.contains("\"windowsPdbPolicy\": \"excludePdbFromJarAndReports\""), json);
         assertEquals(List.of("linux-x64", "macos-arm64", "windows-x64"),
                 JsonParser.parseString(json)
@@ -297,133 +300,8 @@ class PackagingReportWriterTest {
                 "j2llapp",
                 List.of(TargetTriple.LINUX_X64, TargetTriple.MACOS_ARM64));
 
-        assertEquals("""
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "outputJar": "output/input.jar",
-                  "manifestPolicy": "preserved",
-                  "signaturePolicy": "fail",
-                  "preservationSummary": {
-                    "manifestPreserved": false,
-                    "serviceEntriesPreserved": 0,
-                    "moduleInfoPreserved": false,
-                    "multiRelease": false,
-                    "versionedEntriesPreserved": 0,
-                    "versionedClassPolicy": "baseClassesOnly"
-                  },
-                  "signatureAction": {
-                    "action": "none",
-                    "signedInput": false,
-                    "removedEntries": [],
-                    "reasonCode": "SIGNATURE_NOT_PRESENT",
-                    "reason": "input JAR is not signed"
-                  },
-                  "generatedLoaders": [],
-                  "rewrittenClasses": [],
-                  "embeddedLibraries": [],
-                  "zigToolchain": {
-                    "managed": true,
-                    "version": null,
-                    "executable": null,
-                    "buildZig": null,
-                    "verificationPolicy": null,
-                    "selectedTargets": [
-                      "linux-x64",
-                      "macos-arm64"
-                    ],
-                    "requiredTargets": [
-                      "linux-x64",
-                      "macos-arm64"
-                    ],
-                    "buildableTargets": [
-                      "macos-arm64"
-                    ],
-                    "skippedTargets": [],
-                    "failedTargets": [
-                      {
-                        "target": "linux-x64",
-                        "zigTarget": "x86_64-linux",
-                        "output": "/work/native/linux-x64/x64-linux.so",
-                        "status": "failed",
-                        "currentHost": false,
-                        "required": true,
-                        "buildable": false,
-                        "reasonCode": "ZIG_TARGET_UNBUILDABLE",
-                        "reason": "selected required target linux-x64 is not buildable by the current managed Zig workspace preflight",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "Zig Linux libc/linker support for selected target",
-                        "failureKind": "unsupportedLibc",
-                        "buildLogTail": "preflight only: no Zig build invoked for required unbuildable target linux-x64"
-                      }
-                    ],
-                    "targetArtifacts": [
-                      {
-                        "target": "linux-x64",
-                        "required": true,
-                        "currentHost": false,
-                        "buildable": false,
-                        "osClassifier": "linux",
-                        "archClassifier": "x64",
-                        "libraryExtension": "so",
-                        "libraryName": "j2llapp",
-                        "zigTarget": "x86_64-linux",
-                        "expectedArtifactPath": "/work/native/linux-x64/x64-linux.so",
-                        "expectedArtifactName": "x64-linux.so",
-                        "expectedResourcePath": "native/linux-x64/x64-linux.so",
-                        "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
-                        "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
-                        "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": null,
-                        "actualJarPath": null,
-                        "actualSha256": null,
-                        "exportedSymbols": [],
-                        "status": "failed",
-                        "reasonCode": "ZIG_TARGET_UNBUILDABLE",
-                        "reason": "selected required target linux-x64 is not buildable by the current managed Zig workspace preflight",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "Zig Linux libc/linker support for selected target",
-                        "failureKind": "unsupportedLibc",
-                        "buildLogTail": "preflight only: no Zig build invoked for required unbuildable target linux-x64"
-                      },
-                      {
-                        "target": "macos-arm64",
-                        "required": true,
-                        "currentHost": true,
-                        "buildable": true,
-                        "osClassifier": "macos",
-                        "archClassifier": "arm64",
-                        "libraryExtension": "dylib",
-                        "libraryName": "j2llapp",
-                        "zigTarget": "aarch64-macos",
-                        "expectedArtifactPath": "/work/native/macos-arm64/arm64-macos.dylib",
-                        "expectedArtifactName": "arm64-macos.dylib",
-                        "expectedResourcePath": "native/macos-arm64/arm64-macos.dylib",
-                        "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
-                        "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
-                        "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": null,
-                        "actualJarPath": null,
-                        "actualSha256": null,
-                        "exportedSymbols": [],
-                        "status": "buildable",
-                        "reasonCode": "CURRENT_HOST_TARGET",
-                        "reason": "selected target matches the current JVM host and is buildable now",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "macOS SDK and linker support for selected target",
-                        "failureKind": "none",
-                        "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
-                      }
-                    ],
-                    "bootstrapEvents": []
-                  },
-                  "registeredNativeMethods": [],
-                  "registrationGroups": [],
-                  "exportedSymbols": [],
-                  "fallbackBlobs": []
-                }
-                """, new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+        String json = new PackagingReportWriter().packagingJson(
+                Path.of("input.jar"),
                 SignaturePolicy.FAIL,
                 List.of(),
                 List.of(),
@@ -432,7 +310,21 @@ class PackagingReportWriterTest {
                 List.of(),
                 null,
                 plan,
-                List.of()));
+                List.of());
+        var zig = JsonParser.parseString(json).getAsJsonObject().getAsJsonObject("zigToolchain");
+        assertEquals(List.of("linux-x64", "macos-arm64"), zig.getAsJsonArray("buildableTargets").asList().stream()
+                .map(element -> element.getAsString())
+                .toList());
+        assertTrue(zig.getAsJsonArray("failedTargets").isEmpty(), json);
+        var targets = zig.getAsJsonArray("targetArtifacts").asList().stream()
+                .map(element -> element.getAsJsonObject())
+                .toList();
+        assertEquals("x86_64-linux.3.2-gnu.2.17", targets.get(0).get("zigTarget").getAsString());
+        assertEquals("ZIG_CROSS_TARGET_SUPPORTED", targets.get(0).get("reasonCode").getAsString());
+        assertEquals("aarch64-macos.11.0", targets.get(1).get("zigTarget").getAsString());
+        assertEquals("CURRENT_HOST_TARGET", targets.get(1).get("reasonCode").getAsString());
+        assertTrue(targets.stream().allMatch(target -> target.get("buildable").getAsBoolean()));
+        assertTrue(targets.stream().allMatch(target -> "none".equals(target.get("failureKind").getAsString())));
     }
 
     @Test
@@ -448,9 +340,9 @@ class PackagingReportWriterTest {
                 Path.of("/work/native/zig-workspace/c/jni_wrappers.c"),
                 List.of(new NativeLibraryArtifact(
                         TargetTriple.WINDOWS_X64,
-                        Path.of("/work/native/windows-x64/x64-windows.dll"),
+                        Path.of("/work/native/x64-windows.dll"),
                         Path.of("/work/native/zig-workspace/c/jni_wrappers.c"),
-                        "native/windows-x64/x64-windows.dll",
+                        "native/x64-windows.dll",
                         "a".repeat(64),
                         List.of("JNI_OnLoad"))),
                 new ZigBuildInvocation(
@@ -460,7 +352,7 @@ class PackagingReportWriterTest {
                         Path.of("/work/logs/zig-build.log")));
 
         String json = new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+                Path.of("input.jar"),
                 SignaturePolicy.FAIL,
                 List.of(),
                 List.of(),
@@ -475,11 +367,13 @@ class PackagingReportWriterTest {
         assertTrue(json.contains("\"osClassifier\": \"windows\""));
         assertTrue(json.contains("\"archClassifier\": \"x64\""));
         assertTrue(json.contains("\"libraryExtension\": \"dll\""));
-        assertTrue(json.contains("\"expectedResourcePath\": \"native/windows-x64/x64-windows.dll\""));
+        assertTrue(json.contains("\"expectedArtifactPath\": \"/work/native/x64-windows.dll\""));
+        assertTrue(json.contains("\"expectedResourcePath\": \"native/x64-windows.dll\""));
         assertTrue(json.contains("\"loaderExtractionPathPolicy\": \"contentAddressedTempCacheBySha256\""));
         assertTrue(json.contains("\"symbolVisibilityPolicy\": \"allowlistOnlyJniOnLoadAndBootstrap\""));
         assertTrue(json.contains("\"actualSha256\": \"" + "a".repeat(64) + "\""));
-        assertTrue(json.contains("\"actualJarPath\": \"native/windows-x64/x64-windows.dll\""));
+        assertTrue(json.contains("\"actualArtifactPath\": \"/work/native/x64-windows.dll\""));
+        assertTrue(json.contains("\"actualJarPath\": \"native/x64-windows.dll\""));
         assertTrue(json.contains("\"windowsPdbPolicy\": \"excludePdbFromJarAndReports\""));
         assertTrue(json.contains("\"exportedSymbols\": [\n          \"JNI_OnLoad\"\n        ]"));
         assertTrue(json.contains("\"bootstrapEvents\""));
@@ -488,7 +382,7 @@ class PackagingReportWriterTest {
     @Test
     void writesSuccessfulResignAction() {
         String json = new PackagingReportWriter().packagingJson(
-                Path.of("output/input.jar"),
+                Path.of("input.jar"),
                 SignaturePolicy.RESIGN,
                 List.of(),
                 List.of(),

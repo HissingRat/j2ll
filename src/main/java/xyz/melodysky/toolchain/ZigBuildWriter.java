@@ -18,10 +18,20 @@ public final class ZigBuildWriter {
             String libraryName,
             NativeBuildPlan buildPlan,
             ZigInputSet inputs) throws IOException {
+        return write(workspace, libraryName, buildPlan, inputs, true);
+    }
+
+    public Path write(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            NativeBuildPlan buildPlan,
+            ZigInputSet inputs,
+            boolean strip) throws IOException {
+        requireSafeLibraryName(libraryName);
         Files.createDirectories(workspace.buildDirectory());
         Files.writeString(
                 workspace.buildZig(),
-                buildZig(workspace, libraryName, buildPlan, inputs.sources()),
+                buildZig(workspace, libraryName, buildPlan, inputs.sources(), strip),
                 StandardCharsets.UTF_8);
         Files.writeString(
                 workspace.manifest(),
@@ -35,6 +45,16 @@ public final class ZigBuildWriter {
             String libraryName,
             NativeBuildPlan buildPlan,
             ZigSourceSet sources) {
+        return buildZig(workspace, libraryName, buildPlan, sources, true);
+    }
+
+    public String buildZig(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            NativeBuildPlan buildPlan,
+            ZigSourceSet sources,
+            boolean strip) {
+        requireSafeLibraryName(libraryName);
         StringBuilder builder = new StringBuilder();
         builder.append("""
                 const std = @import("std");
@@ -42,8 +62,11 @@ public final class ZigBuildWriter {
                 pub fn build(b: *std.Build) void {
                     const optimize = .ReleaseSafe;
                 """);
+        if (!buildPlan.units().isEmpty()) {
+            builder.append("    const progress_markers = b.addWriteFiles();\n");
+        }
         for (NativeBuildUnit unit : buildPlan.units()) {
-            appendTarget(builder, workspace, libraryName, unit, sources);
+            appendTarget(builder, workspace, libraryName, unit, sources, strip);
         }
         builder.append("}\n");
         return builder.toString();
@@ -54,21 +77,19 @@ public final class ZigBuildWriter {
             ZigBuildWorkspace workspace,
             String libraryName,
             NativeBuildUnit unit,
-            ZigSourceSet sources) {
+            ZigSourceSet sources,
+            boolean strip) {
         TargetTriple target = unit.target();
         String symbol = target.safeSymbol();
         builder.append("\n")
-                .append("    const target_").append(symbol).append(" = b.resolveTargetQuery(.{ .cpu_arch = .")
-                .append(target.zigCpuArch()).append(", .os_tag = .").append(target.zigOsTag()).append(" });\n")
+                .append("    const target_").append(symbol).append(" = b.resolveTargetQuery(")
+                .append(target.zigTargetQuery()).append(");\n")
                 .append("    const module_").append(symbol).append(" = b.createModule(.{\n")
                 .append("        .target = target_").append(symbol).append(",\n")
                 .append("        .optimize = optimize,\n")
+                .append("        .strip = ").append(strip).append(",\n")
                 .append("        .link_libc = true,\n")
                 .append("    });\n");
-        for (Path include : sources.includeDirectories()) {
-            builder.append("    module_").append(symbol).append(".addIncludePath(.{ .cwd_relative = ")
-                    .append(quote(include.toAbsolutePath().normalize().toString())).append(" });\n");
-        }
         if (!sources.cSources().isEmpty()) {
             builder.append("    module_").append(symbol).append(".addCSourceFiles(.{\n")
                     .append("        .root = b.path(\".\"),\n")
@@ -78,7 +99,12 @@ public final class ZigBuildWriter {
                     .toList()));
             builder.append(" },\n")
                     .append("        .language = .c,\n")
-                    .append("        .flags = &.{ \"-g0\", \"-fvisibility=hidden\", \"-ffile-compilation-dir=.\", \"-fdebug-compilation-dir=.\" },\n")
+                    .append("        .flags = &.{ \"-g0\", \"-fvisibility=hidden\", \"-ffile-compilation-dir=.\", \"-fdebug-compilation-dir=.\"");
+            for (Path include : sources.includeDirectories()) {
+                builder.append(", ")
+                        .append(quote("-I" + include.toAbsolutePath().normalize()));
+            }
+            builder.append(" },\n")
                     .append("    });\n");
         }
         for (Path llvm : sources.llvmSources()) {
@@ -107,7 +133,18 @@ public final class ZigBuildWriter {
                 .append(quote(relative(workspace.workspaceRoot(), unit.outputPath())))
                 .append(",\n")
                 .append("    });\n")
-                .append("    b.getInstallStep().dependOn(&install_").append(symbol).append(".step);\n");
+                .append("    const marker_").append(symbol).append(" = progress_markers.add(")
+                .append(quote(target.directoryName() + ".done")).append(", ")
+                .append(quote(ZigTargetCompletionMonitor.markerContent(target))).append(");\n")
+                .append("    const install_marker_").append(symbol)
+                .append(" = b.addInstallFileWithDir(marker_").append(symbol).append(", .prefix, ")
+                .append(quote(relative(
+                        workspace.workspaceRoot(),
+                        ZigTargetCompletionMonitor.markerPath(workspace, target))))
+                .append(");\n")
+                .append("    install_marker_").append(symbol).append(".step.dependOn(&install_")
+                .append(symbol).append(".step);\n")
+                .append("    b.getInstallStep().dependOn(&install_marker_").append(symbol).append(".step);\n");
     }
 
     private String manifestJson(
@@ -214,6 +251,30 @@ public final class ZigBuildWriter {
     }
 
     private String quote(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        StringBuilder quoted = new StringBuilder("\"");
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            switch (ch) {
+                case '\\' -> quoted.append("\\\\");
+                case '"' -> quoted.append("\\\"");
+                case '\n' -> quoted.append("\\n");
+                case '\r' -> quoted.append("\\r");
+                case '\t' -> quoted.append("\\t");
+                default -> {
+                    if (ch < 0x20 || ch == 0x7f) {
+                        quoted.append(String.format(java.util.Locale.ROOT, "\\x%02x", (int) ch));
+                    } else {
+                        quoted.append(ch);
+                    }
+                }
+            }
+        }
+        return quoted.append('"').toString();
+    }
+
+    private void requireSafeLibraryName(String libraryName) {
+        if (!NativeLibraryName.isSafe(libraryName)) {
+            throw new IllegalArgumentException("unsafe native library name: " + libraryName);
+        }
     }
 }

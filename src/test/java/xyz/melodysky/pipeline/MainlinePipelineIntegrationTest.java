@@ -2,6 +2,7 @@ package xyz.melodysky.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -25,6 +26,7 @@ import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.JarClassFileSource;
+import xyz.melodysky.packaging.PackagingDiagnostics;
 import xyz.melodysky.report.ArtifactAudit;
 import xyz.melodysky.report.ArtifactAuditCheck;
 import xyz.melodysky.report.ArtifactAuditResult;
@@ -35,10 +37,29 @@ import xyz.melodysky.testsupport.FakeManagedZig;
 import xyz.melodysky.testsupport.JvmRunner;
 import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.TargetTriple;
+import xyz.melodysky.toolchain.ZigBuildException;
 
 class MainlinePipelineIntegrationTest implements Opcodes {
     @TempDir
     Path temp;
+
+    @Test
+    void rejectsReservedRuntimeLoaderEntryBeforeNativeBuild() throws Exception {
+        Path inputJar = temp.resolve("loader-collision.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/Mathy.class", AsmFixtureBuilder.classWithAddMethod("pkg/Mathy"),
+                "native0/Loader.class", new byte[] {1, 2, 3}));
+        Path workspace = temp.resolve("out/loader-collision");
+
+        MainlinePipelineResult result = runPipeline(config(inputJar), workspace);
+
+        assertFalse(result.successful(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code()
+                        .equals(PackagingDiagnostics.GENERATED_RUNTIME_LOADER_ENTRY_COLLISION)));
+        assertFalse(Files.exists(workspace.resolve("native")));
+        assertFalse(Files.exists(result.outputJar()));
+    }
 
     @Test
     void runsTinyStaticAddJarThroughMainlineSkeleton() throws Exception {
@@ -188,7 +209,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
     }
 
     @Test
-    void reportsComplexFinallyAsFrontendSkippedNotFallback() throws Exception {
+    void reportsComplexFinallyAsEncodedJvmFallback() throws Exception {
         Path inputJar = temp.resolve("complex-finally-input.jar");
         writeJar(inputJar, "pkg/FinallyShape.class",
                 AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/FinallyShape"));
@@ -201,12 +222,13 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String frontendSkipReport = Files.readString(workspace.resolve("reports/frontend-skip-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"frontendSkipped\""));
+        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
         assertTrue(loweringReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
-        assertTrue(frontendSkipReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
-        assertFalse(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"fallbackBlobs\": []"));
-        assertTrue(packagingReport.contains("\"registeredNativeMethods\": []"));
+        assertFalse(frontendSkipReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
+        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"UNSUPPORTED_MULTI_EXIT_FINALLY\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\": []"));
+        assertFalse(packagingReport.contains("\"registeredNativeMethods\": []"));
         var outputClass = new AsmClassParser()
                 .parseAll(new JarClassFileSource(result.outputJar()))
                 .artifact()
@@ -218,8 +240,8 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 .filter(method -> method.name().equals("badFinally"))
                 .findFirst()
                 .orElseThrow();
-        assertFalse(badFinally.accessFlags().isNative());
-        assertTrue(badFinally.hasCode());
+        assertTrue(badFinally.accessFlags().isNative());
+        assertFalse(badFinally.hasCode());
     }
 
     @Test
@@ -475,43 +497,36 @@ class MainlinePipelineIntegrationTest implements Opcodes {
     }
 
     @Test
-    void failsWhenSelectedRequiredNonHostTargetIsUnbuildable() throws Exception {
+    void matrixInvocationIncludesCrossTargetAndAttributesInjectedBuildFailure() throws Exception {
         Path inputJar = temp.resolve("multi-target-input.jar");
         writeJar(inputJar);
         JsonObject json = JsonParser.parseString(baseJson(inputJar, "\"pkg/Mathy#add!(II)I\"")).getAsJsonObject();
-        json.add("target", JsonParser.parseString(hostPlusNonHostTargetJson()).getAsJsonObject());
+        json.add("target", JsonParser.parseString(hostPlusCrossTargetJson()).getAsJsonObject());
         ResolvedConfig config = new ConfigLoader().load(json, temp).config().orElseThrow();
         Path workspace = temp.resolve("out/build_2026-06-25_00-00-02");
 
-        MainlinePipelineResult result = runPipeline(config, workspace);
+        ZigBuildException failure;
+        try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-cross-target-failure"))) {
+            failure = assertThrows(
+                    ZigBuildException.class,
+                    () -> new MainlinePipeline().run(config, workspace));
+        }
 
-        assertFalse(result.successful(), result.diagnostics().toString());
-        assertFalse(Files.exists(result.outputJar()));
-        assertEquals(1, result.nativeBuildPlan().units().size());
-        assertEquals(2, result.nativeBuildPlan().targetPreflights().size());
-        String diagnostics = Files.readString(workspace.resolve("reports/diagnostics.json"));
-        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         String manifest = Files.readString(workspace.resolve("native/zig-workspace/j2ll-build-manifest.json"));
         TargetTriple host = HostPlatform.detect().orElseThrow().target();
-        TargetTriple nonHost = nonHostTarget(host);
-        assertTrue(diagnostics.contains("\"code\": \"ZIG_TARGET_UNBUILDABLE\""));
-        assertTrue(diagnostics.contains("\"decision\": \"failed\""));
-        assertTrue(packagingReport.contains("\"selectedTargets\""));
-        assertTrue(packagingReport.contains("\"requiredTargets\""));
-        assertTrue(packagingReport.contains("\"buildableTargets\""));
-        assertTrue(packagingReport.contains("\"failedTargets\""));
-        assertTrue(packagingReport.contains("\"targetArtifacts\""));
-        assertTrue(packagingReport.contains("\"expectedArtifactName\""));
-        assertTrue(packagingReport.contains("\"windowsPdbPolicy\""));
-        assertTrue(packagingReport.contains("\"target\": \"" + nonHost.directoryName() + "\""));
-        assertTrue(packagingReport.contains("\"reasonCode\": \"ZIG_TARGET_UNBUILDABLE\""));
-        assertTrue(packagingReport.contains("\"requiredCapability\": \"managedZig0.15.2BuildZigSharedLibrary\""));
-        assertTrue(packagingReport.contains("\"platformSdkRequirement\""));
-        assertTrue(packagingReport.contains("\"output\""));
+        TargetTriple crossTarget = crossTarget(host);
+        String buildZig = Files.readString(workspace.resolve("native/zig-workspace/build.zig"));
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
+        assertTrue(failure.failedTargets().contains(crossTarget), failure.failedTargets().toString());
+        assertTrue(Files.isRegularFile(failure.logFile()));
+        assertTrue(manifest.contains("\"buildableTargets\""));
+        assertTrue(manifest.contains("\"failedTargets\": []"));
         assertTrue(manifest.contains("\"target\": \"" + host.directoryName() + "\""));
-        assertTrue(manifest.contains("\"target\": \"" + nonHost.directoryName() + "\""));
-        assertFalse(Files.readString(workspace.resolve("native/zig-workspace/build.zig"))
-                .contains("const target_" + nonHost.safeSymbol()));
+        assertTrue(manifest.contains("\"target\": \"" + crossTarget.directoryName() + "\""));
+        assertTrue(manifest.contains("\"reasonCode\": \"ZIG_CROSS_TARGET_SUPPORTED\""));
+        assertTrue(manifest.contains("\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""));
+        assertTrue(buildZig.contains("const target_" + host.safeSymbol()));
+        assertTrue(buildZig.contains("const target_" + crossTarget.safeSymbol()));
     }
 
     @Test
@@ -914,9 +929,9 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 target == TargetTriple.MACOS_ARM64);
     }
 
-    private String hostPlusNonHostTargetJson() {
+    private String hostPlusCrossTargetJson() {
         TargetTriple host = HostPlatform.detect().orElseThrow().target();
-        TargetTriple nonHost = nonHostTarget(host);
+        TargetTriple crossTarget = crossTarget(host);
         return """
                 {
                     "windowsX64": %s,
@@ -926,20 +941,20 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                     "macosX64": %s,
                     "macosArm64": %s
                   }""".formatted(
-                host == TargetTriple.WINDOWS_X64 || nonHost == TargetTriple.WINDOWS_X64,
-                host == TargetTriple.WINDOWS_ARM64 || nonHost == TargetTriple.WINDOWS_ARM64,
-                host == TargetTriple.LINUX_X64 || nonHost == TargetTriple.LINUX_X64,
-                host == TargetTriple.LINUX_ARM64 || nonHost == TargetTriple.LINUX_ARM64,
-                host == TargetTriple.MACOS_X64 || nonHost == TargetTriple.MACOS_X64,
-                host == TargetTriple.MACOS_ARM64 || nonHost == TargetTriple.MACOS_ARM64);
+                host == TargetTriple.WINDOWS_X64 || crossTarget == TargetTriple.WINDOWS_X64,
+                host == TargetTriple.WINDOWS_ARM64 || crossTarget == TargetTriple.WINDOWS_ARM64,
+                host == TargetTriple.LINUX_X64 || crossTarget == TargetTriple.LINUX_X64,
+                host == TargetTriple.LINUX_ARM64 || crossTarget == TargetTriple.LINUX_ARM64,
+                host == TargetTriple.MACOS_X64 || crossTarget == TargetTriple.MACOS_X64,
+                host == TargetTriple.MACOS_ARM64 || crossTarget == TargetTriple.MACOS_ARM64);
     }
 
-    private TargetTriple nonHostTarget(TargetTriple host) {
+    private TargetTriple crossTarget(TargetTriple host) {
         for (TargetTriple target : TargetTriple.values()) {
             if (target != host) {
                 return target;
             }
         }
-        throw new IllegalStateException("no non-host target available");
+        throw new IllegalStateException("no cross target available");
     }
 }

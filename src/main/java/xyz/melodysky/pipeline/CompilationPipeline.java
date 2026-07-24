@@ -1,6 +1,7 @@
 package xyz.melodysky.pipeline;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -21,18 +22,21 @@ public final class CompilationPipeline {
         Objects.requireNonNull(context, "context");
         Object current = initialArtifact;
         ArrayList<DiagnosticStage> completedStages = new ArrayList<>();
+        LinkedHashMap<DiagnosticStage, Object> stageArtifacts = new LinkedHashMap<>();
 
         for (PipelineStage<Object, Object> stage : stages) {
             StageResult<Object> result = stage.run(current, context);
             context.diagnostics().addAll(result.diagnostics());
             completedStages.add(stage.name());
+            result.artifact().ifPresent(artifact -> stageArtifacts.put(stage.name(), artifact));
 
             if (result.hasErrors() || result.artifact().isEmpty()) {
                 return new PipelineRunResult(
                         Optional.empty(),
                         context.diagnostics().diagnostics(),
                         completedStages,
-                        true);
+                        true,
+                        stageArtifacts);
             }
             current = result.artifact().get();
         }
@@ -41,6 +45,7 @@ public final class CompilationPipeline {
                 Optional.ofNullable(current),
                 context.diagnostics().diagnostics(),
                 completedStages,
-                false);
+                false,
+                stageArtifacts);
     }
 }

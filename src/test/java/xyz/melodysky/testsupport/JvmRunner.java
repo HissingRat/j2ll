@@ -25,7 +25,11 @@ public final class JvmRunner {
         }
         return new JvmRunResult(
                 process.exitValue(),
-                new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8),
-                new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+                normalizeLineEndings(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8)),
+                normalizeLineEndings(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)));
+    }
+
+    private static String normalizeLineEndings(String text) {
+        return text.replace("\r\n", "\n").replace('\r', '\n');
     }
 }

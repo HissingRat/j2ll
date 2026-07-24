@@ -185,7 +185,7 @@ class ReleaseReadinessGateTest {
     @Test
     void requiredTargetFailureBlocksFinalArtifactAndStillHasTargetEvidence() throws Exception {
         writeCompleteReports(temp);
-        Files.delete(temp.resolve("output/input.jar"));
+        Files.delete(temp.resolve("input.jar"));
         Files.writeString(temp.resolve("reports/packaging-report.json"), failedTargetPackagingReport());
         Files.writeString(temp.resolve("reports/release-suite-summary.json"), strictSuiteSummary("""
                 "UNSAFE_RAW_MEMORY_FALLBACK": "expected"
@@ -314,8 +314,7 @@ class ReleaseReadinessGateTest {
     private void writeCompleteReports(Path workspace) throws Exception {
         Path reports = workspace.resolve("reports");
         Files.createDirectories(reports);
-        Files.createDirectories(workspace.resolve("output"));
-        Files.writeString(workspace.resolve("output/input.jar"), "fixture");
+        Files.writeString(workspace.resolve("input.jar"), "fixture");
         Files.writeString(reports.resolve("diagnostics.json"), "{\"diagnostics\":[]}\n");
         Files.writeString(reports.resolve("artifact-audit.json"), """
                 {
@@ -516,7 +515,7 @@ class ReleaseReadinessGateTest {
     private String successfulPackagingReport() {
         return """
                 {
-                  "outputJar": "output/input.jar",
+                  "outputJar": "input.jar",
                   "signatureAction": {},
                   "fallbackBlobs": [],
                   "zigToolchain": {
@@ -530,22 +529,22 @@ class ReleaseReadinessGateTest {
                         "archClassifier": "arm64",
                         "libraryExtension": "dylib",
                         "libraryName": "j2ll",
-                        "zigTarget": "aarch64-macos",
-                        "expectedArtifactPath": "native/macos-arm64/arm64-macos.dylib",
+                        "zigTarget": "aarch64-macos.11.0",
+                        "expectedArtifactPath": "native/arm64-macos.dylib",
                         "expectedArtifactName": "arm64-macos.dylib",
-                        "expectedResourcePath": "native/macos-arm64/arm64-macos.dylib",
+                        "expectedResourcePath": "native/arm64-macos.dylib",
                         "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
                         "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
                         "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": "native/macos-arm64/arm64-macos.dylib",
-                        "actualJarPath": "native/macos-arm64/arm64-macos.dylib",
+                        "actualArtifactPath": "native/arm64-macos.dylib",
+                        "actualJarPath": "native/arm64-macos.dylib",
                         "actualSha256": "%s",
                         "exportedSymbols": ["JNI_OnLoad"],
                         "status": "built",
                         "reasonCode": "CURRENT_HOST_TARGET",
                         "reason": "selected target matches the current JVM host and is buildable now",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "macOS SDK and linker support for selected target",
+                        "requiredCapability": "managedZig0.15.2CrossTargetSharedLibrary",
+                        "platformSdkRequirement": "managed Zig 0.15.2 Mach-O/Darwin target support; no host macOS SDK required",
                         "failureKind": "none",
                         "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
                       }
@@ -558,7 +557,7 @@ class ReleaseReadinessGateTest {
     private String failedTargetPackagingReport() {
         return """
                 {
-                  "outputJar": "output/input.jar",
+                  "outputJar": "input.jar",
                   "signatureAction": {},
                   "fallbackBlobs": [],
                   "zigToolchain": {
@@ -572,10 +571,10 @@ class ReleaseReadinessGateTest {
                         "archClassifier": "x64",
                         "libraryExtension": "so",
                         "libraryName": "j2ll",
-                        "zigTarget": "x86_64-linux",
-                        "expectedArtifactPath": "native/linux-x64/x64-linux.so",
+                        "zigTarget": "x86_64-linux.3.2-gnu.2.17",
+                        "expectedArtifactPath": "native/x64-linux.so",
                         "expectedArtifactName": "x64-linux.so",
-                        "expectedResourcePath": "native/linux-x64/x64-linux.so",
+                        "expectedResourcePath": "native/x64-linux.so",
                         "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
                         "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
                         "windowsPdbPolicy": "notApplicable",
@@ -585,11 +584,11 @@ class ReleaseReadinessGateTest {
                         "exportedSymbols": [],
                         "status": "failed",
                         "reasonCode": "ZIG_TARGET_UNBUILDABLE",
-                        "reason": "selected required target linux-x64 is not buildable by the current managed Zig workspace preflight",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "Zig Linux libc/linker support for selected target",
-                        "failureKind": "unsupportedLibc",
-                        "buildLogTail": "preflight only: no Zig build invoked for required unbuildable target linux-x64"
+                        "reason": "managed Zig failed to produce the required target artifact",
+                        "requiredCapability": "managedZig0.15.2CrossTargetSharedLibrary",
+                        "platformSdkRequirement": "managed Zig 0.15.2 ELF/Linux libc target support; no host Linux SDK required",
+                        "failureKind": "zigBuildFailed",
+                        "buildLogTail": "matrix-wide Zig link failed for linux-x64"
                       }
                     ]
                   }

@@ -62,7 +62,30 @@ public enum TargetTriple {
     }
 
     public String zigTarget() {
-        return zigCpuArch() + "-" + zigOsTag();
+        return switch (this) {
+            case WINDOWS_X64, WINDOWS_ARM64 -> zigCpuArch() + "-windows-gnu";
+            case LINUX_X64 -> "x86_64-linux.3.2-gnu.2.17";
+            case LINUX_ARM64 -> "aarch64-linux.3.7-gnu.2.17";
+            case MACOS_X64 -> "x86_64-macos.10.15";
+            case MACOS_ARM64 -> "aarch64-macos.11.0";
+        };
+    }
+
+    public String zigTargetQuery() {
+        String base = ".{ .cpu_arch = ." + zigCpuArch() + ", .os_tag = ." + zigOsTag();
+        return switch (this) {
+            case WINDOWS_X64, WINDOWS_ARM64 -> base + ", .abi = .gnu }";
+            case LINUX_X64 -> base
+                    + ", .os_version_min = .{ .semver = .{ .major = 3, .minor = 2, .patch = 0 } }"
+                    + ", .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 } }";
+            case LINUX_ARM64 -> base
+                    + ", .os_version_min = .{ .semver = .{ .major = 3, .minor = 7, .patch = 0 } }"
+                    + ", .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 } }";
+            case MACOS_X64 -> base
+                    + ", .os_version_min = .{ .semver = .{ .major = 10, .minor = 15, .patch = 0 } } }";
+            case MACOS_ARM64 -> base
+                    + ", .os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } } }";
+        };
     }
 
     public String safeSymbol() {

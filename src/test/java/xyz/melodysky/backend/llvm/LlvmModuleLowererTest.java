@@ -43,7 +43,8 @@ class LlvmModuleLowererTest {
         String text = new LlvmTextEmitter().emit(module);
 
         assertEquals("pkg/Mathy", module.identifier());
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Mathy_add_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
+        assertFalse(text.contains("pkg_Mathy"));
         assertTrue(text.contains("%sum = add i32 %p0, %p1"));
         assertTrue(text.contains("ret i32 %sum"));
     }
@@ -69,7 +70,8 @@ class LlvmModuleLowererTest {
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN));
 
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Mathy_add_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
+        assertFalse(text.contains("pkg_Mathy"));
         assertTrue(text.contains("%sum = add i32 %p0, %p1"));
     }
 
@@ -178,11 +180,12 @@ class LlvmModuleLowererTest {
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
                 new IrClass("pkg/Fields", List.of(readStatic, readInstance))));
 
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Fields_readStatic_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(readStatic)));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %j2ll_owner)"));
         assertTrue(text.contains("call i32 @j2ll_rt_field_get_static_i32(ptr %j2ll_env, ptr %j2ll_owner, i64 "
                 + FieldIdentityToken.token(staticFieldKey) + ")"));
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Fields_readInstance_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(readInstance)));
+        assertFalse(text.contains("pkg_Fields"));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %p0)"));
         assertTrue(text.contains("call i32 @j2ll_rt_field_get_field_i32(ptr %j2ll_env, ptr %p0, i64 "
                 + FieldIdentityToken.token(instanceFieldKey) + ")"));
@@ -212,7 +215,8 @@ class LlvmModuleLowererTest {
 
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Div", List.of(method))));
 
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Div_divRem_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
+        assertFalse(text.contains("pkg_Div"));
         assertTrue(text.contains("(ptr %j2ll_env, i32 %p0, i32 %p1)"));
         assertTrue(text.contains("%quotient = call i32 @j2ll_rt_div_i32(ptr %j2ll_env, i32 %p0, i32 %p1)"));
         assertTrue(text.contains("%remainder = call i32 @j2ll_rt_rem_i32(ptr %j2ll_env, i32 %p0, i32 %p1)"));
@@ -290,7 +294,8 @@ class LlvmModuleLowererTest {
 
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Locks", List.of(method))));
 
-        assertTrue(text.contains("define external hidden void @j2ll_pkg_Locks_locked_"));
+        assertTrue(text.contains("define external hidden void @" + new LlvmNameMangler().functionName(method)));
+        assertFalse(text.contains("pkg_Locks"));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %p0)"));
         assertTrue(text.contains("declare void @j2ll_rt_monitor_enter(ptr, ptr) ; monitorEnter"));
         assertTrue(text.contains("call void @j2ll_rt_monitor_enter(ptr %j2ll_env, ptr %p0)"));
@@ -325,7 +330,8 @@ class LlvmModuleLowererTest {
 
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
 
-        assertTrue(text.contains("define external hidden i32 @j2ll_pkg_Arrays_setFirstPlusLength_"));
+        assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
+        assertFalse(text.contains("pkg_Arrays"));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %p0, i32 %p1)"));
         assertTrue(text.contains("call void @j2ll_rt_array_store_i32(ptr %j2ll_env, ptr %p0, i32 %zero, i32 %p1)"));
         assertTrue(text.contains("%length = call i32 @j2ll_rt_array_length_i32(ptr %j2ll_env, ptr %p0)"));
@@ -484,8 +490,50 @@ class LlvmModuleLowererTest {
                 LlvmVisibility.HIDDEN,
                 Set.of(calleeKey)));
 
-        assertTrue(text.contains("call i32 @j2ll_pkg_Calls_callee_"));
+        assertTrue(text.contains("call i32 @" + new LlvmNameMangler().functionName(calleeKey)));
+        assertFalse(text.contains("@j2ll_pkg_Calls_callee_"));
         assertTrue(!text.contains("@j2ll_call_pkg_Calls_callee"));
+    }
+
+    @Test
+    void directCallPassesTheCalleeImplicitJniContext() {
+        String calleeKey = "pkg/Calls#calleeWithStatic!()I";
+        String fieldKey = "pkg/Calls#VALUE!I";
+        IrValue fieldValue = new IrValue("%field", IrType.I32);
+        IrMethod callee = new IrMethod(
+                "pkg/Calls",
+                "calleeWithStatic",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.fieldGet(fieldValue, IrOpcode.GET_STATIC, List.of(), fieldKey)),
+                        IrTerminator.returnValue(fieldValue))));
+        IrValue result = new IrValue("%result", IrType.I32);
+        IrMethod caller = new IrMethod(
+                "pkg/Calls",
+                "caller",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.call(
+                                Optional.of(result),
+                                IrOpcode.CALL_STATIC,
+                                List.of(),
+                                calleeKey)),
+                        IrTerminator.returnValue(result))));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+                new IrClass("pkg/Calls", List.of(callee, caller)),
+                LlvmLinkage.EXTERNAL,
+                LlvmVisibility.HIDDEN,
+                Set.of(calleeKey)));
+        String calleeSymbol = new LlvmNameMangler().functionName(calleeKey);
+
+        assertTrue(text.contains("call i32 @" + calleeSymbol + "(ptr %j2ll_env, ptr %j2ll_owner)"));
     }
 
     @Test
@@ -528,7 +576,8 @@ class LlvmModuleLowererTest {
                 LlvmVisibility.HIDDEN,
                 Set.of(calleeKey)));
 
-        assertTrue(text.contains("call i32 @j2ll_pkg_Calls_privateValue_"));
+        assertTrue(text.contains("call i32 @" + new LlvmNameMangler().functionName(calleeKey)));
+        assertFalse(text.contains("@j2ll_pkg_Calls_privateValue_"));
         assertTrue(text.contains("(ptr %p0, i32 %p1)"));
         assertTrue(!text.contains("@j2ll_call_pkg_Calls_privateValue"));
     }

@@ -21,6 +21,7 @@ import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.toolchain.HostPlatform;
+import xyz.melodysky.toolchain.NativeLibraryName;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class ConfigLoader {
@@ -121,11 +122,20 @@ public final class ConfigLoader {
         }
 
         String embeddedLibraryDirectory = root.get("embeddedLibraryDirectory").getAsString();
-        if (embeddedLibraryDirectory.isBlank() || embeddedLibraryDirectory.startsWith("/")) {
+        if (!isRuntimeClassDirectory(embeddedLibraryDirectory)) {
+            diagnostics.add(Diagnostic.error(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.INVALID_EMBEDDED_LIBRARY_DIRECTORY,
+                    "embeddedLibraryDirectory must be a relative Java package path "
+                            + "such as native0 or xyz/Melody/natives"));
+        }
+        String libraryName = nullableString(root, "libraryName");
+        if (libraryName != null && !NativeLibraryName.isSafe(libraryName)) {
             diagnostics.add(Diagnostic.error(
                     DiagnosticStage.CONFIG,
                     ConfigDiagnostics.INVALID_FIELD_VALUE,
-                    "embeddedLibraryDirectory must be a non-empty relative JAR path"));
+                    "libraryName must start with an ASCII letter and contain at most 64 "
+                            + "ASCII letters, digits, '_' or '-'"));
         }
 
         SigningConfig signing = parseSigning(base, root.get("signing"), diagnostics);
@@ -163,13 +173,23 @@ public final class ConfigLoader {
                 blackList,
                 target,
                 targets,
-                nullableString(root, "libraryName"),
+                libraryName,
                 embeddedLibraryDirectory,
                 signaturePolicy,
                 signing,
                 parseIntermediates(root.getAsJsonObject("intermediates")),
                 parseProtection(root.getAsJsonObject("protection"), seed));
         return new ConfigLoadResult(Optional.of(config), diagnostics);
+    }
+
+    private boolean isRuntimeClassDirectory(String value) {
+        if (!value.matches("[A-Za-z_$][A-Za-z0-9_$]*(/[A-Za-z_$][A-Za-z0-9_$]*)*")) {
+            return false;
+        }
+        return !value.equals("java")
+                && !value.startsWith("java/")
+                && !value.equals("META-INF")
+                && !value.startsWith("META-INF/");
     }
 
     private void validateShape(JsonObject root, List<Diagnostic> diagnostics) {

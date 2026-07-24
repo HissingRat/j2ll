@@ -3,6 +3,7 @@ package xyz.melodysky.pipeline;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
@@ -786,7 +787,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"DIV_REM_EXCEPTION_HELPER\""));
         String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_div_i32"));
-        assertTrue(source.contains("java/lang/ArithmeticException"));
+        assertFalse(source.contains("java/lang/ArithmeticException"));
+        assertTrue(source.contains("j2ll_decode_metadata_strings();"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DivRemOps.ll"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_div_i32(ptr %j2ll_env"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_rem_i32(ptr %j2ll_env"));
@@ -872,7 +874,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(source.contains("GetArrayLength"));
         assertTrue(source.contains("GetIntArrayRegion"));
         assertTrue(source.contains("SetIntArrayRegion"));
-        assertTrue(source.contains("ArrayIndexOutOfBoundsException"));
+        assertFalse(source.contains("ArrayIndexOutOfBoundsException"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ArrayHelperOps.ll"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_array_length_i32(ptr %j2ll_env"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_array_load_i32(ptr %j2ll_env"));
@@ -1895,7 +1897,9 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
             assertFalse(jarFile.stream()
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
                             && entry.getName().endsWith(".class")));
-            assertNotNull(jarFile.getJarEntry("xyz/melodysky/runtime/fallback/J2llFallbackSupport.class"));
+            assertNotNull(jarFile.getJarEntry("native0/Loader.class"));
+            assertNull(jarFile.getJarEntry("xyz/melodysky/runtime/fallback/J2llFallbackSupport.class"));
+            assertNull(jarFile.getJarEntry("xyz/melodysky/runtime/loader/J2llNativeLoaderSupport.class"));
         }
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));

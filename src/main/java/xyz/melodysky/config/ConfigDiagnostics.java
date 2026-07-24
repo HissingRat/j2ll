@@ -6,6 +6,8 @@ public final class ConfigDiagnostics {
     public static final DiagnosticCode UNKNOWN_FIELD = DiagnosticCode.of("UNKNOWN_FIELD");
     public static final DiagnosticCode MISSING_REQUIRED_FIELD = DiagnosticCode.of("MISSING_REQUIRED_FIELD");
     public static final DiagnosticCode INVALID_FIELD_VALUE = DiagnosticCode.of("INVALID_FIELD_VALUE");
+    public static final DiagnosticCode INVALID_EMBEDDED_LIBRARY_DIRECTORY =
+            DiagnosticCode.of("INVALID_EMBEDDED_LIBRARY_DIRECTORY");
     public static final DiagnosticCode UNSUPPORTED_SCHEMA_VERSION = DiagnosticCode.of("UNSUPPORTED_SCHEMA_VERSION");
     public static final DiagnosticCode UNSUPPORTED_FALLBACK_MODE = DiagnosticCode.of("UNSUPPORTED_FALLBACK_MODE");
     public static final DiagnosticCode NO_TARGET_SELECTED = DiagnosticCode.of("NO_TARGET_SELECTED");

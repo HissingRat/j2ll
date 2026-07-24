@@ -11,9 +11,16 @@ public final class DiagnosticHints {
     public static String hint(String reasonCode, String message) {
         return switch (reasonCode) {
             case "INVALID_SELECTOR" -> "Use owner/Class#method!(descriptor), for example example/Adder#add!(II)I.";
+            case "INVALID_EMBEDDED_LIBRARY_DIRECTORY" ->
+                    "Use a relative Java package path such as native0 or xyz/Melody/natives; do not use dots, '..', backslashes or META-INF.";
+            case "GENERATED_RUNTIME_LOADER_ENTRY_COLLISION",
+                    "GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW" ->
+                    "Choose an unused embeddedLibraryDirectory or remove the conflicting base/versioned Loader.class entry from the input JAR.";
             case "MISSING_REQUIRED_FIELD" -> missingRequiredFieldHint(message);
             case "ZIG_TARGET_UNBUILDABLE" ->
-                    "For beta builds, select the current host target or install the required Zig/SDK cross-target support.";
+                    "Open logs/zig-build.log, verify the managed Zig 0.15.2 install, and inspect the named target capability or link failure.";
+            case "SYMBOL_AUDIT_FAILED" ->
+                    "Open reports/symbol-audit.json and fix missing or unexpected exports for the named native target.";
             case "SIGNED_INPUT_REJECTED" ->
                     "Use signaturePolicy strip or resign, or provide an unsigned input JAR.";
             case "SIGNATURE_RESIGN_FAILED" ->

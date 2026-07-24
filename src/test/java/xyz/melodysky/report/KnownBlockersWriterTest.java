@@ -57,7 +57,7 @@ class KnownBlockersWriterTest {
                 "METHOD_HANDLE_FILTER_FALLBACK",
                 "METHOD_HANDLE_FOLD_FALLBACK",
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
-                "ZIG_TARGET_UNBUILDABLE",
+                "CROSS_TARGET_RUNTIME_E2E_PENDING",
                 "UNSAFE_RAW_MEMORY_FALLBACK",
                 "VAR_HANDLE_DYNAMIC_FALLBACK",
                 "FALLBACK_CACHE_REUSE",
@@ -66,7 +66,7 @@ class KnownBlockersWriterTest {
         }
         assertTrue(json.contains("\"reportLocation\": \"reports/lowering-report.json\""));
         assertTrue(json.contains("\"reportLocation\": \"reports/packaging-report.json\""));
-        assertTrue(json.contains("\"severity\": \"rc-blocker\""));
+        assertTrue(json.contains("\"severity\": \"future-blocker\""));
         assertTrue(json.contains("\"targetMilestone\": \"explicit-nongoal\""));
         assertTrue(json.contains("EXPLICIT_NONGOAL_STANDALONE_NATIVE_IMAGE"));
     }

@@ -21,6 +21,10 @@ public final class PipelineContext {
         return new PipelineContext(new DiagnosticBag(), NoopDumpSink.INSTANCE, Clock.systemUTC());
     }
 
+    public static PipelineContext usingDiagnostics(DiagnosticBag diagnostics) {
+        return new PipelineContext(diagnostics, NoopDumpSink.INSTANCE, Clock.systemUTC());
+    }
+
     public DiagnosticBag diagnostics() {
         return diagnostics;
     }

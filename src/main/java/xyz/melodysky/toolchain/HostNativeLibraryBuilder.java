@@ -8,6 +8,7 @@ import java.util.Optional;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 
 public final class HostNativeLibraryBuilder {
     private final NativeImplementationPlanner implementationPlanner = new NativeImplementationPlanner();
@@ -37,9 +38,12 @@ public final class HostNativeLibraryBuilder {
         if (host.isEmpty()) {
             return Optional.empty();
         }
+        RuntimeLoaderPlan runtimeLoaderPlan = RuntimeLoaderPlan.create(
+                embeddedLibraryDirectory,
+                implementationPlan.hasNativeEmbeddedFallback());
         Optional<ZigNativeBuildResult> result = delegate.build(
                 workspaceRoot,
-                embeddedLibraryDirectory,
+                runtimeLoaderPlan,
                 buildPlan,
                 implementationPlan,
                 irMethods);

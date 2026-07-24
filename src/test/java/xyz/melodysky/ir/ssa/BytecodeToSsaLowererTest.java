@@ -5,6 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
@@ -128,9 +132,33 @@ class BytecodeToSsaLowererTest {
                 "badType",
                 LoweringDiagnostics.SSA_MERGE_TYPE_MISMATCH);
         assertMergeSkipped(
-                AsmFixtureBuilder.classWithBadLocalSlotMerge("pkg/BadLocal"),
-                "badLocal",
+                classWithLiveUndefinedLocal("pkg/BadLocal"),
+                "liveUndefined",
                 LoweringDiagnostics.SSA_MERGE_LOCAL_SLOT_MISMATCH);
+        assertMergeSkipped(
+                classWithLiveLocalTypeMismatch("pkg/BadLocalType"),
+                "liveTypeMismatch",
+                LoweringDiagnostics.SSA_MERGE_TYPE_MISMATCH);
+    }
+
+    @Test
+    void ignoresLocalDefinedOnOnlyOneIncomingEdgeWhenDeadAtJoin() {
+        var method = lower(
+                classWithDeadPartialLocal("pkg/DeadPartialLocal"),
+                "deadPartial").irMethod().orElseThrow();
+
+        assertTrue(method.blocks().stream().allMatch(block -> block.parameters().isEmpty()));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+    }
+
+    @Test
+    void allowsDeadLocalSlotToHaveDifferentTypesAcrossIncomingEdges() {
+        var method = lower(
+                classWithDeadLocalTypeReuse("pkg/DeadLocalTypeReuse"),
+                "deadTypeReuse").irMethod().orElseThrow();
+
+        assertTrue(method.blocks().stream().allMatch(block -> block.parameters().isEmpty()));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
     }
 
     @Test
@@ -426,7 +454,8 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY, result.diagnostics().get(0).code());
     }
 
@@ -439,7 +468,8 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION, result.diagnostics().get(0).code());
     }
 
@@ -452,7 +482,8 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY, result.diagnostics().get(0).code());
     }
 
@@ -1253,6 +1284,115 @@ class BytecodeToSsaLowererTest {
         SsaMethodResult artifact = result.artifact().orElseThrow();
         artifact.irMethod().ifPresent(method -> assertTrue(new IrMethodValidator().validate(method).isEmpty()));
         return artifact;
+    }
+
+    private byte[] classWithDeadPartialLocal(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, internalName, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "deadPartial",
+                "(I)I",
+                null,
+                null);
+        Label join = new Label();
+        method.visitCode();
+        method.visitVarInsn(Opcodes.ILOAD, 0);
+        method.visitJumpInsn(Opcodes.IFEQ, join);
+        method.visitInsn(Opcodes.ICONST_1);
+        method.visitVarInsn(Opcodes.ISTORE, 1);
+        method.visitLabel(join);
+        method.visitIntInsn(Opcodes.BIPUSH, 7);
+        method.visitInsn(Opcodes.IRETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] classWithDeadLocalTypeReuse(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, internalName, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "deadTypeReuse",
+                "(I)I",
+                null,
+                null);
+        Label integerBranch = new Label();
+        Label join = new Label();
+        method.visitCode();
+        method.visitVarInsn(Opcodes.ILOAD, 0);
+        method.visitJumpInsn(Opcodes.IFEQ, integerBranch);
+        method.visitInsn(Opcodes.ACONST_NULL);
+        method.visitVarInsn(Opcodes.ASTORE, 1);
+        method.visitJumpInsn(Opcodes.GOTO, join);
+        method.visitLabel(integerBranch);
+        method.visitInsn(Opcodes.ICONST_1);
+        method.visitVarInsn(Opcodes.ISTORE, 1);
+        method.visitLabel(join);
+        method.visitIntInsn(Opcodes.BIPUSH, 7);
+        method.visitInsn(Opcodes.IRETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] classWithLiveUndefinedLocal(String internalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, internalName, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "liveUndefined",
+                "(I)I",
+                null,
+                null);
+        Label undefinedBranch = new Label();
+        Label join = new Label();
+        method.visitCode();
+        method.visitVarInsn(Opcodes.ILOAD, 0);
+        method.visitJumpInsn(Opcodes.IFEQ, undefinedBranch);
+        method.visitInsn(Opcodes.ICONST_1);
+        method.visitVarInsn(Opcodes.ISTORE, 1);
+        method.visitJumpInsn(Opcodes.GOTO, join);
+        method.visitLabel(undefinedBranch);
+        method.visitLabel(join);
+        method.visitVarInsn(Opcodes.ILOAD, 1);
+        method.visitInsn(Opcodes.IRETURN);
+        method.visitMaxs(1, 2);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] classWithLiveLocalTypeMismatch(String internalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, internalName, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "liveTypeMismatch",
+                "(I)Ljava/lang/Object;",
+                null,
+                null);
+        Label integerBranch = new Label();
+        Label join = new Label();
+        method.visitCode();
+        method.visitVarInsn(Opcodes.ILOAD, 0);
+        method.visitJumpInsn(Opcodes.IFEQ, integerBranch);
+        method.visitInsn(Opcodes.ACONST_NULL);
+        method.visitVarInsn(Opcodes.ASTORE, 1);
+        method.visitJumpInsn(Opcodes.GOTO, join);
+        method.visitLabel(integerBranch);
+        method.visitInsn(Opcodes.ICONST_1);
+        method.visitVarInsn(Opcodes.ISTORE, 1);
+        method.visitLabel(join);
+        method.visitVarInsn(Opcodes.ALOAD, 1);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(1, 2);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private void assertMergeSkipped(byte[] classBytes, String methodName, DiagnosticCode expectedCode) {

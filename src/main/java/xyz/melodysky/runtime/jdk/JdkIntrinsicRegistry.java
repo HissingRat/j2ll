@@ -1,5 +1,6 @@
 package xyz.melodysky.runtime.jdk;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ public final class JdkIntrinsicRegistry {
     }
 
     public static JdkIntrinsicRegistry defaultRegistry() {
-        return new JdkIntrinsicRegistry(List.of(
+        ArrayList<JdkIntrinsic> methods = new ArrayList<>(List.of(
                 JdkIntrinsic.direct("java/lang/Object", "<init>", "()V"),
                 JdkIntrinsic.runtimeHelper("java/lang/Object", "getClass", "()Ljava/lang/Class;", RuntimeHelperKind.OBJECT_GET_CLASS),
                 JdkIntrinsic.runtimeHelper("java/lang/Object", "hashCode", "()I", RuntimeHelperKind.OBJECT_HASH_CODE),
@@ -104,11 +105,11 @@ public final class JdkIntrinsicRegistry {
                 JdkIntrinsic.bridge("java/util/stream/Stream", "collect", "(Ljava/util/stream/Collector;)Ljava/lang/Object;", "JDK_BRIDGE: Stream.collect uses JVM stream semantics"),
                 JdkIntrinsic.bridge("java/util/function/Function", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;", "JDK_BRIDGE: Function.apply uses JVM dispatch semantics"),
                 JdkIntrinsic.bridge("java/util/function/IntSupplier", "getAsInt", "()I", "JDK_BRIDGE: IntSupplier.getAsInt uses JVM dispatch semantics"),
-                JdkIntrinsic.fallback("java/util/ArrayList", "<init>", "()V", "JDK_COLLECTION_HELPER_FALLBACK: ArrayList constructor uses JVM collection semantics"),
+                JdkIntrinsic.bridge("java/util/ArrayList", "<init>", "()V", "JDK_BRIDGE: ArrayList construction stays on the JVM"),
                 JdkIntrinsic.fallback("java/util/ArrayList", "add", "(Ljava/lang/Object;)Z", "JDK_COLLECTION_HELPER_FALLBACK: ArrayList.add uses JVM collection semantics"),
                 JdkIntrinsic.fallback("java/util/ArrayList", "get", "(I)Ljava/lang/Object;", "JDK_COLLECTION_HELPER_FALLBACK: ArrayList.get uses JVM collection semantics"),
                 JdkIntrinsic.fallback("java/util/ArrayList", "size", "()I", "JDK_COLLECTION_HELPER_FALLBACK: ArrayList.size uses JVM collection semantics"),
-                JdkIntrinsic.fallback("java/util/HashMap", "<init>", "()V", "JDK_COLLECTION_HELPER_FALLBACK: HashMap constructor uses JVM collection semantics"),
+                JdkIntrinsic.bridge("java/util/HashMap", "<init>", "()V", "JDK_BRIDGE: HashMap construction stays on the JVM"),
                 JdkIntrinsic.fallback("java/util/HashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", "JDK_COLLECTION_HELPER_FALLBACK: HashMap.put uses JVM collection semantics"),
                 JdkIntrinsic.fallback("java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", "JDK_COLLECTION_HELPER_FALLBACK: HashMap.get uses JVM collection semantics"),
                 JdkIntrinsic.fallback("java/util/HashMap", "containsKey", "(Ljava/lang/Object;)Z", "JDK_COLLECTION_HELPER_FALLBACK: HashMap.containsKey uses JVM collection semantics"),
@@ -136,6 +137,8 @@ public final class JdkIntrinsicRegistry {
                 JdkIntrinsic.fallback("java/lang/Object", "wait", "(J)V", "WAIT_NOTIFY_FALLBACK: Object.wait(long) keeps JVM monitor queue semantics"),
                 JdkIntrinsic.fallback("java/lang/Object", "notify", "()V", "WAIT_NOTIFY_FALLBACK: Object.notify keeps JVM monitor queue semantics"),
                 JdkIntrinsic.fallback("java/lang/String", "substring", "(I)Ljava/lang/String;", "single-index substring remains nativeEmbeddedClassBlob fallback fixture")));
+        methods.addAll(JdkGenericBridgePolicies.policies());
+        return new JdkIntrinsicRegistry(methods);
     }
 
     public Optional<JdkIntrinsic> lookup(String owner, String name, String descriptor) {

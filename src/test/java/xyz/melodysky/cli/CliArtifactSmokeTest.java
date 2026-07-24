@@ -19,7 +19,8 @@ class CliArtifactSmokeTest {
         ProcessResult version = runJar(jar, "--version");
 
         assertEquals(0, help.exitCode(), help.stderr());
-        assertTrue(help.stdout().contains("j2ll build <config.json> <workspace>"), help.stdout());
+        assertTrue(help.stdout().contains(
+                "j2ll [--config <config.json>] [--validate | --dry-run] [--debug]"), help.stdout());
         assertEquals(0, version.exitCode(), version.stderr());
         assertTrue(version.stdout().startsWith("j2ll "), version.stdout());
     }
@@ -35,7 +36,7 @@ class CliArtifactSmokeTest {
 
         ProcessResult version = runJar(jar, "--version");
         ProcessResult help = runJar(jar, "--help");
-        ProcessResult validate = runJar(jar, "validate", example.toString());
+        ProcessResult validate = runJar(jar, "--validate", "--config", example.toString());
 
         assertEquals(0, version.exitCode(), version.stderr());
         assertEquals(0, help.exitCode(), help.stderr());

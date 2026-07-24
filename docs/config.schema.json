@@ -54,8 +54,14 @@
         "macosArm64": { "type": "boolean" }
       }
     },
-    "libraryName": { "type": ["string", "null"] },
-    "embeddedLibraryDirectory": { "type": "string", "minLength": 1 },
+    "libraryName": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "embeddedLibraryDirectory": {
+      "type": "string",
+      "pattern": "^(?!java(?:/|$))(?!META-INF(?:/|$))[A-Za-z_$][A-Za-z0-9_$]*(?:/[A-Za-z_$][A-Za-z0-9_$]*)*$"
+    },
     "signaturePolicy": { "type": "string", "enum": ["fail", "strip", "resign"] },
     "signing": {
       "type": ["object", "null"],

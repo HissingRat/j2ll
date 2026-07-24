@@ -2,8 +2,10 @@ package xyz.melodysky.packaging;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -78,17 +80,34 @@ class JarRepackagerTest {
                 outputJar,
                 Map.of("pkg/Foo.class", new byte[] {42}),
                 Map.of(
-                        "j2ll/generated/seed/NativeLoader.class", new byte[] {5, 6, 7},
+                        "native0/Loader.class", new byte[] {5, 6, 7},
                         "native0/arm64-macos.dylib", new byte[] {8, 9},
                         "j2ll/generated/fallback/pkg_Foo/Fallback.class", new byte[] {10}));
 
         assertArrayEquals(new byte[] {42}, readEntry(outputJar, "pkg/Foo.class"));
-        assertArrayEquals(new byte[] {5, 6, 7}, readEntry(outputJar, "j2ll/generated/seed/NativeLoader.class"));
+        assertArrayEquals(new byte[] {5, 6, 7}, readEntry(outputJar, "native0/Loader.class"));
         assertArrayEquals(new byte[] {8, 9}, readEntry(outputJar, "native0/arm64-macos.dylib"));
         try (JarFile jarFile = new JarFile(outputJar.toFile())) {
             assertNull(jarFile.getJarEntry("j2ll/generated/fallback/pkg_Foo/Fallback.class"));
-            assertNotNull(jarFile.getJarEntry("j2ll/generated/seed/NativeLoader.class"));
+            assertNotNull(jarFile.getJarEntry("native0/Loader.class"));
         }
+    }
+
+    @Test
+    void rejectsAddedEntryThatCollidesWithInput() throws IOException {
+        Path inputJar = tempDir.resolve("input.jar");
+        Path outputJar = tempDir.resolve("out").resolve("input.jar");
+        writeJar(inputJar, Map.of("native0/Loader.class", new byte[] {1, 2, 3}));
+
+        IOException error = assertThrows(
+                IOException.class,
+                () -> new JarRepackager().write(
+                        inputJar,
+                        outputJar,
+                        Map.of(),
+                        Map.of("native0/Loader.class", new byte[] {4, 5, 6})));
+
+        assertTrue(error.getMessage().contains("native0/Loader.class"), error.getMessage());
     }
 
     @Test

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.List;
 import org.objectweb.asm.ClassReader;
@@ -13,7 +14,6 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import org.junit.jupiter.api.Test;
-import xyz.melodysky.runtime.fallback.J2llFallbackSupport;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class FallbackBlobPlannerTest {
@@ -160,7 +160,7 @@ class FallbackBlobPlannerTest {
                 "xyz/melodysky/packaging/FallbackBlobPlannerTest#substring!(Ljava/lang/String;)Ljava/lang/String;",
                 "xyz/melodysky/packaging/FallbackBlobPlannerTest");
 
-        Class<?> hidden = J2llFallbackSupport.defineHiddenFallback(FallbackBlobPlannerTest.class, helperClass.bytes());
+        Class<?> hidden = defineHiddenFallback(FallbackBlobPlannerTest.class, helperClass.bytes());
         Method method = hidden.getDeclaredMethod(FallbackHelperClassFactory.HELPER_METHOD_NAME, String.class);
 
         assertTrue(hidden.isHidden());
@@ -184,7 +184,7 @@ class FallbackBlobPlannerTest {
 
         FallbackHelperClass helperClass = new FallbackHelperClassFactory().create("copy__1234", parsedMethod);
         new ClassReader(helperClass.bytes());
-        Class<?> hidden = J2llFallbackSupport.defineHiddenFallback(FallbackBlobPlannerTest.class, helperClass.bytes());
+        Class<?> hidden = defineHiddenFallback(FallbackBlobPlannerTest.class, helperClass.bytes());
         Method method = hidden.getDeclaredMethod(FallbackHelperClassFactory.HELPER_METHOD_NAME, String.class);
 
         assertEquals("bc", method.invoke(null, "abc"));
@@ -213,5 +213,11 @@ class FallbackBlobPlannerTest {
             output[index] = (byte) ((input[index] & 0xff) ^ stream);
         }
         return output;
+    }
+
+    private Class<?> defineHiddenFallback(Class<?> owner, byte[] classBytes) throws IllegalAccessException {
+        return MethodHandles.privateLookupIn(owner, MethodHandles.lookup())
+                .defineHiddenClass(classBytes, true, MethodHandles.Lookup.ClassOption.NESTMATE)
+                .lookupClass();
     }
 }

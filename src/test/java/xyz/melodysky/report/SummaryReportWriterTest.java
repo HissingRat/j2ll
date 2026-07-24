@@ -42,7 +42,7 @@ class SummaryReportWriterTest {
                 {
                   "schemaVersion": 1,
                   "reportVersion": 1,
-                  "outputJar": "output/app.jar",
+                  "outputJar": "app.jar",
                   "zigToolchain": {
                     "targetArtifacts": [
                       {
@@ -50,7 +50,7 @@ class SummaryReportWriterTest {
                         "required": true,
                         "currentHost": true,
                         "status": "built",
-                        "expectedResourcePath": "native/macos-aarch64/libj2ll.dylib",
+                        "expectedResourcePath": "native/libj2ll.dylib",
                         "actualSha256": "abc123",
                         "failureKind": null
                       }
@@ -104,7 +104,7 @@ class SummaryReportWriterTest {
 
         assertTrue(json.indexOf("\"schemaVersion\"") < json.indexOf("\"reportVersion\""), json);
         assertEquals("passed", summary.get("status").getAsString());
-        assertEquals("output/app.jar", summary.get("outputJar").getAsString());
+        assertEquals("app.jar", summary.get("outputJar").getAsString());
         assertEquals(1, summary.getAsJsonObject("diagnostics").get("warnings").getAsInt());
         assertEquals(1, summary.getAsJsonObject("methods").get("lowered").getAsInt());
         assertEquals(1, summary.getAsJsonObject("methods").get("halfLowered").getAsInt());

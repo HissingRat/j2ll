@@ -36,7 +36,6 @@ class J2llCliTest implements Opcodes {
     @Test
     void invalidConfigWritesDiagnosticsAndDoesNotEnterPipeline() throws Exception {
         Path config = temp.resolve("config.json");
-        Path workspace = temp.resolve("workspace");
         Files.writeString(config, """
                 {
                   "jarFile": "input.txt",
@@ -46,11 +45,13 @@ class J2llCliTest implements Opcodes {
 
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = J2llCli.run(
-                new String[] {"build", config.toString(), workspace.toString()},
+                new String[] {"--config", config.toString()},
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8));
 
         assertEquals(2, code);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        Path workspace = pathValue(stderr, "reportsDir").getParent();
         assertTrue(Files.exists(workspace.resolve("reports/diagnostics.json")));
         String diagnostics = Files.readString(workspace.resolve("reports/diagnostics.json"));
         assertTrue(diagnostics.contains("\"code\": \"MISSING_REQUIRED_FIELD\""), diagnostics);
@@ -60,28 +61,91 @@ class J2llCliTest implements Opcodes {
         assertTrue(failure.contains("\"reasonCode\": \"MISSING_REQUIRED_FIELD\""), failure);
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
-        assertFalse(Files.exists(workspace.resolve("output")));
+        assertFalse(Files.exists(workspace.resolve("config-failed.jar")));
         assertFalse(Files.exists(workspace.resolve("native")));
         assertFalse(Files.exists(workspace.resolve("build.zig")));
         assertTrue(Files.isRegularFile(workspace.resolve("reports/summary.json")));
         assertTrue(Files.isRegularFile(workspace.resolve("reports/index.json")));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("config validation failed"));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("hint="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("summaryReport="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("reportIndex="));
+        assertTrue(stderr.contains("config validation failed"));
+        assertTrue(stderr.contains("hint="));
+        assertTrue(stderr.contains("summaryReport="));
+        assertTrue(stderr.contains("reportIndex="));
+    }
+
+    @Test
+    void frontendFailureFinishesProgressBeforeMachineParseableFailurePaths() throws Exception {
+        Path inputJar = temp.resolve("broken-input.jar");
+        writeJar(inputJar, Map.of("pkg/Broken.class", new byte[] {0, 1, 2, 3}));
+        Path config = temp.resolve("broken-config.json");
+        Files.writeString(config, configJson(inputJar, "[\"pkg/Broken\"]", targetJson()));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertEquals(3, code, stderr);
+        assertTrue(stdout.isEmpty(), stdout);
+        assertTrue(stderr.contains("[01/13] Inspecting input  broken-input.jar"), stderr);
+        assertTrue(stderr.contains("[02/13] Parsing classes  broken-input.jar"), stderr);
+        assertFalse(stderr.contains("BUILD FAILED"), stderr);
+        assertTrue(stderr.indexOf("[02/13] Parsing classes")
+                < stderr.indexOf("PARSE CLASS_PARSE_FAILED"), stderr);
+        assertTrue(stderr.lines().anyMatch(line -> line.startsWith("reportsDir=")), stderr);
+        assertTrue(stderr.lines().anyMatch(line -> line.startsWith("summaryReport=")), stderr);
+        assertTrue(stderr.lines().anyMatch(line -> line.startsWith("reportIndex=")), stderr);
+    }
+
+    @Test
+    void buildWithoutNativeWorkShowsEveryPlainProgressStage() throws Exception {
+        Path inputJar = temp.resolve("resources-only.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/example.txt",
+                "resource".getBytes(StandardCharsets.UTF_8)));
+        Path config = temp.resolve("resources-config.json");
+        Files.writeString(config, configJson(inputJar, "[]", targetJson()));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertEquals(0, code, stderr);
+        assertTrue(stdout.contains("outputJar="), stdout);
+        assertTrue(stderr.contains("[01/13] Inspecting input"), stderr);
+        assertTrue(stderr.contains("[02/13] Parsing classes"), stderr);
+        assertTrue(stderr.contains("[03/13] Selecting methods"), stderr);
+        assertTrue(stderr.contains("[04/13] Analyzing program"), stderr);
+        assertTrue(stderr.contains("[05/13] Lowering and protecting methods"), stderr);
+        assertTrue(stderr.contains("[06/13] Planning native implementations"), stderr);
+        assertTrue(stderr.contains("[07/13] Emitting LLVM"), stderr);
+        assertTrue(stderr.contains("[08/13] Writing intermediates"), stderr);
+        assertTrue(stderr.contains("[09/13] Checking native targets"), stderr);
+        assertTrue(stderr.contains("[10/13] Building native libraries  no native implementations"), stderr);
+        assertTrue(stderr.contains("[11/13] Packaging output JAR"), stderr);
+        assertTrue(stderr.contains("[12/13] Auditing artifacts"), stderr);
+        assertTrue(stderr.contains("[13/13] Writing reports"), stderr);
+        assertTrue(stderr.contains("BUILD SUCCESSFUL"), stderr);
+        assertFalse(stderr.contains("actionable stages"), stderr);
     }
 
     @Test
     void usageFailureDoesNotCreateWorkspace() throws Exception {
-        Path workspace = temp.resolve("workspace");
-
         int code = J2llCli.run(
-                new String[] {"build"},
+                new String[] {"--config"},
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
 
         assertEquals(2, code);
-        assertFalse(Files.exists(workspace));
+        assertFalse(Files.exists(temp.resolve("out")));
     }
 
     @Test
@@ -98,8 +162,10 @@ class J2llCliTest implements Opcodes {
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
 
         assertEquals(0, helpCode);
-        assertTrue(help.toString(StandardCharsets.UTF_8).contains("j2ll build <config.json> <workspace>"));
-        assertTrue(help.toString(StandardCharsets.UTF_8).contains("j2ll dry-run <config.json> <workspace>"));
+        assertTrue(help.toString(StandardCharsets.UTF_8)
+                .contains("j2ll [--config <config.json>] [--validate | --dry-run] [--debug]"));
+        assertTrue(help.toString(StandardCharsets.UTF_8)
+                .contains("build into <outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]"));
         assertEquals(0, versionCode);
         assertTrue(version.toString(StandardCharsets.UTF_8).startsWith("j2ll "));
     }
@@ -112,7 +178,7 @@ class J2llCliTest implements Opcodes {
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         int code = J2llCli.run(
-                new String[] {"validate", config.toString()},
+                new String[] {"--config", config.toString(), "--validate"},
                 new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
 
@@ -133,7 +199,7 @@ class J2llCliTest implements Opcodes {
 
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = J2llCli.run(
-                new String[] {"validate", config.toString()},
+                new String[] {"--config", config.toString(), "--validate"},
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8));
 
@@ -150,12 +216,11 @@ class J2llCliTest implements Opcodes {
                 "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
                 "pkg/CliMain.class", cliMainClass()));
         Path config = temp.resolve("dry-run-config.json");
-        Path workspace = temp.resolve("dry-run-workspace");
         Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", targetJson()));
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         int code = J2llCli.run(
-                new String[] {"dry-run", config.toString(), workspace.toString()},
+                new String[] {"--config", config.toString(), "--dry-run"},
                 new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
 
@@ -163,7 +228,9 @@ class J2llCliTest implements Opcodes {
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("dryRunReport="));
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("summaryReport="));
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("reportIndex="));
-        assertFalse(Files.exists(workspace.resolve("output").resolve(inputJar.getFileName())));
+        Path dryRunReport = pathValue(out.toString(StandardCharsets.UTF_8), "dryRunReport");
+        Path workspace = dryRunReport.getParent().getParent();
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
         assertFalse(Files.exists(workspace.resolve("native")));
         String dryRun = Files.readString(workspace.resolve("reports/dry-run-report.json"));
         assertTrue(dryRun.contains("\"inputJarParsed\": true"), dryRun);
@@ -176,29 +243,33 @@ class J2llCliTest implements Opcodes {
     }
 
     @Test
-    void dryRunRequiredNonHostTargetFailsWithExitFourAndNoFinalJar() throws Exception {
-        Path inputJar = temp.resolve("dry-run-non-host.jar");
+    void dryRunAcceptsRequiredCrossTargetWithoutInvokingNativeBuild() throws Exception {
+        Path inputJar = temp.resolve("dry-run-cross-target.jar");
         writeJar(inputJar, Map.of("pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath")));
-        Path config = temp.resolve("dry-run-non-host-config.json");
-        Path workspace = temp.resolve("dry-run-non-host-workspace");
-        Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", hostPlusNonHostTargetJson()));
+        Path config = temp.resolve("dry-run-cross-target-config.json");
+        Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", hostPlusCrossTargetJson()));
 
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = J2llCli.run(
-                new String[] {"dry-run", config.toString(), workspace.toString()},
-                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new String[] {"--config", config.toString(), "--dry-run"},
+                new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8));
 
-        assertEquals(4, code);
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("ZIG_TARGET_UNBUILDABLE"));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("hint="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("summaryReport="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("reportIndex="));
-        assertTrue(Files.isRegularFile(workspace.resolve("reports/failure-report.json")));
-        assertTrue(Files.readString(workspace.resolve("reports/failure-report.json")).contains("\"finalArtifactWritten\": false"));
+        assertEquals(0, code);
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stdout.contains("dryRunReport="));
+        assertFalse(stderr.contains("ZIG_TARGET_UNBUILDABLE"));
+        Path workspace = pathValue(stdout, "reportsDir").getParent();
+        assertFalse(Files.exists(workspace.resolve("reports/failure-report.json")));
+        assertTrue(Files.readString(workspace.resolve("reports/dry-run-report.json"))
+                .contains("\"nativeBuildInvoked\": false"));
+        assertTrue(Files.readString(workspace.resolve("reports/packaging-report.json"))
+                .contains("\"ZIG_CROSS_TARGET_SUPPORTED\""));
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
-        assertFalse(Files.exists(workspace.resolve("output").resolve(inputJar.getFileName())));
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
     }
 
     @Test
@@ -208,7 +279,6 @@ class J2llCliTest implements Opcodes {
                 "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
                 "pkg/CliMain.class", cliMainClass()));
         Path config = temp.resolve("config-success.json");
-        Path workspace = temp.resolve("workspace-success");
         Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", targetJson()));
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -216,7 +286,7 @@ class J2llCliTest implements Opcodes {
         int code;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-success"))) {
             code = J2llCli.run(
-                    new String[] {"build", config.toString(), workspace.toString()},
+                    new String[] {"--config", config.toString()},
                     new PrintStream(out, true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         }
@@ -228,8 +298,17 @@ class J2llCliTest implements Opcodes {
         assertTrue(stdout.contains("reportsDir="), stdout);
         assertTrue(stdout.contains("summaryReport="), stdout);
         assertTrue(stdout.contains("reportIndex="), stdout);
+        assertFalse(stdout.contains("[01/13]"), stdout);
+        assertTrue(stderr.contains("[01/13] Inspecting input  cli-input.jar"), stderr);
+        assertTrue(stderr.contains("[05/13] Lowering and protecting methods"), stderr);
+        assertTrue(stderr.contains("[10/13] Building native libraries  1 target"), stderr);
+        assertTrue(stderr.contains("BUILD SUCCESSFUL"), stderr);
+        assertFalse(stderr.replace("\r\n", "\n").contains("\r"), stderr);
         assertFalse(stderr.contains("\"diagnostics\""), stderr);
-        Path outputJar = workspace.resolve("output").resolve(inputJar.getFileName());
+        Path outputJar = pathValue(stdout, "outputJar");
+        Path workspace = outputJar.getParent();
+        assertEquals(inputJar.getFileName(), outputJar.getFileName());
+        assertTrue(workspace.getFileName().toString().startsWith("build_"), workspace.toString());
         assertTrue(Files.isRegularFile(outputJar));
         var run = new JvmRunner().run(outputJar, "pkg.CliMain", List.of());
         assertEquals(0, run.exitCode(), run.stderr());
@@ -254,20 +333,18 @@ class J2llCliTest implements Opcodes {
                 "pkg/LeakyMain.class", leakyMainClass(),
                 "leak.txt", "cli-template-leak".getBytes(StandardCharsets.UTF_8)));
         Path config = temp.resolve("config-audit-fail.json");
-        Path workspace = temp.resolve("workspace-audit-fail");
         Files.writeString(config, configJson(inputJar, "[\"pkg/LeakyBox#<init>!()V\"]", targetJson()));
 
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-audit-fail"))) {
             code = J2llCli.run(
-                    new String[] {"build", config.toString(), workspace.toString()},
+                    new String[] {"--config", config.toString()},
                     new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         }
 
         assertEquals(6, code, err.toString(StandardCharsets.UTF_8));
-        assertFalse(Files.exists(workspace.resolve("output").resolve(inputJar.getFileName())));
         String stderr = err.toString(StandardCharsets.UTF_8);
         assertTrue(stderr.contains("ARTIFACT_AUDIT"));
         assertTrue(stderr.contains("ARTIFACT_AUDIT_FAILED"));
@@ -275,6 +352,8 @@ class J2llCliTest implements Opcodes {
         assertTrue(stderr.contains("reportsDir="));
         assertTrue(stderr.contains("summaryReport="));
         assertTrue(stderr.contains("reportIndex="));
+        Path workspace = pathValue(stderr, "reportsDir").getParent();
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
         String failure = Files.readString(workspace.resolve("reports/failure-report.json"));
         assertTrue(failure.contains("\"stage\": \"ARTIFACT_AUDIT\""), failure);
         assertTrue(failure.contains("\"primaryDiagnosticId\": \"ARTIFACT_AUDIT:ARTIFACT_AUDIT_FAILED\""), failure);
@@ -284,33 +363,39 @@ class J2llCliTest implements Opcodes {
     }
 
     @Test
-    void buildCommandReportsRequiredNonHostTargetWithExitCodeFour() throws Exception {
-        Path inputJar = temp.resolve("cli-non-host.jar");
+    void buildCommandReportsInjectedCrossTargetBuildFailureWithExitCodeFour() throws Exception {
+        Path inputJar = temp.resolve("cli-cross-target-failure.jar");
         writeJar(inputJar, Map.of(
                 "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
                 "pkg/CliMain.class", cliMainClass()));
-        Path config = temp.resolve("config-non-host.json");
-        Path workspace = temp.resolve("workspace-non-host");
-        Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", hostPlusNonHostTargetJson()));
+        Path config = temp.resolve("config-cross-target-failure.json");
+        Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", hostPlusCrossTargetJson()));
 
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code;
-        try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-non-host"))) {
+        try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-cross-target-failure"))) {
             code = J2llCli.run(
-                    new String[] {"build", config.toString(), workspace.toString()},
+                    new String[] {"--config", config.toString()},
                     new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         }
 
         assertEquals(4, code, err.toString(StandardCharsets.UTF_8));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("ZIG_TARGET_UNBUILDABLE"));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("hint="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("summaryReport="));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("reportIndex="));
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stderr.contains("ZIG_TARGET_UNBUILDABLE"));
+        assertTrue(stderr.contains("hint="));
+        assertTrue(stderr.contains("summaryReport="));
+        assertTrue(stderr.contains("reportIndex="));
+        Path workspace = pathValue(stderr, "reportsDir").getParent();
+        String packaging = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertTrue(packaging.contains("\"failureKind\": \"zigBuildFailed\""), packaging);
+        assertTrue(packaging.contains("\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""), packaging);
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/build.zig"))
+                .contains("const target_" + crossTarget().safeSymbol()));
         assertTrue(Files.readString(workspace.resolve("reports/failure-report.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
-        assertFalse(Files.exists(workspace.resolve("output").resolve(inputJar.getFileName())));
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
     }
 
     @Test
@@ -320,7 +405,6 @@ class J2llCliTest implements Opcodes {
                 "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
                 "pkg/CliMain.class", cliMainClass()));
         Path config = temp.resolve("config-zig-checksum.json");
-        Path workspace = temp.resolve("workspace-zig-checksum");
         Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", targetJson()));
         Path j2llHome = temp.resolve("j2ll-home-checksum");
         Files.createDirectories(j2llHome);
@@ -333,7 +417,7 @@ class J2llCliTest implements Opcodes {
         try {
             System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, j2llHome.toString());
             code = J2llCli.run(
-                    new String[] {"build", config.toString(), workspace.toString()},
+                    new String[] {"--config", config.toString()},
                     new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         } finally {
@@ -345,12 +429,14 @@ class J2llCliTest implements Opcodes {
         }
 
         assertEquals(4, code, err.toString(StandardCharsets.UTF_8));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("checksum mismatch"), err.toString(StandardCharsets.UTF_8));
-        assertTrue(err.toString(StandardCharsets.UTF_8).contains("hint="), err.toString(StandardCharsets.UTF_8));
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stderr.contains("checksum mismatch"), stderr);
+        assertTrue(stderr.contains("hint="), stderr);
+        Path workspace = pathValue(stderr, "reportsDir").getParent();
         assertTrue(Files.readString(workspace.resolve("reports/failure-report.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
-        assertFalse(Files.exists(workspace.resolve("output").resolve(inputJar.getFileName())));
+        assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
     }
 
     @Test
@@ -395,6 +481,15 @@ class J2llCliTest implements Opcodes {
 
     private int exitCode(DiagnosticStage stage, String code) {
         return J2llCli.exitCodeForDiagnostics(List.of(Diagnostic.error(stage, DiagnosticCode.of(code), code)));
+    }
+
+    private Path pathValue(String output, String key) {
+        String prefix = key + "=";
+        return output.lines()
+                .filter(line -> line.startsWith(prefix))
+                .map(line -> Path.of(line.substring(prefix.length())))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing " + prefix + " in output:\n" + output));
     }
 
     private String configJson(Path inputJar, String selectors, String targetJson) {
@@ -464,10 +559,14 @@ class J2llCliTest implements Opcodes {
         return targetJson(host);
     }
 
-    private String hostPlusNonHostTargetJson() {
+    private String hostPlusCrossTargetJson() {
         TargetTriple host = HostPlatform.detect().orElseThrow().target();
-        TargetTriple extra = host == TargetTriple.LINUX_X64 ? TargetTriple.MACOS_ARM64 : TargetTriple.LINUX_X64;
-        return targetJson(host, extra);
+        return targetJson(host, crossTarget());
+    }
+
+    private TargetTriple crossTarget() {
+        TargetTriple host = HostPlatform.detect().orElseThrow().target();
+        return host == TargetTriple.LINUX_X64 ? TargetTriple.MACOS_ARM64 : TargetTriple.LINUX_X64;
     }
 
     private String targetJson(TargetTriple... enabled) {

@@ -21,6 +21,10 @@ class CompilationPipelineTest {
 
         assertFalse(result.halted());
         assertEquals("pc", result.artifact().orElseThrow());
+        assertEquals("pc", result.artifactAs(String.class).orElseThrow());
+        assertEquals("p", result.stageArtifact(DiagnosticStage.PARSE, String.class).orElseThrow());
+        assertEquals("pc", result.stageArtifact(DiagnosticStage.CFG, String.class).orElseThrow());
+        assertTrue(result.stageArtifact(DiagnosticStage.CFG, Integer.class).isEmpty());
         assertEquals(List.of(DiagnosticStage.PARSE, DiagnosticStage.CFG), result.completedStages());
         assertEquals(2, result.diagnostics().size());
     }

@@ -1,8 +1,11 @@
 package xyz.melodysky.ir.pass;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrInstruction;
@@ -18,34 +21,18 @@ public final class DeadInstructionEliminationPass implements IrMethodPass {
 
     @Override
     public IrMethod run(IrMethod method, PassContext context) {
+        Map<IrValue, IrInstruction> definitions = definitions(method);
+        Set<IrValue> live = liveValues(method, definitions);
         ArrayList<IrBlock> blocks = new ArrayList<>();
         for (IrBlock block : method.blocks()) {
-            Set<IrValue> live = new HashSet<>();
-            block.terminator().value().ifPresent(live::add);
-            block.terminator().condition().ifPresent(live::add);
-            block.terminator().switchValue().ifPresent(live::add);
-            live.addAll(block.terminator().targetArguments());
-            live.addAll(block.terminator().trueTargetArguments());
-            live.addAll(block.terminator().falseTargetArguments());
-            live.addAll(block.terminator().defaultTargetArguments());
-            for (var switchCase : block.terminator().switchCases()) {
-                live.addAll(switchCase.arguments());
-            }
-            ArrayList<IrInstruction> keptReversed = new ArrayList<>();
-            List<IrInstruction> instructions = block.instructions();
-            for (int index = instructions.size() - 1; index >= 0; index--) {
-                IrInstruction instruction = instructions.get(index);
+            ArrayList<IrInstruction> kept = new ArrayList<>();
+            for (IrInstruction instruction : block.instructions()) {
                 if (instruction.result().isEmpty()
                         || hasSideEffect(instruction.opcode())
                         || !instruction.exceptionSites().isEmpty()
                         || live.contains(instruction.result().orElseThrow())) {
-                    keptReversed.add(instruction);
-                    live.addAll(instruction.operands());
+                    kept.add(instruction);
                 }
-            }
-            ArrayList<IrInstruction> kept = new ArrayList<>();
-            for (int index = keptReversed.size() - 1; index >= 0; index--) {
-                kept.add(keptReversed.get(index));
             }
             blocks.add(new IrBlock(
                     block.name(),
@@ -56,6 +43,53 @@ public final class DeadInstructionEliminationPass implements IrMethodPass {
                     block.terminator()));
         }
         return new IrMethod(method.owner(), method.name(), method.descriptor(), method.returnType(), method.parameters(), blocks);
+    }
+
+    private Map<IrValue, IrInstruction> definitions(IrMethod method) {
+        Map<IrValue, IrInstruction> definitions = new HashMap<>();
+        for (IrBlock block : method.blocks()) {
+            for (IrInstruction instruction : block.instructions()) {
+                instruction.result().ifPresent(result -> definitions.put(result, instruction));
+            }
+        }
+        return definitions;
+    }
+
+    private Set<IrValue> liveValues(
+            IrMethod method,
+            Map<IrValue, IrInstruction> definitions) {
+        Set<IrValue> live = new HashSet<>();
+        ArrayDeque<IrValue> work = new ArrayDeque<>();
+        for (IrBlock block : method.blocks()) {
+            block.terminator().value().ifPresent(work::add);
+            block.terminator().condition().ifPresent(work::add);
+            block.terminator().switchValue().ifPresent(work::add);
+            work.addAll(block.terminator().targetArguments());
+            work.addAll(block.terminator().trueTargetArguments());
+            work.addAll(block.terminator().falseTargetArguments());
+            work.addAll(block.terminator().defaultTargetArguments());
+            for (var switchCase : block.terminator().switchCases()) {
+                work.addAll(switchCase.arguments());
+            }
+            for (IrInstruction instruction : block.instructions()) {
+                if (instruction.result().isEmpty()
+                        || hasSideEffect(instruction.opcode())
+                        || !instruction.exceptionSites().isEmpty()) {
+                    work.addAll(instruction.operands());
+                }
+            }
+        }
+        while (!work.isEmpty()) {
+            IrValue value = work.removeFirst();
+            if (!live.add(value)) {
+                continue;
+            }
+            IrInstruction definition = definitions.get(value);
+            if (definition != null) {
+                work.addAll(definition.operands());
+            }
+        }
+        return live;
     }
 
     private boolean hasSideEffect(IrOpcode opcode) {

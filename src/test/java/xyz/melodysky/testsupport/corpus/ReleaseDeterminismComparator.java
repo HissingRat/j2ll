@@ -17,7 +17,8 @@ public final class ReleaseDeterminismComparator {
     private static final Pattern FALLBACK_ID = Pattern.compile("\"fallbackId\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern STRING_TOKEN = Pattern.compile("enc:v1:([0-9a-f]+):");
     private static final Pattern HIDDEN_SYMBOL = Pattern.compile("(j2ll_(?:f|cit|cid)_[0-9a-f]+)");
-    private static final Pattern LOADER_PATH = Pattern.compile("(j2ll/generated/[A-Za-z0-9_$/.]+NativeLoader)");
+    private static final Pattern LOADER_PATH =
+            Pattern.compile("\"generatedLoaders\"\\s*:\\s*\\[\\s*\"([A-Za-z0-9_$/.]+/Loader)\"");
 
     public DeterminismEvidence compare(CorpusRunResult first, CorpusRunResult second) throws Exception {
         Map<String, String> firstJar = jarEntryHashes(first.pipelineResult().outputJar());
@@ -63,16 +64,20 @@ public final class ReleaseDeterminismComparator {
     }
 
     private boolean normalizedJarEntry(String entryName) {
-        return entryName.startsWith("native0/")
-                || (entryName.startsWith("j2ll/generated/") && entryName.endsWith("NativeLoader.class"))
+        return isNativeLibrary(entryName)
                 || entryName.equals("META-INF/j2ll/native-libraries.json");
     }
 
     private List<String> nativeResourcePaths(Map<String, String> entryHashes) {
         return entryHashes.keySet().stream()
-                .filter(entry -> entry.startsWith("native0/"))
+                .filter(this::isNativeLibrary)
                 .sorted()
                 .toList();
+    }
+
+    private boolean isNativeLibrary(String entryName) {
+        String lower = entryName.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".dll") || lower.endsWith(".so") || lower.endsWith(".dylib");
     }
 
     private List<String> embeddedNativeSha(CorpusRunResult result) throws Exception {

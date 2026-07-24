@@ -43,11 +43,12 @@ class BetaAcceptanceTest implements Opcodes {
 
         ProcessResult version = runCli(dist, "--version");
         ProcessResult help = runCli(dist, "--help");
-        ProcessResult validate = runCli(dist, "validate", exampleConfig.toString());
+        ProcessResult validate = runCli(dist, "--config", exampleConfig.toString(), "--validate");
         assertEquals(0, version.exitCode(), version.stderr());
         assertTrue(version.stdout().startsWith("j2ll "), version.stdout());
         assertEquals(0, help.exitCode(), help.stderr());
-        assertTrue(help.stdout().contains("j2ll build <config.json> <workspace>"), help.stdout());
+        assertTrue(help.stdout().contains(
+                "j2ll [--config <config.json>] [--validate | --dry-run] [--debug]"), help.stdout());
         assertEquals(0, validate.exitCode(), validate.stderr());
         assertTrue(validate.stdout().contains("config=ok"), validate.stdout());
 
@@ -60,20 +61,20 @@ class BetaAcceptanceTest implements Opcodes {
                 .replace("\"jarFile\": \"input.jar\"", "\"jarFile\": \"" + slash(inputJar) + "\"")
                 .replace("\"seed\": null", "\"seed\": \"" + SECRET_SEED + "\""));
 
-        Path dryWorkspace = temp.resolve("dry-workspace");
-        ProcessResult dryRun = runCli(dist, "dry-run", config.toString(), dryWorkspace.toString());
+        ProcessResult dryRun = runCli(dist, "--config", config.toString(), "--dry-run");
         assertEquals(0, dryRun.exitCode(), dryRun.stderr());
         assertTrue(dryRun.stdout().contains("dryRunReport="), dryRun.stdout());
+        Path dryRunReport = pathValue(dryRun.stdout(), "dryRunReport");
+        Path dryWorkspace = dryRunReport.getParent().getParent();
         assertTrue(Files.isRegularFile(dryWorkspace.resolve("reports/index.json")));
         assertTrue(Files.isRegularFile(dryWorkspace.resolve("reports/summary.md")));
         assertTrue(Files.isRegularFile(dryWorkspace.resolve("reports/release-readiness.json")));
-        assertFalse(Files.exists(dryWorkspace.resolve("output").resolve(inputJar.getFileName())));
+        assertFalse(Files.exists(dryWorkspace.resolve(inputJar.getFileName())));
         assertFalse(Files.exists(dryWorkspace.resolve("native")));
 
-        Path workspace = temp.resolve("build-workspace");
         ProcessResult build;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(dist)) {
-            build = runCli(dist, "build", config.toString(), workspace.toString());
+            build = runCli(dist, "--config", config.toString());
         }
         assertEquals(0, build.exitCode(), build.stderr());
         assertTrue(build.stdout().contains("outputJar="), build.stdout());
@@ -81,7 +82,8 @@ class BetaAcceptanceTest implements Opcodes {
         assertTrue(build.stdout().contains("reportIndex="), build.stdout());
         assertFalse(build.stderr().contains("\"diagnostics\""), build.stderr());
 
-        Path outputJar = workspace.resolve("output").resolve(inputJar.getFileName());
+        Path outputJar = pathValue(build.stdout(), "outputJar");
+        Path workspace = outputJar.getParent();
         assertTrue(Files.isRegularFile(outputJar), "expected output JAR at " + outputJar);
         var run = new JvmRunner().run(outputJar, "example.Main", List.of());
         assertEquals(0, run.exitCode(), run.stderr());
@@ -110,6 +112,15 @@ class BetaAcceptanceTest implements Opcodes {
                 exitCode,
                 new String(stdout, StandardCharsets.UTF_8),
                 new String(stderr, StandardCharsets.UTF_8));
+    }
+
+    private Path pathValue(String output, String key) {
+        String prefix = key + "=";
+        return output.lines()
+                .filter(line -> line.startsWith(prefix))
+                .map(line -> Path.of(line.substring(prefix.length())))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing " + prefix + " in output:\n" + output));
     }
 
     private void assertReportsAndMetadataAreAcceptanceReady(Path workspace, Path outputJar) throws Exception {

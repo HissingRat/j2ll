@@ -260,7 +260,7 @@ public final class PackagingReportWriter {
                     object.addProperty("expectedArtifactName", preflight.outputPath().getFileName().toString());
                     object.addProperty("expectedResourcePath", embeddedJarPaths.getOrDefault(
                             preflight.target().directoryName(),
-                            "native/" + preflight.target().directoryName() + "/" + preflight.outputPath().getFileName()));
+                            "native/" + preflight.outputPath().getFileName()));
                     object.addProperty("loaderExtractionPathPolicy", "contentAddressedTempCacheBySha256");
                     object.addProperty("symbolVisibilityPolicy", "allowlistOnlyJniOnLoadAndBootstrap");
                     object.addProperty("windowsPdbPolicy", preflight.target().isWindows()

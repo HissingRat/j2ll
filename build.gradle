@@ -1,4 +1,9 @@
 import java.util.concurrent.ConcurrentHashMap
+import org.gradle.api.tasks.testing.TestDescriptor
+import org.gradle.api.tasks.testing.TestListener
+import org.gradle.api.tasks.testing.TestOutputEvent
+import org.gradle.api.tasks.testing.TestOutputListener
+import org.gradle.api.tasks.testing.TestResult
 
 plugins {
     id 'com.gradleup.shadow' version '8.3.6'
@@ -26,6 +31,10 @@ sourceSets {
     main {
         java.srcDirs = ['src/main/java']
         resources.srcDirs = ['src/main/resources']
+    }
+    runtimeLoader {
+        java.srcDirs = ['src/runtimeLoader/java']
+        resources.srcDirs = []
     }
     dummy {
         java.srcDirs = ['src/dummy/main/java']
@@ -105,9 +114,19 @@ tasks.register('distJ2ll', Sync) {
     from('docs/getting-started.md') {
         into 'docs'
     }
-    from('AGENTS.md') {
-        rename { 'README.md' }
+    from('docs/java-support-tiers.md') {
+        into 'docs'
     }
+    from('docs/protection-obfuscation.md') {
+        into 'docs'
+    }
+    from('docs/rewrite-roadmap.md') {
+        into 'docs'
+    }
+    from('docs/pipeline/README.md') {
+        into 'docs/pipeline'
+    }
+    from('README.md')
 }
 
 tasks.named('compileDummyJava', JavaCompile) {
@@ -174,16 +193,44 @@ tasks.register('dummyTest', Test) {
 ['dTestBasic', 'dTestAdvanced', 'dummyTest'].each { taskName ->
     tasks.named(taskName, Test) {
         testLogging {
-            events 'failed'
-            exceptionFormat 'full'
+            events = ['failed']
+            exceptionFormat = 'full'
             showStandardStreams = true
         }
         systemProperty 'j2ll.dummy.workspaceRoot', layout.buildDirectory.dir('dummy/j2ll').get().asFile.absolutePath
-        afterTest { descriptor, result ->
-            if (result.resultType == TestResult.ResultType.FAILURE && result.exception != null) {
-                println(result.exception.message)
+        addTestListener(new TestListener() {
+            @Override
+            void beforeSuite(TestDescriptor suite) {}
+
+            @Override
+            void afterSuite(TestDescriptor suite, TestResult result) {}
+
+            @Override
+            void beforeTest(TestDescriptor testDescriptor) {}
+
+            @Override
+            void afterTest(TestDescriptor testDescriptor, TestResult result) {
+                if (result.resultType == TestResult.ResultType.FAILURE && result.exception != null) {
+                    println(result.exception.message)
+                }
             }
-        }
+        })
+    }
+}
+
+tasks.named('compileRuntimeLoaderJava', JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 17
+    // Keep the generated Loader independent from invokedynamic bootstrap
+    // metadata so pruning the optional MethodHandles fallback bridge also
+    // removes its constant-pool surface completely.
+    options.compilerArgs.add('-XDstringConcat=inline')
+}
+
+tasks.named('processResources') {
+    dependsOn(tasks.named('compileRuntimeLoaderJava'))
+    from(sourceSets.runtimeLoader.output.classesDirs) {
+        include 'xyz/melodysky/runtime/loader/LoaderTemplate.class'
     }
 }
 
@@ -198,6 +245,28 @@ tasks.register('betaAcceptance', Test) {
         includeTestsMatching 'xyz.melodysky.cli.BetaAcceptanceTest'
     }
     environment 'JAVA_HOME', System.getProperty('java.home')
+    addTestListener(new TestListener() {
+        @Override
+        void beforeSuite(TestDescriptor suite) {}
+
+        @Override
+        void afterSuite(TestDescriptor suite, TestResult result) {
+            if (suite.parent == null && (result.skippedTestCount > 0 || result.testCount == 0)) {
+                throw new GradleException(
+                        "betaAcceptance must execute without skips (tests=${result.testCount}, skipped=${result.skippedTestCount})")
+            }
+        }
+
+        @Override
+        void beforeTest(TestDescriptor testDescriptor) {}
+
+        @Override
+        void afterTest(TestDescriptor testDescriptor, TestResult result) {}
+    })
+}
+
+tasks.named('betaAcceptance') {
+    mustRunAfter(tasks.named('test'))
 }
 
 jar {
@@ -220,64 +289,76 @@ tasks.register('benchJar', Jar) {
 publishing {
     publications {
         maven(MavenPublication) {
-            groupId project.group + ".nativeobfuscator"
-            artifactId project.name
-            version project.version
+            groupId = project.group + ".nativeobfuscator"
+            artifactId = project.name
+            version = project.version
             from components.java
         }
     }
 }
 
-ConcurrentHashMap<String, StringBuilder> testOutputs = new ConcurrentHashMap<>()
+ConcurrentHashMap<TestDescriptor, StringBuffer> testOutputs = new ConcurrentHashMap<>()
 
 test {
     dependsOn(shadowJar, distJ2ll)
     useJUnitPlatform()
     environment 'JAVA_HOME', System.getProperty('java.home')
 
-    maxParallelForks = Math.max(Runtime.runtime.availableProcessors(), 32)
+    maxParallelForks = Math.max(1, Math.min(Runtime.runtime.availableProcessors(), 32))
 
     testLogging {
         events = []
     }
 
-    beforeTest { descriptor ->
-        if (System.getenv("CI"))
-            System.out.print("\u001b[1;33m")
-        testOutputs.put(descriptor.getName(), new StringBuilder())
-        System.out.print("Running test \"" + descriptor.getDisplayName() + "\" -> ")
-        System.out.flush()
-    }
+    addTestListener(new TestListener() {
+        @Override
+        void beforeSuite(TestDescriptor suite) {}
 
-    afterTest { descriptor, result ->
-        if (System.getenv("CI")) {
-            if (result.getResultType() == TestResult.ResultType.SUCCESS)
-                System.out.print("\u001b[1;32m")
-            if (result.getResultType() == TestResult.ResultType.FAILURE)
-                System.out.print("\u001b[1;31m")
-            if (result.getResultType() == TestResult.ResultType.SKIPPED)
-                System.out.print("\u001b[1;34m")
+        @Override
+        void afterSuite(TestDescriptor suite, TestResult result) {}
+
+        @Override
+        void beforeTest(TestDescriptor descriptor) {
+            testOutputs.put(descriptor, new StringBuffer())
         }
-        System.out.print(result.getResultType().toString())
-        if (System.getenv("CI"))
-            System.out.print("\u001b[1;33m")
-        System.out.println(" in " + ((result.getEndTime()) - (result.getStartTime())) + "ms")
-        if (result.getResultType() == TestResult.ResultType.FAILURE) {
+
+        @Override
+        void afterTest(TestDescriptor descriptor, TestResult result) {
+            StringBuffer output = testOutputs.remove(descriptor)
+            String descriptorKey = (descriptor.className == null ? "" : descriptor.className + ".") +
+                    descriptor.displayName
+            String color = ""
+            String reset = ""
             if (System.getenv("CI")) {
-                System.out.print("\u001b[1;31m")
+                if (result.resultType == TestResult.ResultType.SUCCESS)
+                    color = "\u001b[1;32m"
+                if (result.resultType == TestResult.ResultType.FAILURE)
+                    color = "\u001b[1;31m"
+                if (result.resultType == TestResult.ResultType.SKIPPED)
+                    color = "\u001b[1;34m"
+                reset = "\u001b[0m"
             }
-            System.out.println("Test fail log")
-            System.out.print(testOutputs.get(descriptor.getName()).toString())
-            testOutputs.remove(descriptor.getName())
+            System.out.println(color + "Test \"" + descriptorKey + "\" -> " + result.resultType
+                    + " in " + (result.endTime - result.startTime) + "ms" + reset)
+            if (result.getResultType() == TestResult.ResultType.FAILURE) {
+                StringBuilder failureLog = new StringBuilder("Test fail log for \"")
+                        .append(descriptorKey).append("\"\n")
+                if (output != null) {
+                    failureLog.append(output)
+                }
+                System.out.print(failureLog)
+            }
         }
-    }
+    })
 
-    onOutput { descriptor, event ->
-        if (!testOutputs.containsKey(descriptor.getName()))
-            testOutputs.put(descriptor.getName(), new StringBuilder())
-        testOutputs.get(descriptor.getName()).append("[")
-                .append(event.getDestination().toString().toUpperCase()).append("] ").append(event.getMessage())
-    }
+    addTestOutputListener(new TestOutputListener() {
+        @Override
+        void onOutput(TestDescriptor descriptor, TestOutputEvent event) {
+            testOutputs.computeIfAbsent(descriptor, ignored -> new StringBuffer())
+                    .append("[")
+                    .append(event.getDestination().toString().toUpperCase()).append("] ").append(event.getMessage())
+        }
+    })
 }
 
 tasks.register('obfBench', Exec) {

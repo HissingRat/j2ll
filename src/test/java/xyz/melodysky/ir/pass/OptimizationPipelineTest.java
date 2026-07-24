@@ -124,6 +124,38 @@ class OptimizationPipelineTest {
     }
 
     @Test
+    void deadInstructionEliminationKeepsValuesUsedInDominatedBlocks() {
+        IrValue shared = new IrValue("%shared", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue result = new IrValue("%result", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/CrossBlock",
+                "read",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.constInt(shared, 41),
+                                        IrInstruction.constInt(zero, 0),
+                                        IrInstruction.binary(condition, IrOpcode.CMP_EQ_I32, zero, zero)),
+                                IrTerminator.branch(condition, "use", "use")),
+                        new IrBlock(
+                                "use",
+                                List.of(IrInstruction.binary(result, IrOpcode.ADD_I32, shared, shared)),
+                                IrTerminator.returnValue(result))));
+
+        var optimized = OptimizationPipeline.defaultPipeline().run(method, PassContext.empty());
+
+        assertFalse(optimized.hasErrors());
+        assertTrue(optimized.artifact().orElseThrow().blocks().get(0).instructions().stream()
+                .anyMatch(instruction -> instruction.result().orElseThrow().equals(shared)));
+    }
+
+    @Test
     void deadInstructionEliminationKeepsImplicitExceptionSites() {
         IrValue input = new IrValue("%input", IrType.REFERENCE);
         IrValue cast = new IrValue("%cast", IrType.REFERENCE);

@@ -39,39 +39,46 @@ class WeirdBytecodeSeedCorpusTest {
     }
 
     @Test
-    void unsupportedWeirdBytecodeSeedsProducePreciseFrontendDiagnostics() {
+    void unsupportedWeirdBytecodeSeedsUsePreciseFallbackOrFrontendDiagnostics() {
         for (UnsupportedSeed seed : List.of(
                 new UnsupportedSeed(
                         "multi-exit-finally",
                         AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/BadFinally"),
                         "badFinally",
+                        LoweringStatus.HALF_LOWERED,
                         LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY),
                 new UnsupportedSeed(
                         "exception-state-merge-finally",
                         AsmFixtureBuilder.classWithUnsupportedExceptionStateMergeFinallyShape("pkg/StateMergeFinally"),
                         "badStateMergeFinally",
+                        LoweringStatus.HALF_LOWERED,
                         LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE),
                 new UnsupportedSeed(
                         "monitor-finally-interaction",
                         AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinally"),
                         "badMonitorFinally",
+                        LoweringStatus.HALF_LOWERED,
                         LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION),
                 new UnsupportedSeed(
                         "nested-finally",
                         AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinally"),
                         "badNestedFinally",
+                        LoweringStatus.HALF_LOWERED,
                         LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY),
                 new UnsupportedSeed(
                         "legacy-jsr-ret",
                         AsmFixtureBuilder.classWithLegacyJsrRetSubroutine("pkg/LegacySubroutine"),
                         "legacyFinally",
+                        LoweringStatus.FRONTEND_SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_FINALLY_SUBROUTINE))) {
             ParsedMethod parsedMethod = parseMethod(seed.classBytes(), seed.methodName());
             MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
             var result = new BytecodeToSsaLowerer().lower(cfg);
+            SsaMethodResult artifact = result.artifact().orElseThrow();
 
             assertFalse(result.hasErrors(), seed.name());
-            assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status(), seed.name());
+            assertEquals(seed.expectedStatus(), artifact.status(), seed.name());
+            assertTrue(artifact.irMethod().isEmpty(), seed.name());
             assertEquals(seed.reasonCode(), result.diagnostics().get(0).code(), seed.name());
         }
     }
@@ -112,5 +119,6 @@ class WeirdBytecodeSeedCorpusTest {
             String name,
             byte[] classBytes,
             String methodName,
+            LoweringStatus expectedStatus,
             DiagnosticCode reasonCode) {}
 }

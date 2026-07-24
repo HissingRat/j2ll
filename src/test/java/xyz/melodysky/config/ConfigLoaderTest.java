@@ -107,6 +107,60 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void rejectsLibraryNameThatCanEscapeTheNativeWorkspace() {
+        JsonObject json = JsonParser.parseString(baseJson()
+                        .replace("\"libraryName\": null", "\"libraryName\": \"../outside\""))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
+                        && diagnostic.message().contains("libraryName")));
+    }
+
+    @Test
+    void acceptsCanonicalNestedEmbeddedLibraryDirectory() {
+        JsonObject json = JsonParser.parseString(baseJson()
+                        .replace(
+                                "\"embeddedLibraryDirectory\": \"native0\"",
+                                "\"embeddedLibraryDirectory\": \"xyz/Melody/natives\""))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertEquals(
+                "xyz/Melody/natives",
+                result.config().orElseThrow().embeddedLibraryDirectory());
+    }
+
+    @Test
+    void rejectsEmbeddedLibraryDirectoryThatIsNotAJavaPackagePath() {
+        for (String invalid : java.util.List.of(
+                "foo.bar",
+                "../native",
+                "native0/",
+                "native0//nested",
+                "java/lang",
+                "META-INF")) {
+            JsonObject json = JsonParser.parseString(baseJson()
+                            .replace(
+                                    "\"embeddedLibraryDirectory\": \"native0\"",
+                                    "\"embeddedLibraryDirectory\": \"" + invalid + "\""))
+                    .getAsJsonObject();
+
+            ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+            assertTrue(result.hasErrors(), invalid);
+            assertTrue(result.diagnostics().stream()
+                    .anyMatch(diagnostic -> diagnostic.code()
+                            .equals(ConfigDiagnostics.INVALID_EMBEDDED_LIBRARY_DIRECTORY)), invalid);
+        }
+    }
+
+    @Test
     void rejectsStrictSelectorValidationFailures() {
         JsonObject json = JsonParser.parseString(baseJson().replace("\"whiteList\": []", """
                 "whiteList": [

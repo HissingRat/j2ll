@@ -84,9 +84,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 "beta-command-smoke",
                 "cli-artifact-smoke",
                 List.of("docs-examples-validated", "report-index", "llvm-native", "mixed-helper-fallback"),
-                Map.of(
-                        "LLVM_NATIVE_PATH", "expected",
-                        "ZIG_TARGET_UNBUILDABLE", "expected"),
+                Map.of("LLVM_NATIVE_PATH", "expected"),
                 "pkg.CorpusMain",
                 Map.of(
                         "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
@@ -371,7 +369,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
     }
 
     @Test
-    void blockerReleaseSuiteCoversKnownRuntimeAndToolchainBoundariesForStrictReadiness() throws Exception {
+    void blockerReleaseSuiteCoversKnownRuntimeBoundariesForStrictReadiness() throws Exception {
         ReleaseSuiteResult result = new ReleaseSuiteRunner().run(new ReleaseSuite(
                 "blocker-release",
                 List.of(
@@ -379,8 +377,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                         safeFinallyCase(),
                         unsafeRawMemoryBoundaryCase(),
                         dynamicVarHandleBoundaryCase(),
-                        waitNotifyBoundaryCase(),
-                        nonHostTargetBoundaryCase())), temp);
+                        waitNotifyBoundaryCase())), temp);
 
         String summary = Files.readString(result.summary());
         for (String reason : List.of(
@@ -393,22 +390,13 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
                 "UNSAFE_RAW_MEMORY_FALLBACK",
                 "VAR_HANDLE_DYNAMIC_FALLBACK",
-                "WAIT_NOTIFY_FALLBACK",
-                "ZIG_TARGET_UNBUILDABLE")) {
+                "WAIT_NOTIFY_FALLBACK")) {
             assertTrue(summary.contains(reason), reason);
         }
         assertTrue(summary.contains("\"reportLocation\": \"reports/packaging-report.json\""));
         assertTrue(summary.contains("\"reportLocation\": \"reports/frontend-skip-report.json\"")
                 || summary.contains("\"reportLocation\": \"reports/lowering-report.json\""));
         assertTrue(summary.contains("\"name\": \"safe-finally-cleanup\""));
-        CorpusRunResult nonHost = result.cases().stream()
-                .filter(run -> run.corpusCase().name().equals("non-host-target"))
-                .findFirst()
-                .orElseThrow();
-        assertFalse(nonHost.pipelineResult().successful());
-        assertTrue(nonHost.outputRun() == null);
-        assertTrue(Files.readString(nonHost.reportPaths().reports().get("diagnostics.json"))
-                .contains("ZIG_TARGET_UNBUILDABLE"));
         for (CorpusRunResult run : result.cases()) {
             assertTrue(run.pipelineResult().successful() == run.corpusCase().expectedPipelineSuccess(), run.corpusCase().name());
             if (run.corpusCase().expectedPipelineSuccess()) {
@@ -416,6 +404,30 @@ class ReleaseSuiteRunnerTest implements Opcodes {
             }
         }
         assertStrictReadinessPassed(result.cases().get(0));
+    }
+
+    @Test
+    void recordsInjectedRequiredCrossTargetBuildFailureAfterSupportedPreflight() throws Exception {
+        ReleaseSuiteResult result = new ReleaseSuiteRunner().run(new ReleaseSuite(
+                "required-target-failure",
+                List.of(requiredCrossTargetBuildFailureCase())), temp);
+
+        CorpusRunResult run = result.cases().get(0);
+        assertFalse(run.pipelineResult().successful());
+        assertTrue(run.outputRun() == null);
+        Path workspace = run.reportPaths().reports().values().iterator().next().getParent().getParent();
+        String summary = Files.readString(result.summary());
+        String packaging = Files.readString(run.reportPaths().reports().get("packaging-report.json"));
+        String manifest = Files.readString(workspace.resolve("native/zig-workspace/j2ll-build-manifest.json"));
+        assertTrue(summary.contains("\"name\": \"cross-target-build-failure\""), summary);
+        assertTrue(summary.contains("\"expectedFailureReasonCode\": \"ZIG_TARGET_UNBUILDABLE\""), summary);
+        assertTrue(Files.readString(run.reportPaths().reports().get("diagnostics.json"))
+                .contains("ZIG_TARGET_UNBUILDABLE"));
+        assertTrue(packaging.contains("\"failureKind\": \"zigBuildFailed\""), packaging);
+        assertTrue(packaging.contains("\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""), packaging);
+        assertTrue(manifest.contains("\"reasonCode\": \"ZIG_CROSS_TARGET_SUPPORTED\""), manifest);
+        assertTrue(manifest.contains("\"failedTargets\": []"), manifest);
+        assertFalse(Files.exists(workspace.resolve(run.inputJar().getFileName())));
     }
 
     private void assertReadinessPassed(CorpusRunResult run) throws Exception {
@@ -795,11 +807,11 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 true);
     }
 
-    private CorpusCase nonHostTargetBoundaryCase() {
+    private CorpusCase requiredCrossTargetBuildFailureCase() {
         return new CorpusCase(
-                "non-host-target",
-                "toolchain-boundary",
-                List.of("managed-zig", "non-host-target", "required-target-failure"),
+                "cross-target-build-failure",
+                "required-target-failure",
+                List.of("cross-target-matrix", "managed-zig", "test-driver-build-failure"),
                 Map.of("ZIG_TARGET_UNBUILDABLE", "expected"),
                 "pkg.CorpusMain",
                 Map.of(
@@ -811,7 +823,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 null,
                 Map.of(),
                 false,
-                hostPlusNonHostTargetJson())
+                hostPlusCrossTargetJson())
                 .withExpectedFailure("TOOLCHAIN", "ZIG_TARGET_UNBUILDABLE");
     }
 
@@ -1327,9 +1339,9 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return Path.of(System.getProperty("java.home"), "bin", executable);
     }
 
-    private String hostPlusNonHostTargetJson() {
+    private String hostPlusCrossTargetJson() {
         TargetTriple host = HostPlatform.detect().orElseThrow().target();
-        TargetTriple nonHost = nonHostTarget(host);
+        TargetTriple crossTarget = crossTarget(host);
         return """
                 {
                   "windowsX64": %s,
@@ -1340,15 +1352,15 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                   "macosArm64": %s
                 }
                 """.formatted(
-                host == TargetTriple.WINDOWS_X64 || nonHost == TargetTriple.WINDOWS_X64,
-                host == TargetTriple.WINDOWS_ARM64 || nonHost == TargetTriple.WINDOWS_ARM64,
-                host == TargetTriple.LINUX_X64 || nonHost == TargetTriple.LINUX_X64,
-                host == TargetTriple.LINUX_ARM64 || nonHost == TargetTriple.LINUX_ARM64,
-                host == TargetTriple.MACOS_X64 || nonHost == TargetTriple.MACOS_X64,
-                host == TargetTriple.MACOS_ARM64 || nonHost == TargetTriple.MACOS_ARM64);
+                host == TargetTriple.WINDOWS_X64 || crossTarget == TargetTriple.WINDOWS_X64,
+                host == TargetTriple.WINDOWS_ARM64 || crossTarget == TargetTriple.WINDOWS_ARM64,
+                host == TargetTriple.LINUX_X64 || crossTarget == TargetTriple.LINUX_X64,
+                host == TargetTriple.LINUX_ARM64 || crossTarget == TargetTriple.LINUX_ARM64,
+                host == TargetTriple.MACOS_X64 || crossTarget == TargetTriple.MACOS_X64,
+                host == TargetTriple.MACOS_ARM64 || crossTarget == TargetTriple.MACOS_ARM64);
     }
 
-    private TargetTriple nonHostTarget(TargetTriple host) {
+    private TargetTriple crossTarget(TargetTriple host) {
         return switch (host) {
             case MACOS_ARM64 -> TargetTriple.LINUX_X64;
             case MACOS_X64 -> TargetTriple.LINUX_ARM64;

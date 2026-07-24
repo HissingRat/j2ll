@@ -7,6 +7,8 @@ public final class ToolchainDiagnostics {
             DiagnosticCode.of("ZIG_TARGET_PREFLIGHT");
     public static final DiagnosticCode ZIG_TARGET_UNBUILDABLE =
             DiagnosticCode.of("ZIG_TARGET_UNBUILDABLE");
+    public static final DiagnosticCode SYMBOL_AUDIT_FAILED =
+            DiagnosticCode.of("SYMBOL_AUDIT_FAILED");
 
     private ToolchainDiagnostics() {
     }

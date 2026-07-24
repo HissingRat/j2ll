@@ -50,7 +50,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
         ClassRewriteResult result = new NativeOriginalClassRewriter().rewrite(
                 parsedClass,
                 List.of(decision),
-                "j2ll/generated/seed/NativeLoader");
+                "native0/Loader");
         ParsedClass rewritten = parsed("pkg/Mathy", result.classBytes());
         MethodNode clinit = rewritten.classNode().methods.stream()
                 .filter(method -> method.name.equals("<clinit>"))
@@ -59,7 +59,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
         MethodInsnNode trigger = (MethodInsnNode) clinit.instructions.getFirst();
 
         assertEquals(INVOKESTATIC, trigger.getOpcode());
-        assertEquals("j2ll/generated/seed/NativeLoader", trigger.owner);
+        assertEquals("native0/Loader", trigger.owner);
         assertEquals("ensureLoaded", trigger.name);
         assertEquals("()V", trigger.desc);
     }

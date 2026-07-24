@@ -46,9 +46,11 @@ Use the same schema shape as `docs/examples/minimal-config.json`:
 ## Command
 
 ```sh
-java -jar build/dist/j2ll/j2ll.jar build config/basic-cli-app.json build/j2ll-basic-workspace
-java -jar build/j2ll-basic-workspace/output/basic-cli-app.jar sample.basic.Main beta
+java -jar build/dist/j2ll/j2ll.jar --config config/basic-cli-app.json
+java -jar <outputJar-path-printed-by-j2ll> sample.basic.Main beta
 ```
+
+j2ll creates `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/` automatically and writes `basic-cli-app.jar` directly in that workspace.
 
 Expected output:
 
@@ -62,4 +64,4 @@ Expected report highlights:
 - `reports/summary.md` shows audit/readiness status and method counts.
 - JDK collection calls may stay helper/fallback-backed; native code does not read collection internals.
 
-Set exactly one `target` flag for the current host when running this sample.
+Enable the current host target when you want to run this sample locally. You may also enable any of the other five fixed targets in the same build; managed Zig produces the selected DLL/SO/dylib matrix in one invocation, while only the host artifact is exercised by the local child JVM.

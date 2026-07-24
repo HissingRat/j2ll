@@ -1,6 +1,6 @@
 # Getting Started
 
-This beta package is a JVM-hosted JAR obfuscator/native-lowering tool. The output is still a runnable JAR and loads embedded native libraries through the JVM, JNI, generated loader code, RegisterNatives, runtime helpers, and fallback blobs.
+This beta package is a JVM-hosted JAR obfuscator/native-lowering tool. The output is still a runnable JAR for Java 17 or newer and loads embedded native libraries through the JVM, JNI, one generated `<embeddedLibraryDirectory>/Loader.class`, RegisterNatives, runtime helpers, and fallback blobs.
 
 ## Build The Beta Package
 
@@ -26,21 +26,28 @@ java -jar build/dist/j2ll/j2ll.jar --version
 Validate a config:
 
 ```sh
-java -jar build/dist/j2ll/j2ll.jar validate docs/examples/minimal-config.json
+java -jar build/dist/j2ll/j2ll.jar --validate --config docs/examples/minimal-config.json
 ```
+
+Validation creates no workspace. If `--config` is omitted, j2ll reads `Config.json` from the current directory.
 
 Dry-run a config without building native artifacts or writing a final output JAR:
 
 ```sh
-java -jar build/dist/j2ll/j2ll.jar dry-run docs/examples/minimal-config.json build/j2ll-dry-run
+java -jar build/dist/j2ll/j2ll.jar --dry-run --config docs/examples/minimal-config.json
 ```
 
 Build an input JAR:
 
 ```sh
-java -jar build/dist/j2ll/j2ll.jar build docs/examples/minimal-config.json build/j2ll-workspace
-java -jar build/j2ll-workspace/output/input.jar example.Main
+java -jar build/dist/j2ll/j2ll.jar --config docs/examples/minimal-config.json
+# Run the outputJar=... path printed by j2ll:
+java -jar <resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/input.jar example.Main
 ```
+
+Build is the default mode. Add `--debug` to enable every intermediate output switch for the run: debug dumps, per-class SSA IR, LLVM IR, and generated C. This retains compiler diagnostics; it does not enable native debug symbols.
+
+During a full build, stderr shows progress across input inspection, parsing, selection, analysis, lowering/protection, LLVM emission, intermediates, target preflight, native build, packaging, audit, and reports. An interactive terminal follows the legacy lifecycle: a three-line compiler region (`Read bytecode`, `Lower to IR`, and `Emit LLVM IR`), a native region with one aggregate `Build native` bar, one row per selected target, and a `Stage` row, then a one-line `Finalize JAR` region. A target row remains indeterminate at `building/linking` until its non-empty final library is installed, then becomes `done`; the aggregate bar is therefore a real completed-target count rather than a guessed compiler percentage. After native completion the target rows collapse to a short aggregate summary. Normal-width terminals use 28-character bars; narrow terminals shorten the bar before truncating useful detail. Redirected output uses one control-sequence-free `[current/total]` line per high-level stage without per-target log spam, so stdout stays machine-parseable. Managed Zig still runs the selected target matrix in one opaque invocation and schedules independent build nodes internally. On failure the active region is cleared without an extra Gradle-style failure summary, allowing the primary diagnostic to be printed immediately.
 
 ## Managed Zig
 
@@ -52,14 +59,19 @@ The schema v1 native toolchain is managed Zig `0.15.2`.
 - Local and downloaded archives are checked against the expected SHA-256 before extraction.
 - Signature verification is reported as `notVerifiedBoundary` until signature verification is fully wired.
 - Extracted archives are normalized so the final executable is `zig/zig` or `zig/zig.exe`.
+- One generated `build.zig` and one matrix-wide invocation can produce Windows GNU x86_64/AArch64, Linux GNU glibc 2.17 x86_64/AArch64, and macOS 10.15 x86_64/11.0 AArch64 libraries.
+- Structural cross-build evidence verifies DLL/SO/dylib format, architecture and exports. Runtime child-JVM E2E is currently host-target evidence; non-host runtime execution remains separate.
 
-Checksum mismatch, corrupt archive, missing metadata for the current host, or an unbuildable required target exits with code `4` and writes reports.
+Checksum mismatch, corrupt archive, missing bootstrap metadata for the current host Zig executable, or an actual required-target capability/compile/link failure exits with code `4` and writes reports. Non-host selection by itself is not a failure condition.
 
 ## Outputs And Reports
 
 Successful build:
 
-- `output/<input-name>.jar`
+- `<workspace>/<input-name>.jar`
+- `<workspace>/native/<library-file-name>` for each selected target
+- exactly one Java 17 `<embeddedLibraryDirectory>/Loader.class` inside the output JAR; native loading is always present, while `defineHiddenFallback` is included only when `nativeEmbeddedClassBlob` was actually used
+- no retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or `j2ll/generated/**/NativeLoader.class` entry
 - `reports/index.json`
 - `reports/summary.md`
 - `reports/release-readiness.json`
@@ -80,9 +92,14 @@ Dry-run:
 - No native library is built.
 - Reports are retained, including target package planning evidence.
 
+Dry-run and build allocate `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/` automatically. The numeric suffix is added only when a workspace with the same timestamp already exists.
+
+`embeddedLibraryDirectory` is also the generated loader's Java package prefix, so it must be a canonical Java internal package path. Keep it application-unique when multiple different output artifacts may share one `ClassLoader`; otherwise they would request the same `<embeddedLibraryDirectory>/Loader` internal name.
+
 ## Common Failures
 
 - Invalid config: exit `2`; see `reports/diagnostics.json`.
+- Input base/MR Loader collision: rejected before Zig as `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` or `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`.
 - Frontend/lowering unsupported shape: exit `3`; see lowering and frontend skip reports.
 - Zig checksum, missing toolchain, or required target unbuildable: exit `4`; see packaging report and failure report.
 - Signing or packaging policy failure: exit `5`.

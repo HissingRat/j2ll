@@ -14,6 +14,8 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import xyz.melodysky.packaging.NativeLoaderClassGenerator;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 
 class ArtifactAuditTest {
     @TempDir
@@ -25,11 +27,10 @@ class ArtifactAuditTest {
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
         writeJar(jar, withMetadata(
                 "native0/macos-arm64/arm64-macos.dylib",
-                sha256(nativeBytes),
-                Map.of(
-                        "META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n".getBytes(StandardCharsets.UTF_8),
-                        "j2ll/generated/seed/NativeLoader.class", new byte[] {1},
-                        "native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
+                 sha256(nativeBytes),
+                 Map.of(
+                         "META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n".getBytes(StandardCharsets.UTF_8),
+                         "native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
 
         ArtifactAuditResult result = new ArtifactAudit().audit(
                 temp,
@@ -45,7 +46,7 @@ class ArtifactAuditTest {
         assertTrue(result.passed(), result.checks().toString());
         String json = new ArtifactAuditReportWriter().json(result);
         assertTrue(json.contains("\"reasonCode\": \"NATIVE_LIBRARY_SHA256_MATCH\""));
-        assertTrue(json.contains("\"reasonCode\": \"HIDDEN_SYMBOLS_NOT_EXPORTED\""));
+        assertTrue(json.contains("\"reasonCode\": \"NATIVE_EXPORT_ALLOWLIST_PASSED\""));
         assertTrue(json.contains("\"reasonCode\": \"NO_PLAIN_FALLBACK_CLASSES\""));
         assertTrue(json.contains("\"name\": \"surface.outputJarEntries\""));
         assertTrue(json.contains("\"name\": \"surface.nativeLibraryResources\""));
@@ -88,11 +89,40 @@ class ArtifactAuditTest {
                 "PLAIN_FALLBACK_CLASS_ENTRY",
                 "WINDOWS_PDB_PACKAGED",
                 "NATIVE_LIBRARY_SHA256_MISMATCH",
-                "HIDDEN_SYMBOL_EXPORTED",
+                "NATIVE_EXPORT_ALLOWLIST_FAILED",
                 "LEGACY_OUTPUT_PATH_FOUND",
                 "FORBIDDEN_PLAINTEXT_FOUND")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reason + "\""), reason + "\n" + json);
         }
+    }
+
+    @Test
+    void failsWhenFlatWorkspaceNativeDirectoryContainsWindowsPdb() throws Exception {
+        Path jar = temp.resolve("output.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        writeJar(jar, withMetadata(
+                "native0/x64-windows.dll",
+                sha256(nativeBytes),
+                Map.of("native0/x64-windows.dll", nativeBytes)));
+        Path pdb = temp.resolve("native/x64-windows.pdb");
+        Files.createDirectories(pdb.getParent());
+        Files.write(pdb, new byte[] {1, 2, 3});
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "windows-x64",
+                        "native0/x64-windows.dll",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of());
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"WINDOWS_PDB_WORKSPACE_FOUND\""), json);
+        assertTrue(json.contains("native/x64-windows.pdb"), json);
     }
 
     @Test
@@ -115,7 +145,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of(SensitivePlaintextFact.of(
                                 "template-secret",
                                 "pkg/Foo#template!()Ljava/lang/String;",
@@ -158,7 +188,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of(SensitivePlaintextFact.of(
                                 "template-leak",
                                 "pkg/Leaky#<init>!()V",
@@ -199,7 +229,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of(SensitivePlaintextFact.of(
                                 "recipe-secret",
                                 "pkg/Concat#concat!(Ljava/lang/String;I)Ljava/lang/String;",
@@ -239,7 +269,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of(
                         SensitivePlaintextFact.of(
                                         "pkg.Private",
@@ -275,9 +305,9 @@ class ArtifactAuditTest {
         Path jar = temp.resolve("fallback-clean.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
         writeJar(jar, withMetadata(
-                "native0/macos-arm64/arm64-macos.dylib",
+                "native0/arm64-macos.dylib",
                 sha256(nativeBytes),
-                Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
+                Map.of("native0/arm64-macos.dylib", nativeBytes)));
         writeFallbackPackagingReport("123", "234", "0".repeat(64), "0".repeat(64));
         Path c = temp.resolve("native/zig-workspace/jni/j2ll.c");
         Files.createDirectories(c.getParent());
@@ -289,9 +319,9 @@ class ArtifactAuditTest {
                 "native0",
                 List.of(new EmbeddedLibraryReport(
                         "macos-arm64",
-                        "native0/macos-arm64/arm64-macos.dylib",
+                        "native0/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of());
 
         assertTrue(result.passed(), result.checks().toString());
@@ -305,9 +335,9 @@ class ArtifactAuditTest {
         Path jar = temp.resolve("fallback-tampered.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
         writeJar(jar, withMetadata(
-                "native0/macos-arm64/arm64-macos.dylib",
+                "native0/arm64-macos.dylib",
                 sha256(nativeBytes),
-                Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
+                Map.of("native0/arm64-macos.dylib", nativeBytes)));
         writeFallbackPackagingReport("0", "-1", "0".repeat(64), "not-a-sha");
         Path c = temp.resolve("native/zig-workspace/jni/j2ll.c");
         Files.createDirectories(c.getParent());
@@ -319,9 +349,9 @@ class ArtifactAuditTest {
                 "native0",
                 List.of(new EmbeddedLibraryReport(
                         "macos-arm64",
-                        "native0/macos-arm64/arm64-macos.dylib",
+                        "native0/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of());
 
         assertFalse(result.passed());
@@ -358,7 +388,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of());
 
         assertFalse(result.passed());
@@ -393,7 +423,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of());
 
         assertFalse(result.passed());
@@ -421,7 +451,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad"),
+                List.of("JNI_OnLoad", "j2ll_register"),
                 List.of());
 
         assertFalse(result.passed());
@@ -444,6 +474,11 @@ class ArtifactAuditTest {
 
     private Map<String, byte[]> withMetadata(String jarPath, String sha256, Map<String, byte[]> entries) throws Exception {
         java.util.LinkedHashMap<String, byte[]> all = new java.util.LinkedHashMap<>(entries);
+        all.putIfAbsent(
+                "native0/Loader.class",
+                new NativeLoaderClassGenerator().generate(
+                        RuntimeLoaderPlan.create("native0", false),
+                        List.of()));
         List<String> reports = List.of(
                 "diagnostics.json",
                 "artifact-audit.json",
@@ -516,22 +551,22 @@ class ArtifactAuditTest {
                         "archClassifier": "arm64",
                         "libraryExtension": "dylib",
                         "libraryName": "j2ll",
-                        "zigTarget": "aarch64-macos",
-                        "expectedArtifactPath": "native/macos-arm64/arm64-macos.dylib",
+                        "zigTarget": "aarch64-macos.11.0",
+                        "expectedArtifactPath": "native/arm64-macos.dylib",
                         "expectedArtifactName": "arm64-macos.dylib",
-                        "expectedResourcePath": "native0/macos-arm64/arm64-macos.dylib",
+                        "expectedResourcePath": "native0/arm64-macos.dylib",
                         "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
                         "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
                         "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": "native/macos-arm64/arm64-macos.dylib",
-                        "actualJarPath": "native0/macos-arm64/arm64-macos.dylib",
+                        "actualArtifactPath": "native/arm64-macos.dylib",
+                        "actualJarPath": "native0/arm64-macos.dylib",
                         "actualSha256": "%5$s",
                         "exportedSymbols": ["JNI_OnLoad"],
                         "status": "built",
                         "reasonCode": "CURRENT_HOST_TARGET",
                         "reason": "selected target matches the current JVM host and is buildable now",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "macOS SDK and linker support for selected target",
+                        "requiredCapability": "managedZig0.15.2CrossTargetSharedLibrary",
+                        "platformSdkRequirement": "managed Zig 0.15.2 Mach-O/Darwin target support; no host macOS SDK required",
                         "failureKind": "none",
                         "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
                       }
@@ -575,22 +610,22 @@ class ArtifactAuditTest {
                         "archClassifier": "arm64",
                         "libraryExtension": "dylib",
                         "libraryName": "j2ll",
-                        "zigTarget": "aarch64-macos",
-                        "expectedArtifactPath": "native/macos-arm64/arm64-macos.dylib",
+                        "zigTarget": "aarch64-macos.11.0",
+                        "expectedArtifactPath": "native/arm64-macos.dylib",
                         "expectedArtifactName": "arm64-macos.dylib",
                         "expectedResourcePath": "%1$s",
                         "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
                         "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
                         "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": "native/macos-arm64/arm64-macos.dylib",
+                        "actualArtifactPath": "native/arm64-macos.dylib",
                         "actualJarPath": "%1$s",
                         "actualSha256": "%2$s",
                         "exportedSymbols": ["JNI_OnLoad"],
                         "status": "built",
                         "reasonCode": "CURRENT_HOST_TARGET",
                         "reason": "selected target matches the current JVM host and is buildable now",
-                        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-                        "platformSdkRequirement": "macOS SDK and linker support for selected target",
+                        "requiredCapability": "managedZig0.15.2CrossTargetSharedLibrary",
+                        "platformSdkRequirement": "managed Zig 0.15.2 Mach-O/Darwin target support; no host macOS SDK required",
                         "failureKind": "none",
                         "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
                       }

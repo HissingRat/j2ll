@@ -3,6 +3,7 @@ package xyz.melodysky.toolchain;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public record NativeBuildPlan(List<NativeBuildUnit> units, List<NativeBuildTargetPreflight> targetPreflights) {
     public NativeBuildPlan(List<NativeBuildUnit> units) {
@@ -41,6 +42,36 @@ public record NativeBuildPlan(List<NativeBuildUnit> units, List<NativeBuildTarge
 
     public List<NativeBuildTargetPreflight> failedTargetPreflights() {
         return targetPreflights.stream().filter(preflight -> !preflight.buildable()).toList();
+    }
+
+    public NativeBuildPlan withBuildFailures(
+            List<TargetTriple> failedTargets,
+            String failureKind,
+            String buildLogTail) {
+        Set<TargetTriple> failed = Set.copyOf(failedTargets);
+        List<NativeBuildTargetPreflight> updated = targetPreflights.stream()
+                .map(preflight -> failed.contains(preflight.target())
+                        ? new NativeBuildTargetPreflight(
+                                preflight.target(),
+                                preflight.outputPath(),
+                                preflight.libraryName(),
+                                preflight.currentHost(),
+                                false,
+                                "ZIG_TARGET_UNBUILDABLE",
+                                "managed Zig failed to produce the required target artifact",
+                                preflight.requiredCapability(),
+                                preflight.platformSdkRequirement(),
+                                preflight.required(),
+                                failureKind,
+                                buildLogTail)
+                        : preflight)
+                .toList();
+        return new NativeBuildPlan(
+                updated.stream()
+                        .filter(NativeBuildTargetPreflight::buildable)
+                        .map(NativeBuildTargetPreflight::asBuildUnit)
+                        .toList(),
+                updated);
     }
 
     private static String platformSdkRequirement(TargetTriple target) {

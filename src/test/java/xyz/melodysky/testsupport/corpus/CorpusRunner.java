@@ -19,6 +19,8 @@ import java.util.jar.JarOutputStream;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.cli.J2llCli;
+import xyz.melodysky.diagnostic.Diagnostic;
+import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.pipeline.MainlinePipeline;
 import xyz.melodysky.pipeline.MainlinePipelineResult;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
@@ -27,6 +29,7 @@ import xyz.melodysky.testsupport.JvmRunner;
 import xyz.melodysky.toolchain.NativeBuildPlan;
 import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.TargetTriple;
+import xyz.melodysky.toolchain.ToolchainDiagnostics;
 
 public final class CorpusRunner {
     private static final List<String> REPORTS = List.of(
@@ -60,7 +63,9 @@ public final class CorpusRunner {
                 ResolvedConfig config = configResult.config()
                         .orElseThrow(() -> new IllegalStateException(
                                 "release corpus config failed to load: " + configResult.diagnostics()));
-                pipelineResult = new MainlinePipeline(corpusCase.environment()::get).run(config, workspace);
+                pipelineResult = "TOOLCHAIN".equals(corpusCase.expectedFailureStage())
+                        ? runCliToolchainFailureCase(inputJar, corpusCase, workspace)
+                        : new MainlinePipeline(corpusCase.environment()::get).run(config, workspace);
                 if (!configResult.diagnostics().isEmpty()) {
                     ArrayList<xyz.melodysky.diagnostic.Diagnostic> diagnostics = new ArrayList<>();
                     diagnostics.addAll(configResult.diagnostics());
@@ -90,7 +95,7 @@ public final class CorpusRunner {
                 pipelineResult,
                 originalRun,
                 outputRun,
-                new CorpusReportPaths(reportPaths(workspace)));
+                new CorpusReportPaths(reportPaths(pipelineResult.workspaceRoot())));
     }
 
     private ResolvedConfig config(Path inputJar, CorpusCase corpusCase) {
@@ -101,6 +106,10 @@ public final class CorpusRunner {
     }
 
     private xyz.melodysky.config.ConfigLoadResult configResult(Path inputJar, CorpusCase corpusCase) {
+        return new ConfigLoader().load(configRoot(inputJar, corpusCase), inputJar.getParent());
+    }
+
+    private JsonObject configRoot(Path inputJar, CorpusCase corpusCase) {
         JsonObject root = JsonParser.parseString("""
                 {
                   "schemaVersion": 1,
@@ -171,7 +180,41 @@ public final class CorpusRunner {
                         corpusCase.protectionEnabled()))
                 .getAsJsonObject();
         addExtraTopLevelFields(root, corpusCase.extraTopLevelConfigFields());
-        return new ConfigLoader().load(root, inputJar.getParent());
+        return root;
+    }
+
+    private MainlinePipelineResult runCliToolchainFailureCase(
+            Path inputJar,
+            CorpusCase corpusCase,
+            Path requestedWorkspace)
+            throws IOException {
+        Path configPath = requestedWorkspace.resolve("config.json");
+        Files.createDirectories(configPath.getParent());
+        Files.writeString(configPath, configRoot(inputJar, corpusCase).toString());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int exitCode = J2llCli.run(
+                new String[] {"--config", configPath.toString()},
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        if (exitCode != 4) {
+            throw new IllegalStateException(
+                    "expected injected toolchain failure exit 4, got " + exitCode + ":\n"
+                            + err.toString(StandardCharsets.UTF_8));
+        }
+        Path actualWorkspace = pathValue(err.toString(StandardCharsets.UTF_8), "reportsDir").getParent();
+        Diagnostic diagnostic = Diagnostic.error(
+                        DiagnosticStage.NATIVE_LINK,
+                        ToolchainDiagnostics.ZIG_TARGET_UNBUILDABLE,
+                        "test-only managed Zig did not produce every selected target artifact")
+                .withDecision("failed");
+        return new MainlinePipelineResult(
+                actualWorkspace,
+                actualWorkspace.resolve(inputJar.getFileName()),
+                List.of(diagnostic),
+                new NativeBuildPlan(List.of()),
+                new NativeRegistrationPlan(List.of()),
+                false);
     }
 
     private MainlinePipelineResult runCliConfigCase(Path inputJar, CorpusCase corpusCase, Path workspace)
@@ -182,18 +225,29 @@ public final class CorpusRunner {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         J2llCli.run(
-                new String[] {"build", configPath.toString(), workspace.toString()},
+                new String[] {"--config", configPath.toString()},
                 new PrintStream(out, true, StandardCharsets.UTF_8),
                 new PrintStream(err, true, StandardCharsets.UTF_8));
         var loaded = new ConfigLoader().load(configPath);
-        Path outputJar = workspace.resolve("output/config-failed.jar");
+        Path reportsDirectory = pathValue(err.toString(StandardCharsets.UTF_8), "reportsDir");
+        Path actualWorkspace = reportsDirectory.getParent();
+        Path outputJar = actualWorkspace.resolve("config-failed.jar");
         return new MainlinePipelineResult(
-                workspace,
+                actualWorkspace,
                 outputJar,
                 loaded.diagnostics(),
                 new NativeBuildPlan(List.of()),
                 new NativeRegistrationPlan(List.of()),
                 false);
+    }
+
+    private Path pathValue(String output, String key) {
+        String prefix = key + "=";
+        return output.lines()
+                .filter(line -> line.startsWith(prefix))
+                .map(line -> Path.of(line.substring(prefix.length())))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("missing " + prefix + " in CLI output:\n" + output));
     }
 
     private String materializedConfigJson(Path inputJar, String configJson) {

@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 
 public class ArtifactAudit {
     public ArtifactAuditResult audit(
@@ -59,12 +61,19 @@ public class ArtifactAudit {
             checkNoLegacyEntries(checks, entries);
             checkNoPdbEntries(checks, entries);
             checkNativeResourcePaths(checks, entries, embeddedLibraryDirectory, embeddedLibraries);
+            checkRuntimeLoader(
+                    checks,
+                    jar,
+                    entries,
+                    embeddedLibraryDirectory,
+                    !embeddedLibraries.isEmpty());
             checkEmbeddedLibraryHashes(checks, jar, embeddedLibraries);
             checkJ2llMetadata(checks, workspaceRoot, jar, entries, embeddedLibraries);
             checkFallbackBlobReport(checks, workspaceRoot);
             checkPlaintextsInJar(workspaceRoot, jar, checks, checkedSensitiveFacts);
         }
-        checkExportedSymbols(checks, exportedSymbols);
+        checkExportedSymbols(checks, exportedSymbols, !embeddedLibraries.isEmpty());
+        checkNoWorkspacePdb(checks, workspaceRoot, embeddedLibraries);
         checkPlaintexts(workspaceRoot, checks, checkedSensitiveFacts);
         checks.add(ArtifactAuditCheck.passed(
                 "plaintext.observedOnlyFacts",
@@ -136,7 +145,16 @@ public class ArtifactAudit {
                 .filter(path -> !entries.contains(path))
                 .sorted()
                 .toList();
-        checks.add(wrong.isEmpty() && missing.isEmpty()
+        Set<String> expected = embeddedLibraries.stream()
+                .map(EmbeddedLibraryReport::jarPath)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        List<String> unexpected = entries.stream()
+                .filter(path -> path.startsWith(prefix))
+                .filter(this::isNativeLibraryPath)
+                .filter(path -> !expected.contains(path))
+                .sorted()
+                .toList();
+        checks.add(wrong.isEmpty() && missing.isEmpty() && unexpected.isEmpty()
                 ? ArtifactAuditCheck.passed(
                         "jar.nativeResourcePaths",
                         "NATIVE_RESOURCES_UNDER_CONFIGURED_DIRECTORY",
@@ -144,7 +162,109 @@ public class ArtifactAudit {
                 : ArtifactAuditCheck.failed(
                         "jar.nativeResourcePaths",
                         "NATIVE_RESOURCE_PATH_INVALID",
-                        "wrong directory: " + wrong + ", missing: " + missing));
+                        "wrong directory: " + wrong + ", missing: " + missing
+                                + ", unexpected: " + unexpected));
+    }
+
+    private boolean isNativeLibraryPath(String path) {
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".dll") || lower.endsWith(".so") || lower.endsWith(".dylib");
+    }
+
+    private void checkRuntimeLoader(
+            List<ArtifactAuditCheck> checks,
+            JarFile jar,
+            Set<String> entries,
+            String embeddedLibraryDirectory,
+            boolean required) throws IOException {
+        String directory = embeddedLibraryDirectory.endsWith("/")
+                ? embeddedLibraryDirectory.substring(0, embeddedLibraryDirectory.length() - 1)
+                : embeddedLibraryDirectory;
+        String internalName = directory + "/Loader";
+        String entryName = internalName + ".class";
+        List<String> forbiddenSupportEntries = List.of(
+                "xyz/melodysky/runtime/fallback/J2llFallbackSupport.class",
+                "xyz/melodysky/runtime/loader/J2llNativeLoaderSupport.class");
+        List<String> presentForbiddenSupport = forbiddenSupportEntries.stream()
+                .filter(entries::contains)
+                .toList();
+        List<String> oldGeneratedLoaders = entries.stream()
+                .filter(entry -> entry.startsWith("j2ll/generated/"))
+                .filter(entry -> entry.endsWith("/NativeLoader.class"))
+                .sorted()
+                .toList();
+        checks.add(presentForbiddenSupport.isEmpty() && oldGeneratedLoaders.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.noLegacyRuntimeSupportClasses",
+                        "NO_LEGACY_RUNTIME_SUPPORT_CLASSES",
+                        "output JAR has no split or old generated runtime loader classes")
+                : ArtifactAuditCheck.failed(
+                        "jar.noLegacyRuntimeSupportClasses",
+                        "LEGACY_RUNTIME_SUPPORT_CLASS_FOUND",
+                        "legacy runtime support entries: " + presentForbiddenSupport
+                                + ", old generated loaders: " + oldGeneratedLoaders));
+
+        if (!required) {
+            checks.add(ArtifactAuditCheck.passed(
+                    "jar.runtimeLoader",
+                    "RUNTIME_LOADER_NOT_REQUIRED",
+                    "no native library was embedded, so Loader.class is not required"));
+            return;
+        }
+        long entryCount = jar.stream()
+                .filter(entry -> !entry.isDirectory())
+                .filter(entry -> entry.getName().equals(entryName))
+                .count();
+        if (entryCount != 1) {
+            checks.add(ArtifactAuditCheck.failed(
+                    "jar.runtimeLoader",
+                    "RUNTIME_LOADER_ENTRY_INVALID",
+                    "expected exactly one " + entryName + " but found " + entryCount));
+            return;
+        }
+        try (InputStream input = jar.getInputStream(jar.getJarEntry(entryName))) {
+            ClassReader reader = new ClassReader(input);
+            boolean identityMatches = reader.getClassName().equals(internalName);
+            boolean versionMatches = reader.readUnsignedShort(6) == Opcodes.V17;
+            checks.add(identityMatches && versionMatches
+                    ? ArtifactAuditCheck.passed(
+                            "jar.runtimeLoader",
+                            "RUNTIME_LOADER_PRESENT",
+                            "single Java 17 runtime Loader is present at " + entryName)
+                    : ArtifactAuditCheck.failed(
+                            "jar.runtimeLoader",
+                            "RUNTIME_LOADER_CLASS_INVALID",
+                            "Loader identity/version mismatch: internalName=" + reader.getClassName()
+                                    + ", major=" + reader.readUnsignedShort(6)));
+        }
+    }
+
+    private void checkNoWorkspacePdb(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot,
+            List<EmbeddedLibraryReport> embeddedLibraries) throws IOException {
+        ArrayList<String> pdb = new ArrayList<>();
+        Path nativeDirectory = workspaceRoot.resolve("native");
+        if (!embeddedLibraries.isEmpty() && Files.isDirectory(nativeDirectory)) {
+            try (Stream<Path> paths = Files.list(nativeDirectory)) {
+                paths.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString()
+                                .toLowerCase(java.util.Locale.ROOT)
+                                .endsWith(".pdb"))
+                        .map(path -> displayPath(workspaceRoot, path))
+                        .forEach(pdb::add);
+            }
+        }
+        pdb.sort(String::compareTo);
+        checks.add(pdb.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "workspace.noPdb",
+                        "WINDOWS_PDB_WORKSPACE_EXCLUDED",
+                        "flat native output directory has no PDB files")
+                : ArtifactAuditCheck.failed(
+                        "workspace.noPdb",
+                        "WINDOWS_PDB_WORKSPACE_FOUND",
+                        "PDB files in flat native output directory: " + pdb));
     }
 
     private void checkEmbeddedLibraryHashes(
@@ -499,23 +619,31 @@ public class ArtifactAudit {
         return object.has(field) && object.get(field).isJsonPrimitive() && object.get(field).getAsInt() > 0;
     }
 
-    private void checkExportedSymbols(List<ArtifactAuditCheck> checks, List<String> exportedSymbols) {
-        List<String> hidden = exportedSymbols.stream()
-                .filter(symbol -> symbol.startsWith("j2ll_f_")
-                        || symbol.startsWith("j2ll_cit_")
-                        || symbol.startsWith("j2ll_cid_")
-                        || symbol.startsWith("Java_"))
+    private void checkExportedSymbols(
+            List<ArtifactAuditCheck> checks,
+            List<String> exportedSymbols,
+            boolean nativeLibrariesPresent) {
+        List<String> allowed = List.of("JNI_OnLoad", "j2ll_register", "__dso_handle", "_mh_dylib_header");
+        List<String> unexpected = exportedSymbols.stream()
+                .filter(symbol -> !allowed.contains(symbol))
                 .sorted()
                 .toList();
-        checks.add(hidden.isEmpty()
+        List<String> missing = nativeLibrariesPresent
+                ? List.of("JNI_OnLoad", "j2ll_register").stream()
+                        .filter(symbol -> !exportedSymbols.contains(symbol))
+                        .toList()
+                : List.of();
+        checks.add(unexpected.isEmpty() && missing.isEmpty()
                 ? ArtifactAuditCheck.passed(
                         "symbols.noHiddenExports",
-                        "HIDDEN_SYMBOLS_NOT_EXPORTED",
-                        "hidden Java implementation/protection symbols are not dynamic exports")
+                        "NATIVE_EXPORT_ALLOWLIST_PASSED",
+                        nativeLibrariesPresent
+                                ? "native exports match the loader/platform allowlist"
+                                : "no native library export surface is required")
                 : ArtifactAuditCheck.failed(
                         "symbols.noHiddenExports",
-                        "HIDDEN_SYMBOL_EXPORTED",
-                        "hidden symbols exported: " + hidden));
+                        "NATIVE_EXPORT_ALLOWLIST_FAILED",
+                        "missing exports: " + missing + ", unexpected exports: " + unexpected));
     }
 
     private void checkPlaintexts(
@@ -534,12 +662,6 @@ public class ArtifactAudit {
                     "no forbidden plaintext literals were provided for this audit"));
             return;
         }
-        List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
-                .map(SensitivePlaintextFact::plaintext)
-                .filter(value -> !value.isBlank())
-                .sorted()
-                .distinct()
-                .toList();
         ArrayList<String> hits = new ArrayList<>();
         for (Path root : roots) {
             if (!Files.isDirectory(root)) {
@@ -550,6 +672,13 @@ public class ArtifactAudit {
                     if (!isPlaintextAuditSurface(workspaceRoot, path)) {
                         continue;
                     }
+                    List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
+                            .filter(fact -> appliesToWorkspacePath(fact, path))
+                            .map(SensitivePlaintextFact::plaintext)
+                            .filter(value -> !value.isBlank())
+                            .sorted()
+                            .distinct()
+                            .toList();
                     String text = Files.readString(path, StandardCharsets.ISO_8859_1);
                     collectPlaintextHits(workspaceRoot, path, text, forbiddenPlaintexts, hits);
                 }
@@ -571,14 +700,17 @@ public class ArtifactAudit {
             JarFile jar,
             List<ArtifactAuditCheck> checks,
             List<SensitivePlaintextFact> checkedSensitiveFacts) throws IOException {
-        if (checkedSensitiveFacts.isEmpty()) {
+        List<SensitivePlaintextFact> jarFacts = checkedSensitiveFacts.stream()
+                .filter(fact -> !isNativeMetadataFact(fact))
+                .toList();
+        if (jarFacts.isEmpty()) {
             checks.add(ArtifactAuditCheck.passed(
                     "plaintext.jarEntries",
                     "PLAINTEXT_JAR_AUDIT_NOT_APPLICABLE",
                     "no blocking plaintext facts were provided for JAR entry audit"));
             return;
         }
-        List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
+        List<String> forbiddenPlaintexts = jarFacts.stream()
                 .map(SensitivePlaintextFact::plaintext)
                 .filter(value -> !value.isBlank())
                 .sorted()
@@ -647,7 +779,7 @@ public class ArtifactAudit {
                 "surfaceNotGenerated",
                 workspaceRoot.resolve("intermediates/classes"),
                 path -> path.toString().endsWith(".ll")));
-        checks.add(Files.isRegularFile(workspaceRoot.resolve("build.zig"))
+        checks.add(Files.isRegularFile(workspaceRoot.resolve("native/zig-workspace/build.zig"))
                 ? ArtifactAuditCheck.passed("surface.buildZig", "BUILD_ZIG_SURFACE_CHECKED", "build.zig workspace manifest checked")
                 : ArtifactAuditCheck.skipped("surface.buildZig", "surfaceNotGenerated", "build.zig was not generated"));
         checks.add(embeddedLibraries.isEmpty()
@@ -716,10 +848,24 @@ public class ArtifactAudit {
         return false;
     }
 
+    private boolean appliesToWorkspacePath(SensitivePlaintextFact fact, Path path) {
+        if (!isNativeMetadataFact(fact)) {
+            return true;
+        }
+        String lower = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".c")
+                || lower.endsWith(".dll")
+                || lower.endsWith(".so")
+                || lower.endsWith(".dylib");
+    }
+
+    private boolean isNativeMetadataFact(SensitivePlaintextFact fact) {
+        return fact.pathKind().equals("NATIVE_METADATA_STRING");
+    }
+
     private boolean isJarPlaintextAuditSurface(String entryName) {
         String lower = entryName.toLowerCase(java.util.Locale.ROOT);
-        if (lower.startsWith("native0/")
-                || lower.endsWith(".dylib")
+        if (lower.endsWith(".dylib")
                 || lower.endsWith(".so")
                 || lower.endsWith(".dll")
                 || lower.endsWith(".pdb")) {

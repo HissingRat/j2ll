@@ -15,6 +15,18 @@ import xyz.melodysky.toolchain.TargetTriple;
 
 class SymbolAuditTest {
     @Test
+    void macosAllowlistIncludesOnlyRequiredPlatformRuntimeExportsBeyondBootstrap() {
+        ExportList allowlist = new SymbolVisibilityPlanner().loaderExports(TargetTriple.MACOS_ARM64);
+
+        assertEquals(
+                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header", "j2ll_register"),
+                allowlist.symbols().stream().map(ExportedSymbol::name).toList());
+        assertTrue(new SymbolAudit().audit(
+                allowlist,
+                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header", "j2ll_register")).passed());
+    }
+
+    @Test
     void passesWhenActualExportsMatchAllowlist() {
         ExportList allowlist = new SymbolVisibilityPlanner().defaultLoaderExports();
 
@@ -42,12 +54,13 @@ class SymbolAuditTest {
                 new NativeRegistrationEntry("pkg/Foo", "run", "()V", "j2ll_pkg_Foo_run")));
         JniOnLoadPlan onLoadPlan = new JniOnLoadPlanner().plan(registrationPlan);
         ExportList allowlist = new SymbolVisibilityPlanner().jniExports(onLoadPlan);
+        var bootstrapWrapper = onLoadPlan.bootstrapWrappers().get(0);
 
         SymbolAuditResult result = new SymbolAudit().audit(allowlist, List.of(
                 "JNI_OnLoad",
                 "j2ll_register",
-                "j2ll_bootstrap_pkg_Foo",
-                "j2ll_register_pkg_Foo",
+                bootstrapWrapper.wrapperSymbol(),
+                bootstrapWrapper.registerSymbol(),
                 "Java_pkg_Foo_run"));
 
         assertFalse(result.passed());
@@ -59,7 +72,7 @@ class SymbolAuditTest {
     void windowsReleasePlansPdbRemoval() {
         StripPlan plan = new StripCommandPlanner().plan(
                 TargetTriple.WINDOWS_X64,
-                Path.of("native/windows-x64/x64-windows.dll"),
+                Path.of("native/x64-windows.dll"),
                 true);
 
         assertTrue(plan.removePdb());

@@ -41,6 +41,16 @@ class ProtectionAvailabilityReporterTest {
         assertFalse(new ProtectionAvailabilityReporter(Set.of(), Set.of()).report(disabled).iterator().hasNext());
     }
 
+    @Test
+    void currentImplementationDoesNotWarnForImplementedIndirectCalls() {
+        var diagnostics = ProtectionAvailabilityReporter.currentImplementation().report(config());
+
+        assertTrue(diagnostics.stream()
+                .noneMatch(diagnostic -> diagnostic.message().contains("indirectCalls")));
+        assertTrue(diagnostics.stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("opaquePredicates")));
+    }
+
     private xyz.melodysky.config.ProtectionConfig config() {
         return new xyz.melodysky.config.ProtectionConfig(
                 true,

@@ -1,569 +1,297 @@
 # j2ll
 
-[English](#j2ll) | [中文](#j2ll-中文)
+[English](#english) | [中文](#中文)
 
-Java `.jar` to native library transpiler and repacker for JNI-based deployment.
+## English
 
-The tool runs an IR-only pipeline:
+j2ll is a JVM-hosted JAR obfuscation and native-lowering tool. It rewrites selected Java methods, builds JNI dynamic libraries, and repackages everything as a runnable JAR.
 
-`JAR -> ASM -> custom IR -> IR passes -> LLVM IR -> native libs -> repacked JAR`
-
-For large applications, `whiteList` and `blackList` filtering is still recommended. Native lowering and the protection layers add overhead, so avoid obfuscating an entire large game jar unless you have validated the result.
-
-This tool provides string obfuscation, but it is not fundamentally irreversible because the key material still has to be derivable at runtime.
-
-This tool currently provides:
-- Java/JAR side:
-  - method native rewriting
-  - loader injection
-  - `RegisterNatives`-based binding
-  - loader generation aligned to the input jar class version
-- Native side:
-  - string obfuscation
-  - symbol de-semanticization
-  - call indirection and dispatcher-based call routing
-  - integer/long constant splitting
-  - light CFG perturbation
-  - runtime helper metadata obfuscation
-
----
-
-### Lowering status terminology
-
-j2ll reports every selected method with an explicit status. The important ones are:
-
-- `lowered`: the method body was native-lowered. The original Java method is rewritten to a native/stub entry, registered through JNI, and its behavior is implemented by generated native code plus JVM/JNI runtime helpers.
-- `halfLowered`: the method was still wrapped through the native path, but at least one operation or call site is preserved through a JVM fallback. In schema v1 this usually means the original bytecode needed for that fallback is encoded into the native artifact as a `nativeEmbeddedClassBlob`, then invoked through a hidden/helper class at runtime.
-- `frontendSkipped`: j2ll kept the original bytecode and did not rewrite/register that method. This is used for shapes that are not safe to native-wrap yet, such as some complex finally/default-interface-super cases.
-- `notApplicable`: the selector matched a method that has no lowerable Java body or does not need rewriting, such as abstract or already-native methods.
-- `failed`: j2ll could not preserve a safe output for that method or stage.
-
-In short:
+The output is **not** a standalone native executable or a replacement Java runtime. It still runs on a JVM. Java objects, arrays, strings, exceptions, monitors, threads, identity, lifetime, and garbage collection remain JVM-owned; lowered code reaches them through JNI and runtime helpers.
 
 ```text
-lowered:
-  Java method -> native stub -> generated LLVM/JNI/helper implementation
-
-halfLowered:
-  Java method -> native stub -> native bridge -> encoded JVM fallback helper
-
-frontendSkipped:
-  Java method remains ordinary bytecode
+.class -> ASM -> method CFG -> hierarchy/call analysis -> SSA IR
+       -> optimization/protection -> LLVM modules -> managed Zig
+       -> JNI registration + embedded native libraries -> output JAR
 ```
 
-`halfLowered` is not a silent skip. It is a conservative safety path: j2ll still hides the original method entry behind native registration, but keeps hard JVM semantics correct by delegating the unsupported part to encoded bytecode-preserving fallback. For stronger obfuscation, prefer more `lowered` methods and fewer `halfLowered`/`frontendSkipped` methods, but `failed` is the status that indicates a real build problem.
-
----
+The current beta performs structural native builds for all six fixed targets through managed Zig `0.15.2`: Windows GNU x86_64/AArch64, Linux GNU x86_64/AArch64 with a glibc 2.17 baseline, and macOS x86_64/AArch64 with minimum versions 10.15/11.0. Runtime child-JVM parity is currently exercised on the host target; non-host runtime E2E remains separate release evidence. JVM semantics that are not safely lowered use explicit helper-backed or bytecode-preserving fallback paths. Protection improves resistance to inspection, but it is not irreversible: runtime code must retain enough information to execute the protected program.
 
 ### Requirements
-1. JDK 25
 
-   - Windows:
-     install a JDK 25 distribution such as Oracle JDK 25.
-   - Linux/macOS:
-     install a JDK 25 distribution with your package manager or your preferred vendor package.
+- JDK 25 to build and run the current j2ll CLI.
+- Java 17 or newer to run an output JAR; the generated runtime loader is a Java 17 classfile.
+- Managed Zig `0.15.2` for native builds. j2ll installs or reuses it according to the policy below.
 
-2. Zig 0.15.2
+### Build the CLI
 
-   If Zig 0.15.2 is not available, the tool can download it automatically from the
-   [official website](https://ziglang.org/download/) into the same directory as the
-   obfuscator jar under `zig-0.15.2/`.
+Build the runnable JAR:
 
-   You can also pre-download the host Zig archive into the same directory as the
-   obfuscator jar. In that case, place both the official archive and its `.minisig`
-   file there, and keep the original filenames exactly as published by Zig. For
-   example on Windows:
+```sh
+./gradlew cliJar
+```
 
-   - `zig-x86_64-windows-0.15.2.zip`
-   - `zig-x86_64-windows-0.15.2.zip.minisig`
-
----
-
-### General usage
-This project is intended to be driven through `Config.json`.
-
-Run it as:
+The stable artifact is:
 
 ```text
-java -jar j2ll.jar
-java -jar j2ll.jar --config /path/to/Config.json
-java -jar j2ll.jar --debug --config /path/to/Config.json
-java -jar j2ll.jar --analyze --config /path/to/Config.json
+build/cli/j2ll.jar
 ```
 
-If `Config.json` does not exist, the tool will create a template in the current directory.
+Build the beta distribution, including the CLI JAR, schema, examples, sample guides, and user documentation:
 
-`--debug` keeps native build intermediates and prints extra IR/native timing information.
-
-`--analyze` runs the frontend analysis only. It writes `analysis-report.json`
-and any frontend skip reports into the timestamped workspace without building
-native libraries or repacking the input jar.
-
-#### Config file format
-```json
-{
-  "jarFile": "/absolute/path/to/input.jar",
-  "outputDirectory": "out",
-  "blackList": [],
-  "whiteList": [],
-  "target": {
-    "windowsX64": true,
-    "windowsArm64": false,
-    "linuxX64": true,
-    "linuxArm64": false,
-    "macosX64": true,
-    "macosArm64": true
-  },
-  "libraryName": null,
-  "embeddedLibraryDirectory": "native0",
-  "stringObfuscation": {
-    "enabled": true
-  },
-  "maxShardMB": 16
-}
+```sh
+./gradlew distJ2ll
 ```
 
-#### Config fields
-`jarFile` - input `.jar` file to obfuscate
-
-`outputDirectory` - output root directory. Every run creates a separate timestamped workspace inside it, for example:
-
-`out/build_2026-04-12_14-42-24`
-
-`whiteList` - list of classes and methods to include
-
-`blackList` - list of classes and methods to exclude
-
-Both lists use entries like:
-```json
-"whiteList": [
-  "<class>",
-  "<class>#<method name>!<method descriptor>",
-  "mypackage/myotherpackage/Class1",
-  "mypackage/myotherpackage/Class1#doSomething!()V",
-  "mypackage/myotherpackage/Class1$SubClass#doOther!(I)V"
-]
-```
-
-Filtering uses JVM internal class names and method descriptors.
-
-Wildcard matchers are also supported:
-```json
-"whiteList": [
-  "mypackage/myotherpackage/*",
-  "mypackage/myotherpackagewithnested/**",
-  "mypackage/myotherpackage/*/Class1",
-  "mypackage/myotherpackagewithnested/**/Class1",
-  "mypackage/myotherpackage/Class*"
-]
-```
-
-`*` matches a single entry separated by `/`
-
-`**` matches multiple nested entries
-
-`libraryName` - if the output jar should load native libraries from the system library path, set the plain library name used by `LoaderPlain`
-
-`embeddedLibraryDirectory` - sets the embedded native library directory inside the output jar
-
-`stringObfuscation.enabled` - enables string obfuscation pass
-
-`maxShardMB` - best-effort upper bound for generated LLVM shards and runtime helper shards, in megabytes. This is useful when you want smaller compile/link units for large jars.
-
-If you want to ship the jar with embedded native libraries, leave `libraryName` as `null`. The automatic Zig build step will place them into the output jar in the form of:
+The distribution is written to:
 
 ```text
-x64-windows.dll
-x64-linux.so
-x64-macos.dylib
-arm64-linux.so
-arm64-windows.dll
-arm64-macos.dylib
+build/dist/j2ll/
 ```
 
-inside the directory printed in `stdout` (by default `native0/`, or the resolved `embeddedLibraryDirectory` value if present).
+### CLI
 
----
+Canonical syntax: `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`. Help and version remain standalone flags.
 
-### Automatic build flow
-1. The tool validates `Config.json`.
-2. A timestamped workspace is created inside `outputDirectory`.
-3. The input jar is parsed through ASM and lowered into custom IR.
-4. IR validation and method-pass processing are applied.
-5. Current method passes include:
-   - CFG cleanup
-   - string obfuscation
-   - constant splitting
-   - light CFG perturbation
-6. LLVM IR is emitted into `llvm-modules/program.ll` and split into shard modules under `llvm-modules/`.
-7. Runtime C sources are generated into `runtime/`.
-8. Zig 0.15.2 is checked before native export starts.
-9. If a matching Zig archive already exists next to the obfuscator jar, its `.minisig` is verified and the cached archive is reused.
-10. Otherwise Zig is downloaded, its `.minisig` is verified, and it is extracted into `zig-0.15.2/` next to the obfuscator jar.
-11. The selected targets from `config.target` are built automatically with Zig.
-12. A loader is generated, native methods are rewritten, native libraries are embedded, and the output jar is repacked automatically.
+```sh
+java -jar build/cli/j2ll.jar --help
+java -jar build/cli/j2ll.jar --version
+java -jar build/cli/j2ll.jar --validate --config <config.json>
+java -jar build/cli/j2ll.jar --dry-run --config <config.json>
+java -jar build/cli/j2ll.jar --config <config.json>
+java -jar build/cli/j2ll.jar --debug --config <config.json>
+```
 
-`Ctrl+C` cancels the Java process and also terminates spawned Zig child processes.
+- `--config` selects a config file. Without it, j2ll reads `Config.json` from the current directory.
+- `--validate` checks the configuration only and creates no workspace or pipeline artifacts.
+- `--dry-run` validates config and selectors and performs target preflight. It creates a report workspace, but never invokes Zig, builds native libraries, or writes a final JAR.
+- With neither `--validate` nor `--dry-run`, j2ll runs the full build pipeline.
+- `--debug` enables all intermediate outputs (`enabled`, debug dumps, per-class IR, LLVM, and C) for that run. It is diagnostic artifact retention, not a native debug-symbol build.
+- Full builds show stage progress on stderr. Interactive terminals use optimized legacy regions: `Read bytecode` / `Lower to IR` / `Emit LLVM IR`, then an aggregate `Build native` bar plus one `building/linking` or `done` row per target and a `Stage` row, then `Finalize JAR`. Native aggregate progress advances only when a non-empty target library is installed; no compiler percentage is invented. Normal-width terminals keep 28-character bars; narrow terminals shorten the bar before truncating useful status. Redirected output and CI receive one control-sequence-free `[current/total]` line per high-level stage without per-target log spam. Zig still receives the selected targets in one invocation and schedules its independent build graph internally.
 
----
+Start with [`docs/examples/minimal-config.json`](docs/examples/minimal-config.json). Schema v1 is defined by [`docs/config.schema.json`](docs/config.schema.json); do not infer the full schema from a shortened README sample. Additional checked examples cover all-on protection, signing policies, a target matrix, and debug dumps under [`docs/examples/`](docs/examples/).
 
-### Workspace layout
-Each run creates a build workspace like:
+For a complete walkthrough, see [`docs/getting-started.md`](docs/getting-started.md). The authoritative input/config/output contract is [`docs/io-config-output-contract.md`](docs/io-config-output-contract.md).
+
+### Method results
+
+Every selector match receives an explicit result in `reports/lowering-report.json`:
+
+- `lowered`: the method was rewritten and its implementation is provided by generated native code plus JVM/JNI helpers.
+- `halfLowered`: the method uses a native entry, but one or more operations use an explicit JVM fallback. In schema v1, bytecode needed by ordinary-method fallback is stored as an encoded `nativeEmbeddedClassBlob` in the native artifact, not as a plaintext generated class in the output JAR.
+- `frontendSkipped`: the original bytecode remains runnable because the method shape cannot yet be safely native-wrapped. The reason is also recorded in `reports/frontend-skip-report.json`.
+- `notApplicable`: the selector matched a method without a lowerable body, such as an abstract or already-native method.
+- `failed`: j2ll could not preserve a safe result; the build fails and no final JAR is retained.
+
+There are no silent selector skips. `halfLowered` and `frontendSkipped` are conservative compatibility outcomes, not equivalent to `failed`, but they usually provide less protection than a fully `lowered` method.
+
+### Managed Zig 0.15.2
+
+The only schema v1 native build driver is Zig `0.15.2`. Its normalized layout is next to the runnable JAR:
 
 ```text
-out/build_YYYY-MM-DD_HH-mm-ss/
+<j2ll-home>/
+  j2ll.jar
+  zig/
+    zig        # or zig.exe on Windows
+    lib/
 ```
 
-Important files and directories:
-- Repacked jar: `<workspace>/<input-jar-name>.jar`
-- Native libraries: `<workspace>/native/`
-- Logs: `<workspace>/logs/`
-- LLVM monolithic IR: `<workspace>/llvm-modules/program.ll`
-- LLVM shard modules: `<workspace>/llvm-modules/*.ll`
-- Runtime C sources: `<workspace>/runtime/*.c`
-- Frontend skip report: `<workspace>/frontend-skips.txt` when skips are present
-- Structured frontend skip report: `<workspace>/frontend-skips.json` when skips are present
+j2ll applies this resolution order:
 
-Notes:
-- `frontend-skips.txt` and `frontend-skips.json` are not generated when the frontend skip count is `0`.
-- Annotation classes are intentionally skipped by the frontend today and are not native-lowered.
-- Record-synthesized `equals`, `hashCode`, and `toString` are intentionally kept as bytecode so their JVM `ObjectMethods` semantics remain exact in large whole-jar workloads.
+1. Reuse `zig/zig` or `zig/zig.exe` only when its version is exactly `0.15.2`.
+2. Otherwise, reuse the official current-host Zig archive if it is already beside `j2ll.jar`.
+3. If no local archive exists, download it from `https://ziglang.org/download/0.15.2/`.
+4. Verify local or downloaded archives against built-in official SHA-256 metadata before extraction, then normalize the extracted files into `zig/`.
 
-`frontend-skips.json` contains the total skip count, counts grouped by reason category,
-and one entry per skipped method with class name, method name, descriptor, raw reason,
-and category.
+An archive checksum mismatch is a native/toolchain failure and no final JAR is written. Signature verification is not currently enforced: reports explicitly record `signatureStatus=notVerifiedBoundary`. j2ll does not claim archive-signature verification.
 
-Intermediate native build directories:
-- `native-obj/`
-- `zig-cache/`
-- `zig-build/`
+One generated `build.zig` workspace and one matrix-wide `zig build` invocation compile and link every selected target. The fixed target queries are `x86_64-windows-gnu`, `aarch64-windows-gnu`, `x86_64-linux.3.2-gnu.2.17`, `aarch64-linux.3.7-gnu.2.17`, `x86_64-macos.10.15`, and `aarch64-macos.11.0`. This is real cross-target artifact generation, not a simulated package plan. In schema v1 every selected target is required; an actual capability, preflight, compile, or link failure reports `ZIG_TARGET_UNBUILDABLE`, exits as a toolchain failure, and does not write a final JAR.
 
-These are deleted automatically after the build unless `--debug` is enabled.
+### Workspace and reports
 
----
+`--dry-run` and the default build mode create their workspace automatically under the resolved `outputDirectory`. The name is `build_yyyy-MM-dd_HH-mm-ss`; if it already exists, j2ll appends `-1`, `-2`, and so on. `--validate` creates no workspace.
 
-### Building the tool
-Common commands:
-
-1. `./gradlew clean build`
-   Builds the project and runs the full test suite.
-2. `./gradlew assemble`
-   Builds the project jar without tests.
-3. `./gradlew shadowJar`
-   Produces the runnable fat jar.
-
-The runnable jar is written to:
-
-`build/libs/j2ll.jar`
-
----
-
-### Tests
-Run `./gradlew test` for the unit and integration suite.
-
-You can also run the benchmark fixture end to end with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-obf-bench.ps1
-```
-
-or:
+A successful build writes its primary artifact to:
 
 ```text
-./gradlew obfBench
+<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/<input-name>.jar
 ```
 
-`obfBench` currently acts as a strict gate:
-- the obfuscated benchmark must run successfully
-- frontend skips must be zero
-- native rewriting must succeed
+Native libraries live directly under `<workspace>/native/<library-file-name>` and are embedded in the final JAR under `<embeddedLibraryDirectory>/<library-file-name>`. The same directory contains exactly one generated Java 17 class, `<embeddedLibraryDirectory>/Loader.class`, which always handles native loading and includes `defineHiddenFallback` only when this build actually uses `nativeEmbeddedClassBlob`. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are not emitted. The directory must be a canonical Java internal package path. A colliding input base or multi-release Loader entry is rejected before Zig with `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` or `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Use an application-unique value if different output artifacts can coexist in the same `ClassLoader`, because equal directories give their loaders the same binary name. Optional class-aligned IR/LLVM/C and debug artifacts live under `<workspace>/intermediates/` when enabled by config.
 
----
+Start diagnosis with:
 
-# j2ll 中文
+- `reports/summary.md`: short human-readable result.
+- `reports/summary.json`: machine-readable aggregate.
+- `reports/index.json`: paths, hashes, readiness flags, and status for generated reports.
+- `reports/diagnostics.json`: stable diagnostics and remediation hints.
+- `reports/lowering-report.json`: per-method lowering decisions.
+- `reports/packaging-report.json`: JAR preservation, signatures, Zig bootstrap, and target artifacts.
+- `reports/artifact-audit.json`: final artifact, native-resource, symbol, metadata, fallback-blob, and sensitive-plaintext checks.
+- `reports/release-readiness.json`: readiness checks and missing evidence.
+- `reports/failure-report.json`: primary stage/reason on failed runs; `finalArtifactWritten=false`.
 
-[English](#j2ll) | [中文](#j2ll-中文)
+CLI stdout stays short and points to these files; full-build progress and failures use stderr. Failed config, frontend, native, signing, audit, or readiness runs retain reports but do not retain a success-state final JAR.
 
-j2ll 是一个面向 JNI 部署的 Java `.jar` 到 native library 转换与 repack 工具。
+### Common Gradle commands
 
-工具运行一条 IR-only 管线：
+```sh
+./gradlew cliJar          # build build/cli/j2ll.jar
+./gradlew distJ2ll        # build build/dist/j2ll/
+./gradlew test            # unit and integration suite
+./gradlew betaAcceptance  # exercise the distribution JAR end to end
+./gradlew clean build     # clean build plus verification
+```
 
-`JAR -> ASM -> custom IR -> IR passes -> LLVM IR -> native libs -> repacked JAR`
+Support boundaries and internal design are documented separately:
 
-对于大型应用，仍然建议使用 `whiteList` 和 `blackList` 过滤需要处理的范围。Native lowering 和 protection 层都会带来额外开销，所以在没有验证结果前，不建议直接混淆整个大型游戏 JAR。
+- [Java/JVM support tiers](docs/java-support-tiers.md)
+- [Protection and obfuscation](docs/protection-obfuscation.md)
+- [Compiler pipeline guides](docs/pipeline/README.md)
+- [Clean-room rewrite roadmap](docs/rewrite-roadmap.md)
 
-本工具提供字符串混淆，但它并不是根本不可逆的，因为运行时仍然需要能推导出解密所需的 key material。
+## 中文
 
-当前提供的能力：
+j2ll 是一个 **JVM-hosted JAR 混淆与 native lowering 工具**。它会改写选中的 Java 方法、构建 JNI 动态库，再把类、资源、loader 和 native library 重新打包成可运行 JAR。
 
-- Java/JAR 侧：
-  - method native rewriting
-  - loader injection
-  - 基于 `RegisterNatives` 的绑定
-  - 与输入 JAR class version 对齐的 loader generation
-- Native 侧：
-  - string obfuscation
-  - symbol de-semanticization
-  - call indirection 和 dispatcher-based call routing
-  - integer/long constant splitting
-  - light CFG perturbation
-  - runtime helper metadata obfuscation
-
----
-
-### Lowering 状态说明
-
-j2ll 会为每个被 selector 命中的方法记录明确状态。重要状态包括：
-
-- `lowered`：方法主体已经 native-lowered。原 Java method 会被改写成 native/stub entry，并通过 JNI 注册；实际语义由生成的 native 代码和 JVM/JNI runtime helper 完成。
-- `halfLowered`：方法已经进入 native 包装路径，但至少有一个 operation 或 call site 仍通过 JVM fallback 保持语义。schema v1 中，这通常意味着 fallback 所需的原始 bytecode 会被编码进 native artifact，作为 `nativeEmbeddedClassBlob`，运行时再通过 hidden/helper class 调回 JVM 执行。
-- `frontendSkipped`：j2ll 保留原始 Java bytecode，不 rewrite、不 RegisterNatives。这个状态用于当前还不能安全 native-wrap 的方法形状，例如复杂 finally 或 default-interface-super 边界。
-- `notApplicable`：selector 命中了方法，但该方法没有可 lower 的 Java body，或不需要 rewrite，例如 abstract 或 already-native method。
-- `failed`：j2ll 无法为该方法或阶段生成安全输出。
-
-简化理解：
+输出产物不是独立 native executable，也不是替代 JVM 的 Java runtime；它仍然必须运行在 JVM 上。Java object、array、String、Throwable、monitor、Thread、对象身份、生命周期和 GC 都由 JVM 管理，lowered code 只能通过 JNI 与 runtime helper 操作这些值。
 
 ```text
-lowered:
-  Java method -> native stub -> generated LLVM/JNI/helper implementation
-
-halfLowered:
-  Java method -> native stub -> native bridge -> encoded JVM fallback helper
-
-frontendSkipped:
-  Java method remains ordinary bytecode
+.class -> ASM -> method CFG -> hierarchy/call analysis -> SSA IR
+       -> optimization/protection -> LLVM modules -> managed Zig
+       -> JNI registration + embedded native libraries -> output JAR
 ```
 
-`halfLowered` 不是静默跳过，也不是失败。它是保守安全路径：j2ll 仍然把原方法入口隐藏在 native registration 后面，但对暂时不能安全 native lowering 的复杂 JVM 语义，交给 encoded bytecode-preserving fallback 兜底。想要更强混淆时，应尽量提高 `lowered` 比例，减少 `halfLowered` 和 `frontendSkipped`；但真正需要修复的红线是 `failed`。
-
----
+当前 beta 已通过 managed Zig `0.15.2` 接实六个固定目标的结构性真实构建：Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64，以及最低版本分别为 10.15/11.0 的 macOS x86_64/AArch64。Child JVM runtime parity 当前仍在 host target 上执行；非 host runtime E2E 是独立的待补发布证据。暂时不能安全 native lowering 的 JVM 语义会进入明确的 helper 或 bytecode-preserving fallback。Protection 能提高分析成本，但不是不可逆保证，因为程序运行时仍必须保留执行所需的信息。
 
 ### 环境要求
 
-1. JDK 25
+- 使用 JDK 25 构建并运行当前 j2ll CLI。
+- 输出 JAR 需要 Java 17 或更新版本；生成的 runtime loader 是 Java 17 classfile。
+- Native build 固定使用 managed Zig `0.15.2`。
 
-   - Windows：安装 Oracle JDK 25 等 JDK 25 发行版。
-   - Linux/macOS：通过包管理器或你偏好的 vendor package 安装 JDK 25。
+### 构建 CLI
 
-2. Zig 0.15.2
+```sh
+./gradlew cliJar
+```
 
-   如果 Zig 0.15.2 不可用，工具可以从 [Zig 官方网站](https://ziglang.org/download/) 自动下载，并放到 obfuscator jar 同目录下的 `zig-0.15.2/`。
-
-   你也可以提前把 host Zig archive 放在 obfuscator jar 同目录下。这种情况下，请把官方 archive 和对应 `.minisig` 文件都放在那里，并保持 Zig 官方发布的原始文件名。例如 Windows：
-
-   - `zig-x86_64-windows-0.15.2.zip`
-   - `zig-x86_64-windows-0.15.2.zip.minisig`
-
----
-
-### 基本使用
-
-本项目主要通过 `Config.json` 驱动。
-
-运行方式：
+可运行 JAR 的稳定路径是：
 
 ```text
-java -jar j2ll.jar
-java -jar j2ll.jar --config /path/to/Config.json
-java -jar j2ll.jar --debug --config /path/to/Config.json
-java -jar j2ll.jar --analyze --config /path/to/Config.json
+build/cli/j2ll.jar
 ```
 
-如果 `Config.json` 不存在，工具会在当前目录创建一个模板。
+生成包含 CLI、schema、examples、samples 和用户文档的 beta distribution：
 
-`--debug` 会保留 native build intermediates，并打印额外的 IR/native timing 信息。
-
-`--analyze` 只运行 frontend analysis。它会把 `analysis-report.json` 和 frontend skip reports 写入带时间戳的 workspace，不会构建 native libraries，也不会 repack 输入 JAR。
-
-#### Config 文件格式
-
-```json
-{
-  "jarFile": "/absolute/path/to/input.jar",
-  "outputDirectory": "out",
-  "blackList": [],
-  "whiteList": [],
-  "target": {
-    "windowsX64": true,
-    "windowsArm64": false,
-    "linuxX64": true,
-    "linuxArm64": false,
-    "macosX64": true,
-    "macosArm64": true
-  },
-  "libraryName": null,
-  "embeddedLibraryDirectory": "native0",
-  "stringObfuscation": {
-    "enabled": true
-  },
-  "maxShardMB": 16
-}
+```sh
+./gradlew distJ2ll
 ```
 
-#### Config 字段
-
-`jarFile` - 要混淆的输入 `.jar` 文件。
-
-`outputDirectory` - 输出根目录。每次运行都会在里面创建一个独立的带时间戳 workspace，例如：
-
-`out/build_2026-04-12_14-42-24`
-
-`whiteList` - 要包含的 class 和 method 列表。
-
-`blackList` - 要排除的 class 和 method 列表。
-
-两个列表都使用类似下面的条目：
-
-```json
-"whiteList": [
-  "<class>",
-  "<class>#<method name>!<method descriptor>",
-  "mypackage/myotherpackage/Class1",
-  "mypackage/myotherpackage/Class1#doSomething!()V",
-  "mypackage/myotherpackage/Class1$SubClass#doOther!(I)V"
-]
-```
-
-过滤使用 JVM internal class name 和 method descriptor。
-
-也支持 wildcard matcher：
-
-```json
-"whiteList": [
-  "mypackage/myotherpackage/*",
-  "mypackage/myotherpackagewithnested/**",
-  "mypackage/myotherpackage/*/Class1",
-  "mypackage/myotherpackagewithnested/**/Class1",
-  "mypackage/myotherpackage/Class*"
-]
-```
-
-`*` 匹配由 `/` 分隔的单个 entry。
-
-`**` 匹配多个嵌套 entry。
-
-`libraryName` - 如果输出 JAR 应该从 system library path 加载 native library，则设置 `LoaderPlain` 使用的普通 library name。
-
-`embeddedLibraryDirectory` - 设置输出 JAR 内嵌 native library 的目录。
-
-`stringObfuscation.enabled` - 启用 string obfuscation pass。
-
-`maxShardMB` - 生成的 LLVM shard 和 runtime helper shard 的 best-effort 大小上限，单位 MB。大型 JAR 想要更小的 compile/link unit 时会有用。
-
-如果你想随 JAR 一起发布 embedded native libraries，请把 `libraryName` 保持为 `null`。自动 Zig build step 会把 native library 放进输出 JAR，形式类似：
+输出目录是：
 
 ```text
-x64-windows.dll
-x64-linux.so
-x64-macos.dylib
-arm64-linux.so
-arm64-windows.dll
-arm64-macos.dylib
+build/dist/j2ll/
 ```
 
-这些文件会放在 stdout 打印的目录中，默认是 `native0/`，或 resolved `embeddedLibraryDirectory` 的值。
+### 命令行
 
----
+标准语法为 `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`；help 与 version 保留为独立 flag。
 
-### 自动构建流程
+```sh
+java -jar build/cli/j2ll.jar --help
+java -jar build/cli/j2ll.jar --version
+java -jar build/cli/j2ll.jar --validate --config <config.json>
+java -jar build/cli/j2ll.jar --dry-run --config <config.json>
+java -jar build/cli/j2ll.jar --config <config.json>
+java -jar build/cli/j2ll.jar --debug --config <config.json>
+```
 
-1. 工具验证 `Config.json`。
-2. 在 `outputDirectory` 内创建带时间戳的 workspace。
-3. 输入 JAR 通过 ASM 解析，并 lower 到 custom IR。
-4. 执行 IR validation 和 method-pass processing。
-5. 当前 method passes 包括：
-   - CFG cleanup
-   - string obfuscation
-   - constant splitting
-   - light CFG perturbation
-6. LLVM IR 输出到 `llvm-modules/program.ll`，并拆分为 `llvm-modules/` 下的 shard modules。
-7. runtime C sources 输出到 `runtime/`。
-8. native export 开始前会检查 Zig 0.15.2。
-9. 如果 obfuscator jar 旁边已经存在匹配的 Zig archive，会验证它的 `.minisig` 并复用缓存 archive。
-10. 否则会下载 Zig，验证 `.minisig`，并解压到 obfuscator jar 旁边的 `zig-0.15.2/`。
-11. 使用 Zig 自动构建 `config.target` 中选择的 targets。
-12. 工具生成 loader、rewrite native methods、嵌入 native libraries，并自动 repack 输出 JAR。
+- `--config` 指定 config 文件；未传时默认读取当前目录的 `Config.json`。
+- `--validate` 只校验 config，不创建 workspace 或 pipeline artifact。
+- `--dry-run` 校验 config/selector 并执行 target preflight；它会创建报告 workspace，但不会调用 Zig、构建 native library 或写 final JAR。
+- 未传 `--validate` 或 `--dry-run` 时，默认运行完整 build pipeline。
+- `--debug` 为本次运行开启全部 intermediates（总开关、debug dumps、per-class IR、LLVM 和 C）。它用于保留诊断产物，不代表 native library 带调试符号。
+- 完整 build 会在 stderr 显示阶段进度：交互终端采用优化后的 legacy 分阶段区域，依次显示 `Read bytecode` / `Lower to IR` / `Emit LLVM IR`、一个 `Build native` 总进度条加每个 target 独立的 `building/linking` 或 `done` 行及 `Stage` 行，最后显示 `Finalize JAR`。只有检测到对应 target 的非空动态库已经落盘时，总进度才会推进，不伪造编译百分比。正常宽度保留 28 字符进度条，窄终端先缩短进度条再截断状态。重定向输出和 CI 每个高层阶段只输出一行无控制字符的 `[current/total]` 纯文本，不刷逐 target 日志。Zig 仍通过一次 invocation 接收全部 target，并在内部调度独立构建节点。
 
-`Ctrl+C` 会取消 Java 进程，并终止已启动的 Zig child processes。
+请从 [`docs/examples/minimal-config.json`](docs/examples/minimal-config.json) 开始。Schema v1 的权威定义是 [`docs/config.schema.json`](docs/config.schema.json)，不要把 README 中的缩略示例当成完整 schema。[`docs/examples/`](docs/examples/) 还包含全开 protection、签名策略、target matrix 和 debug dump 配置。
 
----
+完整上手流程见 [`docs/getting-started.md`](docs/getting-started.md)，输入、配置与输出的正式契约见 [`docs/io-config-output-contract.md`](docs/io-config-output-contract.md)。
 
-### Workspace 布局
+### 方法结果
 
-每次运行会创建如下 build workspace：
+每个 selector 命中的方法都会在 `reports/lowering-report.json` 中得到明确结果：
+
+- `lowered`：方法已 rewrite，具体实现由生成的 native code 与 JVM/JNI helper 提供。
+- `halfLowered`：方法使用 native entry，但至少一个 operation 显式回到 JVM 执行。Schema v1 会把 ordinary-method fallback 所需 bytecode 作为编码后的 `nativeEmbeddedClassBlob` 放进 native artifact，不会把明文 generated fallback class 写进 output JAR。
+- `frontendSkipped`：当前 method shape 还不能安全 native-wrap，因此保留可运行的原始 bytecode；原因也会进入 `reports/frontend-skip-report.json`。
+- `notApplicable`：selector 命中了没有可 lower body 的方法，例如 abstract 或 already-native method。
+- `failed`：j2ll 无法产生安全结果；构建失败，不保留 final JAR。
+
+Selector 不会被静默跳过。`halfLowered` 和 `frontendSkipped` 是保守兼容结果，不等同于失败，但保护强度通常低于完整 `lowered`。
+
+### Managed Zig 0.15.2
+
+Schema v1 唯一的 native build driver 是 Zig `0.15.2`，其规范化目录位于可执行 JAR 同级：
 
 ```text
-out/build_YYYY-MM-DD_HH-mm-ss/
+<j2ll-home>/
+  j2ll.jar
+  zig/
+    zig        # Windows 为 zig.exe
+    lib/
 ```
 
-重要文件和目录：
+j2ll 按以下顺序处理 Zig：
 
-- Repacked jar：`<workspace>/<input-jar-name>.jar`
-- Native libraries：`<workspace>/native/`
-- Logs：`<workspace>/logs/`
-- LLVM monolithic IR：`<workspace>/llvm-modules/program.ll`
-- LLVM shard modules：`<workspace>/llvm-modules/*.ll`
-- Runtime C sources：`<workspace>/runtime/*.c`
-- Frontend skip report：有 skip 时生成 `<workspace>/frontend-skips.txt`
-- Structured frontend skip report：有 skip 时生成 `<workspace>/frontend-skips.json`
+1. 只在 `zig/zig(.exe)` 的版本恰好为 `0.15.2` 时复用现有安装。
+2. 否则先查找 `j2ll.jar` 同目录下当前 host 对应的官方 Zig archive。
+3. 本地 archive 不存在时，从 `https://ziglang.org/download/0.15.2/` 下载。
+4. 本地或下载的 archive 都必须先按内置 Zig 官方 SHA-256 metadata 校验，通过后才解压并规范化到 `zig/`。
 
-注意：
+SHA-256 mismatch 属于 native/toolchain failure，不会写 final JAR。当前没有强制 archive signature verification；报告会明确写 `signatureStatus=notVerifiedBoundary`，j2ll 不会宣称已经完成 archive 签名验证。
 
-- frontend skip 数量为 `0` 时，不会生成 `frontend-skips.txt` 和 `frontend-skips.json`。
-- annotation classes 当前会被 frontend 有意跳过，不做 native-lowered。
-- record-synthesized `equals`、`hashCode` 和 `toString` 当前会保留为 bytecode，以便在大型 whole-jar workload 中保持 JVM `ObjectMethods` 语义完全一致。
+所有 selected targets 由同一个生成的 `build.zig` workspace 和一次 matrix-wide `zig build` 调用编译、链接。固定 Zig target query 为 `x86_64-windows-gnu`、`aarch64-windows-gnu`、`x86_64-linux.3.2-gnu.2.17`、`aarch64-linux.3.7-gnu.2.17`、`x86_64-macos.10.15` 和 `aarch64-macos.11.0`；这是实际 cross-target artifact 构建，不是只生成 package plan。Schema v1 中每个 selected target 都是 required；实际 capability/preflight/compile/link 失败仍报告 `ZIG_TARGET_UNBUILDABLE`、按 toolchain failure 退出，并且不写 final JAR。
 
-`frontend-skips.json` 包含总 skip 数、按 reason category 分组的计数，以及每个 skipped method 的 class name、method name、descriptor、raw reason 和 category。
+### Workspace 与报告
 
-中间 native build 目录：
+`--dry-run` 和默认 build 模式会自动在 resolved `outputDirectory` 下创建 workspace，名称为 `build_yyyy-MM-dd_HH-mm-ss`；若同名目录已经存在，则依次追加 `-1`、`-2`。`--validate` 不创建 workspace。
 
-- `native-obj/`
-- `zig-cache/`
-- `zig-build/`
-
-除非开启 `--debug`，这些目录会在构建后自动删除。
-
----
-
-### 构建工具本身
-
-常用命令：
-
-1. `./gradlew clean build`
-   构建项目并运行完整测试套件。
-2. `./gradlew assemble`
-   构建项目 JAR，但不运行测试。
-3. `./gradlew shadowJar`
-   生成 runnable fat jar。
-
-runnable jar 输出到：
-
-`build/libs/j2ll.jar`
-
----
-
-### 测试
-
-运行 unit 和 integration suite：
+成功构建的主产物位于：
 
 ```text
-./gradlew test
+<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/<input-name>.jar
 ```
 
-也可以运行 benchmark fixture 的端到端测试：
+Native library 直接位于 `<workspace>/native/<library-file-name>`，并以 `<embeddedLibraryDirectory>/<library-file-name>` 路径嵌入 final JAR。同一目录中只生成一个 Java 17 的 `<embeddedLibraryDirectory>/Loader.class`：它始终负责 native loading，只有本次构建实际使用 `nativeEmbeddedClassBlob` 时才包含 `defineHiddenFallback`；旧 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 和 `j2ll/generated/**/NativeLoader.class` 不再输出。该目录必须是规范 Java internal package path；输入 base 或 multi-release 同名 Loader 会在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。若多个不同 output artifact 可能进入同一个 `ClassLoader`，应为每个应用选择唯一目录，因为相同目录会得到相同 loader binary name。Config 启用时，class-aligned IR/LLVM/C 与 debug artifacts 写入 `<workspace>/intermediates/`。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-obf-bench.ps1
+排查问题时优先查看：
+
+- `reports/summary.md`：简短的人类可读摘要。
+- `reports/summary.json`：机器可读汇总。
+- `reports/index.json`：报告路径、hash、readiness flags 和状态。
+- `reports/diagnostics.json`：稳定 diagnostic 与修复 hint。
+- `reports/lowering-report.json`：逐方法 lowering 决策。
+- `reports/packaging-report.json`：JAR 保留策略、签名、Zig bootstrap 和 target artifact。
+- `reports/artifact-audit.json`：final artifact、native resource、symbol、metadata、fallback blob 与 sensitive plaintext 审计。
+- `reports/release-readiness.json`：readiness 检查与缺失证据。
+- `reports/failure-report.json`：失败时的主要 stage/reason，且 `finalArtifactWritten=false`。
+
+CLI stdout 只给出稳定摘要和这些报告路径；完整 build 的进度及失败信息写到 stderr。Config、frontend、native、signing、audit 或 readiness 失败时保留报告，但不保留成功态 final JAR。
+
+### 常用 Gradle 命令
+
+```sh
+./gradlew cliJar          # 构建 build/cli/j2ll.jar
+./gradlew distJ2ll        # 构建 build/dist/j2ll/
+./gradlew test            # unit 与 integration suite
+./gradlew betaAcceptance  # 使用 distribution JAR 做端到端验收
+./gradlew clean build     # clean build 与验证
 ```
 
-或：
+更多文档：
 
-```text
-./gradlew obfBench
-```
-
-`obfBench` 当前是 strict gate：
-
-- obfuscated benchmark 必须成功运行
-- frontend skips 必须为 zero
-- native rewriting 必须成功
+- [Java/JVM support tiers](docs/java-support-tiers.md)
+- [Protection 与 obfuscation](docs/protection-obfuscation.md)
+- [Compiler pipeline guides](docs/pipeline/README.md)
+- [Clean-room rewrite roadmap](docs/rewrite-roadmap.md)

@@ -30,6 +30,13 @@ public record SsaMethodResult(
         return new SsaMethodResult(sourceMethod, Optional.of(irMethod), LoweringStatus.HALF_LOWERED, reasonCode, reason);
     }
 
+    public static SsaMethodResult fallbackOnly(
+            ParsedMethod sourceMethod,
+            String reasonCode,
+            String reason) {
+        return new SsaMethodResult(sourceMethod, Optional.empty(), LoweringStatus.HALF_LOWERED, reasonCode, reason);
+    }
+
     public static SsaMethodResult frontendSkipped(ParsedMethod sourceMethod, String reasonCode, String reason) {
         return new SsaMethodResult(sourceMethod, Optional.empty(), LoweringStatus.FRONTEND_SKIPPED, reasonCode, reason);
     }

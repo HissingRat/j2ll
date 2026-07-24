@@ -2,56 +2,41 @@ package xyz.melodysky.runtime.loader;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.invoke.MethodHandles;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Locale;
+import java.util.Objects;
 
-public final class J2llNativeLoaderSupport {
-    private static final Map<String, Object> LOCKS = new ConcurrentHashMap<>();
-    private static final Set<String> LOADED = ConcurrentHashMap.newKeySet();
+/**
+ * Java 17 template relocated into the output JAR by the packaging stage.
+ *
+ * <p>This source must not use nested, anonymous, or lambda classes because the output contract is one
+ * physical Loader.class entry.
+ */
+public final class LoaderTemplate {
+    private static volatile boolean loaded;
 
-    private J2llNativeLoaderSupport() {
+    private LoaderTemplate() {
     }
 
-    public static void load(Class<?> anchor, String resourcePath, String expectedSha256) {
-        String loaderId = classLoaderId(anchor.getClassLoader());
-        String key = loaderId + "|" + resourcePath + "|" + expectedSha256;
-        Object lock = LOCKS.computeIfAbsent(key, ignored -> new Object());
-        synchronized (lock) {
-            if (LOADED.contains(key)) {
-                return;
-            }
-            byte[] bytes = readResource(anchor, resourcePath);
-            String actualSha256 = sha256(bytes);
-            if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
-                throw unsatisfied("hash mismatch for j2ll native library " + resourcePath
-                        + ": expected " + expectedSha256 + " but found " + actualSha256, null);
-            }
-            Path extracted = extract(resourcePath, loaderId, actualSha256, bytes);
-            System.load(extracted.toAbsolutePath().toString());
-            LOADED.add(key);
-        }
+    public static synchronized void ensureLoaded() {
+        throw new AssertionError("Loader template metadata was not injected");
     }
 
-    public static void loadHostOnly(
-            Class<?> anchor,
-            String resourcePath,
-            String expectedSha256,
-            String expectedTarget) {
-        if (!matchesCurrentTarget(expectedTarget)) {
-            throw unsatisfied("unsupported OS/arch for j2ll native library: current="
-                    + System.getProperty("os.name") + "/" + System.getProperty("os.arch")
-                    + ", expected target=" + expectedTarget, null);
-        }
-        load(anchor, resourcePath, expectedSha256);
+    public static Class<?> defineHiddenFallback(Class<?> owner, byte[] classBytes) throws IllegalAccessException {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(classBytes, "classBytes");
+        MethodHandles.Lookup ownerLookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
+        return ownerLookup
+                .defineHiddenClass(classBytes, true, MethodHandles.Lookup.ClassOption.NESTMATE)
+                .lookupClass();
     }
 
-    public static void loadForCurrentTarget(
+    private static void loadForCurrentTarget(
             Class<?> anchor,
             String[] targets,
             String[] resourcePaths,
@@ -68,6 +53,21 @@ public final class J2llNativeLoaderSupport {
         throw unsatisfied("unsupported OS/arch for j2ll native library: current="
                 + System.getProperty("os.name") + "/" + System.getProperty("os.arch")
                 + ", available targets=" + String.join(",", targets), null);
+    }
+
+    private static void load(Class<?> anchor, String resourcePath, String expectedSha256) {
+        byte[] bytes = readResource(anchor, resourcePath);
+        String actualSha256 = sha256(bytes);
+        if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
+            throw unsatisfied("hash mismatch for j2ll native library " + resourcePath
+                    + ": expected " + expectedSha256 + " but found " + actualSha256, null);
+        }
+        Path extracted = extract(
+                resourcePath,
+                classLoaderId(anchor.getClassLoader()),
+                actualSha256,
+                bytes);
+        System.load(extracted.toAbsolutePath().toString());
     }
 
     private static byte[] readResource(Class<?> anchor, String resourcePath) {
@@ -122,8 +122,8 @@ public final class J2llNativeLoaderSupport {
     }
 
     private static boolean matchesCurrentTarget(String expectedTarget) {
-        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-        String arch = System.getProperty("os.arch", "").toLowerCase(java.util.Locale.ROOT);
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
         boolean arm64 = arch.equals("aarch64") || arch.equals("arm64");
         boolean x64 = arch.equals("x86_64") || arch.equals("amd64");
         return switch (expectedTarget) {

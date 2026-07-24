@@ -20,7 +20,7 @@ public final class ProtectionAvailabilityReporter {
     public static ProtectionAvailabilityReporter currentImplementation() {
         return new ProtectionAvailabilityReporter(
                 Set.of("controlFlowFlattening", "fakeBranches", "basicBlockSplitting", "constantEncryption", "stringEncryption"),
-                Set.of("nameObfuscation", "visibilityHardening"));
+                Set.of("nameObfuscation", "indirectCalls", "visibilityHardening"));
     }
 
     public List<Diagnostic> report(xyz.melodysky.config.ProtectionConfig config) {

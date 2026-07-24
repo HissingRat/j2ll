@@ -122,7 +122,10 @@ public final class JarRepackager {
             for (Map.Entry<String, byte[]> entry : addedEntries.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey())
                     .toList()) {
-                if (writtenEntries.contains(entry.getKey()) || isForbiddenPlainFallbackClass(entry.getKey())) {
+                if (writtenEntries.contains(entry.getKey())) {
+                    throw new IOException("added JAR entry collides with input entry: " + entry.getKey());
+                }
+                if (isForbiddenPlainFallbackClass(entry.getKey())) {
                     continue;
                 }
                 JarEntry outputEntry = new JarEntry(entry.getKey());

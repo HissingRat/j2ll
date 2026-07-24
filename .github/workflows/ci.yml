@@ -15,11 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-bench-release:
-    name: Test, Bench, and Release
-    runs-on: windows-latest
+  verify:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows cross-platform verification
+            os: windows-latest
+            artifact-suffix: windows
+          - name: Linux native and beta acceptance
+            os: ubuntu-latest
+            artifact-suffix: linux
+    runs-on: ${{ matrix.os }}
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -40,29 +50,65 @@ jobs:
           version: 0.15.2
 
       - name: Grant Gradle wrapper execute bit
+        if: runner.os != 'Windows'
         shell: bash
         run: chmod +x ./gradlew
 
-      - name: Run unit tests
+      - name: Run Windows unit tests
+        if: runner.os == 'Windows'
         run: .\gradlew.bat test
 
-      - name: Run obf-bench
+      - name: Run Linux unit tests and non-skipping beta acceptance
+        if: runner.os == 'Linux'
+        run: ./gradlew test betaAcceptance
+
+      - name: Run Windows obf-bench
+        if: runner.os == 'Windows'
         run: .\gradlew.bat obfBench
 
       - name: Upload j2ll CI artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: j2ll-ci-artifacts
+          name: j2ll-ci-${{ matrix.artifact-suffix }}
           path: |
-            build/libs/j2ll.jar
+            build/cli/j2ll.jar
+            build/dist/j2ll/**
             build/obf-bench/obf-bench-report.txt
             build/obf-bench/out/**/frontend-skips.txt
             build/obf-bench/out/**/obf-bench.jar
           if-no-files-found: warn
 
+      - name: Upload rolling release CLI
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: j2ll-release-cli
+          path: build/cli/j2ll.jar
+          if-no-files-found: error
+
+  release:
+    name: Publish rolling release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download verified CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: j2ll-release-cli
+          path: build/release-assets
+
       - name: Move rolling release tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -70,17 +116,7 @@ jobs:
           git tag -f j2ll-latest "$GITHUB_SHA"
           git push origin refs/tags/j2ll-latest --force
 
-      - name: Prepare j2ll release assets
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
-        run: |
-          $releaseDir = Join-Path $PWD "build/release-assets"
-          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-
-          Copy-Item "build/libs/j2ll.jar" (Join-Path $releaseDir "j2ll.jar") -Force
-
       - name: Publish j2ll latest release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: j2ll-latest

@@ -1,7 +1,9 @@
 package xyz.melodysky.runtime.jdk;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.runtime.RuntimeHelperKind;
 
@@ -73,5 +75,94 @@ class JdkIntrinsicRegistryTest {
         var objectWait = registry.lookup("java/lang/Object", "wait", "()V").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, objectWait.policy());
         assertEquals("WAIT_NOTIFY_FALLBACK: Object.wait keeps JVM monitor queue semantics", objectWait.reason());
+    }
+
+    @Test
+    void explicitlyBridgesRealWorldJdkInteropWithoutMethodFallback() {
+        JdkIntrinsicRegistry registry = JdkIntrinsicRegistry.defaultRegistry();
+        List<JdkMethodId> bridgedMethods = List.of(
+                method("java/lang/Enum", "<init>", "(Ljava/lang/String;I)V"),
+                method("java/lang/Exception", "getMessage", "()Ljava/lang/String;"),
+                method("java/lang/String", "<init>", "([BLjava/nio/charset/Charset;)V"),
+                method("java/lang/String", "getBytes", "(Ljava/nio/charset/Charset;)[B"),
+                method("java/lang/String", "hashCode", "()I"),
+                method("java/lang/System", "exit", "(I)V"),
+                method("java/lang/Thread", "ofVirtual", "()Ljava/lang/Thread$Builder$OfVirtual;"),
+                method("java/lang/Thread$Builder$OfVirtual", "start", "(Ljava/lang/Runnable;)Ljava/lang/Thread;"),
+                method("java/util/Timer", "<init>", "()V"),
+                method("java/util/Timer", "<init>", "(Ljava/lang/String;Z)V"),
+                method("java/util/Timer", "schedule", "(Ljava/util/TimerTask;J)V"),
+                method("java/util/Timer", "schedule", "(Ljava/util/TimerTask;JJ)V"),
+                method("java/util/TimerTask", "<init>", "()V"),
+                method("java/util/TimerTask", "cancel", "()Z"),
+                method("java/security/KeyFactory", "generatePublic", "(Ljava/security/spec/KeySpec;)Ljava/security/PublicKey;"),
+                method("java/security/KeyFactory", "getInstance", "(Ljava/lang/String;)Ljava/security/KeyFactory;"),
+                method("java/security/MessageDigest", "digest", "()[B"),
+                method("java/security/MessageDigest", "update", "([B)V"),
+                method("java/security/MessageDigest", "update", "(B)V"),
+                method("java/security/SecureRandom", "<init>", "()V"),
+                method("java/security/SecureRandom", "nextBytes", "([B)V"),
+                method("java/security/spec/X509EncodedKeySpec", "<init>", "([B)V"),
+                method("java/util/Base64", "getDecoder", "()Ljava/util/Base64$Decoder;"),
+                method("java/util/Base64", "getEncoder", "()Ljava/util/Base64$Encoder;"),
+                method("java/util/Base64$Decoder", "decode", "(Ljava/lang/String;)[B"),
+                method("java/util/Base64$Encoder", "encodeToString", "([B)Ljava/lang/String;"),
+                method("javax/crypto/Cipher", "doFinal", "([B)[B"),
+                method("javax/crypto/Cipher", "getInstance", "(Ljava/lang/String;)Ljavax/crypto/Cipher;"),
+                method("javax/crypto/Cipher", "init", "(ILjava/security/Key;)V"),
+                method("javax/crypto/Cipher", "init", "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V"),
+                method("javax/crypto/SecretKey", "getEncoded", "()[B"),
+                method("javax/crypto/spec/IvParameterSpec", "<init>", "([B)V"));
+
+        assertEquals(32, bridgedMethods.size());
+        for (JdkMethodId method : bridgedMethods) {
+            JdkIntrinsic intrinsic = registry.lookup(method.owner(), method.name(), method.descriptor()).orElseThrow();
+            assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, intrinsic.policy(), method.methodKey());
+            assertTrue(intrinsic.reason().startsWith("JDK_BRIDGE:"), method.methodKey());
+        }
+    }
+
+    @Test
+    void explicitlyBridgesSecondRealWorldJdkBatchWithoutMethodFallback() {
+        JdkIntrinsicRegistry registry = JdkIntrinsicRegistry.defaultRegistry();
+        List<JdkMethodId> bridgedMethods = List.of(
+                method("java/lang/Byte", "byteValue", "()B"),
+                method("java/lang/Character", "charValue", "()C"),
+                method("java/lang/Class", "getName", "()Ljava/lang/String;"),
+                method("java/lang/Exception", "printStackTrace", "()V"),
+                method("java/lang/Float", "floatValue", "()F"),
+                method("java/lang/IllegalStateException", "<init>", "(Ljava/lang/Throwable;)V"),
+                method("java/lang/RuntimeException", "<init>", "(Ljava/lang/Throwable;)V"),
+                method("java/lang/Short", "shortValue", "()S"),
+                method("java/lang/String", "compareTo", "(Ljava/lang/String;)I"),
+                method("java/lang/String", "toLowerCase", "()Ljava/lang/String;"),
+                method("java/net/URI", "<init>", "(Ljava/lang/String;)V"),
+                method("java/nio/ByteBuffer", "allocate", "(I)Ljava/nio/ByteBuffer;"),
+                method("java/nio/ByteBuffer", "array", "()[B"),
+                method("java/nio/ByteBuffer", "putInt", "(I)Ljava/nio/ByteBuffer;"),
+                method("java/security/MessageDigest", "getInstance", "(Ljava/lang/String;)Ljava/security/MessageDigest;"),
+                method("java/util/ArrayList", "<init>", "()V"),
+                method("java/util/HashMap", "<init>", "()V"),
+                method("java/util/Iterator", "hasNext", "()Z"),
+                method("java/util/Iterator", "next", "()Ljava/lang/Object;"),
+                method("java/util/List", "add", "(Ljava/lang/Object;)Z"),
+                method("java/util/List", "get", "(I)Ljava/lang/Object;"),
+                method("java/util/List", "iterator", "()Ljava/util/Iterator;"),
+                method("java/util/List", "set", "(ILjava/lang/Object;)Ljava/lang/Object;"),
+                method("java/util/List", "size", "()I"),
+                method("java/util/Map", "get", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+                method("java/util/Map", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+                method("java/util/Map", "size", "()I"));
+
+        assertEquals(27, bridgedMethods.size());
+        for (JdkMethodId method : bridgedMethods) {
+            JdkIntrinsic intrinsic = registry.lookup(method.owner(), method.name(), method.descriptor()).orElseThrow();
+            assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, intrinsic.policy(), method.methodKey());
+            assertTrue(intrinsic.reason().startsWith("JDK_BRIDGE:"), method.methodKey());
+        }
+    }
+
+    private JdkMethodId method(String owner, String name, String descriptor) {
+        return new JdkMethodId(owner, name, descriptor);
     }
 }

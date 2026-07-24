@@ -83,10 +83,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (hasComplexExceptionShape(cfg)
                 && !isSupportedSynchronizedExceptionCleanupShape(cfg)
                 && !isSupportedCatchAllRethrowShape(cfg)) {
-            return skipped(
+            return fallbackOnly(
                     method,
                     unsupportedCatchAllReasonCode(cfg),
-                    "SSA lowerer cannot yet prove catch-all/finally shape preserves exception state");
+                    "complex catch-all/finally remains JVM-executed through encoded native fallback");
         }
         ValueFactory values = new ValueFactory();
         List<IrValue> parameters = createParameters(method, values);
@@ -94,6 +94,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         ClassInitializationContext classInitialization = createClassInitializationContext(method, values);
         Map<Integer, BytecodeBasicBlock> blocksById = blocksById(cfg);
         Map<Integer, Integer> predecessorCounts = predecessorCounts(cfg);
+        Map<Integer, Set<Integer>> liveLocalsAtEntry = liveLocalsAtEntry(cfg);
         ArrayList<Diagnostic> diagnostics = new ArrayList<>();
         Map<Integer, BlockInput> inputs = new HashMap<>();
         Map<Integer, BlockLowering> loweredBlocks = new HashMap<>();
@@ -131,13 +132,20 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                             successor.toBlockId(),
                             lowered.outgoingState.copy(),
                             values,
-                            predecessorCounts.getOrDefault(successor.toBlockId(), 0) > 1);
+                            predecessorCounts.getOrDefault(successor.toBlockId(), 0) > 1,
+                            liveLocalsAtEntry.getOrDefault(successor.toBlockId(), Set.of()));
                     if (changed) {
                         enqueue(worklist, queued, successor.toBlockId());
                     }
                 }
             }
         } catch (MergeFailure failure) {
+            if (isExceptionStateMergeBoundary(cfg, failure)) {
+                return fallbackOnly(
+                        method,
+                        "UNSUPPORTED_EXCEPTION_STATE_MERGE",
+                        "exception handler requires throw-site local state; preserving it through encoded JVM fallback");
+            }
             return skipped(method, failure.reasonCode, failure.getMessage());
         } catch (IllegalStateException exception) {
             Diagnostic diagnostic = Diagnostic.error(
@@ -182,7 +190,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 method.owner(),
                 method.name(),
                 method.descriptor(),
-                returnType(method.descriptor()),
+                JvmToIrTypes.returnType(method.descriptor()),
                 parameters,
                 blocks);
         if (hasUnsupportedDefaultInterfaceSuper(diagnostics)) {
@@ -248,13 +256,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 block.endInstructionIndexExclusive());
         for (AbstractInsnNode instruction : bytecode) {
             int opcode = instruction.getOpcode();
-            if (isConditionalBranch(opcode)) {
+            if (SsaOpcodeSemantics.isConditionalBranch(opcode)) {
                 terminator = lowerConditionalBranch(cfg, block, opcode, stack, values, instructions);
             } else if (opcode == GOTO) {
                 terminator = IrTerminator.gotoBlock(blockName(branchEdge(cfg, block).toBlockId()));
             } else if (instruction instanceof TableSwitchInsnNode || instruction instanceof LookupSwitchInsnNode) {
                 terminator = lowerSwitch(cfg, block, stack);
-            } else if (isValueReturn(opcode)) {
+            } else if (SsaOpcodeSemantics.isValueReturn(opcode)) {
                 IrValue value = stack.pop();
                 appendClassInitializerEnd(classInitialization, instructions);
                 appendMethodMonitorExit(methodMonitor, instructions);
@@ -329,9 +337,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             pushConst(intInsn.operand, values, stack, instructions);
         } else if (instruction instanceof LdcInsnNode ldc) {
             pushLdc(ldc.cst, method, values, stack, instructions, diagnostics);
-        } else if (instruction instanceof VarInsnNode varInsn && isLoad(opcode)) {
+        } else if (instruction instanceof VarInsnNode varInsn && SsaOpcodeSemantics.isLoad(opcode)) {
             stack.push(locals.get(varInsn.var));
-        } else if (instruction instanceof VarInsnNode varInsn && isStore(opcode)) {
+        } else if (instruction instanceof VarInsnNode varInsn && SsaOpcodeSemantics.isStore(opcode)) {
             locals.set(varInsn.var, stack.pop());
         } else if (instruction instanceof IincInsnNode iincInsn) {
             lowerIinc(iincInsn, values, locals, instructions);
@@ -342,7 +350,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             lowerPrimitiveArrayAllocation(intInsn, values, stack, instructions);
         } else if (instruction instanceof MultiANewArrayInsnNode multiANewArrayInsn) {
             lowerMultiArrayAllocation(multiANewArrayInsn, values, stack, instructions);
-        } else if (isStackManipulation(opcode)) {
+        } else if (SsaOpcodeSemantics.isStackManipulation(opcode)) {
             lowerStackManipulation(opcode, stack);
         } else if (opcode == ARRAYLENGTH) {
             IrValue array = stack.pop();
@@ -354,38 +362,38 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     "arrayLength")
                     .withExceptionSite(exceptionSite(IrExceptionSiteKind.NULL_CHECK, exceptionEdges)));
             stack.push(result);
-        } else if (isArrayLoad(opcode)) {
+        } else if (SsaOpcodeSemantics.isArrayLoad(opcode)) {
             lowerArrayLoad(opcode, values, stack, exceptionEdges, instructions);
-        } else if (isArrayStore(opcode)) {
+        } else if (SsaOpcodeSemantics.isArrayStore(opcode)) {
             lowerArrayStore(opcode, stack, exceptionEdges, instructions);
-        } else if (isShift(opcode)) {
+        } else if (SsaOpcodeSemantics.isShift(opcode)) {
             lowerShift(opcode, values, stack, instructions);
-        } else if (isBinary(opcode)) {
+        } else if (SsaOpcodeSemantics.isBinary(opcode)) {
             IrValue right = stack.pop();
             IrValue left = stack.pop();
-            IrValue result = values.next(binaryResultType(opcode));
-            IrInstruction binary = IrInstruction.binary(result, opcodeFor(opcode), left, right);
-            if (isIntegerDivisionOrRemainder(opcode)) {
+            IrValue result = values.next(SsaOpcodeSemantics.binaryResultType(opcode));
+            IrInstruction binary = IrInstruction.binary(result, SsaOpcodeSemantics.irOpcode(opcode), left, right);
+            if (SsaOpcodeSemantics.isIntegerDivisionOrRemainder(opcode)) {
                 binary = binary.withExceptionSite(
                         exceptionSite(IrExceptionSiteKind.DIVISION_BY_ZERO, exceptionEdges));
             }
             instructions.add(binary);
             stack.push(result);
-        } else if (isNeg(opcode)) {
+        } else if (SsaOpcodeSemantics.isNegation(opcode)) {
             IrValue operand = stack.pop();
             IrValue result = values.next(operand.type());
-            instructions.add(IrInstruction.unary(result, opcodeFor(opcode), operand));
+            instructions.add(IrInstruction.unary(result, SsaOpcodeSemantics.irOpcode(opcode), operand));
             stack.push(result);
-        } else if (isConversion(opcode)) {
+        } else if (SsaOpcodeSemantics.isConversion(opcode)) {
             IrValue operand = stack.pop();
-            IrValue result = values.next(conversionResultType(opcode));
-            instructions.add(IrInstruction.unary(result, opcodeFor(opcode), operand));
+            IrValue result = values.next(SsaOpcodeSemantics.conversionResultType(opcode));
+            instructions.add(IrInstruction.unary(result, SsaOpcodeSemantics.irOpcode(opcode), operand));
             stack.push(result);
-        } else if (isValueComparison(opcode)) {
+        } else if (SsaOpcodeSemantics.isValueComparison(opcode)) {
             IrValue right = stack.pop();
             IrValue left = stack.pop();
             IrValue result = values.next(IrType.I32);
-            instructions.add(IrInstruction.binary(result, opcodeFor(opcode), left, right));
+            instructions.add(IrInstruction.binary(result, SsaOpcodeSemantics.irOpcode(opcode), left, right));
             stack.push(result);
         } else if (instruction instanceof FieldInsnNode fieldInsn
                 && (opcode == GETSTATIC || opcode == PUTSTATIC || opcode == GETFIELD || opcode == PUTFIELD)) {
@@ -438,16 +446,18 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         IrValue shiftCount = stack.pop();
         IrValue value = stack.pop();
         IrValue mask = values.next(IrType.I32);
-        instructions.add(IrInstruction.constInt(mask, binaryResultType(opcode) == IrType.I64 ? 63 : 31));
+        instructions.add(IrInstruction.constInt(
+                mask,
+                SsaOpcodeSemantics.binaryResultType(opcode) == IrType.I64 ? 63 : 31));
         IrValue maskedCount = values.next(IrType.I32);
         instructions.add(IrInstruction.binary(maskedCount, IrOpcode.AND_I32, shiftCount, mask));
         IrValue typedCount = maskedCount;
-        if (binaryResultType(opcode) == IrType.I64) {
+        if (SsaOpcodeSemantics.binaryResultType(opcode) == IrType.I64) {
             typedCount = values.next(IrType.I64);
             instructions.add(IrInstruction.unary(typedCount, IrOpcode.I2L, maskedCount));
         }
-        IrValue result = values.next(binaryResultType(opcode));
-        instructions.add(IrInstruction.binary(result, opcodeFor(opcode), value, typedCount));
+        IrValue result = values.next(SsaOpcodeSemantics.binaryResultType(opcode));
+        instructions.add(IrInstruction.binary(result, SsaOpcodeSemantics.irOpcode(opcode), value, typedCount));
         stack.push(result);
     }
 
@@ -510,7 +520,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 java.util.Optional.of(result),
                 IrOpcode.NEW_ARRAY,
                 List.of(count),
-                "primitiveArray:" + primitiveArrayType(intInsn.operand)));
+                "primitiveArray:" + SsaOpcodeSemantics.primitiveArrayType(intInsn.operand)));
         stack.push(result);
     }
 
@@ -540,12 +550,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             List<IrInstruction> instructions) {
         IrValue index = stack.pop();
         IrValue array = stack.pop();
-        IrValue result = values.next(arrayLoadType(opcode));
+        IrValue result = values.next(SsaOpcodeSemantics.arrayLoadType(opcode));
         instructions.add(IrInstruction.operation(
                 java.util.Optional.of(result),
-                arrayLoadOpcode(opcode),
+                SsaOpcodeSemantics.arrayLoadOpcode(opcode),
                 List.of(array, index),
-                arrayElementKind(opcode))
+                SsaOpcodeSemantics.arrayElementKind(opcode))
                 .withExceptionSite(exceptionSite(IrExceptionSiteKind.ARRAY_BOUNDS, exceptionEdges)));
         stack.push(result);
     }
@@ -560,9 +570,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         IrValue array = stack.pop();
         IrInstruction store = IrInstruction.operation(
                 java.util.Optional.empty(),
-                arrayStoreOpcode(opcode),
+                SsaOpcodeSemantics.arrayStoreOpcode(opcode),
                 List.of(array, index, value),
-                arrayElementKind(opcode))
+                SsaOpcodeSemantics.arrayElementKind(opcode))
                 .withExceptionSite(exceptionSite(IrExceptionSiteKind.ARRAY_BOUNDS, exceptionEdges));
         if (opcode == AASTORE) {
             store = store.withExceptionSite(exceptionSite(IrExceptionSiteKind.ARRAY_STORE, exceptionEdges));
@@ -578,7 +588,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             StackState stack,
             List<IrInstruction> instructions) {
         String fieldKey = fieldInsn.owner + "#" + fieldInsn.name + "!" + fieldInsn.desc;
-        IrType fieldType = typeAt(fieldInsn.desc, 0).type();
+        IrType fieldType = JvmToIrTypes.fieldType(fieldInsn.desc);
         java.util.Optional<ParsedField> parsedField = fieldMetadata(method, fieldInsn);
         boolean volatileField = parsedField.map(field -> field.accessFlags().isVolatile()).orElse(false);
         boolean finalField = parsedField.map(field -> field.accessFlags().isFinal()).orElse(false);
@@ -634,14 +644,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             appendClassInitGuard(currentMethod, methodInsn.owner, values, instructions);
         }
         ArrayList<IrValue> operands = new ArrayList<>();
-        List<IrType> parameterTypes = parameterTypes(methodInsn.desc);
+        List<IrType> parameterTypes = JvmToIrTypes.parameterTypes(methodInsn.desc);
         for (int index = parameterTypes.size() - 1; index >= 0; index--) {
             operands.add(0, stack.pop());
         }
         if (opcode == INVOKESPECIAL || opcode == INVOKEVIRTUAL || opcode == INVOKEINTERFACE) {
             operands.add(0, stack.pop());
         }
-        IrType returnType = returnType(methodInsn.desc);
+        IrType returnType = JvmToIrTypes.returnType(methodInsn.desc);
         String methodKey = methodInsn.owner + "#" + methodInsn.name + "!" + methodInsn.desc;
         if (opcode == INVOKESPECIAL && methodInsn.itf) {
             addDefaultInterfaceSuperDiagnostic(
@@ -704,7 +714,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     diagnostics);
         }
         IrInstruction call = appendOrdinaryCall(
-                callOpcode(opcode),
+                SsaOpcodeSemantics.callOpcode(opcode),
                 operands,
                 returnType,
                 values,
@@ -812,7 +822,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     methodKey,
                     "MethodHandle call has no receiver",
                     diagnostics);
-            appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+            appendOrdinaryCall(
+                    SsaOpcodeSemantics.callOpcode(opcode),
+                    operands,
+                    returnType,
+                    values,
+                    stack,
+                    instructions,
+                    methodKey);
             return true;
         }
         java.util.Optional<MethodHandleConstant> constant = methodHandleConstant(operands.get(0), instructions);
@@ -822,7 +839,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         MethodHandleConstant handle = constant.orElseThrow();
         appendOrdinaryCall(
-                callOpcodeForHandleTag(handle.tag()),
+                SsaOpcodeSemantics.callOpcodeForHandleTag(handle.tag()),
                 operands.subList(1, operands.size()),
                 returnType,
                 values,
@@ -952,7 +969,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     plan.reason(),
                     DiagnosticCode.UNSAFE_RAW_MEMORY_FALLBACK,
                     diagnostics);
-            appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+            appendOrdinaryCall(
+                    SsaOpcodeSemantics.callOpcode(opcode),
+                    operands,
+                    returnType,
+                    values,
+                    stack,
+                    instructions,
+                    methodKey);
             return true;
         }
         if (plan.kind() == UnsafeOperationKind.PUT_VOLATILE
@@ -1033,7 +1057,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 && methodInsn.desc.equals("(Ljava/lang/String;)Ljava/lang/Class;")) {
             java.util.Optional<String> className = stringLiteral(operands.get(0), instructions);
             if (className.isEmpty()) {
-                appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+                appendOrdinaryCall(
+                        SsaOpcodeSemantics.callOpcode(opcode),
+                        operands,
+                        returnType,
+                        values,
+                        stack,
+                        instructions,
+                        methodKey);
                 return true;
             }
             IrValue initialize = values.next(IrType.I32);
@@ -1047,7 +1078,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 && methodInsn.desc.equals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;")) {
             java.util.Optional<String> className = stringLiteral(operands.get(0), instructions);
             if (className.isEmpty()) {
-                appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+                appendOrdinaryCall(
+                        SsaOpcodeSemantics.callOpcode(opcode),
+                        operands,
+                        returnType,
+                        values,
+                        stack,
+                        instructions,
+                        methodKey);
                 return true;
             }
             lowerClassForNameStatic(className.orElseThrow(), operands.get(1), values, stack, instructions);
@@ -1061,7 +1099,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> name = stringLiteral(operands.get(1), instructions);
             java.util.Optional<List<String>> parameters = classArrayDescriptors(operands.get(2), instructions);
             if (owner.isEmpty() || name.isEmpty() || parameters.isEmpty()) {
-                appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+                appendOrdinaryCall(
+                        SsaOpcodeSemantics.callOpcode(opcode),
+                        operands,
+                        returnType,
+                        values,
+                        stack,
+                        instructions,
+                        methodKey);
                 return true;
             }
             lowerMetadataLookup(
@@ -1082,7 +1127,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> owner = classInternalNameForValue(operands.get(0), instructions);
             java.util.Optional<String> name = stringLiteral(operands.get(1), instructions);
             if (owner.isEmpty() || name.isEmpty()) {
-                appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+                appendOrdinaryCall(
+                        SsaOpcodeSemantics.callOpcode(opcode),
+                        operands,
+                        returnType,
+                        values,
+                        stack,
+                        instructions,
+                        methodKey);
                 return true;
             }
             lowerMetadataLookup(
@@ -1101,7 +1153,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             java.util.Optional<String> owner = classInternalNameForValue(operands.get(0), instructions);
             java.util.Optional<List<String>> parameters = classArrayDescriptors(operands.get(1), instructions);
             if (owner.isEmpty() || parameters.isEmpty()) {
-                appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+                appendOrdinaryCall(
+                        SsaOpcodeSemantics.callOpcode(opcode),
+                        operands,
+                        returnType,
+                        values,
+                        stack,
+                        instructions,
+                        methodKey);
                 return true;
             }
             lowerMetadataLookup(
@@ -1117,7 +1176,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
         if (methodInsn.owner.equals("java/lang/Class")
                 && isReflectionMemberScan(methodInsn.name)) {
-            appendOrdinaryCall(callOpcode(opcode), operands, returnType, values, stack, instructions, methodKey);
+            appendOrdinaryCall(
+                    SsaOpcodeSemantics.callOpcode(opcode),
+                    operands,
+                    returnType,
+                    values,
+                    stack,
+                    instructions,
+                    methodKey);
             return true;
         }
         if (methodInsn.owner.equals("java/lang/reflect/Method")
@@ -1471,16 +1537,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 Boolean.parseBoolean(body.substring(lastColon + 1))));
     }
 
-    private IrOpcode callOpcodeForHandleTag(int tag) {
-        return switch (tag) {
-            case H_INVOKESTATIC -> IrOpcode.CALL_STATIC;
-            case H_INVOKEVIRTUAL -> IrOpcode.CALL_VIRTUAL;
-            case H_INVOKEINTERFACE -> IrOpcode.CALL_INTERFACE;
-            case H_INVOKESPECIAL, H_NEWINVOKESPECIAL -> IrOpcode.CALL_SPECIAL;
-            default -> IrOpcode.CALL_DYNAMIC;
-        };
-    }
-
     private String runtimeHelperSymbol(xyz.melodysky.runtime.RuntimeHelperKind helperKind) {
         return runtimeHelpers.helper(helperKind).orElseThrow().llvmSymbol();
     }
@@ -1538,18 +1594,25 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             List<IrInstruction> instructions,
             List<Diagnostic> diagnostics) {
         ArrayList<IrValue> operands = new ArrayList<>();
-        List<IrType> parameterTypes = parameterTypes(invokeDynamicInsn.desc);
+        List<IrType> parameterTypes = JvmToIrTypes.parameterTypes(invokeDynamicInsn.desc);
         for (int index = parameterTypes.size() - 1; index >= 0; index--) {
             operands.add(0, stack.pop());
         }
-        IrType returnType = returnType(invokeDynamicInsn.desc);
+        IrType returnType = JvmToIrTypes.returnType(invokeDynamicInsn.desc);
         StringConcatBootstrapPlan concatPlan = stringConcatFactory.parse(
                 invokeDynamicInsn.name,
                 invokeDynamicInsn.bsm,
                 invokeDynamicInsn.bsmArgs);
         if (concatPlan.stringConcatFactory()) {
             if (concatPlan.supported() && returnType == IrType.REFERENCE) {
-                lowerStringConcat(concatPlan, parameterTypes, parameterDescriptors(invokeDynamicInsn.desc), operands, values, stack, instructions);
+                lowerStringConcat(
+                        concatPlan,
+                        parameterTypes,
+                        JvmToIrTypes.parameterDescriptors(invokeDynamicInsn.desc),
+                        operands,
+                        values,
+                        stack,
+                        instructions);
                 return;
             }
             addJvmHelperFallbackDiagnostic(
@@ -1793,11 +1856,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             List<IrInstruction> instructions) {
         IrValue right;
         IrValue left;
-        if (isIntZeroBranch(opcode)) {
+        if (SsaOpcodeSemantics.isIntZeroBranch(opcode)) {
             left = stack.pop();
             right = values.next(IrType.I32);
             instructions.add(IrInstruction.constInt(right, 0));
-        } else if (isNullBranch(opcode)) {
+        } else if (SsaOpcodeSemantics.isNullBranch(opcode)) {
             left = stack.pop();
             right = values.next(IrType.REFERENCE);
             instructions.add(IrInstruction.constNull(right));
@@ -1806,7 +1869,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             left = stack.pop();
         }
         IrValue condition = values.next(IrType.I1);
-        instructions.add(IrInstruction.binary(condition, compareOpcode(opcode), left, right));
+        instructions.add(IrInstruction.binary(condition, SsaOpcodeSemantics.compareOpcode(opcode), left, right));
         BytecodeEdge trueEdge = branchEdge(cfg, block);
         BytecodeEdge falseEdge = edge(cfg, block, BytecodeEdgeKind.FALLTHROUGH);
         if (falseEdge == null) {
@@ -1868,6 +1931,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private boolean hasComplexExceptionShape(BytecodeCfg cfg) {
         return cfg.exceptionRegions().stream()
                 .anyMatch(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()));
+    }
+
+    private boolean isExceptionStateMergeBoundary(BytecodeCfg cfg, MergeFailure failure) {
+        return !cfg.exceptionRegions().isEmpty()
+                && (failure.reasonCode.equals("SSA_MERGE_LOCAL_SLOT_MISMATCH")
+                        || failure.reasonCode.equals("SSA_MERGE_TYPE_MISMATCH"));
     }
 
     private boolean isSupportedSynchronizedExceptionCleanupShape(BytecodeCfg cfg) {
@@ -1982,6 +2051,66 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return Map.copyOf(counts);
     }
 
+    private Map<Integer, Set<Integer>> liveLocalsAtEntry(BytecodeCfg cfg) {
+        HashMap<Integer, Set<Integer>> usesBeforeDefinition = new HashMap<>();
+        HashMap<Integer, Set<Integer>> definitions = new HashMap<>();
+        HashMap<Integer, Set<Integer>> liveIn = new HashMap<>();
+        HashMap<Integer, Set<Integer>> liveOut = new HashMap<>();
+        for (BytecodeBasicBlock block : cfg.blocks()) {
+            TreeSet<Integer> uses = new TreeSet<>();
+            TreeSet<Integer> defined = new TreeSet<>();
+            for (AbstractInsnNode instruction : cfg.instructions().subList(
+                    block.startInstructionIndex(),
+                    block.endInstructionIndexExclusive())) {
+                if (instruction instanceof IincInsnNode iincInsn) {
+                    if (!defined.contains(iincInsn.var)) {
+                        uses.add(iincInsn.var);
+                    }
+                    defined.add(iincInsn.var);
+                    continue;
+                }
+                if (!(instruction instanceof VarInsnNode varInsn)) {
+                    continue;
+                }
+                if (SsaOpcodeSemantics.isLoad(varInsn.getOpcode())) {
+                    if (!defined.contains(varInsn.var)) {
+                        uses.add(varInsn.var);
+                    }
+                } else if (SsaOpcodeSemantics.isStore(varInsn.getOpcode())) {
+                    defined.add(varInsn.var);
+                }
+            }
+            usesBeforeDefinition.put(block.id(), Set.copyOf(uses));
+            definitions.put(block.id(), Set.copyOf(defined));
+            liveIn.put(block.id(), Set.of());
+            liveOut.put(block.id(), Set.of());
+        }
+
+        boolean changed;
+        do {
+            changed = false;
+            for (int index = cfg.blocks().size() - 1; index >= 0; index--) {
+                BytecodeBasicBlock block = cfg.blocks().get(index);
+                TreeSet<Integer> nextLiveOut = new TreeSet<>();
+                for (BytecodeEdge edge : normalSuccessors(cfg, block)) {
+                    nextLiveOut.addAll(liveIn.getOrDefault(edge.toBlockId(), Set.of()));
+                }
+                TreeSet<Integer> nextLiveIn = new TreeSet<>(nextLiveOut);
+                nextLiveIn.removeAll(definitions.getOrDefault(block.id(), Set.of()));
+                nextLiveIn.addAll(usesBeforeDefinition.getOrDefault(block.id(), Set.of()));
+                Set<Integer> immutableLiveOut = Set.copyOf(nextLiveOut);
+                Set<Integer> immutableLiveIn = Set.copyOf(nextLiveIn);
+                if (!immutableLiveOut.equals(liveOut.put(block.id(), immutableLiveOut))) {
+                    changed = true;
+                }
+                if (!immutableLiveIn.equals(liveIn.put(block.id(), immutableLiveIn))) {
+                    changed = true;
+                }
+            }
+        } while (changed);
+        return Map.copyOf(liveIn);
+    }
+
     private List<BytecodeEdge> normalSuccessors(BytecodeCfg cfg, BytecodeBasicBlock block) {
         return cfg.edges().stream()
                 .filter(edge -> edge.fromBlockId() == block.id() && edge.kind() != BytecodeEdgeKind.EXCEPTION)
@@ -2017,13 +2146,15 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             int blockId,
             FrameState incoming,
             ValueFactory values,
-            boolean mergeBlock) {
+            boolean mergeBlock,
+            Set<Integer> liveLocalSlots) {
+        FrameState projectedIncoming = incoming.projectLocals(liveLocalSlots, blockId);
         BlockInput current = inputs.get(blockId);
         if (current == null) {
-            inputs.put(blockId, new BlockInput(incoming.copy()));
+            inputs.put(blockId, new BlockInput(projectedIncoming));
             return true;
         }
-        return current.merge(incoming, values, mergeBlock);
+        return current.merge(projectedIncoming, values, mergeBlock, liveLocalSlots);
     }
 
     private IrTerminator withTargetArguments(
@@ -2087,7 +2218,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             IrValue self = values.parameter(parameterIndex++, IrType.REFERENCE);
             parameters.add(self);
         }
-        for (IrType parameterType : parameterTypes(method.descriptor())) {
+        for (IrType parameterType : JvmToIrTypes.parameterTypes(method.descriptor())) {
             IrValue parameter = values.parameter(parameterIndex++, parameterType);
             parameters.add(parameter);
         }
@@ -2100,7 +2231,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (!method.accessFlags().isStatic()) {
             locals.set(slot++, parameters.get(index++));
         }
-        for (IrType parameterType : parameterTypes(method.descriptor())) {
+        for (IrType parameterType : JvmToIrTypes.parameterTypes(method.descriptor())) {
             locals.set(slot, parameters.get(index++));
             slot += parameterType == IrType.I64 || parameterType == IrType.F64 ? 2 : 1;
         }
@@ -2185,7 +2316,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (isSupportedConstantDynamic(constantDynamic)) {
             IrValue constantId = values.next(IrType.I64);
             instructions.add(IrInstruction.constLong(constantId, stableClassId(key)));
-            IrValue result = values.next(typeAt(constantDynamic.getDescriptor(), 0).type());
+            IrValue result = values.next(JvmToIrTypes.fieldType(constantDynamic.getDescriptor()));
             instructions.add(IrInstruction.call(
                     java.util.Optional.of(result),
                     IrOpcode.CALL_RUNTIME_HELPER,
@@ -2199,7 +2330,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 key,
                 "unsupported ConstantDynamic bootstrap requires JVM helper fallback",
                 diagnostics);
-        IrValue result = values.next(typeAt(constantDynamic.getDescriptor(), 0).type());
+        IrValue result = values.next(JvmToIrTypes.fieldType(constantDynamic.getDescriptor()));
         instructions.add(IrInstruction.call(
                 java.util.Optional.of(result),
                 IrOpcode.CALL_DYNAMIC,
@@ -2212,7 +2343,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         Handle bootstrap = constantDynamic.getBootstrapMethod();
         return bootstrap.getOwner().equals("java/lang/invoke/ConstantBootstraps")
                 && bootstrap.getName().equals("nullConstant")
-                && typeAt(constantDynamic.getDescriptor(), 0).type() == IrType.REFERENCE;
+                && JvmToIrTypes.fieldType(constantDynamic.getDescriptor()) == IrType.REFERENCE;
     }
 
     private void pushSymbolicConstant(
@@ -2224,91 +2355,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         IrValue result = values.next(IrType.REFERENCE);
         instructions.add(IrInstruction.symbolicConstant(result, opcode, symbol));
         stack.push(result);
-    }
-
-    private boolean isLoad(int opcode) {
-        return opcode == ILOAD || opcode == LLOAD || opcode == FLOAD || opcode == DLOAD || opcode == ALOAD;
-    }
-
-    private boolean isStore(int opcode) {
-        return opcode == ISTORE || opcode == LSTORE || opcode == FSTORE || opcode == DSTORE || opcode == ASTORE;
-    }
-
-    private boolean isBinary(int opcode) {
-        return opcode == IADD || opcode == ISUB || opcode == IMUL || opcode == IDIV || opcode == IREM
-                || opcode == LADD || opcode == LSUB || opcode == LMUL || opcode == LDIV || opcode == LREM
-                || opcode == FADD || opcode == FSUB || opcode == FMUL || opcode == FDIV || opcode == FREM
-                || opcode == DADD || opcode == DSUB || opcode == DMUL || opcode == DDIV || opcode == DREM
-                || opcode == IAND || opcode == IOR || opcode == IXOR
-                || opcode == LAND || opcode == LOR || opcode == LXOR;
-    }
-
-    private boolean isIntegerDivisionOrRemainder(int opcode) {
-        return opcode == IDIV || opcode == IREM || opcode == LDIV || opcode == LREM;
-    }
-
-    private boolean isNeg(int opcode) {
-        return opcode == INEG || opcode == LNEG || opcode == FNEG || opcode == DNEG;
-    }
-
-    private boolean isShift(int opcode) {
-        return opcode == ISHL || opcode == ISHR || opcode == IUSHR
-                || opcode == LSHL || opcode == LSHR || opcode == LUSHR;
-    }
-
-    private boolean isConversion(int opcode) {
-        return opcode == I2L || opcode == I2F || opcode == I2D || opcode == I2B || opcode == I2C || opcode == I2S
-                || opcode == L2I || opcode == L2F || opcode == L2D
-                || opcode == F2I || opcode == F2L || opcode == F2D
-                || opcode == D2I || opcode == D2L || opcode == D2F;
-    }
-
-    private boolean isValueComparison(int opcode) {
-        return opcode == LCMP || opcode == FCMPL || opcode == FCMPG || opcode == DCMPL || opcode == DCMPG;
-    }
-
-    private boolean isStackManipulation(int opcode) {
-        return opcode == POP || opcode == POP2 || opcode == DUP || opcode == DUP_X1 || opcode == DUP_X2
-                || opcode == DUP2 || opcode == DUP2_X1 || opcode == DUP2_X2 || opcode == SWAP;
-    }
-
-    private boolean isArrayLoad(int opcode) {
-        return opcode == IALOAD || opcode == LALOAD || opcode == FALOAD || opcode == DALOAD || opcode == AALOAD
-                || opcode == BALOAD || opcode == CALOAD || opcode == SALOAD;
-    }
-
-    private boolean isArrayStore(int opcode) {
-        return opcode == IASTORE || opcode == LASTORE || opcode == FASTORE || opcode == DASTORE || opcode == AASTORE
-                || opcode == BASTORE || opcode == CASTORE || opcode == SASTORE;
-    }
-
-    private boolean isValueReturn(int opcode) {
-        return opcode == IRETURN || opcode == LRETURN || opcode == FRETURN || opcode == DRETURN || opcode == ARETURN;
-    }
-
-    private boolean isConditionalBranch(int opcode) {
-        return isIntZeroBranch(opcode) || isIntCompareBranch(opcode) || isReferenceBranch(opcode);
-    }
-
-    private boolean isIntZeroBranch(int opcode) {
-        return opcode == IFEQ || opcode == IFNE || opcode == IFLT || opcode == IFLE || opcode == IFGT || opcode == IFGE;
-    }
-
-    private boolean isIntCompareBranch(int opcode) {
-        return opcode == IF_ICMPEQ
-                || opcode == IF_ICMPNE
-                || opcode == IF_ICMPLT
-                || opcode == IF_ICMPLE
-                || opcode == IF_ICMPGT
-                || opcode == IF_ICMPGE;
-    }
-
-    private boolean isReferenceBranch(int opcode) {
-        return opcode == IF_ACMPEQ || opcode == IF_ACMPNE || isNullBranch(opcode);
-    }
-
-    private boolean isNullBranch(int opcode) {
-        return opcode == IFNULL || opcode == IFNONNULL;
     }
 
     private boolean hasMerge(BytecodeCfg cfg) {
@@ -2510,172 +2556,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return "b" + blockId;
     }
 
-    private IrType binaryResultType(int opcode) {
-        return switch (opcode) {
-            case LADD, LSUB, LMUL, LDIV, LREM, LAND, LOR, LXOR, LSHL, LSHR, LUSHR -> IrType.I64;
-            case FADD, FSUB, FMUL, FDIV, FREM -> IrType.F32;
-            case DADD, DSUB, DMUL, DDIV, DREM -> IrType.F64;
-            default -> IrType.I32;
-        };
-    }
-
-    private IrType conversionResultType(int opcode) {
-        return switch (opcode) {
-            case I2L, F2L, D2L -> IrType.I64;
-            case I2F, L2F, D2F -> IrType.F32;
-            case I2D, L2D, F2D -> IrType.F64;
-            case I2B, I2C, I2S, L2I, F2I, D2I -> IrType.I32;
-            default -> throw new IllegalArgumentException("unsupported conversion opcode " + opcode);
-        };
-    }
-
-    private IrOpcode opcodeFor(int opcode) {
-        return switch (opcode) {
-            case IADD -> IrOpcode.ADD_I32;
-            case ISUB -> IrOpcode.SUB_I32;
-            case IMUL -> IrOpcode.MUL_I32;
-            case IDIV -> IrOpcode.DIV_I32;
-            case IREM -> IrOpcode.REM_I32;
-            case INEG -> IrOpcode.NEG_I32;
-            case ISHL -> IrOpcode.SHL_I32;
-            case ISHR -> IrOpcode.SHR_I32;
-            case IUSHR -> IrOpcode.USHR_I32;
-            case IAND -> IrOpcode.AND_I32;
-            case IOR -> IrOpcode.OR_I32;
-            case IXOR -> IrOpcode.XOR_I32;
-            case LADD -> IrOpcode.ADD_I64;
-            case LSUB -> IrOpcode.SUB_I64;
-            case LMUL -> IrOpcode.MUL_I64;
-            case LDIV -> IrOpcode.DIV_I64;
-            case LREM -> IrOpcode.REM_I64;
-            case LNEG -> IrOpcode.NEG_I64;
-            case LSHL -> IrOpcode.SHL_I64;
-            case LSHR -> IrOpcode.SHR_I64;
-            case LUSHR -> IrOpcode.USHR_I64;
-            case LAND -> IrOpcode.AND_I64;
-            case LOR -> IrOpcode.OR_I64;
-            case LXOR -> IrOpcode.XOR_I64;
-            case FADD -> IrOpcode.ADD_F32;
-            case FSUB -> IrOpcode.SUB_F32;
-            case FMUL -> IrOpcode.MUL_F32;
-            case FDIV -> IrOpcode.DIV_F32;
-            case FREM -> IrOpcode.REM_F32;
-            case FNEG -> IrOpcode.NEG_F32;
-            case DADD -> IrOpcode.ADD_F64;
-            case DSUB -> IrOpcode.SUB_F64;
-            case DMUL -> IrOpcode.MUL_F64;
-            case DDIV -> IrOpcode.DIV_F64;
-            case DREM -> IrOpcode.REM_F64;
-            case DNEG -> IrOpcode.NEG_F64;
-            case LCMP -> IrOpcode.LCMP;
-            case FCMPL -> IrOpcode.FCMPL;
-            case FCMPG -> IrOpcode.FCMPG;
-            case DCMPL -> IrOpcode.DCMPL;
-            case DCMPG -> IrOpcode.DCMPG;
-            case I2L -> IrOpcode.I2L;
-            case I2F -> IrOpcode.I2F;
-            case I2D -> IrOpcode.I2D;
-            case I2B -> IrOpcode.I2B;
-            case I2C -> IrOpcode.I2C;
-            case I2S -> IrOpcode.I2S;
-            case L2I -> IrOpcode.L2I;
-            case L2F -> IrOpcode.L2F;
-            case L2D -> IrOpcode.L2D;
-            case F2I -> IrOpcode.F2I;
-            case F2L -> IrOpcode.F2L;
-            case F2D -> IrOpcode.F2D;
-            case D2I -> IrOpcode.D2I;
-            case D2L -> IrOpcode.D2L;
-            case D2F -> IrOpcode.D2F;
-            default -> throw new IllegalArgumentException("unsupported binary opcode " + opcode);
-        };
-    }
-
-    private IrOpcode compareOpcode(int opcode) {
-        return switch (opcode) {
-            case IFEQ, IF_ICMPEQ -> IrOpcode.CMP_EQ_I32;
-            case IFNE, IF_ICMPNE -> IrOpcode.CMP_NE_I32;
-            case IFLT, IF_ICMPLT -> IrOpcode.CMP_LT_I32;
-            case IFLE, IF_ICMPLE -> IrOpcode.CMP_LE_I32;
-            case IFGT, IF_ICMPGT -> IrOpcode.CMP_GT_I32;
-            case IFGE, IF_ICMPGE -> IrOpcode.CMP_GE_I32;
-            case IF_ACMPEQ, IFNULL -> IrOpcode.CMP_EQ_REF;
-            case IF_ACMPNE, IFNONNULL -> IrOpcode.CMP_NE_REF;
-            default -> throw new IllegalArgumentException("unsupported branch opcode " + opcode);
-        };
-    }
-
-    private IrOpcode callOpcode(int opcode) {
-        return switch (opcode) {
-            case INVOKESTATIC -> IrOpcode.CALL_STATIC;
-            case INVOKESPECIAL -> IrOpcode.CALL_SPECIAL;
-            case INVOKEVIRTUAL -> IrOpcode.CALL_VIRTUAL;
-            case INVOKEINTERFACE -> IrOpcode.CALL_INTERFACE;
-            default -> throw new IllegalArgumentException("unsupported call opcode " + opcode);
-        };
-    }
-
-    private IrOpcode arrayLoadOpcode(int opcode) {
-        return switch (opcode) {
-            case LALOAD -> IrOpcode.ARRAY_LOAD_I64;
-            case FALOAD -> IrOpcode.ARRAY_LOAD_F32;
-            case DALOAD -> IrOpcode.ARRAY_LOAD_F64;
-            case AALOAD -> IrOpcode.ARRAY_LOAD_REF;
-            case IALOAD, BALOAD, CALOAD, SALOAD -> IrOpcode.ARRAY_LOAD_I32;
-            default -> throw new IllegalArgumentException("not an array load opcode " + opcode);
-        };
-    }
-
-    private IrOpcode arrayStoreOpcode(int opcode) {
-        return switch (opcode) {
-            case LASTORE -> IrOpcode.ARRAY_STORE_I64;
-            case FASTORE -> IrOpcode.ARRAY_STORE_F32;
-            case DASTORE -> IrOpcode.ARRAY_STORE_F64;
-            case AASTORE -> IrOpcode.ARRAY_STORE_REF;
-            case IASTORE, BASTORE, CASTORE, SASTORE -> IrOpcode.ARRAY_STORE_I32;
-            default -> throw new IllegalArgumentException("not an array store opcode " + opcode);
-        };
-    }
-
-    private IrType arrayLoadType(int opcode) {
-        return switch (opcode) {
-            case LALOAD -> IrType.I64;
-            case FALOAD -> IrType.F32;
-            case DALOAD -> IrType.F64;
-            case AALOAD -> IrType.REFERENCE;
-            case IALOAD, BALOAD, CALOAD, SALOAD -> IrType.I32;
-            default -> throw new IllegalArgumentException("not an array load opcode " + opcode);
-        };
-    }
-
-    private String arrayElementKind(int opcode) {
-        return switch (opcode) {
-            case IALOAD, IASTORE -> "int";
-            case LALOAD, LASTORE -> "long";
-            case FALOAD, FASTORE -> "float";
-            case DALOAD, DASTORE -> "double";
-            case AALOAD, AASTORE -> "reference";
-            case BALOAD, BASTORE -> "byteOrBoolean";
-            case CALOAD, CASTORE -> "char";
-            case SALOAD, SASTORE -> "short";
-            default -> throw new IllegalArgumentException("not an array opcode " + opcode);
-        };
-    }
-
-    private String primitiveArrayType(int operand) {
-        return switch (operand) {
-            case T_BOOLEAN -> "boolean";
-            case T_CHAR -> "char";
-            case T_FLOAT -> "float";
-            case T_DOUBLE -> "double";
-            case T_BYTE -> "byte";
-            case T_SHORT -> "short";
-            case T_INT -> "int";
-            case T_LONG -> "long";
-            default -> throw new IllegalArgumentException("not a primitive array type " + operand);
-        };
-    }
-
     private String handleKey(Handle handle) {
         return handle.getTag()
                 + ":" + handle.getOwner()
@@ -2694,6 +2574,20 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return StageResult.complete(
                 DiagnosticStage.LOWERING,
                 SsaMethodResult.frontendSkipped(method, reasonCode, reason),
+                List.of(diagnostic));
+    }
+
+    private StageResult<SsaMethodResult> fallbackOnly(ParsedMethod method, String reasonCode, String reason) {
+        Diagnostic diagnostic = Diagnostic.warning(
+                        DiagnosticStage.LOWERING,
+                        diagnosticCode(reasonCode),
+                        reason)
+                .at(location(method))
+                .withDecision(LoweringStatus.HALF_LOWERED.wireName())
+                .withConservativeFallbackAvailable(true);
+        return StageResult.complete(
+                DiagnosticStage.LOWERING,
+                SsaMethodResult.fallbackOnly(method, reasonCode, reason),
                 List.of(diagnostic));
     }
 
@@ -2748,60 +2642,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
 
     private DiagnosticLocation location(ParsedMethod method) {
         return DiagnosticLocation.methodLocation(method.owner(), method.name(), method.descriptor());
-    }
-
-    private IrType returnType(String descriptor) {
-        int end = descriptor.indexOf(')');
-        return typeAt(descriptor, end + 1).type();
-    }
-
-    private List<IrType> parameterTypes(String descriptor) {
-        ArrayList<IrType> types = new ArrayList<>();
-        int index = 1;
-        while (descriptor.charAt(index) != ')') {
-            ParsedType parsed = typeAt(descriptor, index);
-            types.add(parsed.type());
-            index = parsed.nextIndex();
-        }
-        return types;
-    }
-
-    private List<String> parameterDescriptors(String descriptor) {
-        ArrayList<String> descriptors = new ArrayList<>();
-        int index = 1;
-        while (descriptor.charAt(index) != ')') {
-            int start = index;
-            ParsedType parsed = typeAt(descriptor, index);
-            descriptors.add(descriptor.substring(start, parsed.nextIndex()));
-            index = parsed.nextIndex();
-        }
-        return descriptors;
-    }
-
-    private ParsedType typeAt(String descriptor, int index) {
-        char tag = descriptor.charAt(index);
-        return switch (tag) {
-            case 'V' -> new ParsedType(IrType.VOID, index + 1);
-            case 'I', 'Z', 'B', 'S', 'C' -> new ParsedType(IrType.I32, index + 1);
-            case 'J' -> new ParsedType(IrType.I64, index + 1);
-            case 'F' -> new ParsedType(IrType.F32, index + 1);
-            case 'D' -> new ParsedType(IrType.F64, index + 1);
-            case 'L' -> new ParsedType(IrType.REFERENCE, descriptor.indexOf(';', index) + 1);
-            case '[' -> {
-                int next = index;
-                while (descriptor.charAt(next) == '[') {
-                    next++;
-                }
-                if (descriptor.charAt(next) == 'L') {
-                    next = descriptor.indexOf(';', next);
-                }
-                yield new ParsedType(IrType.REFERENCE, next + 1);
-            }
-            default -> throw new IllegalArgumentException("unsupported descriptor type " + tag);
-        };
-    }
-
-    private record ParsedType(IrType type, int nextIndex) {
     }
 
     private record MethodHandleConstant(
@@ -2912,6 +2752,20 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return new FrameState(stack, locals);
         }
 
+        private FrameState projectLocals(Set<Integer> liveLocalSlots, int blockId) {
+            TreeMap<Integer, IrValue> projected = new TreeMap<>();
+            for (int slot : liveLocalSlots) {
+                IrValue value = locals.get(slot);
+                if (value == null) {
+                    throw new MergeFailure(
+                            "SSA_MERGE_LOCAL_SLOT_MISMATCH",
+                            "live-in local slot " + slot + " is undefined on an incoming edge to block " + blockId);
+                }
+                projected.put(slot, value);
+            }
+            return new FrameState(stack, projected);
+        }
+
         private boolean sameValues(FrameState other) {
             return stack.equals(other.stack) && locals.equals(other.locals);
         }
@@ -2958,7 +2812,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return parametersBySlot.values().stream().map(MergeParameter::value).toList();
         }
 
-        private boolean merge(FrameState incoming, ValueFactory values, boolean mergeBlock) {
+        private boolean merge(
+                FrameState incoming,
+                ValueFactory values,
+                boolean mergeBlock,
+                Set<Integer> liveLocalSlots) {
             if (!mergeBlock) {
                 if (state.sameValues(incoming)) {
                     return false;
@@ -2979,10 +2837,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 changed |= mergeValue(new MergeSlot(MergeSlotKind.STACK, index), incoming.stack.get(index), values);
             }
 
-            TreeSet<Integer> slots = new TreeSet<>();
-            slots.addAll(state.locals.keySet());
-            slots.addAll(incoming.locals.keySet());
-            for (int slot : slots) {
+            for (int slot : new TreeSet<>(liveLocalSlots)) {
                 IrValue current = state.locals.get(slot);
                 IrValue incomingValue = incoming.locals.get(slot);
                 if (current == null || incomingValue == null) {

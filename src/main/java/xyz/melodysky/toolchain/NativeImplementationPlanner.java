@@ -90,7 +90,7 @@ public final class NativeImplementationPlanner {
                 if (irMethod != null && supportsLlvmNativePath(
                         entry.getValue(),
                         irMethod,
-                        supportedLlvmMethods,
+                        sameOwnerDirectCallTargets(irMethod, supportedLlvmMethods),
                         availableProgramMethodKeys)) {
                     supportedLlvmMethods.add(entry.getKey());
                     changed = true;
@@ -110,7 +110,10 @@ public final class NativeImplementationPlanner {
                 List<String> classObjectKeys = classObjectKeys(irMethod);
                 List<String> runtimeMetadataKeys = runtimeMetadataKeys(irMethod);
                 List<String> constructorCallKeys = constructorCallKeys(irMethod);
-                List<String> staticCallKeys = staticCallKeys(irMethod, supportedLlvmMethods, availableProgramMethodKeys);
+                List<String> staticCallKeys = staticCallKeys(
+                        irMethod,
+                        directCallTargets,
+                        availableProgramMethodKeys);
                 List<String> dispatchKeys = dispatchKeys(irMethod);
                 List<String> stringHelperSymbols = stringHelperSymbols(irMethod);
                 boolean jdkScalarHelper = containsJdkScalarHelper(irMethod);
@@ -129,7 +132,7 @@ public final class NativeImplementationPlanner {
                 boolean runtimeMetadataHelper = containsRuntimeMetadataHelper(irMethod);
                 boolean classInitHelper = containsClassInitHelper(irMethod);
                 boolean passesJniEnv = needsJniEnv(irMethod, directCallTargets, staticCallKeys);
-                boolean passesOwnerClass = needsOwnerClass(irMethod);
+                boolean passesOwnerClass = needsOwnerClass(irMethod, directCallTargets);
                 implementations.add(new NativeMethodImplementation(
                         entry,
                         decision,
@@ -1422,15 +1425,22 @@ public final class NativeImplementationPlanner {
     }
 
     private List<String> directCallTargets(IrMethod method, Set<String> supportedLlvmMethods) {
+        return sameOwnerDirectCallTargets(method, supportedLlvmMethods).stream()
+                .sorted()
+                .toList();
+    }
+
+    private Set<String> sameOwnerDirectCallTargets(
+            IrMethod method,
+            Set<String> supportedLlvmMethods) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC
                         || isDirectSpecialCallInstruction(instruction))
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .filter(supportedLlvmMethods::contains)
-                .distinct()
-                .sorted()
-                .toList();
+                .filter(target -> target.startsWith(method.owner() + "#"))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private List<String> allocationKeys(IrMethod method) {
@@ -1487,12 +1497,12 @@ public final class NativeImplementationPlanner {
 
     private List<String> staticCallKeys(
             IrMethod method,
-            Set<String> supportedLlvmMethods,
+            List<String> directCallTargets,
             Set<String> availableProgramMethods) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC)
-                .filter(instruction -> instruction.symbol().filter(symbol -> !supportedLlvmMethods.contains(symbol)).isPresent())
+                .filter(instruction -> instruction.symbol().filter(symbol -> !directCallTargets.contains(symbol)).isPresent())
                 .filter(instruction -> supportsStaticCallBridgeInstruction(instruction, availableProgramMethods))
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .distinct()
@@ -1628,8 +1638,9 @@ public final class NativeImplementationPlanner {
                                 && instruction.symbol().map(this::isEnvBackedRuntimeHelperSymbol).orElse(false)));
     }
 
-    private boolean needsOwnerClass(IrMethod method) {
-        return method.blocks().stream()
+    private boolean needsOwnerClass(IrMethod method, List<String> directCallTargets) {
+        return !directCallTargets.isEmpty()
+                || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
                         || instruction.opcode() == IrOpcode.PUT_STATIC);

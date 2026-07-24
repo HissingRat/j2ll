@@ -155,7 +155,7 @@ The runnable artifact path is stable: `build/cli/j2ll.jar`. The jar manifest poi
 ```bash
 java -jar build/cli/j2ll.jar --help
 java -jar build/cli/j2ll.jar --version
-java -jar build/cli/j2ll.jar validate docs/examples/minimal-config.json
+java -jar build/cli/j2ll.jar --validate --config docs/examples/minimal-config.json
 ```
 
 For a beta distribution directory, build:
@@ -178,13 +178,11 @@ CLI commands:
 
 - `j2ll --help`
 - `j2ll --version`
-- `j2ll validate <config.json>`
-- `j2ll dry-run <config.json> <workspace>`
-- `j2ll build <config.json> <workspace>`
+- `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`
 
-`validate` only checks config and does not create pipeline artifacts. `dry-run` writes reports for config, selector expansion and target preflight, but never invokes managed Zig/native build and never writes a final JAR.
+`--config` selects the config file; without it the CLI reads `Config.json` from the current directory. `--validate` only checks config and does not create a workspace or pipeline artifacts. `--dry-run` writes reports for config, selector expansion and target preflight, but never invokes managed Zig/native build and never writes a final JAR. With neither mode flag, the CLI runs the full build pipeline. `--debug` enables all five effective intermediate switches for the run (`enabled`, debug dumps, per-class IR, per-class LLVM and per-class C); it does not request native debug symbols.
 
-`j2ll build <config.json> <workspace>` and the failure-producing commands use stable exit codes:
+The default build mode and `--dry-run` allocate a workspace automatically at `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/`. `--validate` allocates none. The build mode and failure-producing commands use stable exit codes:
 
 - `0`: success.
 - `2`: config validation failure.
@@ -195,12 +193,12 @@ CLI commands:
 - `7`: strict release-readiness failure.
 - `1`: unexpected internal error or an uncategorized fatal diagnostic.
 
-On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. On failure stderr includes the primary human-readable failure, one short `hint=...` line when available, reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
+On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. Full-build progress is written only to stderr. Interactive terminals use optimized legacy phase regions: compiler work is shown as `Read bytecode` / `Lower to IR` / `Emit LLVM IR`; native preparation/build uses one aggregate `Build native` row, one stable row per selected target, and one `Stage` row; packaging/audit/report writing is shown as `Finalize JAR`. While Zig is running, each target row is indeterminate and says `building/linking`; it changes to `done` only after the corresponding final non-empty DLL/SO/dylib is observed at its planned flat workspace output path. The aggregate native bar advances by observed completed targets, not by parsing Zig output or inventing compile/link percentages. Once the native phase completes, its per-target rows collapse to one aggregate completed row before finalization begins. A phase transition completes the previous region and starts the next region; only the active region is erased and redrawn in place. Normal-width terminals use 28-character bars, while narrow terminals may shorten the bar before truncating the label, real count, or useful detail. Redirected/CI output receives exactly one control-sequence-free `[current/total]` line per high-level stage plus the short success result; target completion callbacks do not add log lines. Method lowering and LLVM emission report real current/total counts, including honest zero-work states. The managed Zig command remains one matrix-wide opaque invocation and may schedule independent targets concurrently, but the TUI must not concatenate all target names into one detail, parse unstable Zig console text, fabricate per-target percentages, or claim an execution order. On failure the complete active progress region is only cleared and terminated before stderr prints the primary human-readable failure; the renderer must not insert a redundant `BUILD FAILED` or Gradle-style actionable-stage summary ahead of that diagnostic. One short `hint=...` line is printed when available, followed by the reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
 
 Minimal command:
 
 ```bash
-j2ll build config.json /tmp/j2ll-workspace
+j2ll --config config.json
 ```
 
 On success stdout contains stable `outputJar=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...` lines. On config/toolchain/signing/artifact-audit/readiness failure the final JAR is not retained; inspect `reports/index.json`, `reports/summary.md`, `reports/summary.json`, `reports/diagnostics.json`, `reports/failure-report.json` and the stage-specific report named by stderr.
@@ -281,7 +279,7 @@ Intentionally not supported in schema version 1:
 
 `outputDirectory`
 
-Directory for build workspaces. Required. Each run creates a timestamped workspace under this directory.
+Directory for build workspaces. Required. Build and dry-run create `build_yyyy-MM-dd_HH-mm-ss[-n]` under the resolved directory; the numeric suffix avoids a same-second collision. Validate creates no workspace.
 
 `whiteList`
 
@@ -357,13 +355,30 @@ Fields:
 - `macosX64`: build x86_64 macOS dylib.
 - `macosArm64`: build AArch64 macOS dylib.
 
+Managed Zig `0.15.2` maps these fields to a fixed structural cross-build matrix:
+
+| Config field | Zig target query | ABI / minimum |
+| --- | --- | --- |
+| `windowsX64` | `x86_64-windows-gnu` | MinGW/UCRT GNU ABI |
+| `windowsArm64` | `aarch64-windows-gnu` | MinGW/UCRT GNU ABI |
+| `linuxX64` | `x86_64-linux.3.2-gnu.2.17` | Linux 3.2, glibc 2.17 |
+| `linuxArm64` | `aarch64-linux.3.7-gnu.2.17` | Linux 3.7, glibc 2.17 |
+| `macosX64` | `x86_64-macos.10.15` | macOS 10.15 |
+| `macosArm64` | `aarch64-macos.11.0` | macOS 11.0 |
+
+All selected targets are compiled and linked by one generated `build.zig` and one matrix-wide `zig build` invocation. Successful structural cross-build means the target DLL/SO/dylib was produced and passed format/architecture/export audit; the support matrix records this as `ZIG_CROSS_TARGET_SUPPORTED`. It does not by itself claim child-JVM execution on a non-host OS. Non-host runtime E2E remains separate release evidence with reason `CROSS_TARGET_RUNTIME_E2E_PENDING`.
+
 `libraryName`
 
 Optional logical native library base name. If `null`, j2ll generates a deterministic name from the input artifact and resolved config. This name is used for native build metadata and loader metadata. Selected target libraries are still embedded into the output jar under `embeddedLibraryDirectory`.
 
 `embeddedLibraryDirectory`
 
-Package path inside the output jar where selected target dynamic libraries are stored. Default recommendation is `native0`. The path must be a relative JAR path and must not start with `/`.
+Package path inside the output jar where selected target dynamic libraries and the generated runtime loader are stored. Default recommendation is `native0`. This value is also the loader's JVM package/internal-name prefix, so it must be a canonical ASCII Java internal package path matching `[A-Za-z_$][A-Za-z0-9_$]*(/[A-Za-z_$][A-Za-z0-9_$]*)*`. Empty segments, leading/trailing `/`, `.`, `..`, backslashes, and the reserved `java[/...]` and `META-INF[/...]` namespaces are invalid. Invalid values fail config validation with `INVALID_EMBEDDED_LIBRARY_DIRECTORY`.
+
+Every build reserves `<embeddedLibraryDirectory>/Loader.class`. If the input JAR already contains that base entry, packaging fails with `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION`; if any `META-INF/versions/**/<embeddedLibraryDirectory>/Loader.class` entry could shadow it, packaging fails with `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Both checks run before managed Zig/native build and no final JAR is written.
+
+Different output artifacts that use the same directory therefore request the same loader binary name. Loading such artifacts through one defining `ClassLoader` is a known boundary; choose an application-unique `embeddedLibraryDirectory` when they may coexist. Independent `ClassLoader` instances keep separate loader classes and state.
 
 ### Managed Zig Toolchain
 
@@ -412,8 +427,9 @@ Managed Zig rules：
 - local/downloaded archive 必须按内置官方 Zig `0.15.2` SHA-256 metadata 校验；checksum mismatch 是 native/toolchain failure，不能继续解压或 fallback 成成功。
 - signature verification 当前是显式边界，report 使用 `signatureStatus=notVerifiedBoundary`。
 - archive extraction 必须防 zip-slip / path traversal，不能写出 `<j2ll-home>/zig`。
-- Zig compiles/links all buildable selected target dynamic libraries. Schema v1 records every selected target in preflight/report, and selected targets are required by default. A selected target that preflight cannot build is reported in `failedTargets` with `ZIG_TARGET_UNBUILDABLE`, includes required/optional state, Zig target triple, expected library path/name, failure kind, exact reason and build log tail, and makes the pipeline fail; optional/report-only target simulation belongs only in focused toolchain tests.
+- Zig compiles/links all buildable selected target dynamic libraries. Managed Zig `0.15.2` currently declares all six fixed targets above structurally buildable; non-host selection alone is not a failure condition. Schema v1 records every selected target in preflight/report, and selected targets are required by default. A target with an actual capability, preflight, compile or link failure is reported in `failedTargets` with `ZIG_TARGET_UNBUILDABLE`, includes required/optional state, exact Zig target query, expected library path/name, failure kind, exact reason and build log tail, and makes the pipeline fail; optional/report-only target simulation belongs only in focused toolchain tests.
 - Per-class `.ll`, Zig-managed `.o`, JNI wrapper C, runtime helper C and fallback blob carrier sources are all Zig toolchain inputs.
+- Cross-target C compilation uses the current JDK's platform-neutral `jni.h` plus a generated target-portable `jni_md.h`; it must not reuse the host platform's `jni_md.h` ABI definitions for non-host targets. Target preflight fails before Zig invocation when the current runtime does not provide `include/jni.h`.
 - j2ll generates one `build.zig` workspace per build. The Java side invokes managed `zig build` once for the selected target matrix; it must not issue ad-hoc per-target `zig cc`, host `cc`, `clang`, `llc` or platform linker commands.
 - j2ll must not silently fall back to host `cc`, platform linker, external `clang` or external `llc` outside the managed `ZigToolchain` capability contract.
 - If Zig cannot compile/link a required `.ll` / `.o` / C input for a selected target, preflight/build fails with a diagnostic that names the missing toolchain capability and the affected target. The stable reason for selected required targets that cannot be built in the current environment is `ZIG_TARGET_UNBUILDABLE`.
@@ -449,6 +465,8 @@ Fields:
 - `includePerClassIr`: write class-aligned SSA IR files.
 - `includePerClassLlvm`: write class-aligned LLVM IR files.
 - `includePerClassC`: write class-aligned C wrapper/runtime glue files where applicable.
+
+The CLI `--debug` flag overrides all five switches to `true` for that run. This is an intermediate-artifact diagnostic mode; native libraries are still release-style builds without native debug symbols.
 
 `protection`
 
@@ -524,19 +542,20 @@ Fields:
 
 ## Output Workspace
 
-Each run creates:
+Build and dry-run create automatically:
 
 ```text
-<outputDirectory>/build_YYYY-MM-DD_HH-mm-ss/
+<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/
 ```
+
+Validate creates no workspace. The optional numeric suffix is added when the timestamped name already exists.
 
 Required top-level layout:
 
 ```text
-build_YYYY-MM-DD_HH-mm-ss/
+build_yyyy-MM-dd_HH-mm-ss[-n]/
   config.resolved.json
-  output/
-    <input-jar-file-name>
+  <input-jar-file-name>
   reports/
     artifact-audit.json
     diagnostics.json
@@ -555,12 +574,13 @@ build_YYYY-MM-DD_HH-mm-ss/
     support-matrix.json
     symbol-audit.json
   native/
-    windows-x64/
-    windows-arm64/
-    linux-x64/
-    linux-arm64/
-    macos-x64/
-    macos-arm64/
+    x64-windows.dll
+    arm64-windows.dll
+    x64-linux.so
+    arm64-linux.so
+    x64-macos.dylib
+    arm64-macos.dylib
+    zig-workspace/
   intermediates/
     classes/
     runtime/
@@ -572,9 +592,9 @@ build_YYYY-MM-DD_HH-mm-ss/
 
 Fully resolved config with defaults, absolute paths, a hash-only protection seed identity, resolved target list and normalized selectors. The raw protection seed is not written to this report.
 
-`output/<input-jar-file-name>`
+`<input-jar-file-name>`
 
-Final repacked JAR. This is the primary output artifact.
+Final repacked JAR at the workspace root. This is the primary output artifact and is present only after a successful build.
 
 The final JAR also contains j2ll metadata entries written before signing/resigning:
 
@@ -594,7 +614,7 @@ Written for failed config or pipeline runs. It summarizes error diagnostics with
 
 `reports/artifact-audit.json`
 
-Artifact audit v2.2 result. Successful pipeline runs audit the output JAR and embedded native resources for plaintext generated fallback `.class` entries, legacy output paths, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH` connected surfaces, `TEMPLATE_JNI_PATH_STABLE_SURFACE` constructor/body helper string surfaces and StringConcat constant carrier stable generated-C surfaces are blocking when the literal is long enough to be a stable audit signal. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names are recorded as hash-only `observedOnly` with `PLAINTEXT_LITERAL_TOO_SHORT_FOR_BLOCKING_GATE`. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`; complex fallback blob facts remain observed-only for plaintext literal gating but have blocking binary metadata/carrier checks. The checks array also records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths, fallback blob binary metadata and final JAR metadata; skipped surfaces must include `surfaceNotGenerated`, `nonBlockingPathKind` or `unavailableOnTarget` style reasons. Failed runs write a no-final-artifact audit result so readiness reports do not confuse a missing final JAR with a successful artifact. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
+Artifact audit v2.2 result. Successful pipeline runs audit the output JAR and embedded native resources for plaintext generated fallback `.class` entries, legacy output paths, exactly one correctly named Java 17 `<embeddedLibraryDirectory>/Loader.class`, absence of the retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH_STABLE_SURFACE`, StringConcat constant carrier, and `NATIVE_METADATA_STRING` facts are blocking on their connected surfaces. `NATIVE_METADATA_STRING` covers registration owners, sufficiently distinctive member names, referenced internal class names and native runtime error text; generated C stores those JNI-required bytes as deterministic encoded writable arrays and decodes them once at `j2ll_register`, while generated wrapper/LLVM/bootstrap identifiers are hash-only. This is an at-rest static-string boundary, not a claim that runtime memory or JNI arguments are secret. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names remain hash-only observed evidence. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`; complex fallback blob facts remain observed-only for plaintext literal gating but have blocking binary metadata/carrier checks. The checks array also records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths, fallback blob binary metadata and final JAR metadata. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
 
 `reports/frontend-skip-report.json`
 
@@ -610,7 +630,7 @@ Deterministic opcode/category/status/reason/test coverage matrix used by release
 
 `reports/packaging-report.json`
 
-Manifest/resource/signature handling, generated loader classes, native registration summary and output jar validation result.
+Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result.
 
 `reports/protection-report.json`
 
@@ -662,13 +682,13 @@ Strict readiness consumes release suite summaries by profile:
 - `smoke`: narrow compiler/runtime sanity evidence.
 - `standard`: regular helper/fallback/protection regression evidence.
 - `beta`: user-facing usability evidence. Requires CLI jar smoke, docs examples validation, report index evidence, minimal LLVM native evidence and mixed helper/fallback evidence. `beta-blocker` rows must be covered by suite evidence or accepted workaround evidence; otherwise `betaProfilePassed=false`. Future or explicit non-goal blockers remain visible but do not block beta when they have evidence/future path.
-- `rc`: release-candidate evidence. Requires all RC categories, blocker evidence, determinism, signing/packaging preservation, artifact audit failure evidence and required non-host target failure evidence.
+- `rc`: release-candidate evidence. Requires all RC categories, blocker evidence, determinism, signing/packaging preservation, artifact audit failure evidence and injected/actual required-target failure hygiene evidence. Real six-target structural artifacts are verified separately by `ZigCrossTargetBuildTest`.
 
 Sample project docs live under `docs/samples/`, currently `basic-cli-app.md` and `reflection-service-app.md`. They include source snippets, config shape, commands, expected output and report highlights, and are tested so they do not drift away from `docs/examples/*.json`.
 
 Release suite summary written by the deterministic test harness, not by ordinary CLI pipeline runs. Strict readiness mode requires this file for suite workspaces. It records `schemaVersion`, `reportVersion`, `suiteName`, `profile` (`smoke`, `standard`, `beta` or `rc`), `requiredCategories`, `missingCategories`, stable `cases` ordering, `aggregate` (`totalCases`, `successCases`, `expectedFailureCases`, `casesByCategory`, `casesByFeature`, `strictEvidenceComplete`, `determinismEvidenceComplete`), root `determinismEvidenceComplete`, each case `name`, `category`, `features`, expected support statuses, original/output child JVM exit/stdout/stderr when child JVM differential is applicable, collected produced report paths, diagnostics, protection setting, signature policy and whether pipeline success was expected. Expected config/toolchain/artifact failures may omit original/output child JVM runs, but must record `expectedFailure=true`, `expectedFailureStage`, `expectedFailureReasonCode`, `finalArtifactWritten=false`, a matching diagnostic and `failure-report.json`. Beta profile strict readiness requires CLI artifact smoke, docs example validation and report-index evidence; RC profile strict readiness requires `missingCategories` to be empty.
 
-Strict readiness gate v6 treats `expectedSupportStatuses` and `expectedSupportEvidence` as release blocker coverage evidence. `beta-blocker` and `rc-blocker` known-blocker reasons must be covered either by a suite case expected status/diagnostic or by a documented weird-bytecode seed reason. `future-blocker` and explicit `non-goal` rows remain visible in coverage output but do not block RC strict readiness. Expected failure cases, such as invalid config, signed input rejected by `signaturePolicy: "fail"`, artifact audit failure or a required non-host target with `ZIG_TARGET_UNBUILDABLE`, must have `output: null`, `finalArtifactWritten=false`, `failure-report.json` and a matching diagnostic/stage/reason; successful cases must include output child JVM results, passed artifact audit and the required report set.
+Strict readiness gate v6 treats `expectedSupportStatuses` and `expectedSupportEvidence` as release blocker coverage evidence. `beta-blocker` and `rc-blocker` known-blocker reasons must be covered either by a suite case expected status/diagnostic or by a documented weird-bytecode seed reason. `future-blocker` and explicit `non-goal` rows remain visible in coverage output but do not block RC strict readiness. Expected failure cases, such as invalid config, signed input rejected by `signaturePolicy: "fail"`, artifact audit failure or an injected/actual required-target capability, compile or link failure with `ZIG_TARGET_UNBUILDABLE`, must have `output: null`, `finalArtifactWritten=false`, `failure-report.json` and a matching diagnostic/stage/reason. Non-host selection alone is a successful structural cross-build case, not expected-failure evidence. Successful runtime cases include output child JVM results, passed artifact audit and the required report set; structural-only cross-target cases include target-format/export evidence and clearly separate pending non-host runtime E2E.
 
 `reports/symbol-audit.json`
 
@@ -805,7 +825,7 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
 ```json
 {
   "schemaVersion": 1,
-  "outputJar": "output/input.jar",
+  "outputJar": "input.jar",
   "manifestPolicy": "preserved",
   "signaturePolicy": "fail",
   "preservationSummary": {
@@ -824,7 +844,7 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
     "warning": null,
     "error": null
   },
-  "generatedLoaders": ["j2ll/generated/abc123/NativeLoader"],
+  "generatedLoaders": ["native0/Loader"],
   "rewrittenClasses": [
     {
       "class": "pkg/Foo",
@@ -842,6 +862,11 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
     {
       "target": "linux-x64",
       "jarPath": "native0/x64-linux.so",
+      "sha256": "..."
+    },
+    {
+      "target": "macos-arm64",
+      "jarPath": "native0/arm64-macos.dylib",
       "sha256": "..."
     }
   ],
@@ -865,22 +890,9 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
     "buildCommand": ["<j2ll-home>/zig/zig", "build", "--prefix", "..."],
     "selectedTargets": ["linux-x64", "macos-arm64"],
     "requiredTargets": ["linux-x64", "macos-arm64"],
-    "buildableTargets": ["macos-arm64"],
+    "buildableTargets": ["linux-x64", "macos-arm64"],
     "skippedTargets": [],
-    "failedTargets": [
-      {
-        "target": "linux-x64",
-        "zigTarget": "x86_64-linux",
-        "output": "native/linux-x64/x64-linux.so",
-        "status": "failed",
-        "currentHost": false,
-        "buildable": false,
-        "reasonCode": "ZIG_TARGET_UNBUILDABLE",
-        "reason": "selected required target linux-x64 is not buildable by the current managed Zig workspace preflight",
-        "requiredCapability": "managedZig0.15.2BuildZigSharedLibrary",
-        "platformSdkRequirement": "Zig Linux libc/linker support for selected target"
-      }
-    ]
+    "failedTargets": []
   },
   "fallbackBlobs": [
     {
@@ -948,7 +960,7 @@ Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result record
   "libraries": [
     {
       "target": "linux-x64",
-      "path": "native/linux-x64/x64-linux.so",
+      "path": "native/x64-linux.so",
       "allowedExports": ["JNI_OnLoad", "j2ll_register"],
       "actualExports": ["JNI_OnLoad", "j2ll_register"],
       "unexpectedExports": [],
@@ -967,6 +979,7 @@ The final output jar must contain:
 <original resources>
 <rewritten classes>
 <embeddedLibraryDirectory>/
+  Loader.class
   x64-windows.dll
   arm64-windows.dll
   x64-linux.so
@@ -975,14 +988,15 @@ The final output jar must contain:
   arm64-macos.dylib
 ```
 
-Only selected targets appear. For example, if `linuxX64` and `macosArm64` are true, only these files are required:
+`Loader.class` always appears exactly once. Only selected native targets appear. For example, if `linuxX64` and `macosArm64` are true, these generated entries are required:
 
 ```text
+<embeddedLibraryDirectory>/Loader.class
 <embeddedLibraryDirectory>/x64-linux.so
 <embeddedLibraryDirectory>/arm64-macos.dylib
 ```
 
-The output jar must also contain generated loader/registration classes needed to load the embedded native libraries and bind native methods. j2ll uses generated loader classes plus `RegisterNatives`; Java method implementation functions remain internal/hidden and are not exported as JNI method-name symbols.
+The generated class is a Java 17 classfile whose internal name is exactly `<embeddedLibraryDirectory>/Loader`. It always contains the native target selection, SHA-256 verification, extraction and loading path. Its `defineHiddenFallback(Class, byte[])` method is present only when the implementation plan actually uses `nativeEmbeddedClassBlob`; otherwise that method is removed without removing native loading. No separate `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or legacy `j2ll/generated/<artifact-id>/NativeLoader.class` entry is emitted. j2ll uses this loader plus `RegisterNatives`; Java method implementation functions remain internal/hidden and are not exported as JNI method-name symbols.
 
 ### Method Rewrite Strategies
 
@@ -1063,7 +1077,7 @@ Signature rules:
 - `signaturePolicy: "strip"` removes old signature files and produces an unsigned runnable jar.
 - `signaturePolicy: "resign"` removes old signature files and signs the output jar with the configured key.
 - Every signature decision must be recorded in `reports/packaging-report.json`.
-- `reports/packaging-report.json` also records `zigToolchain.targetArtifacts`, including selected/required target, current-host/buildable state, OS/arch classifier, library extension, Zig target triple, expected artifact path/name/resource path, loader extraction path policy, symbol visibility policy, actual artifact SHA-256 for built current-host targets, exported symbols, required capability, platform SDK requirement, failure kind, build log tail and Windows PDB exclusion policy.
+- `reports/packaging-report.json` also records `zigToolchain.targetArtifacts`, including selected/required target, current-host/buildable state, OS/arch classifier, library extension, exact Zig target query, expected artifact path/name/resource path, loader extraction path policy, symbol visibility policy, actual artifact SHA-256 and exported symbols for every built target, required capability, platform SDK requirement, failure kind, build log tail and Windows PDB exclusion policy.
 - `reports/support-matrix.json` is a stable release-readiness artifact listing feature, support status (`LLVM_NATIVE_PATH`, `HELPER_BACKED`, `FALLBACK`, `FRONTEND_SKIPPED`, `NOT_APPLICABLE`), reason code and test coverage pointer.
 - `reports/opcode-support-matrix.json` is the matching opcode-level release-readiness artifact listing opcode bucket, category, status, reason code and test coverage pointer.
 - `reports/known-blockers.json` tracks remaining conservative boundaries with stable blocker id, reason code, severity, target milestone, report location and suggested future path.
@@ -1151,9 +1165,9 @@ loader/native registration 需要解决三件事：
 
 正式方案：
 
-- 使用 generated loader + `RegisterNatives`。
-- generated loader internal name uses `j2ll/generated/<artifact-id>/NativeLoader`, where `artifact-id` is a filesystem/class-name safe token derived from the resolved config and input jar hash.
-- Rewritten owner classes call the generated loader from `<clinit>` or from a generated method stub before the first native helper call. If an existing `<clinit>` exists, loader initialization is prepended before lowered method use.
+- 使用唯一的 `<embeddedLibraryDirectory>/Loader.class` + `RegisterNatives`。该 classfile 固定为 Java 17，internal name 固定为 `<embeddedLibraryDirectory>/Loader`。
+- Loader 始终包含 native loading；只有 implementation plan 实际使用 `nativeEmbeddedClassBlob` 时才保留 `defineHiddenFallback(Class, byte[])`。不再输出 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 或 `j2ll/generated/<artifact-id>/NativeLoader.class`。
+- Rewritten owner classes call this loader from `<clinit>` or from a generated method stub before the first native helper call. If an existing `<clinit>` exists, loader initialization is prepended before lowered method use.
 - Dynamic libraries are extracted from jar resources to a per-classloader, content-addressed temp/cache path under `java.io.tmpdir`.
 - Extracted libraries must be verified against SHA-256 metadata before `System.load`.
 - Native registration tables are grouped per owner class.
@@ -1163,6 +1177,8 @@ loader/native registration 需要解决三件事：
 - Extraction paths must not be user-controlled relative paths; temp files should use restrictive permissions where the platform supports them.
 - Only loader/bootstrap JNI wrapper symbols and optional `JNI_OnLoad` are exported. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
 - Loader, extraction and `RegisterNatives` failures throw `UnsatisfiedLinkError` with a clear message.
+
+The reserved base/MR loader-entry collision checks run before Zig. A base collision reports `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION`; a multi-release shadow reports `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Because the loader binary name is directory-derived rather than artifact-derived, multiple different artifacts using the same `embeddedLibraryDirectory` in one defining `ClassLoader` remain an explicit known boundary. Applications that load such artifacts together should assign application-unique directories.
 
 ## Native Lowering Guarantee
 
@@ -1321,17 +1337,20 @@ Native libraries are written to workspace `native/` and embedded into the final 
 Workspace paths:
 
 ```text
-native/windows-x64/x64-windows.dll
-native/windows-arm64/arm64-windows.dll
-native/linux-x64/x64-linux.so
-native/linux-arm64/arm64-linux.so
-native/macos-x64/x64-macos.dylib
-native/macos-arm64/arm64-macos.dylib
+native/x64-windows.dll
+native/arm64-windows.dll
+native/x64-linux.so
+native/arm64-linux.so
+native/x64-macos.dylib
+native/arm64-macos.dylib
 ```
+
+Workspace dynamic libraries are intentionally flat because the fixed target filenames are unique across the six-target matrix. `native/zig-workspace/` remains reserved for generated Zig sources, manifests and logs. This workspace layout is independent of the JAR resource prefix below.
 
 JAR paths:
 
 ```text
+<embeddedLibraryDirectory>/Loader.class
 <embeddedLibraryDirectory>/x64-windows.dll
 <embeddedLibraryDirectory>/arm64-windows.dll
 <embeddedLibraryDirectory>/x64-linux.so
@@ -1340,13 +1359,16 @@ JAR paths:
 <embeddedLibraryDirectory>/arm64-macos.dylib
 ```
 
+`Loader.class` is generated once regardless of target count. It remains present for every native build; its fallback-definition method is conditional on actual `nativeEmbeddedClassBlob` use.
+
 Binary hardening rules:
 
 - Export only JNI / C ABI wrapper symbols required by the loader/registration plan.
 - Java method implementation functions are internal LLVM functions or hidden symbols.
 - Internal helpers, dispatchers, method tables and protection tables are hidden unless explicitly required by runtime ABI.
 - Windows release output must not package `.pdb` files.
-- `reports/symbol-audit.json` must record the allowlist and actual exported symbols.
+- Cross-target audit parses the produced target format directly: PE export directory for Windows, ELF dynamic symbols for Linux and Mach-O export trie/symbol table for macOS. It also verifies target architecture and does not depend on a host-only `nm`.
+- `reports/symbol-audit.json` must record the platform allowlist and actual exported symbols for every built target.
 
 ## Failure Outputs
 
@@ -1371,4 +1393,4 @@ logs/
 intermediates/
 ```
 
-`output/<input-jar-file-name>` is only written when the build succeeds.
+`<input-jar-file-name>` at the workspace root is only written when the build succeeds.

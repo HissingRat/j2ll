@@ -2,6 +2,8 @@ package xyz.melodysky.packaging;
 
 import java.util.Map;
 import java.util.TreeMap;
+import xyz.melodysky.toolchain.CIdentifier;
+import xyz.melodysky.toolchain.CSourceEscaper;
 
 public final class RegisterNativesTableBuilder {
     public String emit(NativeRegistrationPlan plan) {
@@ -11,15 +13,15 @@ public final class RegisterNativesTableBuilder {
             byOwner.computeIfAbsent(entry.registrationOwner(), ignored -> new java.util.ArrayList<>()).add(entry);
         }
         for (Map.Entry<String, java.util.List<NativeRegistrationEntry>> ownerEntry : byOwner.entrySet()) {
-            String tableName = "j2ll_natives_" + safeSymbol(ownerEntry.getKey());
+            String tableName = "j2ll_natives_" + CIdentifier.forIdentity(ownerEntry.getKey());
             builder.append("static JNINativeMethod ")
                     .append(tableName)
                     .append("[] = {\n");
             for (NativeRegistrationEntry entry : ownerEntry.getValue()) {
                 builder.append("    {\"")
-                        .append(entry.methodName())
+                        .append(CSourceEscaper.stringContents(entry.methodName()))
                         .append("\", \"")
-                        .append(entry.descriptor())
+                        .append(CSourceEscaper.stringContents(entry.descriptor()))
                         .append("\", (void*)")
                         .append(entry.nativeSymbol())
                         .append("},\n");
@@ -34,18 +36,4 @@ public final class RegisterNativesTableBuilder {
         return builder.toString();
     }
 
-    private String safeSymbol(String value) {
-        StringBuilder result = new StringBuilder();
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            if ((ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z')
-                    || (ch >= '0' && ch <= '9')) {
-                result.append(ch);
-            } else {
-                result.append('_');
-            }
-        }
-        return result.toString();
-    }
 }

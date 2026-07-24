@@ -78,8 +78,9 @@ class JvmHostedE2eSkeletonTest implements Opcodes {
         assertTrue(loweringReport.contains("\"class\": \"pkg/Adder\""));
         assertTrue(loweringReport.contains("\"status\": \"lowered\""));
         assertTrue(loweringReport.contains("\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
-        Path hostNativeDir = workspace.resolve("native").resolve(HostPlatform.detect().orElseThrow().target().directoryName());
-        assertTrue(Files.exists(hostNativeDir.resolve(HostPlatform.detect().orElseThrow().target().libraryFileName())));
+        Path hostNative = workspace.resolve("native")
+                .resolve(HostPlatform.detect().orElseThrow().target().libraryFileName());
+        assertTrue(Files.exists(hostNative));
         Path zigWorkspace = workspace.resolve("native/zig-workspace");
         String source = Files.readString(zigWorkspace.resolve("jni/j2lle2e.c"));
         String llvm = Files.readString(zigWorkspace.resolve("llvm/pkg_Adder.ll"));

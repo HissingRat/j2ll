@@ -17,7 +17,7 @@ class DocsSamplesTest {
         Path sample = Path.of("docs/samples").resolve(fileName);
         String markdown = Files.readString(sample);
         assertTrue(markdown.contains("\"schemaVersion\": 1"), markdown);
-        assertTrue(markdown.contains("java -jar build/dist/j2ll/j2ll.jar build"), markdown);
+        assertTrue(markdown.contains("java -jar build/dist/j2ll/j2ll.jar --config"), markdown);
         assertTrue(markdown.contains(expectedOutput), markdown);
         assertTrue(markdown.contains("reports/index.json"), markdown);
         assertTrue(markdown.contains("report"), markdown);

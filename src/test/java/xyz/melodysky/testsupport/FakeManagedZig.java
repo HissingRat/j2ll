@@ -18,10 +18,18 @@ public final class FakeManagedZig {
         assumeTrue(Files.exists(Path.of(System.getProperty("java.home")).resolve("include/jni.h")),
                 "JDK headers are required for fake managed Zig JNI build");
         Path executable = j2llHome.resolve("zig").resolve(isWindows() ? "zig.exe" : "zig");
+        assumeTrue(Files.notExists(executable), "fake managed Zig requires a clean test distribution");
         Files.createDirectories(executable.getParent());
         Files.writeString(executable, script(), StandardCharsets.UTF_8);
         executable.toFile().setExecutable(true);
-        return useHome(j2llHome);
+        AutoCloseable homeOverride = useHome(j2llHome);
+        return () -> {
+            try {
+                homeOverride.close();
+            } finally {
+                Files.deleteIfExists(executable);
+            }
+        };
     }
 
     public static boolean supportsCurrentHostFixture(HostPlatform host) {
@@ -94,7 +102,7 @@ public final class FakeManagedZig {
                         target_name = target["target"]
                         flags = shared_flag(target_name)
                         if flags is None:
-                            return fail("fake managed Zig cannot build non-host target " + target_name)
+                            return fail("test-only managed Zig does not implement target output " + target_name)
                         output = output_from_prefix(workspace, target["output"])
                         output.parent.mkdir(parents=True, exist_ok=True)
                         temp_root = workspace / "logs"

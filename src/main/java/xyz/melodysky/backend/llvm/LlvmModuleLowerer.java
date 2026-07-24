@@ -67,12 +67,82 @@ public final class LlvmModuleLowerer {
             LlvmVisibility visibility,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys) {
+        Map<String, Set<String>> directCallsByMethod = new HashMap<>();
+        Map<String, Set<String>> staticCallsByMethod = new HashMap<>();
+        for (IrMethod method : irClass.methods()) {
+            directCallsByMethod.put(
+                    method.methodKey(),
+                    configuredDirectCalls(method, directCallMethodKeys));
+            staticCallsByMethod.put(
+                    method.methodKey(),
+                    configuredStaticCalls(method, staticCallMethodKeys));
+        }
+        return lowerClass(
+                irClass,
+                linkage,
+                visibility,
+                directCallsByMethod,
+                staticCallsByMethod);
+    }
+
+    private Set<String> configuredDirectCalls(IrMethod method, Set<String> configuredTargets) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC
+                        || isDirectSpecialCallInstruction(instruction))
+                .flatMap(instruction -> instruction.symbol().stream())
+                .filter(configuredTargets::contains)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private Set<String> configuredStaticCalls(IrMethod method, Set<String> configuredTargets) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC)
+                .flatMap(instruction -> instruction.symbol().stream())
+                .filter(configuredTargets::contains)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    public LlvmModule lowerClass(
+            IrClass irClass,
+            LlvmLinkage linkage,
+            LlvmVisibility visibility,
+            Map<String, Set<String>> directCallsByMethod,
+            Map<String, Set<String>> staticCallsByMethod) {
+        Map<String, LlvmFunctionAbi> functionAbis = functionAbis(
+                irClass,
+                directCallsByMethod,
+                staticCallsByMethod);
         return new LlvmModule(
                 irClass.internalName(),
                 runtimeHelperDeclarations(),
                 irClass.methods().stream()
-                        .map(method -> lowerMethod(method, linkage, visibility, directCallMethodKeys, staticCallMethodKeys))
+                        .map(method -> lowerMethod(
+                                method,
+                                linkage,
+                                visibility,
+                                directCallsByMethod.getOrDefault(method.methodKey(), Set.of()),
+                                staticCallsByMethod.getOrDefault(method.methodKey(), Set.of()),
+                                functionAbis))
                         .toList());
+    }
+
+    private Map<String, LlvmFunctionAbi> functionAbis(
+            IrClass irClass,
+            Map<String, Set<String>> directCallsByMethod,
+            Map<String, Set<String>> staticCallsByMethod) {
+        Map<String, LlvmFunctionAbi> result = new HashMap<>();
+        for (IrMethod method : irClass.methods()) {
+            Set<String> directCalls = directCallsByMethod.getOrDefault(method.methodKey(), Set.of());
+            Set<String> staticCalls = staticCallsByMethod.getOrDefault(method.methodKey(), Set.of());
+            result.put(
+                    method.methodKey(),
+                    new LlvmFunctionAbi(
+                            methodNeedsJniEnv(method, directCalls, staticCalls),
+                            methodNeedsOwnerClass(method, directCalls)));
+        }
+        return Map.copyOf(result);
     }
 
     private List<LlvmDeclaration> runtimeHelperDeclarations() {
@@ -90,12 +160,14 @@ public final class LlvmModuleLowerer {
             LlvmLinkage linkage,
             LlvmVisibility visibility,
             Set<String> directCallMethodKeys,
-            Set<String> staticCallMethodKeys) {
+            Set<String> staticCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis) {
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
-        if (methodNeedsJniEnv(method, directCallMethodKeys, staticCallMethodKeys)) {
+        LlvmFunctionAbi functionAbi = functionAbis.get(method.methodKey());
+        if (functionAbi.passesJniEnv()) {
             parameters.add(new LlvmParameter(LlvmType.PTR, "%j2ll_env"));
         }
-        if (methodNeedsOwnerClass(method)) {
+        if (functionAbi.passesOwnerClass()) {
             parameters.add(new LlvmParameter(LlvmType.PTR, "%j2ll_owner"));
         }
         method.parameters().stream()
@@ -107,7 +179,8 @@ public final class LlvmModuleLowerer {
                         block,
                         phiIncoming.getOrDefault(block.name(), List.of()),
                         directCallMethodKeys,
-                        staticCallMethodKeys))
+                        staticCallMethodKeys,
+                        functionAbis))
                 .toList();
         return new LlvmFunction(
                 nameMangler.functionName(method),
@@ -122,7 +195,8 @@ public final class LlvmModuleLowerer {
             IrBlock block,
             List<PhiIncoming> phiIncoming,
             Set<String> directCallMethodKeys,
-            Set<String> staticCallMethodKeys) {
+            Set<String> staticCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis) {
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
         for (int index = 0; index < block.parameters().size(); index++) {
             IrValue parameter = block.parameters().get(index);
@@ -142,6 +216,7 @@ public final class LlvmModuleLowerer {
                     instruction,
                     directCallMethodKeys,
                     staticCallMethodKeys,
+                    functionAbis,
                     block.name(),
                     instructionIndex));
         }
@@ -247,6 +322,7 @@ public final class LlvmModuleLowerer {
             xyz.melodysky.ir.model.IrInstruction instruction,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis,
             String blockName,
             int instructionIndex) {
         if (isCall(instruction.opcode())) {
@@ -254,14 +330,16 @@ public final class LlvmModuleLowerer {
                     instruction,
                     directCallMethodKeys,
                     staticCallMethodKeys,
+                    functionAbis,
                     stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
         }
-        return List.of(lowerInstruction(instruction, directCallMethodKeys));
+        return List.of(lowerInstruction(instruction, directCallMethodKeys, functionAbis));
     }
 
     private LlvmInstruction lowerInstruction(
             xyz.melodysky.ir.model.IrInstruction instruction,
-            Set<String> directCallMethodKeys) {
+            Set<String> directCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis) {
         if (isConversion(instruction.opcode())) {
             return lowerConversion(instruction);
         }
@@ -322,7 +400,7 @@ public final class LlvmModuleLowerer {
             return lowerFieldAccess(instruction);
         }
         if (isCall(instruction.opcode())) {
-            return lowerCall(instruction, directCallMethodKeys);
+            return lowerCall(instruction, directCallMethodKeys, functionAbis);
         }
         String opcode = switch (instruction.opcode()) {
             case CONST_INT -> "add";
@@ -593,11 +671,16 @@ public final class LlvmModuleLowerer {
 
     private LlvmInstruction lowerCall(
             xyz.melodysky.ir.model.IrInstruction instruction,
-            Set<String> directCallMethodKeys) {
+            Set<String> directCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis) {
         if ((instruction.opcode() == IrOpcode.CALL_STATIC || isDirectSpecialCallInstruction(instruction))
                 && instruction.symbol().filter(directCallMethodKeys::contains).isPresent()) {
-            String target = nameMangler.functionName(instruction.symbol().orElseThrow());
-            String args = typedOperands(instruction.operands());
+            String methodKey = instruction.symbol().orElseThrow();
+            String target = nameMangler.functionName(methodKey);
+            LlvmFunctionAbi targetAbi = Optional.ofNullable(functionAbis.get(methodKey))
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "direct LLVM call target is outside the current class module: " + methodKey));
+            String args = directCallArguments(targetAbi, instruction.operands());
             if (instruction.result().isPresent()) {
                 String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
                 return LlvmInstruction.raw(
@@ -652,10 +735,23 @@ public final class LlvmModuleLowerer {
         return LlvmInstruction.raw(Optional.empty(), "call void @" + prefix + symbol + "(" + args + ")");
     }
 
+    private String directCallArguments(LlvmFunctionAbi targetAbi, List<IrValue> operands) {
+        ArrayList<String> arguments = new ArrayList<>();
+        if (targetAbi.passesJniEnv()) {
+            arguments.add("ptr %j2ll_env");
+        }
+        if (targetAbi.passesOwnerClass()) {
+            arguments.add("ptr %j2ll_owner");
+        }
+        arguments.addAll(operands.stream().map(this::typedOperand).toList());
+        return String.join(", ", arguments);
+    }
+
     private List<LlvmInstruction> lowerCallInstructions(
             xyz.melodysky.ir.model.IrInstruction instruction,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys,
+            Map<String, LlvmFunctionAbi> functionAbis,
             String scratchSuffix) {
         if (isConstructorCallHelperInstruction(instruction)) {
             return lowerConstructorCallBridge(instruction, scratchSuffix);
@@ -666,7 +762,7 @@ public final class LlvmModuleLowerer {
         if (isDispatchHelperInstruction(instruction)) {
             return lowerDispatchCallBridge(instruction, scratchSuffix);
         }
-        return List.of(lowerCall(instruction, directCallMethodKeys));
+        return List.of(lowerCall(instruction, directCallMethodKeys, functionAbis));
     }
 
     private List<LlvmInstruction> lowerConstructorCallBridge(
@@ -1435,8 +1531,9 @@ public final class LlvmModuleLowerer {
                                 && instruction.symbol().map(this::isEnvBackedRuntimeHelperSymbol).orElse(false)));
     }
 
-    private boolean methodNeedsOwnerClass(IrMethod method) {
-        return method.blocks().stream()
+    private boolean methodNeedsOwnerClass(IrMethod method, Set<String> directCallMethodKeys) {
+        return !directCallMethodKeys.isEmpty()
+                || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
                         || instruction.opcode() == IrOpcode.PUT_STATIC);

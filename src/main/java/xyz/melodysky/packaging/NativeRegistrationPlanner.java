@@ -1,7 +1,6 @@
 package xyz.melodysky.packaging;
 
 import java.util.List;
-import java.util.Locale;
 import xyz.melodysky.toolchain.ClassArtifactPath;
 
 public final class NativeRegistrationPlanner {
@@ -38,28 +37,7 @@ public final class NativeRegistrationPlanner {
     private String nativeSymbol(MethodRewriteDecision decision) {
         String hash = artifactPath
                 .methodHash(decision.method().owner(), decision.method().name(), decision.method().descriptor())
-                .substring(0, 16);
-        return "j2ll_" + safeSymbol(decision.registrationOwner())
-                + "_" + safeSymbol(decision.method().name())
-                + "_" + hash;
-    }
-
-    private String safeSymbol(String value) {
-        StringBuilder result = new StringBuilder();
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            if ((ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z')
-                    || (ch >= '0' && ch <= '9')) {
-                result.append(ch);
-            } else {
-                result.append('_');
-                if (ch > 127) {
-                    result.append(Integer.toHexString(ch).toLowerCase(Locale.ROOT));
-                    result.append('_');
-                }
-            }
-        }
-        return result.toString();
+                .substring(0, 32);
+        return "j2ll_n_" + hash;
     }
 }

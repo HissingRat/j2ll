@@ -9,10 +9,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
@@ -24,6 +25,7 @@ import xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.packaging.EmbeddedLibraryLayout;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
 
 public final class ZigNativeLibraryBuilder {
@@ -37,6 +39,7 @@ public final class ZigNativeLibraryBuilder {
     private final J2llHomeResolver homeResolver;
     private final boolean callIndirectionEnabled;
     private final long protectionSeed;
+    private final boolean strip;
 
     public ZigNativeLibraryBuilder() {
         this(new LlvmNameMangler());
@@ -50,6 +53,14 @@ public final class ZigNativeLibraryBuilder {
             LlvmNameMangler llvmNameMangler,
             boolean callIndirectionEnabled,
             long protectionSeed) {
+        this(llvmNameMangler, callIndirectionEnabled, protectionSeed, true);
+    }
+
+    public ZigNativeLibraryBuilder(
+            LlvmNameMangler llvmNameMangler,
+            boolean callIndirectionEnabled,
+            long protectionSeed,
+            boolean strip) {
         this(
                 new HostJniCSourceGenerator(),
                 new LlvmModuleLowerer(llvmNameMangler),
@@ -60,7 +71,8 @@ public final class ZigNativeLibraryBuilder {
                 new NativeSymbolInspector(),
                 new J2llHomeResolver(),
                 callIndirectionEnabled,
-                protectionSeed);
+                protectionSeed,
+                strip);
     }
 
     public ZigNativeLibraryBuilder(
@@ -82,7 +94,8 @@ public final class ZigNativeLibraryBuilder {
                 symbolInspector,
                 homeResolver,
                 false,
-                0L);
+                0L,
+                true);
     }
 
     public ZigNativeLibraryBuilder(
@@ -96,6 +109,32 @@ public final class ZigNativeLibraryBuilder {
             J2llHomeResolver homeResolver,
             boolean callIndirectionEnabled,
             long protectionSeed) {
+        this(
+                sourceGenerator,
+                llvmLowerer,
+                llvmEmitter,
+                zigLocator,
+                buildWriter,
+                buildInvoker,
+                symbolInspector,
+                homeResolver,
+                callIndirectionEnabled,
+                protectionSeed,
+                true);
+    }
+
+    public ZigNativeLibraryBuilder(
+            HostJniCSourceGenerator sourceGenerator,
+            LlvmModuleLowerer llvmLowerer,
+            LlvmTextEmitter llvmEmitter,
+            ManagedZigLocator zigLocator,
+            ZigBuildWriter buildWriter,
+            ZigBuildInvoker buildInvoker,
+            NativeSymbolInspector symbolInspector,
+            J2llHomeResolver homeResolver,
+            boolean callIndirectionEnabled,
+            long protectionSeed,
+            boolean strip) {
         this.sourceGenerator = sourceGenerator;
         this.llvmLowerer = llvmLowerer;
         this.llvmEmitter = llvmEmitter;
@@ -106,22 +145,51 @@ public final class ZigNativeLibraryBuilder {
         this.homeResolver = homeResolver;
         this.callIndirectionEnabled = callIndirectionEnabled;
         this.protectionSeed = protectionSeed;
+        this.strip = strip;
     }
 
     public Optional<ZigNativeBuildResult> build(
             Path workspaceRoot,
-            String embeddedLibraryDirectory,
+            RuntimeLoaderPlan runtimeLoaderPlan,
             NativeBuildPlan buildPlan,
             NativeImplementationPlan implementationPlan,
             Map<String, IrMethod> irMethods) throws IOException {
+        return build(
+                workspaceRoot,
+                runtimeLoaderPlan,
+                buildPlan,
+                implementationPlan,
+                irMethods,
+                NativeBuildProgressListener.none());
+    }
+
+    public Optional<ZigNativeBuildResult> build(
+            Path workspaceRoot,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeBuildPlan buildPlan,
+            NativeImplementationPlan implementationPlan,
+            Map<String, IrMethod> irMethods,
+            NativeBuildProgressListener progressListener) throws IOException {
+        Objects.requireNonNull(progressListener, "progressListener");
         if (implementationPlan.implementations().isEmpty() || buildPlan.units().isEmpty()) {
             return Optional.empty();
         }
         ManagedZig zig = zigLocator.ensure(homeResolver.resolve());
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(workspaceRoot);
         prepareDirectories(workspace);
-        Path wrapper = workspace.jniDirectory().resolve(buildPlan.units().get(0).libraryName() + ".c");
-        Files.writeString(wrapper, sourceGenerator.generate(implementationPlan), StandardCharsets.UTF_8);
+        String libraryName = buildPlan.units().get(0).libraryName();
+        if (!NativeLibraryName.isSafe(libraryName)) {
+            throw new IOException("unsafe native library name in build plan: " + libraryName);
+        }
+        Path jniDirectory = workspace.jniDirectory().toAbsolutePath().normalize();
+        Path wrapper = jniDirectory.resolve(libraryName + ".c").normalize();
+        if (!wrapper.startsWith(jniDirectory)) {
+            throw new IOException("native wrapper path escapes the Zig JNI workspace: " + wrapper);
+        }
+        Files.writeString(
+                wrapper,
+                sourceGenerator.generate(implementationPlan, runtimeLoaderPlan),
+                StandardCharsets.UTF_8);
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(runtime, "/* runtime helper C inputs are helper-backed skeletons in this slice */\n", StandardCharsets.UTF_8);
         Path fallback = workspace.fallbackDirectory().resolve("j2ll_fallback_blobs.c");
@@ -131,16 +199,21 @@ public final class ZigNativeLibraryBuilder {
                 llvmSources,
                 List.of(wrapper, runtime, fallback),
                 List.of(),
-                jniIncludeDirectories());
+                new ZigJniHeaderSet().prepare(workspace));
         buildWriter.write(
                 workspace,
-                buildPlan.units().get(0).libraryName(),
+                libraryName,
                 buildPlan,
-                new ZigInputSet(sources));
+                new ZigInputSet(sources),
+                strip);
         ZigBuildInvocation invocation = buildInvoker.invocation(zig, workspace);
-        buildInvoker.invoke(zig, workspace);
+        try {
+            buildInvoker.invoke(zig, workspace, buildPlan, progressListener);
+        } catch (IOException exception) {
+            throw ZigBuildException.from(buildPlan, workspace, exception);
+        }
         List<NativeLibraryArtifact> artifacts = collectArtifacts(
-                embeddedLibraryDirectory,
+                runtimeLoaderPlan.embeddedLibraryDirectory(),
                 buildPlan,
                 wrapper);
         return Optional.of(new ZigNativeBuildResult(
@@ -167,11 +240,15 @@ public final class ZigNativeLibraryBuilder {
         if (implementationPlan.llvmImplementations().isEmpty()) {
             return List.of();
         }
-        LinkedHashSet<String> directCallTargets = new LinkedHashSet<>();
-        LinkedHashSet<String> staticCallTargets = new LinkedHashSet<>();
+        Map<String, Set<String>> directCallsByMethod = new LinkedHashMap<>();
+        Map<String, Set<String>> staticCallsByMethod = new LinkedHashMap<>();
         for (NativeMethodImplementation implementation : implementationPlan.llvmImplementations()) {
-            directCallTargets.addAll(implementation.directCallTargets());
-            staticCallTargets.addAll(implementation.staticCallKeys());
+            directCallsByMethod.put(
+                    implementation.methodKey(),
+                    Set.copyOf(implementation.directCallTargets()));
+            staticCallsByMethod.put(
+                    implementation.methodKey(),
+                    Set.copyOf(implementation.staticCallKeys()));
         }
         Map<String, ArrayList<IrMethod>> methodsByOwner = new LinkedHashMap<>();
         for (NativeMethodImplementation implementation : implementationPlan.llvmImplementations()) {
@@ -183,13 +260,13 @@ public final class ZigNativeLibraryBuilder {
         }
         ArrayList<Path> sources = new ArrayList<>();
         for (Map.Entry<String, ArrayList<IrMethod>> entry : methodsByOwner.entrySet()) {
-            Path llvmPath = workspace.llvmDirectory().resolve(safeFileName(entry.getKey()) + ".ll");
+            Path llvmPath = workspace.llvmDirectory().resolve(NativeSourceName.llvmFileName(entry.getKey()));
             LlvmModule module = llvmLowerer.lowerClass(
                     new IrClass(entry.getKey(), entry.getValue()),
                     LlvmLinkage.EXTERNAL,
                     LlvmVisibility.HIDDEN,
-                    directCallTargets,
-                    staticCallTargets);
+                    directCallsByMethod,
+                    staticCallsByMethod);
             module = new LlvmCallIndirectionPass()
                     .run(module, callIndirectionEnabled
                             ? LlvmProtectionConfig.enabled(protectionSeed)
@@ -200,14 +277,6 @@ public final class ZigNativeLibraryBuilder {
             sources.add(llvmPath);
         }
         return List.copyOf(sources);
-    }
-
-    private List<Path> jniIncludeDirectories() {
-        Path javaHome = Path.of(System.getProperty("java.home"));
-        ArrayList<Path> includes = new ArrayList<>();
-        includes.add(javaHome.resolve("include"));
-        HostPlatform.detect().ifPresent(host -> includes.add(javaHome.resolve("include").resolve(host.jniIncludeSubdirectory())));
-        return List.copyOf(includes);
     }
 
     private List<NativeLibraryArtifact> collectArtifacts(
@@ -229,21 +298,6 @@ public final class ZigNativeLibraryBuilder {
                     symbolInspector.exportedSymbols(unit.target(), unit.outputPath())));
         }
         return List.copyOf(artifacts);
-    }
-
-    private String safeFileName(String value) {
-        StringBuilder builder = new StringBuilder();
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            if ((ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z')
-                    || (ch >= '0' && ch <= '9')) {
-                builder.append(ch);
-            } else {
-                builder.append('_');
-            }
-        }
-        return builder.toString();
     }
 
     private String sha256(Path path) throws IOException {

@@ -34,21 +34,22 @@ class DocsExamplesExecutableTest implements Opcodes {
         String configTemplate = Files.readString(Path.of("docs/examples/minimal-config.json"));
         Path config = temp.resolve("minimal-config.json");
         Files.writeString(config, configTemplate.replace("\"jarFile\": \"input.jar\"", "\"jarFile\": \"" + inputJar.toString().replace('\\', '/') + "\""));
-        Path workspace = temp.resolve("workspace");
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int exit;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home"))) {
             exit = J2llCli.run(
-                    new String[] {"build", config.toString(), workspace.toString()},
+                    new String[] {"--config", config.toString()},
                     new PrintStream(out, true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         }
 
         assertEquals(0, exit, err.toString(StandardCharsets.UTF_8));
-        assertTrue(out.toString(StandardCharsets.UTF_8).contains("reportIndex="), out.toString(StandardCharsets.UTF_8));
-        Path outputJar = workspace.resolve("output/input.jar");
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        assertTrue(stdout.contains("reportIndex="), stdout);
+        Path outputJar = pathValue(stdout, "outputJar");
+        Path workspace = outputJar.getParent();
         var run = new JvmRunner().run(outputJar, "example.Main", List.of());
         assertEquals(0, run.exitCode(), run.stderr());
         assertEquals("42\n", run.stdout());
@@ -63,14 +64,23 @@ class DocsExamplesExecutableTest implements Opcodes {
         String reflection = Files.readString(Path.of("docs/samples/reflection-service-app.md"));
         String gettingStarted = Files.readString(Path.of("docs/getting-started.md"));
 
-        assertTrue(basic.contains("java -jar build/dist/j2ll/j2ll.jar build config/basic-cli-app.json"), basic);
+        assertTrue(basic.contains("java -jar build/dist/j2ll/j2ll.jar --config config/basic-cli-app.json"), basic);
         assertTrue(basic.contains("hello beta count=1 opt=beta"), basic);
-        assertTrue(reflection.contains("java -jar build/dist/j2ll/j2ll.jar build config/reflection-service-app.json"), reflection);
+        assertTrue(reflection.contains("java -jar build/dist/j2ll/j2ll.jar --config config/reflection-service-app.json"), reflection);
         assertTrue(reflection.contains("beta:7"), reflection);
         assertTrue(gettingStarted.contains("bash ./gradlew distJ2ll"), gettingStarted);
         assertTrue(gettingStarted.contains("java -jar build/dist/j2ll/j2ll.jar --help"), gettingStarted);
-        assertTrue(gettingStarted.contains("java -jar build/dist/j2ll/j2ll.jar validate docs/examples/minimal-config.json"), gettingStarted);
+        assertTrue(gettingStarted.contains("java -jar build/dist/j2ll/j2ll.jar --validate --config docs/examples/minimal-config.json"), gettingStarted);
         assertTrue(gettingStarted.contains("bash ./gradlew betaAcceptance"), gettingStarted);
+    }
+
+    private Path pathValue(String output, String key) {
+        String prefix = key + "=";
+        return output.lines()
+                .filter(line -> line.startsWith(prefix))
+                .map(line -> Path.of(line.substring(prefix.length())))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing " + prefix + " in output:\n" + output));
     }
 
     private void writeJar(Path jar, Map<String, byte[]> entries) throws Exception {
