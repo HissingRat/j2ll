@@ -1,7 +1,7 @@
 package xyz.melodysky.ir.pass.protection;
 
-import java.util.List;
 import java.util.ArrayList;
+import java.util.List;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticLocation;
 import xyz.melodysky.diagnostic.DiagnosticStage;
@@ -25,6 +25,7 @@ public final class ProtectionPipeline {
                 new StringEncryptionPass(),
                 new ControlFlowFlatteningPass(),
                 new BasicBlockSplittingPass(),
+                new FakeBranchesPass(),
                 new PrimitiveConstantEncryptionPass(),
                 new BlockNameObfuscationPass()));
     }

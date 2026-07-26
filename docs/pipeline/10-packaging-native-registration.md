@@ -66,7 +66,7 @@ Packaging must record one rewrite strategy per matched method:
 
 ## Fallback Blobs
 
-Schema version 1 uses `fallbackMode: "nativeEmbeddedClassBlob"`.
+Schema version 1 always uses the internal `nativeEmbeddedClassBlob` storage strategy; it is not a Config option.
 
 Rules:
 
@@ -76,11 +76,11 @@ Rules:
 - Define fallback helpers lazily per classloader and reuse them for later calls.
 - If no implemented helper definition mechanism works for the target JDK, fail preflight with a clear diagnostic.
 
-No other schema version 1 fallback modes are defined. Unknown fallback modes are config errors.
+No alternative schema version 1 fallback storage strategy is defined.
 
 ## Loader And Registration
 
-Every build emits exactly one generated Java 17 class with internal name `<embeddedLibraryDirectory>/Loader` and JAR entry `<embeddedLibraryDirectory>/Loader.class`. Native loading is unconditional; `defineHiddenFallback(Class, byte[])` is retained only when the final implementation plan actually contains a `nativeEmbeddedClassBlob`. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are never emitted.
+Every build emits exactly one generated Java 17 class with internal name `<embeddedLibraryDirectory>/Loader` and JAR entry `<embeddedLibraryDirectory>/Loader.class`. Native loading is unconditional; `defineHiddenFallback(Class, byte[])` is retained only when the final implementation plan actually contains a `nativeEmbeddedClassBlob`. When internalized reference/array fields exist, that same Loader is conditionally made a `ClassValue` and owns the private `Class -> Object[]` sidecar access path; this does not add a companion or nested class. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are never emitted.
 
 The Loader responsibilities are:
 
@@ -89,6 +89,7 @@ The Loader responsibilities are:
 - verify SHA-256 before `System.load`.
 - call exported bootstrap/JNI wrapper to register owner-class native methods.
 - define fallback helper classes when a `halfLowered` method needs JVM helper fallback and the conditional `defineHiddenFallback` method is present.
+- when required by the final field plan, cache one reference-field `Object[]` sidecar per defining `Class` through JVM `ClassValue`.
 
 Namespace and collision rules:
 
@@ -117,6 +118,7 @@ Current implemented slice:
 - Covered ordinary class methods can use `nativeOriginal` for executable implementations on every selected build target. Each registered method records `nativeImplementationPath` as `LLVM_NATIVE_PATH` or `TEMPLATE_JNI_PATH` in lowering reports.
 - `LLVM_NATIVE_PATH` currently covers ordinary static and instance methods whose SSA IR contains supported constants, arithmetic, return, compare/branch/phi, table/lookup switch terminators, JVM numeric helper opcodes, supported field helper calls, monitor/synchronized helper calls, explicit throw bridge calls, static reflection helper calls including constant-parameter method/constructor descriptors, supported Unsafe token/int field helpers, volatile fence markers, div/rem ArithmeticException helper calls, broad primitive/reference array helper calls, selected primitive/reference/object allocation helpers, selected type helpers, selected String helpers, Math int/long scalar helpers, selected same-class static/private-special direct calls, and tokenized virtual/interface JVM dispatch helpers for no-arg int, int-arg int, reference return and single-reference-argument/reference-return shapes. JNI wrapper C only bridges `JNIEnv*` / `jclass` / `jobject` / `jarray` / primitive ABI and calls the LLVM-generated hidden function; `JNIEnv*` is only passed to hidden LLVM functions whose lowered body actually needs JNI/runtime state.
 - Field helper-backed LLVM methods use deterministic field tokens plus JNI `GetFieldID` / `Get<Type>Field` / `Set<Type>Field` / static equivalents. They include `int`/`long`/reference field pass-through, own null receiver exception behavior, and do not read or write Java object memory directly.
+- Approved internalized static primitive fields use per-defining-`jclass` weak-keyed atomic raw-bit storage with descriptor-correct semantics. Approved reference/array fields use the Loader's JVM-managed `ClassValue<Object[]>`; JNI accesses the array with GC barriers, and each native function activation lazily caches one local sidecar ref in native stack temporary storage and releases it on exit. No native strong global ref caches a defining class, sidecar or stored value.
 - Unsafe helper-backed LLVM methods use deterministic reflection metadata tokens plus JNI field APIs for `getInt` / `putInt`; `compareAndSwapInt` is a conservative monitor-backed smoke path and `allocateInstance` uses JNI `AllocObject`. These helpers are packaged in the native library as JVM-hosted runtime support, not as native object layout access.
 - `TEMPLATE_JNI_PATH` remains the covered path for String content operations beyond the current String helper subset, primitive `int[]` copy templates not emitted through LLVM helpers, exception bridge templates, nativeEmbeddedClassBlob fallback invocation/body bridge, generic straight-line/simple-branch constructor/class-initializer body helpers outside ordinary `nativeOriginal`, and object/reference-heavy semantics outside the current LLVM helper subset.
 - The owner class receives a generated or prepended `<clinit>` trigger that calls `<embeddedLibraryDirectory>/Loader.ensureLoaded()` before the first native method call. Existing `<clinit>` bytecode remains after the loader trigger.
@@ -156,6 +158,7 @@ Packaging validator checks:
 - every selected target library exists in workspace and output JAR.
 - exactly one `<embeddedLibraryDirectory>/Loader.class` exists, its `this_class` is `<embeddedLibraryDirectory>/Loader`, and its classfile version is Java 17.
 - Loader native-loading methods are always present; `defineHiddenFallback` is present if and only if the implementation plan uses `nativeEmbeddedClassBlob`.
+- Loader directly extends `ClassValue` and contains the private sidecar accessor if and only if the final plan has internalized reference/array slots; even then no `Loader$*.class` entry is emitted.
 - no retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or `j2ll/generated/**/NativeLoader.class` entry exists.
 - input base and multi-release Loader collisions are rejected before Zig with the stable collision diagnostics.
 - no plain fallback class entries are emitted for `nativeEmbeddedClassBlob`.

@@ -60,6 +60,31 @@ class ReportIndexWriterTest {
         assertTrue(entries.get(2).getAsJsonObject().get("reportVersion").isJsonNull());
     }
 
+    @Test
+    void fieldInternalizationReportIsRequiredForReadinessBetaRcAndFailureEvidence() throws Exception {
+        Path reports = temp.resolve("reports");
+        Files.createDirectories(reports);
+        Files.writeString(reports.resolve("field-internalization-report.json"), """
+                {
+                  "schemaVersion": 1,
+                  "reportVersion": 1,
+                  "enabled": false,
+                  "decisions": []
+                }
+                """);
+
+        var root = JsonParser.parseString(new ReportIndexWriter().json(temp)).getAsJsonObject();
+        var entry = root.getAsJsonArray("reports").get(0).getAsJsonObject();
+
+        assertEquals(
+                "reports/field-internalization-report.json",
+                entry.get("path").getAsString());
+        assertTrue(entry.get("requiredForReadiness").getAsBoolean());
+        assertTrue(entry.get("requiredForBeta").getAsBoolean());
+        assertTrue(entry.get("requiredForRc").getAsBoolean());
+        assertTrue(entry.get("producedOnFailure").getAsBoolean());
+    }
+
     private String sha256(Path path) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(Files.readAllBytes(path)));

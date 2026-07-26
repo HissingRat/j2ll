@@ -16,6 +16,8 @@ The output is **not** a standalone native executable or a replacement Java runti
 
 The current beta performs structural native builds for all six fixed targets through managed Zig `0.15.2`: Windows GNU x86_64/AArch64, Linux GNU x86_64/AArch64 with a glibc 2.17 baseline, and macOS x86_64/AArch64 with minimum versions 10.15/11.0. Runtime child-JVM parity is currently exercised on the host target; non-host runtime E2E remains separate release evidence. JVM semantics that are not safely lowered use explicit helper-backed or bytecode-preserving fallback paths. Protection improves resistance to inspection, but it is not irreversible: runtime code must retain enough information to execute the protected program.
 
+All schema v1 IR/LLVM protection booleans now dispatch real, bounded implementations rather than placeholder warnings. This includes program-level method inlining/splitting and IR call indirection, LLVM opaque-predicate/block/global-layout transforms, and native-registration method-table hiding. `fieldInternalization` is also implemented for a strict `private static` `boolean/byte/short/char/int/long/float/double` plus reference/array subset, but defaults to `false` because approved fields are removed from Java reflection. It normally requires `CLOSED_WORLD`; during a real build, another configured world prompts for explicit Y/N approval to analyze only references inside the current input JAR. That per-run approval does not change `worldModel`, does not scan configured classpath entries, and records the accepted external-observer boundary in the field report. Primitive values use descriptor-aware atomic raw-bit storage; JVM references and arrays remain on the JVM heap in a per-defining-Class `ClassValue<Object[]>` sidecar. `ClassValue` caches the sidecar across calls; each native function activation obtains its JNI local reference lazily on the first executed access, reuses it, and releases it on exit without a native strong global reference. All eight work items have passing real-Zig Windows-host child-JVM evidence and six-target feature-specific build-graph/content/privacy/export evidence. These are still conservative subsets: inapplicable shapes are reported as skipped, optimized machine-code retention is not guaranteed for optimizer-sensitive transforms, and cross-linking does not imply non-host JVM runtime validation.
+
 ### Requirements
 
 - JDK 25 to build and run the current j2ll CLI.
@@ -66,7 +68,7 @@ java -jar build/cli/j2ll.jar --debug --config <config.json>
 - `--dry-run` validates config and selectors and performs target preflight. It creates a report workspace, but never invokes Zig, builds native libraries, or writes a final JAR.
 - With neither `--validate` nor `--dry-run`, j2ll runs the full build pipeline.
 - `--debug` enables all intermediate outputs (`enabled`, debug dumps, per-class IR, LLVM, and C) for that run. It is diagnostic artifact retention, not a native debug-symbol build.
-- Full builds show stage progress on stderr. Interactive terminals use optimized legacy regions: `Read bytecode` / `Lower to IR` / `Emit LLVM IR`, then an aggregate `Build native` bar plus one `building/linking` or `done` row per target and a `Stage` row, then `Finalize JAR`. Native aggregate progress advances only when a non-empty target library is installed; no compiler percentage is invented. Normal-width terminals keep 28-character bars; narrow terminals shorten the bar before truncating useful status. Redirected output and CI receive one control-sequence-free `[current/total]` line per high-level stage without per-target log spam. Zig still receives the selected targets in one invocation and schedules its independent build graph internally.
+- Full builds show stage progress on stderr. Interactive terminals use optimized legacy regions: `Read bytecode` / `Lower to IR` / `Emit LLVM IR`, then an aggregate `Build native` bar plus one row per selected target, then `Finalize JAR`. Each target percentage is the number of completed Zig build-graph work units divided by that target's total units; large source sets are grouped deterministically into at most 64 observable compile units per target. `building` and `linking` follow real graph boundaries; during `linking`, the bar may remain at the final compilation percentage until the link finishes. A target reaches `100%` / `completed` only after its non-empty DLL/SO/dylib has been installed, and all target rows collapse immediately when the matrix completes. Normal-width terminals keep 28-character bars; narrow terminals shorten the bar before truncating useful status. Redirected output and CI receive one control-sequence-free `[current/total]` line per high-level stage without per-target log spam. Zig still receives the selected targets in one matrix-wide invocation and schedules its independent graph internally; the displayed percentages describe observable graph units, not Zig/Clang/LLVM compiler-internal progress. The `logs/zig-progress/` marker directory exists only while that invocation is running and is deleted after success, failure, or interruption.
 
 Start with [`docs/examples/minimal-config.json`](docs/examples/minimal-config.json). Schema v1 is defined by [`docs/config.schema.json`](docs/config.schema.json); do not infer the full schema from a shortened README sample. Additional checked examples cover all-on protection, signing policies, a target matrix, and debug dumps under [`docs/examples/`](docs/examples/).
 
@@ -126,6 +128,7 @@ Start diagnosis with:
 - `reports/index.json`: paths, hashes, readiness flags, and status for generated reports.
 - `reports/diagnostics.json`: stable diagnostics and remediation hints.
 - `reports/lowering-report.json`: per-method lowering decisions.
+- `reports/field-internalization-report.json`: hash-only field keep/internalize decisions, final paths, hybrid storage/cache/lifecycle policy, and field-removal evidence.
 - `reports/packaging-report.json`: JAR preservation, signatures, Zig bootstrap, and target artifacts.
 - `reports/artifact-audit.json`: final artifact, native-resource, symbol, metadata, fallback-blob, and sensitive-plaintext checks.
 - `reports/release-readiness.json`: readiness checks and missing evidence.
@@ -163,6 +166,8 @@ j2ll 是一个 **JVM-hosted JAR 混淆与 native lowering 工具**。它会改�
 ```
 
 当前 beta 已通过 managed Zig `0.15.2` 接实六个固定目标的结构性真实构建：Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64，以及最低版本分别为 10.15/11.0 的 macOS x86_64/AArch64。Child JVM runtime parity 当前仍在 host target 上执行；非 host runtime E2E 是独立的待补发布证据。暂时不能安全 native lowering 的 JVM 语义会进入明确的 helper 或 bytecode-preserving fallback。Protection 能提高分析成本，但不是不可逆保证，因为程序运行时仍必须保留执行所需的信息。
+
+Schema v1 的 IR/LLVM protection boolean 现在都调度真实但受限的实现，不再只是 placeholder warning：包括 program-level method inline/split、IR call indirection、LLVM opaque predicate/block/global layout，以及 native registration method-table hiding。`fieldInternalization` 也已实现严格的 `private static boolean/byte/short/char/int/long/float/double` 与 reference/array 子集，但默认 `false`，因为获准字段会从 Java reflection surface 删除。它通常要求 `CLOSED_WORLD`；实际 build 遇到其他 world 时会用 Y/N 明确询问是否只分析当前输入 JAR 内的引用。本次授权不会改写 `worldModel`、不会扫描配置的 `classPath`，并会把用户接受的 external-observer 边界写入 field report。primitive 使用 descriptor-aware atomic raw-bit storage；JVM reference/array 始终留在 JVM heap，由 per-defining-Class `ClassValue<Object[]>` sidecar 持有。`ClassValue` 跨调用缓存 sidecar；每个 native function activation 在首次实际访问时惰性获取 JNI local ref，复用后在退出时释放，不建立 native strong global ref。8 项均已有通过的 real-Zig Windows host child-JVM，以及六目标 feature-specific build-graph/content/privacy/export 证据；不适用 shape 仍会保守记录为 pass skipped，optimizer-sensitive transform 不保证最终 machine code 稳定保留，cross-link 成功也不代表非 host JVM runtime 已验证。
 
 ### 环境要求
 
@@ -212,7 +217,7 @@ java -jar build/cli/j2ll.jar --debug --config <config.json>
 - `--dry-run` 校验 config/selector 并执行 target preflight；它会创建报告 workspace，但不会调用 Zig、构建 native library 或写 final JAR。
 - 未传 `--validate` 或 `--dry-run` 时，默认运行完整 build pipeline。
 - `--debug` 为本次运行开启全部 intermediates（总开关、debug dumps、per-class IR、LLVM 和 C）。它用于保留诊断产物，不代表 native library 带调试符号。
-- 完整 build 会在 stderr 显示阶段进度：交互终端采用优化后的 legacy 分阶段区域，依次显示 `Read bytecode` / `Lower to IR` / `Emit LLVM IR`、一个 `Build native` 总进度条加每个 target 独立的 `building/linking` 或 `done` 行及 `Stage` 行，最后显示 `Finalize JAR`。只有检测到对应 target 的非空动态库已经落盘时，总进度才会推进，不伪造编译百分比。正常宽度保留 28 字符进度条，窄终端先缩短进度条再截断状态。重定向输出和 CI 每个高层阶段只输出一行无控制字符的 `[current/total]` 纯文本，不刷逐 target 日志。Zig 仍通过一次 invocation 接收全部 target，并在内部调度独立构建节点。
+- 完整 build 会在 stderr 显示阶段进度：交互终端采用优化后的 legacy 分阶段区域，依次显示 `Read bytecode` / `Lower to IR` / `Emit LLVM IR`、一个 `Build native` 总进度条和每个 target 独立的进度行，最后显示 `Finalize JAR`。每个 target 的百分比等于其已完成的 Zig 构建图工作单元数除以总工作单元数；大输入会被确定性分组为每 target 最多 64 个可观测编译单元。`building` 与 `linking` 来自真实图边界，进入 `linking` 后可能停在最终编译百分比，直到链接完成。只有非空 DLL/SO/dylib 安装完成后才显示 `100%` / `completed`，全部 target 完成时这些行立即折叠。正常宽度保留 28 字符进度条，窄终端先缩短进度条再截断状态。重定向输出和 CI 每个高层阶段只输出一行无控制字符的 `[current/total]` 纯文本，不刷逐 target 日志。Zig 仍通过一次 matrix-wide invocation 接收全部 target 并在内部调度独立构建节点；这里的百分比仅表示可观测构建图工作单元完成率，不代表 Zig/Clang/LLVM 编译器内部百分比。`logs/zig-progress/` marker 目录只在本次 invocation 运行期间存在，成功、失败或中断后都会删除。
 
 请从 [`docs/examples/minimal-config.json`](docs/examples/minimal-config.json) 开始。Schema v1 的权威定义是 [`docs/config.schema.json`](docs/config.schema.json)，不要把 README 中的缩略示例当成完整 schema。[`docs/examples/`](docs/examples/) 还包含全开 protection、签名策略、target matrix 和 debug dump 配置。
 
@@ -272,6 +277,7 @@ Native library 直接位于 `<workspace>/native/<library-file-name>`，并以 `<
 - `reports/index.json`：报告路径、hash、readiness flags 和状态。
 - `reports/diagnostics.json`：稳定 diagnostic 与修复 hint。
 - `reports/lowering-report.json`：逐方法 lowering 决策。
+- `reports/field-internalization-report.json`：hash-only field 保留/内置决策、final path、hybrid storage/cache/lifecycle policy 和字段删除证据。
 - `reports/packaging-report.json`：JAR 保留策略、签名、Zig bootstrap 和 target artifact。
 - `reports/artifact-audit.json`：final artifact、native resource、symbol、metadata、fallback blob 与 sensitive plaintext 审计。
 - `reports/release-readiness.json`：readiness 检查与缺失证据。

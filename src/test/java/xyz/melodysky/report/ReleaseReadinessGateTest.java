@@ -50,6 +50,20 @@ class ReleaseReadinessGateTest {
     }
 
     @Test
+    void fieldInternalizationReportIsRequiredReadinessEvidence() throws Exception {
+        writeCompleteReports(temp);
+        Files.delete(temp.resolve("reports/field-internalization-report.json"));
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"name\": \"report:field-internalization-report.json\""), json);
+        assertTrue(json.contains("\"reasonCode\": \"REPORT_MISSING\""), json);
+        assertTrue(json.contains("\"reportPath\": \"reports/field-internalization-report.json\""), json);
+    }
+
+    @Test
     void strictSuiteModeRequiresReleaseSuiteSummary() throws Exception {
         writeCompleteReports(temp);
 
@@ -327,6 +341,14 @@ class ReleaseReadinessGateTest {
                   ]
                 }
                 """);
+        Files.writeString(reports.resolve("field-internalization-report.json"), """
+                {
+                  "schemaVersion": 1,
+                  "reportVersion": 1,
+                  "enabled": false,
+                  "decisions": []
+                }
+                """);
         Files.writeString(reports.resolve("frontend-skip-report.json"), "{\"skipped\":[]}\n");
         Files.writeString(reports.resolve("known-blockers.json"), """
                 {"blockers":[{"id":"raw","reasonCode":"UNSAFE_RAW_MEMORY_FALLBACK","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"fallback","reportLocation":"reports/lowering-report.json","suggestedFuturePath":"helper"}]}
@@ -384,6 +406,7 @@ class ReleaseReadinessGateTest {
                       "reports": [
                         "diagnostics.json",
                         "artifact-audit.json",
+                        "field-internalization-report.json",
                         "frontend-skip-report.json",
                         "known-blockers.json",
                         "lowering-report.json",
@@ -440,6 +463,7 @@ class ReleaseReadinessGateTest {
                       "reports": [
                         "diagnostics.json",
                         "artifact-audit.json",
+                        "field-internalization-report.json",
                         "frontend-skip-report.json",
                         "known-blockers.json",
                         "lowering-report.json",
@@ -496,6 +520,7 @@ class ReleaseReadinessGateTest {
                       "reports": [
                         "diagnostics.json",
                         "artifact-audit.json",
+                        "field-internalization-report.json",
                         "frontend-skip-report.json",
                         "known-blockers.json",
                         "lowering-report.json",

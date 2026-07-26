@@ -350,7 +350,6 @@ $config = @{
     blackList = @()
     whiteList = $null
     target = Get-HostTargetConfig
-    libraryName = $null
     embeddedLibraryDirectory = "native0"
     stringObfuscation = @{
         enabled = $true

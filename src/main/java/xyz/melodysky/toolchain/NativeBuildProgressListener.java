@@ -9,6 +9,15 @@ public interface NativeBuildProgressListener {
     default void buildStarted(List<TargetTriple> targets) {
     }
 
+    default void targetProgress(
+            NativeTargetProgress progress,
+            int completedTargets,
+            int totalTargets) {
+        if (progress.state() == NativeTargetBuildState.COMPLETED) {
+            targetCompleted(progress.target(), completedTargets, totalTargets);
+        }
+    }
+
     static NativeBuildProgressListener none() {
         return NoopNativeBuildProgressListener.INSTANCE;
     }

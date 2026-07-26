@@ -13,7 +13,6 @@ public record LlvmModule(String identifier, List<LlvmDeclaration> declarations, 
                 .toList();
         globals = globals.stream()
                 .filter(Objects::nonNull)
-                .sorted(Comparator.comparing(LlvmGlobal::name))
                 .toList();
         functions = functions.stream()
                 .filter(Objects::nonNull)

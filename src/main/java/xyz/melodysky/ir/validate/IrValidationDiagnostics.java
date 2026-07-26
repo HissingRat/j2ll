@@ -11,6 +11,8 @@ public final class IrValidationDiagnostics {
     public static final DiagnosticCode IR_EXCEPTION_EDGE_MISMATCH = DiagnosticCode.of("IR_EXCEPTION_EDGE_MISMATCH");
     public static final DiagnosticCode IR_MONITOR_TYPE_MISMATCH = DiagnosticCode.of("IR_MONITOR_TYPE_MISMATCH");
     public static final DiagnosticCode IR_CLASS_INIT_TYPE_MISMATCH = DiagnosticCode.of("IR_CLASS_INIT_TYPE_MISMATCH");
+    public static final DiagnosticCode IR_CALL_INDIRECTION_MISMATCH =
+            DiagnosticCode.of("IR_CALL_INDIRECTION_MISMATCH");
 
     private IrValidationDiagnostics() {
     }

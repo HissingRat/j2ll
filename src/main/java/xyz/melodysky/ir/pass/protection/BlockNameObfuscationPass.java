@@ -84,7 +84,8 @@ public final class BlockNameObfuscationPass implements ProtectionPass {
                 instruction.floatLiteral(),
                 instruction.doubleLiteral(),
                 instruction.symbol(),
-                exceptionSites);
+                exceptionSites,
+                instruction.callIndirection());
     }
 
     private List<IrExceptionEdge> renameExceptionEdges(

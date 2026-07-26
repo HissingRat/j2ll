@@ -24,6 +24,7 @@ public final class J2llMetadataEntries {
     private static final List<String> REPORT_NAMES = List.of(
             "diagnostics.json",
             "artifact-audit.json",
+            "field-internalization-report.json",
             "frontend-skip-report.json",
             "known-blockers.json",
             "lowering-report.json",
@@ -113,8 +114,6 @@ public final class J2llMetadataEntries {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", config.schemaVersion());
         root.addProperty("worldModel", config.worldModel().name());
-        root.addProperty("javaSupportTier", config.javaSupportTier().name());
-        root.addProperty("fallbackMode", config.fallbackMode().wireName());
         root.add("whiteList", sortedStrings(config.whiteList().stream()
                 .map(selector -> selector.raw())
                 .toList()));
@@ -124,7 +123,6 @@ public final class J2llMetadataEntries {
         root.add("targets", sortedStrings(config.targets().stream()
                 .map(target -> target.directoryName())
                 .toList()));
-        root.addProperty("libraryName", config.libraryName());
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
         root.addProperty("protectionEnabled", config.protection().enabled());

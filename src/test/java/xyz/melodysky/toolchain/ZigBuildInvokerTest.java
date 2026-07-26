@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
@@ -90,6 +91,73 @@ class ZigBuildInvokerTest {
                 "started:linux-x64,windows-x64",
                 "windows-x64:1/2",
                 "linux-x64:2/2"), events);
+        assertProgressMarkersDeleted(workspace);
+    }
+
+    @Test
+    void reportsCompileUnitsAndLinkBoundaryWhileOneMatrixInvocationRuns() throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildUnit linux = unit(TargetTriple.LINUX_X64);
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(linux));
+        ZigSourceSet sources = new ZigSourceSet(
+                List.of(workspace.llvmDirectory().resolve("owner.ll")),
+                List.of(
+                        workspace.jniDirectory().resolve("wrapper.c"),
+                        workspace.runtimeDirectory().resolve("runtime.c")),
+                List.of(),
+                List.of());
+        ZigBuildProgressPlan.TargetPlan targetPlan =
+                ZigBuildProgressPlan.forSources(plan, sources).targets().get(0);
+        CountDownLatch firstCompileObserved = new CountDownLatch(1);
+        CountDownLatch linkingObserved = new CountDownLatch(1);
+        CopyOnWriteArrayList<String> events = new CopyOnWriteArrayList<>();
+        ZigCommandRunner runner = (command, workingDirectory, environment) -> {
+            writeCompileMarker(workspace, targetPlan, 0);
+            awaitProgress(firstCompileObserved, "first compile unit");
+            writeCompileMarker(workspace, targetPlan, 1);
+            writeCompileMarker(workspace, targetPlan, 2);
+            writeLinkingMarker(workspace, targetPlan);
+            awaitProgress(linkingObserved, "linking boundary");
+            writeCompletion(workspace, linux);
+            return new ZigCommandResult(0, "", "");
+        };
+
+        new ZigBuildInvoker(runner).invoke(
+                managedZig(),
+                workspace,
+                plan,
+                sources,
+                new NativeBuildProgressListener() {
+                    @Override
+                    public void targetCompleted(
+                            TargetTriple target,
+                            int completedTargets,
+                            int totalTargets) {
+                    }
+
+                    @Override
+                    public void targetProgress(
+                            NativeTargetProgress progress,
+                            int completedTargets,
+                            int totalTargets) {
+                        events.add(progress.state() + ":"
+                                + progress.completedUnits() + "/" + progress.totalUnits());
+                        if (progress.state() == NativeTargetBuildState.BUILDING
+                                && progress.completedUnits() == 1) {
+                            firstCompileObserved.countDown();
+                        }
+                        if (progress.state() == NativeTargetBuildState.LINKING) {
+                            linkingObserved.countDown();
+                        }
+                    }
+                });
+
+        assertEquals(List.of(
+                "BUILDING:0/4",
+                "BUILDING:1/4",
+                "LINKING:3/4",
+                "COMPLETED:4/4"), events);
+        assertProgressMarkersDeleted(workspace);
     }
 
     @Test
@@ -117,6 +185,7 @@ class ZigBuildInvokerTest {
 
         assertTrue(markerWasCleared.get());
         assertEquals(List.of(), completed);
+        assertProgressMarkersDeleted(workspace);
     }
 
     @Test
@@ -143,6 +212,47 @@ class ZigBuildInvokerTest {
         assertEquals(List.of(TargetTriple.LINUX_X64), completed);
         assertTrue(Files.readString(workspace.logsDirectory().resolve("zig-build.log"))
                 .contains("synthetic link failure"));
+        assertProgressMarkersDeleted(workspace);
+    }
+
+    @Test
+    void runnerFailureStillDeletesTransientProgressMarkers() throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildUnit linux = unit(TargetTriple.LINUX_X64);
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(linux));
+        ZigCommandRunner runner = (command, workingDirectory, environment) -> {
+            Path marker = ZigTargetCompletionMonitor.markerPath(workspace, linux.target());
+            Files.createDirectories(marker.getParent());
+            Files.writeString(marker, ZigTargetCompletionMonitor.markerContent(linux.target()));
+            throw new IOException("synthetic runner failure");
+        };
+
+        IOException failure = assertThrows(
+                IOException.class,
+                () -> new ZigBuildInvoker(runner).invoke(
+                        managedZig(),
+                        workspace,
+                        plan,
+                        NativeBuildProgressListener.none()));
+
+        assertTrue(failure.getMessage().contains("synthetic runner failure"));
+        assertProgressMarkersDeleted(workspace);
+    }
+
+    @Test
+    void invocationWithoutProgressListenerAlsoDeletesBuildGraphMarkers() throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        ZigCommandRunner runner = (command, workingDirectory, environment) -> {
+            Path progressDirectory = ZigTargetCompletionMonitor.progressDirectory(workspace);
+            Files.createDirectories(progressDirectory);
+            Files.writeString(progressDirectory.resolve("synthetic.done"), "temporary");
+            return new ZigCommandResult(0, "", "");
+        };
+
+        new ZigBuildInvoker(runner).invoke(managedZig(), workspace);
+
+        assertProgressMarkersDeleted(workspace);
+        assertTrue(Files.isRegularFile(workspace.logsDirectory().resolve("zig-build.log")));
     }
 
     @Test
@@ -183,6 +293,7 @@ class ZigBuildInvokerTest {
         assertTrue(runnerInterrupted.await(2, TimeUnit.SECONDS));
         assertTrue(failure.get() instanceof IOException);
         assertTrue(failure.get().getMessage().contains("interrupted"));
+        assertProgressMarkersDeleted(workspace);
     }
 
     private ManagedZig managedZig() {
@@ -208,5 +319,51 @@ class ZigBuildInvokerTest {
         Path marker = ZigTargetCompletionMonitor.markerPath(workspace, unit.target());
         Files.createDirectories(marker.getParent());
         Files.writeString(marker, ZigTargetCompletionMonitor.markerContent(unit.target()));
+    }
+
+    private void writeCompileMarker(
+            ZigBuildWorkspace workspace,
+            ZigBuildProgressPlan.TargetPlan targetPlan,
+            int index) throws IOException {
+        ZigBuildProgressPlan.CompileUnit unit = targetPlan.compileUnits().get(index);
+        Path marker = ZigTargetCompletionMonitor.compileMarkerPath(
+                workspace,
+                targetPlan.target(),
+                unit);
+        Files.createDirectories(marker.getParent());
+        Files.writeString(
+                marker,
+                ZigTargetCompletionMonitor.compileMarkerContent(targetPlan.target(), unit));
+    }
+
+    private void writeLinkingMarker(
+            ZigBuildWorkspace workspace,
+            ZigBuildProgressPlan.TargetPlan targetPlan) throws IOException {
+        Path marker = ZigTargetCompletionMonitor.linkingMarkerPath(
+                workspace,
+                targetPlan.target());
+        Files.createDirectories(marker.getParent());
+        Files.writeString(
+                marker,
+                ZigTargetCompletionMonitor.linkingMarkerContent(
+                        targetPlan.target(),
+                        targetPlan.compileUnits().size()));
+    }
+
+    private void awaitProgress(CountDownLatch latch, String description) throws IOException {
+        try {
+            if (!latch.await(2, TimeUnit.SECONDS)) {
+                throw new IOException(description + " was not observed while Zig was still running");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("synthetic Zig runner interrupted", exception);
+        }
+    }
+
+    private void assertProgressMarkersDeleted(ZigBuildWorkspace workspace) {
+        assertTrue(Files.notExists(
+                ZigTargetCompletionMonitor.progressDirectory(workspace),
+                LinkOption.NOFOLLOW_LINKS));
     }
 }

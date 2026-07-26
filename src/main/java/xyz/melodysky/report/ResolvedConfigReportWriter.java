@@ -29,8 +29,6 @@ public final class ResolvedConfigReportWriter {
         root.addProperty("javaHome", config.javaHome() == null ? null : config.javaHome().toString());
         root.addProperty("runtimeImage", config.runtimeImage() == null ? null : config.runtimeImage().toString());
         root.addProperty("worldModel", config.worldModel().name());
-        root.addProperty("javaSupportTier", config.javaSupportTier().name());
-        root.addProperty("fallbackMode", config.fallbackMode().wireName());
         root.addProperty("outputDirectory", config.outputDirectory().toString());
         root.add("whiteList", selectors(config.whiteList()));
         root.add("blackList", selectors(config.blackList()));
@@ -39,7 +37,6 @@ public final class ResolvedConfigReportWriter {
             targets.add(target.directoryName());
         }
         root.add("targets", targets);
-        root.addProperty("libraryName", config.libraryName());
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
         root.addProperty("protectionSeedHash", sha256(config.protection().seed()));

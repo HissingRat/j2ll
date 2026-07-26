@@ -10,13 +10,23 @@ import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.List;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.analysis.field.FieldId;
+import xyz.melodysky.analysis.field.NativeFieldStorageKind;
+import xyz.melodysky.ir.model.NativeFieldSlotRef;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class FallbackBlobPlannerTest {
+    private static String fallbackFieldSentinel = "java-field";
+
     @Test
     void plansNativeEmbeddedFallbackBlobManifestAndClassloaderReusePolicy() {
         NativeEmbeddedFallbackBlob blob = new FallbackBlobPlanner().plan(List.of(new FallbackBlobInput(
@@ -191,6 +201,112 @@ class FallbackBlobPlannerTest {
     }
 
     @Test
+    void copiedFallbackBodyPreservesProtectedNestedArrayExceptionFlow() throws Exception {
+        String owner = "xyz/melodysky/packaging/FallbackBlobPlannerTest";
+        ParsedMethod parsedMethod = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        owner + ".class",
+                        AsmFixtureBuilder.classWithProtectedReferenceArrayAllocation(owner, "[B"),
+                        "fixture"))
+                .artifact()
+                .orElseThrow()
+                .methods()
+                .stream()
+                .filter(method -> method.name().equals("array"))
+                .findFirst()
+                .orElseThrow();
+
+        FallbackHelperClass helperClass = new FallbackHelperClassFactory().create("matrix__1234", parsedMethod);
+        Class<?> hidden = defineHiddenFallback(FallbackBlobPlannerTest.class, helperClass.bytes());
+        Method method = hidden.getDeclaredMethod(FallbackHelperClassFactory.HELPER_METHOD_NAME, int.class);
+
+        assertEquals(3, method.invoke(null, 3));
+        assertEquals(-1, method.invoke(null, -1));
+    }
+
+    @Test
+    void copiedFallbackRoutesReferenceFieldThroughPassedSidecarWithoutLocalCollision()
+            throws Exception {
+        String owner = "xyz/melodysky/packaging/FallbackBlobPlannerTest";
+        ParsedMethod parsedMethod = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        owner + ".class",
+                        fallbackReferenceFieldFixture(owner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow()
+                .methods()
+                .stream()
+                .filter(method -> method.name().equals("swap"))
+                .findFirst()
+                .orElseThrow();
+        FallbackSidecarFieldAccess access = new FallbackSidecarFieldAccess(
+                new FieldId(
+                        owner,
+                        "fallbackFieldSentinel",
+                        "Ljava/lang/String;"),
+                new NativeFieldSlotRef(
+                        NativeFieldStorageKind.REFERENCE,
+                        "j2ll_nfs_test",
+                        0),
+                1,
+                1);
+
+        FallbackHelperClass helperClass =
+                new FallbackHelperClassFactory().create(
+                        "sidecar__1234",
+                        parsedMethod,
+                        List.of(access));
+        ClassNode helperNode = new ClassNode();
+        new ClassReader(helperClass.bytes()).accept(helperNode, 0);
+        assertFalse(hasFieldAccess(
+                helperNode,
+                owner,
+                "fallbackFieldSentinel",
+                "Ljava/lang/String;"));
+        assertEquals(1, countOpcode(helperNode, Opcodes.AALOAD));
+        assertEquals(1, countOpcode(helperNode, Opcodes.AASTORE));
+        assertEquals(
+                "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
+                helperNode.methods.stream()
+                        .filter(candidate -> candidate.name.equals(
+                                FallbackHelperClassFactory.HELPER_METHOD_NAME))
+                        .findFirst()
+                        .orElseThrow()
+                        .desc);
+
+        NativeEmbeddedFallbackBlob plannedBlob = new FallbackBlobPlanner()
+                .plan(List.of(new FallbackBlobInput(
+                        "sidecar__1234",
+                        parsedMethod.methodKey(),
+                        parsedMethod.owner(),
+                        parsedMethod.name(),
+                        parsedMethod.descriptor(),
+                        parsedMethod.accessFlags().isStatic(),
+                        parsedMethod.methodNode(),
+                        "UNSUPPORTED_NESTED_FINALLY",
+                        List.of(access))))
+                .get(0);
+        assertEquals(
+                "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;",
+                plannedBlob.fallbackInvokeDescriptor());
+
+        Class<?> hidden = defineHiddenFallback(
+                FallbackBlobPlannerTest.class,
+                helperClass.bytes());
+        Method method = hidden.getDeclaredMethod(
+                FallbackHelperClassFactory.HELPER_METHOD_NAME,
+                String.class,
+                Object[].class);
+        Object[] sidecar = new Object[] {"sidecar-old"};
+        fallbackFieldSentinel = "java-field";
+
+        assertEquals("sidecar-old", method.invoke(null, "sidecar-new", sidecar));
+        assertEquals("sidecar-new", sidecar[0]);
+        assertEquals("java-field", fallbackFieldSentinel);
+    }
+
+    @Test
     void hiddenClassCapabilityResolverSelectsStableFallbackReasons() {
         FallbackDefinitionCapabilityResolver resolver = new FallbackDefinitionCapabilityResolver();
 
@@ -213,6 +329,84 @@ class FallbackBlobPlannerTest {
             output[index] = (byte) ((input[index] & 0xff) ^ stream);
         }
         return output;
+    }
+
+    private byte[] fallbackReferenceFieldFixture(String owner) {
+        ClassWriter writer = new ClassWriter(
+                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                Opcodes.V17,
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER,
+                owner,
+                null,
+                "java/lang/Object",
+                null);
+        writer.visitField(
+                        Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+                        "fallbackFieldSentinel",
+                        "Ljava/lang/String;",
+                        null,
+                        null)
+                .visitEnd();
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "swap",
+                "(Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null);
+        method.visitCode();
+        method.visitFieldInsn(
+                Opcodes.GETSTATIC,
+                owner,
+                "fallbackFieldSentinel",
+                "Ljava/lang/String;");
+        method.visitVarInsn(Opcodes.ASTORE, 1);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitFieldInsn(
+                Opcodes.PUTSTATIC,
+                owner,
+                "fallbackFieldSentinel",
+                "Ljava/lang/String;");
+        method.visitVarInsn(Opcodes.ALOAD, 1);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private boolean hasFieldAccess(
+            ClassNode helper,
+            String owner,
+            String name,
+            String descriptor) {
+        for (var method : helper.methods) {
+            for (var instruction = method.instructions.getFirst();
+                    instruction != null;
+                    instruction = instruction.getNext()) {
+                if (instruction instanceof FieldInsnNode field
+                        && field.owner.equals(owner)
+                        && field.name.equals(name)
+                        && field.desc.equals(descriptor)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private int countOpcode(ClassNode helper, int opcode) {
+        int count = 0;
+        for (var method : helper.methods) {
+            for (var instruction = method.instructions.getFirst();
+                    instruction != null;
+                    instruction = instruction.getNext()) {
+                if (instruction.getOpcode() == opcode) {
+                    count++;
+                }
+            }
+        }
+        return count;
     }
 
     private Class<?> defineHiddenFallback(Class<?> owner, byte[] classBytes) throws IllegalAccessException {

@@ -4,8 +4,11 @@ import java.nio.file.Path;
 import java.util.List;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativeTargetProgress;
+import xyz.melodysky.progress.NativeTargetState;
 import xyz.melodysky.toolchain.NativeBuildPlan;
 import xyz.melodysky.toolchain.NativeBuildProgressListener;
+import xyz.melodysky.toolchain.NativeLlvmCompilationListener;
 import xyz.melodysky.toolchain.TargetTriple;
 
 final class MainlineProgress {
@@ -93,6 +96,28 @@ final class MainlineProgress {
                 total == 0 ? "no LLVM classes" : "done");
     }
 
+    NativeLlvmCompilationListener llvmCompilationProgress() {
+        return new NativeLlvmCompilationListener() {
+            @Override
+            public void started(int totalOwners) {
+                llvmEmission(totalOwners);
+            }
+
+            @Override
+            public void moduleStarted(
+                    int currentOwner,
+                    int totalOwners,
+                    String owner) {
+                llvmEmissionProgress(currentOwner, totalOwners, owner);
+            }
+
+            @Override
+            public void completed(int totalOwners) {
+                llvmEmissionComplete(totalOwners);
+            }
+        };
+    }
+
     void intermediateWriting(boolean enabled) {
         start(BuildStage.INTERMEDIATE_WRITING, enabled ? "enabled" : "manifest only");
     }
@@ -124,11 +149,31 @@ final class MainlineProgress {
             }
 
             @Override
+            public void targetProgress(
+                    xyz.melodysky.toolchain.NativeTargetProgress progress,
+                    int completedTargets,
+                    int totalTargets) {
+                listener.nativeTargetProgress(new NativeTargetProgress(
+                        progress.target().directoryName(),
+                        switch (progress.state()) {
+                            case BUILDING -> NativeTargetState.BUILDING;
+                            case LINKING -> NativeTargetState.LINKING;
+                            case COMPLETED -> NativeTargetState.COMPLETED;
+                        },
+                        progress.completedUnits(),
+                        progress.totalUnits()));
+            }
+
+            @Override
             public void targetCompleted(
                     TargetTriple target,
                     int completedTargets,
                     int totalTargets) {
-                listener.nativeTargetCompleted(target.directoryName());
+                listener.nativeTargetProgress(new NativeTargetProgress(
+                        target.directoryName(),
+                        NativeTargetState.COMPLETED,
+                        0L,
+                        0L));
             }
         };
     }

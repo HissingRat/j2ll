@@ -12,6 +12,8 @@ import org.fusesource.jansi.AnsiPrintStream;
 import org.fusesource.jansi.AnsiType;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativeTargetProgress;
+import xyz.melodysky.progress.NativeTargetState;
 
 public final class LegacyProgressRenderer implements BuildProgressListener {
     private static final int DEFAULT_TERMINAL_WIDTH = 120;
@@ -34,7 +36,7 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
     private long workTotal;
     private LegacyProgressLayout.Work methodWork = LegacyProgressLayout.Work.unknown();
     private LegacyProgressLayout.Work llvmWork = LegacyProgressLayout.Work.unknown();
-    private final LinkedHashMap<String, Boolean> nativeTargets = new LinkedHashMap<>();
+    private final LinkedHashMap<String, NativeTargetProgress> nativeTargets = new LinkedHashMap<>();
     private long lastRenderAtNanos = Long.MIN_VALUE;
     private boolean renderedWorkForCurrentStage;
     private boolean finished;
@@ -99,10 +101,36 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
             for (String target : targets) {
                 String sanitized = TerminalText.sanitize(target);
                 if (!sanitized.isBlank()) {
-                    nativeTargets.putIfAbsent(sanitized, false);
+                    nativeTargets.putIfAbsent(
+                            sanitized,
+                            NativeTargetProgress.building(sanitized));
                 }
             }
         }
+        if (interactive) {
+            renderInteractive(nanoTime.getAsLong());
+        }
+    }
+
+    @Override
+    public synchronized void nativeTargetProgress(NativeTargetProgress progress) {
+        if (finished || currentStage != BuildStage.NATIVE_BUILD) {
+            return;
+        }
+        if (progress == null) {
+            return;
+        }
+        String sanitized = TerminalText.sanitize(progress.target());
+        if (sanitized.isBlank()
+                || !nativeTargets.containsKey(sanitized)) {
+            return;
+        }
+        NativeTargetProgress current = nativeTargets.get(sanitized);
+        NativeTargetProgress next = progress.withTarget(sanitized);
+        if (!advances(current, next)) {
+            return;
+        }
+        nativeTargets.put(sanitized, next);
         if (interactive) {
             renderInteractive(nanoTime.getAsLong());
         }
@@ -114,15 +142,16 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
             return;
         }
         String sanitized = TerminalText.sanitize(target);
-        if (sanitized.isBlank()
-                || !nativeTargets.containsKey(sanitized)
-                || Boolean.TRUE.equals(nativeTargets.get(sanitized))) {
+        NativeTargetProgress current = nativeTargets.get(sanitized);
+        if (current == null || current.completed()) {
             return;
         }
-        nativeTargets.put(sanitized, true);
-        if (interactive) {
-            renderInteractive(nanoTime.getAsLong());
-        }
+        long total = current.totalUnits();
+        nativeTargetProgress(new NativeTargetProgress(
+                sanitized,
+                NativeTargetState.COMPLETED,
+                total,
+                total));
     }
 
     @Override
@@ -188,11 +217,21 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
                 detail,
                 methodWork,
                 llvmWork,
-                nativeTargets.entrySet().stream()
-                        .map(entry -> new LegacyProgressLayout.NativeTarget(
-                                entry.getKey(),
-                                entry.getValue()))
-                        .toList());
+                List.copyOf(nativeTargets.values()));
+    }
+
+    private boolean advances(
+            NativeTargetProgress current,
+            NativeTargetProgress next) {
+        if (current.completed()
+                || next.state().ordinal() < current.state().ordinal()) {
+            return false;
+        }
+        if (next.state() == current.state()
+                && next.completedUnits() < current.completedUnits()) {
+            return false;
+        }
+        return !next.equals(current);
     }
 
     private String plainStageLine(BuildStage stage, String stageDetail) {

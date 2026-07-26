@@ -63,7 +63,18 @@ public final class AsmClassParser {
         String owner = classNode.name;
         ArrayList<ParsedField> fields = new ArrayList<>();
         for (FieldNode field : classNode.fields) {
-            fields.add(new ParsedField(owner, field.name, field.desc, new AccessFlags(field.access), field.signature));
+            boolean hasAnnotations = hasEntries(field.visibleAnnotations)
+                    || hasEntries(field.invisibleAnnotations)
+                    || hasEntries(field.visibleTypeAnnotations)
+                    || hasEntries(field.invisibleTypeAnnotations);
+            fields.add(new ParsedField(
+                    owner,
+                    field.name,
+                    field.desc,
+                    new AccessFlags(field.access),
+                    field.signature,
+                    field.value,
+                    hasAnnotations));
         }
 
         ArrayList<ParsedMethod> methods = new ArrayList<>();
@@ -109,5 +120,9 @@ public final class AsmClassParser {
                 method.maxLocals,
                 method.maxStack,
                 method);
+    }
+
+    private boolean hasEntries(List<?> entries) {
+        return entries != null && !entries.isEmpty();
     }
 }

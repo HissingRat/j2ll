@@ -20,15 +20,31 @@ class ConfigLoaderTest {
 
         assertFalse(result.hasErrors());
         ResolvedConfig config = result.config().orElseThrow();
-        assertEquals(JavaSupportTier.TIER_5, config.javaSupportTier());
         assertEquals(Path.of("/cfg/input.jar"), config.jarFile());
         assertEquals(TargetTriple.LINUX_X64, config.targets().get(0));
         assertEquals("native0", config.embeddedLibraryDirectory());
         assertEquals(SignaturePolicy.FAIL, config.signaturePolicy());
         assertTrue(config.intermediates().includePerClassLlvm());
-        assertTrue(config.protection().ir().constantEncryption().enabled());
+        assertTrue(config.protection().ir().constantEncryption());
+        assertTrue(config.protection().ir().blockNameObfuscation());
         assertNotNull(config.protection().seed());
         assertEquals(16, config.protection().seed().length());
+    }
+
+    @Test
+    void blockNameObfuscationFlagReachesTheIrProtectionPipeline() {
+        JsonObject json = JsonParser.parseString(
+                        baseJson().replace("\"blockNameObfuscation\": true", "\"blockNameObfuscation\": false"))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        ResolvedConfig config = result.config().orElseThrow();
+        assertFalse(config.protection().ir().blockNameObfuscation());
+        assertFalse(xyz.melodysky.ir.pass.protection.ProtectionConfig
+                .fromResolved(config.protection(), 17)
+                .blockNameObfuscation());
     }
 
     @Test
@@ -55,7 +71,7 @@ class ConfigLoaderTest {
     void warnsForUnknownTopLevelAndNestedFields() {
         JsonObject json = JsonParser.parseString(baseJson()
                         .replace("\"protection\": {", "\"extra\": true, \"protection\": {")
-                        .replace("\"fakeBranches\": {", "\"unknownIrField\": false, \"fakeBranches\": {"))
+                        .replace("\"fakeBranches\": true", "\"unknownIrField\": false, \"fakeBranches\": true"))
                 .getAsJsonObject();
 
         ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
@@ -64,20 +80,6 @@ class ConfigLoaderTest {
         assertEquals(2, result.diagnostics().stream()
                 .filter(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.UNKNOWN_FIELD))
                 .count());
-    }
-
-    @Test
-    void rejectsTier6JavaSupportTier() {
-        JsonObject json = JsonParser.parseString(baseJson().replace("\"javaSupportTier\": \"TIER_5\"", "\"javaSupportTier\": \"TIER_6\""))
-                .getAsJsonObject();
-
-        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
-
-        assertTrue(result.hasErrors());
-        assertTrue(result.config().isEmpty());
-        assertTrue(result.diagnostics().stream()
-                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
-                        && diagnostic.message().contains("unsupported javaSupportTier: TIER_6")));
     }
 
     @Test
@@ -94,6 +96,110 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void rejectsLegacyIrPassObjectShape() {
+        JsonObject json = JsonParser.parseString(baseJson()
+                        .replace(
+                                "\"controlFlowFlattening\": true",
+                                "\"controlFlowFlattening\": { \"enabled\": true }"))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
+                        && diagnostic.message().contains("protection.ir.controlFlowFlattening")));
+    }
+
+    @Test
+    void warnsForRemovedVisibilityHardeningField() {
+        JsonObject json = JsonParser.parseString(baseJson()
+                        .replace(
+                                "\"globalLayout\": true",
+                                "\"globalLayout\": true, \"visibilityHardening\": true"))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.UNKNOWN_FIELD)
+                        && diagnostic.message().contains("protection.llvm.visibilityHardening")));
+    }
+
+    @Test
+    void fieldInternalizationDoesNotRequireClosedWorldWhenRootProtectionIsDisabled() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        JsonObject protection = json.getAsJsonObject("protection");
+        protection.addProperty("enabled", false);
+        protection.getAsJsonObject("ir").addProperty("fieldInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.config().orElseThrow().protection().ir().fieldInternalization());
+    }
+
+    @Test
+    void fieldInternalizationDoesNotRequireClosedWorldWhenIrProtectionIsDisabled() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        JsonObject ir = json.getAsJsonObject("protection").getAsJsonObject("ir");
+        ir.addProperty("enabled", false);
+        ir.addProperty("fieldInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.config().orElseThrow().protection().ir().fieldInternalization());
+    }
+
+    @Test
+    void enabledFieldInternalizationRequiresBuildConfirmationOutsideClosedWorld() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("fieldInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.config().isPresent());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(ConfigDiagnostics.FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD)
+                        && diagnostic.severity() == xyz.melodysky.diagnostic.DiagnosticSeverity.WARNING
+                        && "confirmationRequired".equals(diagnostic.decision())));
+    }
+
+    @Test
+    void enabledFieldInternalizationNeedsNoConfirmationInClosedWorld() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.addProperty("worldModel", "CLOSED_WORLD");
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("fieldInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.code().equals(ConfigDiagnostics.FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD)));
+    }
+
+    @Test
+    void rejectsMissingBlockNameObfuscation() {
+        JsonObject json = JsonParser.parseString(baseJson()
+                        .replace("\"blockNameObfuscation\": true", "\"legacyBlockName\": true"))
+                .getAsJsonObject();
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
+                        && diagnostic.message().contains("protection.ir.blockNameObfuscation")));
+    }
+
+    @Test
     void rejectsJarPathThatIsNotJar() {
         JsonObject json = JsonParser.parseString(baseJson().replace("\"jarFile\": \"input.jar\"", "\"jarFile\": \"input.txt\""))
                 .getAsJsonObject();
@@ -104,20 +210,6 @@ class ConfigLoaderTest {
         assertTrue(result.diagnostics().stream()
                 .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_PATH)
                         && diagnostic.message().contains("jarFile")));
-    }
-
-    @Test
-    void rejectsLibraryNameThatCanEscapeTheNativeWorkspace() {
-        JsonObject json = JsonParser.parseString(baseJson()
-                        .replace("\"libraryName\": null", "\"libraryName\": \"../outside\""))
-                .getAsJsonObject();
-
-        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
-
-        assertTrue(result.hasErrors());
-        assertTrue(result.diagnostics().stream()
-                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
-                        && diagnostic.message().contains("libraryName")));
     }
 
     @Test
@@ -179,17 +271,6 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void rejectsGeneratedClassFallbackMode() {
-        JsonObject json = JsonParser.parseString(baseJson().replace("nativeEmbeddedClassBlob", "generatedClass"))
-                .getAsJsonObject();
-
-        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
-
-        assertTrue(result.hasErrors());
-        assertEquals(ConfigDiagnostics.UNSUPPORTED_FALLBACK_MODE, result.diagnostics().get(0).code());
-    }
-
-    @Test
     void resignRequiresSigningConfig() {
         JsonObject json = JsonParser.parseString(baseJson().replace("\"signaturePolicy\": \"fail\"", "\"signaturePolicy\": \"resign\""))
                 .getAsJsonObject();
@@ -210,8 +291,6 @@ class ConfigLoaderTest {
                   "javaHome": null,
                   "runtimeImage": null,
                   "worldModel": "PARTIAL_WORLD",
-                  "javaSupportTier": "TIER_5",
-                  "fallbackMode": "nativeEmbeddedClassBlob",
                   "outputDirectory": "out",
                   "whiteList": [],
                   "blackList": [],
@@ -223,7 +302,6 @@ class ConfigLoaderTest {
                     "macosX64": false,
                     "macosArm64": false
                   },
-                  "libraryName": null,
                   "embeddedLibraryDirectory": "native0",
                   "signaturePolicy": "fail",
                   "signing": null,
@@ -239,24 +317,25 @@ class ConfigLoaderTest {
                     "seed": null,
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true },
-                      "fakeBranches": { "enabled": true },
-                      "basicBlockSplitting": { "enabled": true },
-                      "constantEncryption": { "enabled": true },
-                      "stringEncryption": { "enabled": true },
-                      "methodInlining": { "enabled": true },
-                      "methodSplitting": { "enabled": true },
-                      "callIndirection": { "enabled": true },
-                      "methodTableHiding": { "enabled": true }
+                      "controlFlowFlattening": true,
+                      "fakeBranches": true,
+                      "basicBlockSplitting": true,
+                      "constantEncryption": true,
+                      "stringEncryption": true,
+                      "methodInlining": true,
+                      "methodSplitting": true,
+                      "callIndirection": true,
+                      "fieldInternalization": false,
+                      "methodTableHiding": true,
+                      "blockNameObfuscation": true
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true },
-                      "opaquePredicates": { "enabled": true },
-                      "blockLayoutPerturbation": { "enabled": true },
-                      "indirectCalls": { "enabled": true },
-                      "globalLayout": { "enabled": true },
-                      "visibilityHardening": { "enabled": true }
+                      "nameObfuscation": true,
+                      "opaquePredicates": true,
+                      "blockLayoutPerturbation": true,
+                      "indirectCalls": true,
+                      "globalLayout": true
                     },
                     "binary": {
                       "enabled": true,

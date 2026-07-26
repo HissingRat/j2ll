@@ -23,6 +23,7 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.config.ConfigLoader;
+import xyz.melodysky.config.ConfigDiagnostics;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.JarClassFileSource;
@@ -42,6 +43,33 @@ import xyz.melodysky.toolchain.ZigBuildException;
 class MainlinePipelineIntegrationTest implements Opcodes {
     @TempDir
     Path temp;
+
+    @Test
+    void strictPipelineRejectsUnconfirmedWholeProgramRequirement() throws Exception {
+        Path inputJar = temp.resolve("unconfirmed-field-internalization.jar");
+        writeJar(inputJar);
+        JsonObject json = JsonParser.parseString(baseJson(
+                        inputJar,
+                        "\"pkg/Mathy#add!(II)I\""))
+                .getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("fieldInternalization", true);
+        ResolvedConfig config = new ConfigLoader().load(json, temp).config().orElseThrow();
+        Path workspace = temp.resolve("unconfirmed-workspace");
+
+        MainlinePipelineResult result = new MainlinePipeline().run(config, workspace);
+
+        assertFalse(result.successful());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(
+                        ConfigDiagnostics.FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD)));
+        String report = Files.readString(
+                workspace.resolve("reports/field-internalization-report.json"));
+        assertTrue(report.contains("\"authorization\": \"MISSING\""), report);
+        assertTrue(report.contains("\"analysisExecuted\": false"), report);
+        assertTrue(report.contains("\"scope\": \"NOT_RUN\""), report);
+    }
 
     @Test
     void rejectsReservedRuntimeLoaderEntryBeforeNativeBuild() throws Exception {
@@ -188,6 +216,54 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
         assertTrue(packagingReport.contains("\"classloaderReusePolicy\": \"lazyPerClassLoaderReuse\""));
         assertFalse(packagingReport.contains(".class"));
+    }
+
+    @Test
+    void finalCoverageTurnsProtectedNestedArrayBackendGapIntoNativeFallback() throws Exception {
+        String owner = "pkg/ProtectedByteMatrices";
+        String methodKey = owner + "#array!(I)I";
+        Path inputJar = temp.resolve("protected-nested-array.jar");
+        writeJar(
+                inputJar,
+                owner + ".class",
+                AsmFixtureBuilder.classWithProtectedReferenceArrayAllocation(owner, "[B"));
+        ResolvedConfig config = config(inputJar, methodKey);
+        Path workspace = temp.resolve("out/protected-nested-array");
+
+        MainlinePipelineResult result = runPipeline(config, workspace);
+
+        assertTrue(result.successful(), result.diagnostics().toString());
+        var parsed = new AsmClassParser()
+                .parseAll(new JarClassFileSource(result.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass(owner)
+                .orElseThrow();
+        var array = parsed.methods().stream()
+                .filter(method -> method.name().equals("array")
+                        && method.descriptor().equals("(I)I"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(array.accessFlags().isNative());
+        assertFalse(array.hasCode());
+        assertTrue(result.nativeRegistrationPlan().entries().stream()
+                .anyMatch(entry -> entry.registrationOwner().equals(owner)
+                        && entry.methodName().equals("array")
+                        && entry.descriptor().equals("(I)I")));
+
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        String frontendSkipReport = Files.readString(workspace.resolve("reports/frontend-skip-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"reasonCode\": \"UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW\""), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"nativeImplementationPath\": \"TEMPLATE_JNI_PATH\""), loweringReport);
+        assertTrue(packagingReport.contains(methodKey), packagingReport);
+        assertTrue(packagingReport.contains(
+                "\"fallbackReasonCode\": \"UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW\""), packagingReport);
+        assertFalse(frontendSkipReport.contains(methodKey), frontendSkipReport);
     }
 
     @Test
@@ -857,13 +933,10 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                   "javaHome": null,
                   "runtimeImage": null,
                   "worldModel": "PARTIAL_WORLD",
-                  "javaSupportTier": "TIER_5",
-                  "fallbackMode": "nativeEmbeddedClassBlob",
                   "outputDirectory": "out",
                   "whiteList": [%s],
                   "blackList": [],
                   "target": %s,
-                  "libraryName": "j2lltest",
                   "embeddedLibraryDirectory": "native0",
                   "signaturePolicy": "fail",
                   "signing": null,
@@ -879,24 +952,25 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                     "seed": null,
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true },
-                      "fakeBranches": { "enabled": true },
-                      "basicBlockSplitting": { "enabled": true },
-                      "constantEncryption": { "enabled": true },
-                      "stringEncryption": { "enabled": true },
-                      "methodInlining": { "enabled": true },
-                      "methodSplitting": { "enabled": true },
-                      "callIndirection": { "enabled": true },
-                      "methodTableHiding": { "enabled": true }
+                      "controlFlowFlattening": true,
+                      "fakeBranches": true,
+                      "basicBlockSplitting": true,
+                      "constantEncryption": true,
+                      "stringEncryption": true,
+                      "methodInlining": true,
+                      "methodSplitting": true,
+                      "callIndirection": true,
+                      "fieldInternalization": false,
+                      "methodTableHiding": true,
+                      "blockNameObfuscation": true
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true },
-                      "opaquePredicates": { "enabled": true },
-                      "blockLayoutPerturbation": { "enabled": true },
-                      "indirectCalls": { "enabled": true },
-                      "globalLayout": { "enabled": true },
-                      "visibilityHardening": { "enabled": true }
+                      "nameObfuscation": true,
+                      "opaquePredicates": true,
+                      "blockLayoutPerturbation": true,
+                      "indirectCalls": true,
+                      "globalLayout": true
                     },
                     "binary": {
                       "enabled": true,

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
@@ -63,6 +64,8 @@ class ZigCrossTargetBuildTest {
                     return value + 1;
                 }
 
+                extern jint j2ll_hidden_llvm(jint value);
+
                 static void j2ll_probe_native(JNIEnv* env, jobject self, jobject argument) {
                     (void)env;
                     (void)self;
@@ -84,7 +87,7 @@ class ZigCrossTargetBuildTest {
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_field_descriptor;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_methods[0].name;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_methods[0].signature;
-                    return j2ll_hidden_c(JNI_VERSION_1_8) - 1;
+                    return j2ll_hidden_c(j2ll_hidden_llvm(JNI_VERSION_1_8)) - 2;
                 }
 
                 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -124,6 +127,7 @@ class ZigCrossTargetBuildTest {
                 zig,
                 workspace,
                 plan,
+                sources,
                 (target, completed, total) -> completedTargets.add(target));
 
         assertEquals(plan.units().size(), completedTargets.size());
@@ -137,14 +141,12 @@ class ZigCrossTargetBuildTest {
         List<String> forbiddenBinaryText = new java.util.ArrayList<>(sensitiveMetadata);
         forbiddenBinaryText.add(workspacePath);
         forbiddenBinaryText.add(workspacePath.replace('\\', '/'));
+        assertTrue(Files.notExists(
+                ZigTargetCompletionMonitor.progressDirectory(workspace),
+                LinkOption.NOFOLLOW_LINKS));
         for (NativeBuildUnit unit : plan.units()) {
             assertTrue(Files.isRegularFile(unit.outputPath()), unit.outputPath().toString());
             assertTrue(Files.size(unit.outputPath()) > 0, unit.outputPath().toString());
-            assertEquals(
-                    ZigTargetCompletionMonitor.markerContent(unit.target()),
-                    Files.readString(
-                            ZigTargetCompletionMonitor.markerPath(workspace, unit.target()),
-                            StandardCharsets.UTF_8));
             byte[] binary = Files.readAllBytes(unit.outputPath());
             for (String forbidden : forbiddenBinaryText.stream().distinct().toList()) {
                 assertEncodedTextAbsent(binary, forbidden, unit.target());

@@ -11,7 +11,10 @@ public final class LlvmProtectionPipeline {
     }
 
     public static LlvmProtectionPipeline defaultPipeline() {
-        return new LlvmProtectionPipeline(List.of(new LlvmNameObfuscationPass()));
+        return new LlvmProtectionPipeline(List.of(
+                new LlvmNameObfuscationPass(),
+                new LlvmBlockLayoutPerturbationPass(),
+                new LlvmOpaquePredicatePass()));
     }
 
     public LlvmModule run(LlvmModule module, LlvmProtectionConfig config) {

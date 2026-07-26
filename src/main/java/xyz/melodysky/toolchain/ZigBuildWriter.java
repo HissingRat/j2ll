@@ -65,86 +65,14 @@ public final class ZigBuildWriter {
         if (!buildPlan.units().isEmpty()) {
             builder.append("    const progress_markers = b.addWriteFiles();\n");
         }
-        for (NativeBuildUnit unit : buildPlan.units()) {
-            appendTarget(builder, workspace, libraryName, unit, sources, strip);
+        ZigTargetBuildEmitter targetEmitter =
+                new ZigTargetBuildEmitter(workspace, libraryName, sources, strip);
+        for (ZigBuildProgressPlan.TargetPlan target :
+                ZigBuildProgressPlan.forSources(buildPlan, sources).targets()) {
+            builder.append(targetEmitter.emit(target));
         }
         builder.append("}\n");
         return builder.toString();
-    }
-
-    private void appendTarget(
-            StringBuilder builder,
-            ZigBuildWorkspace workspace,
-            String libraryName,
-            NativeBuildUnit unit,
-            ZigSourceSet sources,
-            boolean strip) {
-        TargetTriple target = unit.target();
-        String symbol = target.safeSymbol();
-        builder.append("\n")
-                .append("    const target_").append(symbol).append(" = b.resolveTargetQuery(")
-                .append(target.zigTargetQuery()).append(");\n")
-                .append("    const module_").append(symbol).append(" = b.createModule(.{\n")
-                .append("        .target = target_").append(symbol).append(",\n")
-                .append("        .optimize = optimize,\n")
-                .append("        .strip = ").append(strip).append(",\n")
-                .append("        .link_libc = true,\n")
-                .append("    });\n");
-        if (!sources.cSources().isEmpty()) {
-            builder.append("    module_").append(symbol).append(".addCSourceFiles(.{\n")
-                    .append("        .root = b.path(\".\"),\n")
-                    .append("        .files = &.{ ");
-            builder.append(String.join(", ", sources.cSources().stream()
-                    .map(path -> quote(relative(workspace.buildDirectory(), path)))
-                    .toList()));
-            builder.append(" },\n")
-                    .append("        .language = .c,\n")
-                    .append("        .flags = &.{ \"-g0\", \"-fvisibility=hidden\", \"-ffile-compilation-dir=.\", \"-fdebug-compilation-dir=.\"");
-            for (Path include : sources.includeDirectories()) {
-                builder.append(", ")
-                        .append(quote("-I" + include.toAbsolutePath().normalize()));
-            }
-            builder.append(" },\n")
-                    .append("    });\n");
-        }
-        for (Path llvm : sources.llvmSources()) {
-            builder.append("    module_").append(symbol).append(".addObjectFile(b.path(")
-                    .append(quote(relative(workspace.buildDirectory(), llvm)))
-                    .append("));\n");
-        }
-        for (Path object : sources.objectInputs()) {
-            builder.append("    module_").append(symbol).append(".addObjectFile(.{ .cwd_relative = ")
-                    .append(quote(object.toAbsolutePath().normalize().toString())).append(" });\n");
-        }
-        builder.append("    const lib_").append(symbol).append(" = b.addLibrary(.{\n")
-                .append("        .linkage = .dynamic,\n")
-                .append("        .name = ").append(quote(libraryName)).append(",\n")
-                .append("        .root_module = module_").append(symbol).append(",\n")
-                .append("    });\n");
-        if (target.zigOsTag().equals("macos")) {
-            builder.append("    lib_").append(symbol).append(".discard_local_symbols = true;\n");
-        }
-        builder.append("    const install_").append(symbol).append(" = b.addInstallArtifact(lib_").append(symbol).append(", .{\n")
-                .append("        .dest_dir = .{ .override = .prefix },\n");
-        if (target.isWindows()) {
-            builder.append("        .implib_dir = .disabled,\n");
-        }
-        builder.append("        .dest_sub_path = ")
-                .append(quote(relative(workspace.workspaceRoot(), unit.outputPath())))
-                .append(",\n")
-                .append("    });\n")
-                .append("    const marker_").append(symbol).append(" = progress_markers.add(")
-                .append(quote(target.directoryName() + ".done")).append(", ")
-                .append(quote(ZigTargetCompletionMonitor.markerContent(target))).append(");\n")
-                .append("    const install_marker_").append(symbol)
-                .append(" = b.addInstallFileWithDir(marker_").append(symbol).append(", .prefix, ")
-                .append(quote(relative(
-                        workspace.workspaceRoot(),
-                        ZigTargetCompletionMonitor.markerPath(workspace, target))))
-                .append(");\n")
-                .append("    install_marker_").append(symbol).append(".step.dependOn(&install_")
-                .append(symbol).append(".step);\n")
-                .append("    b.getInstallStep().dependOn(&install_marker_").append(symbol).append(".step);\n");
     }
 
     private String manifestJson(
@@ -248,28 +176,6 @@ public final class ZigBuildWriter {
                 .relativize(child.toAbsolutePath().normalize())
                 .toString()
                 .replace('\\', '/');
-    }
-
-    private String quote(String value) {
-        StringBuilder quoted = new StringBuilder("\"");
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            switch (ch) {
-                case '\\' -> quoted.append("\\\\");
-                case '"' -> quoted.append("\\\"");
-                case '\n' -> quoted.append("\\n");
-                case '\r' -> quoted.append("\\r");
-                case '\t' -> quoted.append("\\t");
-                default -> {
-                    if (ch < 0x20 || ch == 0x7f) {
-                        quoted.append(String.format(java.util.Locale.ROOT, "\\x%02x", (int) ch));
-                    } else {
-                        quoted.append(ch);
-                    }
-                }
-            }
-        }
-        return quoted.append('"').toString();
     }
 
     private void requireSafeLibraryName(String libraryName) {

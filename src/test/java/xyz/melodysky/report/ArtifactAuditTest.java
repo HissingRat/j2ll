@@ -482,6 +482,7 @@ class ArtifactAuditTest {
         List<String> reports = List.of(
                 "diagnostics.json",
                 "artifact-audit.json",
+                "field-internalization-report.json",
                 "frontend-skip-report.json",
                 "known-blockers.json",
                 "lowering-report.json",

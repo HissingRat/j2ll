@@ -32,6 +32,7 @@ import xyz.melodysky.testsupport.DifferentialHarness;
 import xyz.melodysky.testsupport.DifferentialResult;
 import xyz.melodysky.testsupport.FakeManagedZig;
 import xyz.melodysky.toolchain.HostPlatform;
+import xyz.melodysky.toolchain.NativeLibraryName;
 import xyz.melodysky.toolchain.TargetTriple;
 
 class JvmHostedNativeRuntimeE2eTest implements Opcodes {
@@ -72,7 +73,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(5, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         Path zigWorkspace = workspace.resolve("native/zig-workspace");
-        String source = Files.readString(zigWorkspace.resolve("jni/j2lle2e.c"));
+        String source = Files.readString(zigWorkspace.resolve(
+                "jni/" + NativeLibraryName.derive(config.protection().seed()) + ".c"));
         String llvm = Files.readString(zigWorkspace.resolve("llvm/pkg_LlvmOps.ll"));
         assertTrue(source.matches("(?s).*extern jint j2ll_f_[0-9a-f]{32}\\(.*"));
         assertTrue(source.matches("(?s).*extern jlong j2ll_f_[0-9a-f]{32}\\(.*"));
@@ -2374,13 +2376,10 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                   "javaHome": null,
                   "runtimeImage": null,
                   "worldModel": "PARTIAL_WORLD",
-                  "javaSupportTier": "TIER_5",
-                  "fallbackMode": "nativeEmbeddedClassBlob",
                   "outputDirectory": "out",
                   "whiteList": [%s],
                   "blackList": [],
                   "target": %s,
-                  "libraryName": "j2lle2e",
                   "embeddedLibraryDirectory": "native0",
                   "signaturePolicy": "fail",
                   "signing": null,
@@ -2396,24 +2395,25 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                     "seed": null,
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true },
-                      "fakeBranches": { "enabled": true },
-                      "basicBlockSplitting": { "enabled": true },
-                      "constantEncryption": { "enabled": true },
-                      "stringEncryption": { "enabled": true },
-                      "methodInlining": { "enabled": true },
-                      "methodSplitting": { "enabled": true },
-                      "callIndirection": { "enabled": true },
-                      "methodTableHiding": { "enabled": true }
+                      "controlFlowFlattening": true,
+                      "fakeBranches": true,
+                      "basicBlockSplitting": true,
+                      "constantEncryption": true,
+                      "stringEncryption": true,
+                      "methodInlining": true,
+                      "methodSplitting": true,
+                      "callIndirection": true,
+                      "fieldInternalization": false,
+                      "methodTableHiding": true,
+                      "blockNameObfuscation": true
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true },
-                      "opaquePredicates": { "enabled": true },
-                      "blockLayoutPerturbation": { "enabled": true },
-                      "indirectCalls": { "enabled": true },
-                      "globalLayout": { "enabled": true },
-                      "visibilityHardening": { "enabled": true }
+                      "nameObfuscation": true,
+                      "opaquePredicates": true,
+                      "blockLayoutPerturbation": true,
+                      "indirectCalls": true,
+                      "globalLayout": true
                     },
                     "binary": {
                       "enabled": true,

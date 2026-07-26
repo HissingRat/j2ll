@@ -35,7 +35,11 @@ public final class FallbackBlobPlanner {
                 input.originalMethodId(),
                 input.originalMethodKey(),
                 helperClass.internalName(),
-                helperClassFactory.helperDescriptor(input.ownerInternalName(), input.descriptor(), input.staticMethod()),
+                helperClassFactory.helperDescriptor(
+                        input.ownerInternalName(),
+                        input.descriptor(),
+                        input.staticMethod(),
+                        !input.sidecarFieldAccesses().isEmpty()),
                 input.reasonCode(),
                 encoded.encodedSha256(),
                 encoded.originalSha256(),

@@ -11,6 +11,8 @@ public final class PackagingDiagnostics {
             DiagnosticCode.of("GENERATED_RUNTIME_LOADER_ENTRY_COLLISION");
     public static final DiagnosticCode GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW =
             DiagnosticCode.of("GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW");
+    public static final DiagnosticCode FIELD_INTERNALIZATION_REWRITE_FAILED =
+            DiagnosticCode.of("FIELD_INTERNALIZATION_REWRITE_FAILED");
 
     private PackagingDiagnostics() {
     }

@@ -65,8 +65,6 @@ Use the same fields as `docs/examples/protection-all-on-config.json`; keep sensi
   "jarFile": "build/samples/reflection-service-app.jar",
   "classPath": [],
   "worldModel": "PARTIAL_WORLD",
-  "javaSupportTier": "TIER_5",
-  "fallbackMode": "nativeEmbeddedClassBlob",
   "outputDirectory": "build/j2ll-reflection",
   "whiteList": ["sample/reflect/Main#main!([Ljava/lang/String;)V"],
   "blackList": [],

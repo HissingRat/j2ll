@@ -24,11 +24,11 @@ public record ProtectionConfig(
         return new ProtectionConfig(
                 true,
                 seed,
-                protection.ir().controlFlowFlattening().enabled(),
-                protection.ir().stringEncryption().enabled(),
-                protection.ir().constantEncryption().enabled(),
-                protection.ir().basicBlockSplitting().enabled(),
-                protection.ir().fakeBranches().enabled(),
-                true);
+                protection.ir().controlFlowFlattening(),
+                protection.ir().stringEncryption(),
+                protection.ir().constantEncryption(),
+                protection.ir().basicBlockSplitting(),
+                protection.ir().fakeBranches(),
+                protection.ir().blockNameObfuscation());
     }
 }

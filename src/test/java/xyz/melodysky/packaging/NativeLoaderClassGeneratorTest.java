@@ -3,6 +3,8 @@ package xyz.melodysky.packaging;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,9 +31,14 @@ class NativeLoaderClassGeneratorTest {
         ClassNode loader = read(bytes);
 
         assertEquals("xyz/Melody/natives/Loader", loader.name);
+        assertEquals("java/lang/Object", loader.superName);
         assertEquals(Opcodes.V17, loader.version);
         assertNotNull(method(loader, "ensureLoaded", "()V"));
         assertFalse(hasMethod(loader, "defineHiddenFallback", "(Ljava/lang/Class;[B)Ljava/lang/Class;"));
+        assertFalse(hasMethod(
+                loader,
+                LoaderClassValueSidecarInjector.ACCESSOR_NAME,
+                LoaderClassValueSidecarInjector.ACCESSOR_DESCRIPTOR));
         String constants = new String(bytes, StandardCharsets.ISO_8859_1);
         assertFalse(constants.contains("J2llNativeLoaderSupport"), constants);
         assertFalse(constants.contains("J2llFallbackSupport"), constants);
@@ -44,14 +51,44 @@ class NativeLoaderClassGeneratorTest {
 
     @Test
     void includesHiddenFallbackBridgeOnlyWhenRequired() throws Exception {
-        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", true);
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", true, 2);
         byte[] bytes = new NativeLoaderClassGenerator().generate(plan, List.of());
         ClassNode loader = read(bytes);
 
         assertTrue(hasMethod(loader, "defineHiddenFallback", "(Ljava/lang/Class;[B)Ljava/lang/Class;"));
+        assertTrue(hasMethod(
+                loader,
+                LoaderClassValueSidecarInjector.ACCESSOR_NAME,
+                LoaderClassValueSidecarInjector.ACCESSOR_DESCRIPTOR));
+        assertEquals("java/lang/ClassValue", loader.superName);
         String constants = new String(bytes, StandardCharsets.ISO_8859_1);
         assertTrue(constants.contains("java/lang/invoke/MethodHandles"), constants);
         assertFalse(constants.contains("J2llFallbackSupport"), constants);
+    }
+
+    @Test
+    void classValueSidecarCachesPerDefiningClassWithoutExtraGeneratedClass() throws Exception {
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", false, 3);
+        byte[] bytes = new NativeLoaderClassGenerator().generate(plan, List.of());
+        ClassNode node = read(bytes);
+
+        assertEquals("java/lang/ClassValue", node.superName);
+        assertTrue(node.innerClasses.stream().noneMatch(inner ->
+                inner.name.startsWith("native0/Loader$")));
+        Class<?> loader = new BytesClassLoader(getClass().getClassLoader()).define(bytes);
+        var accessor = loader.getDeclaredMethod(
+                LoaderClassValueSidecarInjector.ACCESSOR_NAME,
+                Class.class);
+        accessor.setAccessible(true);
+        Object[] first = (Object[]) accessor.invoke(null, String.class);
+        Object[] repeated = (Object[]) accessor.invoke(null, String.class);
+        Object[] other = (Object[]) accessor.invoke(null, Integer.class);
+
+        assertEquals(3, first.length);
+        assertSame(first, repeated);
+        assertNotSame(first, other);
+        first[1] = "retained-by-jvm-sidecar";
+        assertEquals("retained-by-jvm-sidecar", repeated[1]);
     }
 
     @Test

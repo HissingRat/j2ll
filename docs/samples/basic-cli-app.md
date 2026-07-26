@@ -32,8 +32,6 @@ Use the same schema shape as `docs/examples/minimal-config.json`:
   "jarFile": "build/samples/basic-cli-app.jar",
   "classPath": [],
   "worldModel": "PARTIAL_WORLD",
-  "javaSupportTier": "TIER_5",
-  "fallbackMode": "nativeEmbeddedClassBlob",
   "outputDirectory": "build/j2ll-basic",
   "whiteList": ["sample/basic/Main#main!([Ljava/lang/String;)V"],
   "blackList": [],

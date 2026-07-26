@@ -221,7 +221,10 @@ final class HostJniAllocationRuntimeSource {
     }
 
     private static long stableClassObjectToken(String classDescriptor) {
-        return Integer.toUnsignedLong(("class:" + classDescriptor).hashCode());
+        // BytecodeToSsaLowerer hashes the descriptor operand itself. The
+        // surrounding "class:" text belongs to the IR evidence symbol only
+        // and must not participate in the runtime lookup token.
+        return Integer.toUnsignedLong(classDescriptor.hashCode());
     }
 
     private static String escapeCString(String value) {

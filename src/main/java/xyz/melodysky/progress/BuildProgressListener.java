@@ -14,6 +14,15 @@ public interface BuildProgressListener {
     default void nativeTargetsStarted(List<String> targets) {
     }
 
+    default void nativeTargetProgress(NativeTargetProgress progress) {
+        if (progress != null && progress.completed()) {
+            nativeTargetCompleted(progress.target());
+        }
+    }
+
+    /**
+     * Compatibility callback for listeners that only need target completion.
+     */
     default void nativeTargetCompleted(String target) {
     }
 

@@ -3,7 +3,6 @@ package xyz.melodysky.ir.pass.protection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import xyz.melodysky.config.PassConfig;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.ir.pass.PassDiagnostics;
@@ -19,8 +18,24 @@ public final class ProtectionAvailabilityReporter {
 
     public static ProtectionAvailabilityReporter currentImplementation() {
         return new ProtectionAvailabilityReporter(
-                Set.of("controlFlowFlattening", "fakeBranches", "basicBlockSplitting", "constantEncryption", "stringEncryption"),
-                Set.of("nameObfuscation", "indirectCalls", "visibilityHardening"));
+                Set.of(
+                        "controlFlowFlattening",
+                        "fakeBranches",
+                        "basicBlockSplitting",
+                        "constantEncryption",
+                        "stringEncryption",
+                        "blockNameObfuscation",
+                        "methodInlining",
+                        "methodSplitting",
+                        "callIndirection",
+                        "fieldInternalization",
+                        "methodTableHiding"),
+                Set.of(
+                        "nameObfuscation",
+                        "opaquePredicates",
+                        "blockLayoutPerturbation",
+                        "indirectCalls",
+                        "globalLayout"));
     }
 
     public List<Diagnostic> report(xyz.melodysky.config.ProtectionConfig config) {
@@ -33,11 +48,13 @@ public final class ProtectionAvailabilityReporter {
             warnIfMissing(diagnostics, "fakeBranches", config.ir().fakeBranches(), implementedIrPasses);
             warnIfMissing(diagnostics, "basicBlockSplitting", config.ir().basicBlockSplitting(), implementedIrPasses);
             warnIfMissing(diagnostics, "constantEncryption", config.ir().constantEncryption(), implementedIrPasses);
-            warnIfMissing(diagnostics, "stringEncryption", config.ir().stringEncryption().enabled(), implementedIrPasses);
+            warnIfMissing(diagnostics, "stringEncryption", config.ir().stringEncryption(), implementedIrPasses);
             warnIfMissing(diagnostics, "methodInlining", config.ir().methodInlining(), implementedIrPasses);
             warnIfMissing(diagnostics, "methodSplitting", config.ir().methodSplitting(), implementedIrPasses);
             warnIfMissing(diagnostics, "callIndirection", config.ir().callIndirection(), implementedIrPasses);
+            warnIfMissing(diagnostics, "fieldInternalization", config.ir().fieldInternalization(), implementedIrPasses);
             warnIfMissing(diagnostics, "methodTableHiding", config.ir().methodTableHiding(), implementedIrPasses);
+            warnIfMissing(diagnostics, "blockNameObfuscation", config.ir().blockNameObfuscation(), implementedIrPasses);
         }
         if (config.llvm().enabled()) {
             warnIfMissing(diagnostics, "nameObfuscation", config.llvm().nameObfuscation(), implementedLlvmPasses);
@@ -45,17 +62,8 @@ public final class ProtectionAvailabilityReporter {
             warnIfMissing(diagnostics, "blockLayoutPerturbation", config.llvm().blockLayoutPerturbation(), implementedLlvmPasses);
             warnIfMissing(diagnostics, "indirectCalls", config.llvm().indirectCalls(), implementedLlvmPasses);
             warnIfMissing(diagnostics, "globalLayout", config.llvm().globalLayout(), implementedLlvmPasses);
-            warnIfMissing(diagnostics, "visibilityHardening", config.llvm().visibilityHardening().enabled(), implementedLlvmPasses);
         }
         return List.copyOf(diagnostics);
-    }
-
-    private void warnIfMissing(
-            List<Diagnostic> diagnostics,
-            String passName,
-            PassConfig passConfig,
-            Set<String> implementedPasses) {
-        warnIfMissing(diagnostics, passName, passConfig.enabled(), implementedPasses);
     }
 
     private void warnIfMissing(

@@ -9,13 +9,24 @@ public record LlvmInstruction(
         LlvmType type,
         String opcode,
         List<String> operands,
-        Optional<String> rawText) {
+        Optional<String> rawText,
+        Optional<LlvmIrCallIndirectionRef> irCallIndirection) {
     public LlvmInstruction {
         Objects.requireNonNull(result, "result");
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(opcode, "opcode");
         operands = List.copyOf(Objects.requireNonNull(operands, "operands"));
         Objects.requireNonNull(rawText, "rawText");
+        Objects.requireNonNull(irCallIndirection, "irCallIndirection");
+    }
+
+    public LlvmInstruction(
+            Optional<String> result,
+            LlvmType type,
+            String opcode,
+            List<String> operands,
+            Optional<String> rawText) {
+        this(result, type, opcode, operands, rawText, Optional.empty());
     }
 
     public LlvmInstruction(Optional<String> result, LlvmType type, String opcode, List<String> operands) {
@@ -24,5 +35,15 @@ public record LlvmInstruction(
 
     public static LlvmInstruction raw(Optional<String> result, String text) {
         return new LlvmInstruction(result, LlvmType.VOID, "raw", List.of(), Optional.of(text));
+    }
+
+    public LlvmInstruction withIrCallIndirection(LlvmIrCallIndirectionRef reference) {
+        return new LlvmInstruction(
+                result,
+                type,
+                opcode,
+                operands,
+                rawText,
+                Optional.of(Objects.requireNonNull(reference, "reference")));
     }
 }

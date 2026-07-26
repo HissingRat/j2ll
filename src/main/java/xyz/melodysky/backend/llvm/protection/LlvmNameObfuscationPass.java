@@ -13,7 +13,7 @@ public final class LlvmNameObfuscationPass implements LlvmModulePass {
 
     @Override
     public LlvmModule run(LlvmModule module, LlvmProtectionConfig config) {
-        if (!config.enabled()) {
+        if (!config.enabled() || !config.nameObfuscation()) {
             return module;
         }
         ProtectionRandom random = new ProtectionRandom(config.seed());
@@ -28,6 +28,6 @@ public final class LlvmNameObfuscationPass implements LlvmModulePass {
                     function.parameters(),
                     function.blocks()));
         }
-        return new LlvmModule(module.identifier(), module.declarations(), functions);
+        return new LlvmModule(module.identifier(), module.declarations(), module.globals(), functions);
     }
 }

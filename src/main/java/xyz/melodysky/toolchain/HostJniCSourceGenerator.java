@@ -19,11 +19,13 @@ import xyz.melodysky.packaging.EncodedFallbackBlob;
 import xyz.melodysky.packaging.FallbackBlobCodec;
 import xyz.melodysky.packaging.FallbackHelperClass;
 import xyz.melodysky.packaging.FallbackHelperClassFactory;
+import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
+import xyz.melodysky.packaging.MethodTableHidingPlan;
+import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
-import xyz.melodysky.packaging.RegisterNativesTableBuilder;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.runtime.MethodIdentityToken;
 import xyz.melodysky.runtime.jni.JniMethodDescriptor;
@@ -37,26 +39,60 @@ public final class HostJniCSourceGenerator implements Opcodes {
     private final FallbackBlobCodec fallbackBlobCodec = new FallbackBlobCodec();
 
     public String generate(NativeImplementationPlan implementationPlan) {
+        List<Binding> bindings = bindings(implementationPlan);
         return generate(
                 implementationPlan,
-                RuntimeLoaderPlan.create("native0", implementationPlan.hasNativeEmbeddedFallback()));
+                RuntimeLoaderPlan.create(
+                        "native0",
+                        implementationPlan.hasNativeEmbeddedFallback(),
+                        HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings)));
     }
 
     public String generate(
             NativeImplementationPlan implementationPlan,
             RuntimeLoaderPlan runtimeLoaderPlan) {
+        return generate(implementationPlan, runtimeLoaderPlan, false, 0L);
+    }
+
+    public String generate(
+            NativeImplementationPlan implementationPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            boolean methodTableHidingEnabled,
+            long protectionSeed) {
+        NativeRegistrationPlan supportedPlan = implementationPlan.registrationPlan();
+        return generate(
+                implementationPlan,
+                runtimeLoaderPlan,
+                new MethodTableHidingPlanner().plan(
+                        supportedPlan,
+                        methodTableHidingEnabled,
+                        protectionSeed));
+    }
+
+    public String generate(
+            NativeImplementationPlan implementationPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            MethodTableHidingPlan methodTablePlan) {
         if (implementationPlan.hasNativeEmbeddedFallback()
                 != runtimeLoaderPlan.includeFallbackDefinition()) {
             throw new IllegalArgumentException("runtime Loader fallback capability does not match native implementation plan");
         }
         List<Binding> bindings = bindings(implementationPlan);
+        if (HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings)
+                != runtimeLoaderPlan.referenceSidecarSize()) {
+            throw new IllegalArgumentException(
+                    "runtime Loader reference sidecar capability does not match native implementation plan");
+        }
         NativeRegistrationPlan supportedPlan = implementationPlan.registrationPlan();
+        String registrationSource =
+                new HostNativeRegistrationSource().emit(supportedPlan, methodTablePlan);
         StringBuilder builder = new StringBuilder();
         builder.append("""
                 #include <jni.h>
                 #include <limits.h>
                 #include <math.h>
                 #include <stdarg.h>
+                #include <stdatomic.h>
                 #include <stdint.h>
                 #include <stdlib.h>
                 #include <string.h>
@@ -87,6 +123,11 @@ public final class HostJniCSourceGenerator implements Opcodes {
         if (HostJniStringConstantRuntimeSource.isNeeded(bindings)) {
             HostJniStringConstantRuntimeSource.append(builder, bindings);
         }
+        HostNativeFieldStorageSource.append(builder, bindings);
+        HostNativeReferenceFieldStorageSource.append(
+                builder,
+                bindings,
+                runtimeLoaderPlan);
         HostJniFieldRuntimeSource.append(builder, bindings);
         for (Binding binding : bindings) {
             if (isNativeEmbeddedFallbackBinding(binding)) {
@@ -104,8 +145,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
         for (Binding binding : bindings) {
             appendFunction(builder, binding);
         }
-        builder.append(new RegisterNativesTableBuilder().emit(supportedPlan));
-        appendOwnerRegistration(builder, supportedPlan);
+        builder.append(registrationSource);
         return new CMetadataStringObfuscator().obfuscate(builder.toString());
     }
 
@@ -1118,6 +1158,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
     }
 
     private void appendNativeEmbeddedFallbackInvoke(StringBuilder builder, Binding binding) {
+        boolean sidecarAware = !fallbackSidecarAccesses(binding).isEmpty();
         if (!binding.descriptor().staticMethod()) {
             builder.append("    jclass owner = (*env)->GetObjectClass(env, self);\n")
                     .append("    if (owner == NULL) {\n");
@@ -1127,38 +1168,78 @@ public final class HostJniCSourceGenerator implements Opcodes {
         builder.append("    jclass helper = j2ll_define_fallback_")
                 .append(safeSymbol(binding.entry().nativeSymbol()))
                 .append("(env, owner);\n")
-                .append(binding.descriptor().staticMethod() ? "" : "    (*env)->DeleteLocalRef(env, owner);\n")
                 .append("    if (helper == NULL) {\n");
+        if (!binding.descriptor().staticMethod()) {
+            builder.append("        (*env)->DeleteLocalRef(env, owner);\n");
+        }
         appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
-        builder.append("    }\n")
-                .append("    jmethodID method = (*env)->GetStaticMethodID(env, helper, \"")
+        builder.append("    }\n");
+        if (sidecarAware) {
+            builder.append(
+                            "    jobjectArray j2ll_fallback_sidecar = (jobjectArray)j2ll_nfs_reference_sidecar(env, owner);\n")
+                    .append(binding.descriptor().staticMethod()
+                            ? ""
+                            : "    (*env)->DeleteLocalRef(env, owner);\n")
+                    .append("    if (j2ll_fallback_sidecar == NULL) {\n");
+            appendDefaultReturn(
+                    builder,
+                    binding.descriptor().javaReturnDescriptor());
+            builder.append("    }\n");
+        } else if (!binding.descriptor().staticMethod()) {
+            builder.append("    (*env)->DeleteLocalRef(env, owner);\n");
+        }
+        builder.append(
+                        "    jmethodID method = (*env)->GetStaticMethodID(env, helper, \"")
                 .append(FallbackHelperClassFactory.HELPER_METHOD_NAME)
                 .append("\", \"")
                 .append(escapeCString(fallbackHelperDescriptor(binding)))
                 .append("\");\n")
                 .append("    if (method == NULL) {\n");
+        if (sidecarAware) {
+            builder.append(
+                    "        (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
+        }
         appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
         builder.append("    }\n");
-        appendFallbackCall(builder, binding);
+        appendFallbackCall(builder, binding, sidecarAware);
     }
 
-    private void appendFallbackCall(StringBuilder builder, Binding binding) {
-        String call = "(*env)->" + jniStaticCall(binding.descriptor().javaReturnDescriptor())
-                + "(env, helper, method" + fallbackArguments(binding) + ")";
+    private void appendFallbackCall(
+            StringBuilder builder,
+            Binding binding,
+            boolean sidecarAware) {
+        String call = "(*env)->"
+                + jniStaticCall(binding.descriptor().javaReturnDescriptor())
+                + "(env, helper, method"
+                + fallbackArguments(binding, sidecarAware)
+                + ")";
         String returnDescriptor = binding.descriptor().javaReturnDescriptor();
         if (returnDescriptor.equals("V")) {
-            builder.append("    ").append(call).append(";\n")
-                    .append("    return;\n");
+            builder.append("    ").append(call).append(";\n");
+            if (sidecarAware) {
+                builder.append(
+                        "    (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
+            }
+            builder.append("    return;\n");
         } else {
-            builder.append("    return (")
+            builder.append("    ")
+                    .append(binding.descriptor().jniReturnType())
+                    .append(" j2ll_fallback_result = (")
                     .append(binding.descriptor().jniReturnType())
                     .append(")")
                     .append(call)
                     .append(";\n");
+            if (sidecarAware) {
+                builder.append(
+                        "    (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
+            }
+            builder.append("    return j2ll_fallback_result;\n");
         }
     }
 
-    private String fallbackArguments(Binding binding) {
+    private String fallbackArguments(
+            Binding binding,
+            boolean sidecarAware) {
         ArrayList<String> arguments = new ArrayList<>();
         if (!binding.descriptor().staticMethod()) {
             arguments.add("self");
@@ -1166,14 +1247,26 @@ public final class HostJniCSourceGenerator implements Opcodes {
         for (int index = 0; index < binding.descriptor().javaParameterDescriptors().size(); index++) {
             arguments.add("arg" + index);
         }
-        return arguments.isEmpty() ? "" : ", " + String.join(", ", arguments);
+        if (sidecarAware) {
+            arguments.add("j2ll_fallback_sidecar");
+        }
+        return arguments.isEmpty()
+                ? ""
+                : ", " + String.join(", ", arguments);
     }
 
     private String fallbackHelperDescriptor(Binding binding) {
         return fallbackHelperClassFactory.helperDescriptor(
                 binding.decision().method().owner(),
                 binding.decision().method().descriptor(),
-                binding.decision().method().accessFlags().isStatic());
+                binding.decision().method().accessFlags().isStatic(),
+                !fallbackSidecarAccesses(binding).isEmpty());
+    }
+
+    private List<FallbackSidecarFieldAccess> fallbackSidecarAccesses(
+            Binding binding) {
+        return FallbackSidecarFieldAccess.parseMarkers(
+                binding.fieldKeys());
     }
 
     private String jniStaticCall(String returnDescriptor) {
@@ -2536,7 +2629,10 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 binding.decision().method().owner(),
                 binding.decision().method().name(),
                 binding.decision().method().descriptor());
-        FallbackHelperClass helperClass = fallbackHelperClassFactory.create(originalMethodId, binding.decision().method());
+        FallbackHelperClass helperClass = fallbackHelperClassFactory.create(
+                originalMethodId,
+                binding.decision().method(),
+                fallbackSidecarAccesses(binding));
         EncodedFallbackBlob encoded = fallbackBlobCodec.encode(
                 helperClass.bytes(),
                 originalMethodId + "\n" + binding.decision().method().methodKey());

@@ -13,14 +13,11 @@ public record ResolvedConfig(
         Path javaHome,
         Path runtimeImage,
         AnalysisWorld worldModel,
-        JavaSupportTier javaSupportTier,
-        FallbackMode fallbackMode,
         Path outputDirectory,
         List<Selector> whiteList,
         List<Selector> blackList,
         TargetConfig target,
         List<TargetTriple> targets,
-        String libraryName,
         String embeddedLibraryDirectory,
         SignaturePolicy signaturePolicy,
         SigningConfig signing,
@@ -30,8 +27,6 @@ public record ResolvedConfig(
         Objects.requireNonNull(jarFile, "jarFile");
         classPath = List.copyOf(Objects.requireNonNull(classPath, "classPath"));
         Objects.requireNonNull(worldModel, "worldModel");
-        Objects.requireNonNull(javaSupportTier, "javaSupportTier");
-        Objects.requireNonNull(fallbackMode, "fallbackMode");
         Objects.requireNonNull(outputDirectory, "outputDirectory");
         whiteList = List.copyOf(Objects.requireNonNull(whiteList, "whiteList"));
         blackList = List.copyOf(Objects.requireNonNull(blackList, "blackList"));

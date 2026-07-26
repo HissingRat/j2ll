@@ -8,8 +8,10 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativeTargetProgress;
 import xyz.melodysky.toolchain.NativeBuildPlan;
 import xyz.melodysky.toolchain.NativeBuildUnit;
+import xyz.melodysky.toolchain.NativeTargetBuildState;
 import xyz.melodysky.toolchain.TargetTriple;
 
 class MainlineProgressTest {
@@ -33,12 +35,44 @@ class MainlineProgressTest {
         progress.nativeBuildProgress().buildStarted(
                 List.of(TargetTriple.LINUX_ARM64, TargetTriple.WINDOWS_X64));
         assertEquals(List.of("linux-arm64", "windows-x64"), listener.nativeTargets);
-        progress.nativeBuildProgress().targetCompleted(TargetTriple.WINDOWS_X64, 1, 2);
-        progress.nativeBuildProgress().targetCompleted(TargetTriple.LINUX_ARM64, 2, 2);
+        progress.nativeBuildProgress().targetProgress(
+                new xyz.melodysky.toolchain.NativeTargetProgress(
+                        TargetTriple.WINDOWS_X64,
+                        NativeTargetBuildState.BUILDING,
+                        1,
+                        3),
+                0,
+                2);
+        progress.nativeBuildProgress().targetProgress(
+                new xyz.melodysky.toolchain.NativeTargetProgress(
+                        TargetTriple.WINDOWS_X64,
+                        NativeTargetBuildState.LINKING,
+                        2,
+                        3),
+                0,
+                2);
+        progress.nativeBuildProgress().targetProgress(
+                new xyz.melodysky.toolchain.NativeTargetProgress(
+                        TargetTriple.WINDOWS_X64,
+                        NativeTargetBuildState.COMPLETED,
+                        3,
+                        3),
+                1,
+                2);
+        progress.nativeBuildProgress().targetProgress(
+                new xyz.melodysky.toolchain.NativeTargetProgress(
+                        TargetTriple.LINUX_ARM64,
+                        NativeTargetBuildState.COMPLETED,
+                        4,
+                        4),
+                2,
+                2);
 
         assertEquals(List.of(
-                "windows-x64",
-                "linux-arm64"), listener.nativeCompleted);
+                "windows-x64:BUILDING:1/3",
+                "windows-x64:LINKING:2/3",
+                "windows-x64:COMPLETED:3/3",
+                "linux-arm64:COMPLETED:4/4"), listener.nativeProgress);
     }
 
     @Test
@@ -82,7 +116,7 @@ class MainlineProgressTest {
         private final ArrayList<String> started = new ArrayList<>();
         private final ArrayList<String> progressed = new ArrayList<>();
         private final ArrayList<String> nativeTargets = new ArrayList<>();
-        private final ArrayList<String> nativeCompleted = new ArrayList<>();
+        private final ArrayList<String> nativeProgress = new ArrayList<>();
 
         @Override
         public void stageStarted(BuildStage stage, String detail) {
@@ -100,8 +134,11 @@ class MainlineProgressTest {
         }
 
         @Override
-        public void nativeTargetCompleted(String target) {
-            nativeCompleted.add(target);
+        public void nativeTargetProgress(NativeTargetProgress progress) {
+            nativeProgress.add(progress.target()
+                    + ":" + progress.state()
+                    + ":" + progress.completedUnits()
+                    + "/" + progress.totalUnits());
         }
 
         @Override

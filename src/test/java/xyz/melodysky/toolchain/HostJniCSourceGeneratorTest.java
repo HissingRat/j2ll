@@ -7,11 +7,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+import xyz.melodysky.analysis.field.FieldAccessImplementationPath;
+import xyz.melodysky.analysis.field.FieldUseAnalyzer;
+import xyz.melodysky.analysis.field.NativeFieldInternalizationPlanner;
+import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
+import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
@@ -19,6 +27,9 @@ import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.pipeline.FallbackSidecarNativePlanReconciler;
+import xyz.melodysky.runtime.ClassIdentityToken;
+import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class HostJniCSourceGeneratorTest {
@@ -91,6 +102,65 @@ class HostJniCSourceGeneratorTest {
     }
 
     @Test
+    void embeddedFallbackReceivesTheSharedReferenceSidecarAndReleasesItsLocalRef() {
+        String owner = "pkg/FallbackSidecar";
+        ParsedClass parsedClass = parse(
+                owner + ".class",
+                classWithFallbackReferenceField(owner));
+        MethodRewriteDecision decision = decision(parsedClass, "swap");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+        NativeImplementationPlan fallbackPlan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(decision),
+                        Map.of(),
+                        Set.of(decision.method().methodKey()));
+        var fieldPlan = new NativeFieldInternalizationPlanner().plan(
+                new FieldUseAnalyzer().analyze(
+                        new ParsedProgram(List.of(parsedClass))),
+                AnalysisWorld.CLOSED_WORLD,
+                true,
+                17L,
+                ignored -> FieldAccessImplementationPath
+                        .JVM_SIDECAR_FALLBACK_PATH);
+        NativeImplementationPlan reconciled =
+                new FallbackSidecarNativePlanReconciler().reconcile(
+                        fallbackPlan,
+                        fieldPlan);
+        RuntimeLoaderPlan loaderPlan = RuntimeLoaderPlan.create(
+                "xyz/Melody/natives",
+                true,
+                fieldPlan.referenceSidecarSize());
+
+        String source = new HostJniCSourceGenerator().generate(
+                reconciled,
+                loaderPlan);
+        String planningMarker = reconciled
+                .implementationFor(decision.method().methodKey())
+                .orElseThrow()
+                .fieldKeys()
+                .stream()
+                .filter(value -> value.startsWith("fallback-sidecar:v1:"))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(fieldPlan.internalizedFields().size() == 1);
+        assertTrue(source.contains(
+                "static jobject j2ll_nfs_reference_sidecar("));
+        assertTrue(source.contains(
+                "jobjectArray j2ll_fallback_sidecar = (jobjectArray)j2ll_nfs_reference_sidecar(env, owner);"));
+        assertTrue(source.contains(
+                "arg0, j2ll_fallback_sidecar)"));
+        assertTrue(source.contains(
+                "DeleteLocalRef(env, j2ll_fallback_sidecar)"));
+        assertFalse(source.contains(planningMarker));
+        assertFalse(source.contains("fallback-sidecar:v1:"));
+        assertFalse(source.contains(
+                owner + "#state!Ljava/lang/Object;"));
+    }
+
+    @Test
     void fieldHelperSourceUsesJniHandlesAndTokensOnly() {
         ParsedClass staticClass = parse("pkg/StaticFields.class", AsmFixtureBuilder.classWithStaticFieldRead("pkg/StaticFields"));
         ParsedClass instanceClass = parse("pkg/Fields.class", AsmFixtureBuilder.classWithInstanceFieldRead("pkg/Fields"));
@@ -135,6 +205,8 @@ class HostJniCSourceGeneratorTest {
         assertTrue(source.contains("(*env)->MonitorExit(env, monitor)"));
         assertTrue(source.contains("jclass j2ll_rt_class_object(JNIEnv* env, int64_t class_token)"));
         assertTrue(source.contains("j2ll_find_class_object_name(class_token)"));
+        assertTrue(source.contains(
+                Long.toString(Integer.toUnsignedLong("Lpkg/StaticFields;".hashCode())) + "LL"));
         assertTrue(source.contains("void j2ll_rt_throw(JNIEnv* env, jobject throwable)"));
         assertTrue(source.contains("(*env)->Throw(env, (jthrowable)throwable)"));
         assertTrue(source.contains("extern jint "
@@ -156,11 +228,92 @@ class HostJniCSourceGeneratorTest {
         assertFalse(source.contains("offsetof("));
     }
 
+    @Test
+    void arrayComponentReferenceAllocationUsesDescriptorComponentToken() {
+        ParsedClass parsedClass = parse(
+                "pkg/ByteMatrices.class",
+                AsmFixtureBuilder.classWithReferenceArrayAllocation(
+                        "pkg/ByteMatrices",
+                        "[B"));
+        MethodRewriteDecision decision = decision(parsedClass, "array");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+        NativeImplementationPlan implementationPlan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(decision),
+                        Map.of(
+                                decision.method().methodKey(),
+                                irMethod(parsedClass, "array")));
+        NativeMethodImplementation implementation =
+                implementationPlan.implementationFor(decision.method().methodKey()).orElseThrow();
+        StringBuilder source = new StringBuilder();
+
+        HostJniAllocationRuntimeSource.append(
+                source,
+                List.of(binding(implementation)));
+
+        long componentToken = ClassIdentityToken.token("[B");
+        assertTrue(source.toString().contains(
+                "{ " + componentToken + "LL, "));
+        assertTrue(source.toString().contains("\"[B\""));
+        assertTrue(source.toString().contains(
+                "const char* class_name = j2ll_find_class_name(component_token);"));
+        assertTrue(source.toString().contains(
+                "(*env)->FindClass(env, class_name)"));
+        assertTrue(source.toString().contains(
+                "(*env)->NewObjectArray(env, (jsize)length, component, NULL)"));
+    }
+
     private ParsedClass parse(String entry, byte[] bytes) {
         return new AsmClassParser()
                 .parse(new ClassFileEntry(entry, bytes, "fixture"))
                 .artifact()
                 .orElseThrow();
+    }
+
+    private byte[] classWithFallbackReferenceField(String owner) {
+        ClassWriter writer = new ClassWriter(
+                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                Opcodes.V17,
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER,
+                owner,
+                null,
+                "java/lang/Object",
+                null);
+        writer.visitField(
+                        Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+                        "state",
+                        "Ljava/lang/Object;",
+                        null,
+                        null)
+                .visitEnd();
+        MethodVisitor method = writer.visitMethod(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "swap",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                null,
+                null);
+        method.visitCode();
+        method.visitFieldInsn(
+                Opcodes.GETSTATIC,
+                owner,
+                "state",
+                "Ljava/lang/Object;");
+        method.visitVarInsn(Opcodes.ASTORE, 1);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitFieldInsn(
+                Opcodes.PUTSTATIC,
+                owner,
+                "state",
+                "Ljava/lang/Object;");
+        method.visitVarInsn(Opcodes.ALOAD, 1);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {
@@ -181,6 +334,35 @@ class HostJniCSourceGeneratorTest {
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
+    }
+
+    private HostJniCSourceGenerator.Binding binding(
+            NativeMethodImplementation implementation) {
+        MethodRewriteDecision decision = implementation.decision();
+        return new HostJniCSourceGenerator.Binding(
+                implementation.entry(),
+                decision,
+                implementation.path(),
+                implementation.llvmFunctionSymbol(),
+                implementation.passesJniEnv(),
+                implementation.passesOwnerClass(),
+                implementation.fieldKeys(),
+                implementation.directCallTargets(),
+                implementation.allocationKeys(),
+                implementation.typeCheckKeys(),
+                implementation.classObjectKeys(),
+                implementation.runtimeMetadataKeys(),
+                implementation.constructorCallKeys(),
+                implementation.staticCallKeys(),
+                implementation.dispatchKeys(),
+                implementation.stringHelperSymbols(),
+                implementation.templateIrMethod(),
+                implementation.reasonCode(),
+                new JniTypeMapper().methodDescriptor(
+                        decision.method().owner(),
+                        decision.method().name(),
+                        decision.method().descriptor(),
+                        decision.method().accessFlags().isStatic()));
     }
 
     private void assertAppearsBefore(String source, String first, String second) {

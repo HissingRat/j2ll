@@ -18,6 +18,8 @@ import java.util.jar.JarFile;
 import java.util.stream.Stream;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
+import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
+import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
 
 public class ArtifactAudit {
     public ArtifactAuditResult audit(
@@ -84,6 +86,52 @@ public class ArtifactAudit {
                 skippedSensitiveFacts.isEmpty() ? "NO_SKIPPED_SENSITIVE_FACTS" : "SKIPPED_SENSITIVE_FACTS_REPORTED",
                 "skipped sensitive facts: " + skippedSensitiveFacts.size()));
         return result(checks, checkedSensitiveFacts, observedOnlySensitiveFacts, skippedSensitiveFacts);
+    }
+
+    public ArtifactAuditResult audit(
+            Path workspaceRoot,
+            Path outputJar,
+            String embeddedLibraryDirectory,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<String> exportedSymbols,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts,
+            NativeFieldInternalizationPlan fieldInternalizationPlan) throws IOException {
+        ArtifactAuditResult base = audit(
+                workspaceRoot,
+                outputJar,
+                embeddedLibraryDirectory,
+                embeddedLibraries,
+                exportedSymbols,
+                sensitivePlaintextFacts);
+        if (!base.passed()) {
+            return base;
+        }
+        List<String> residuals;
+        try (JarFile jar = new JarFile(outputJar.toFile())) {
+            residuals = new InternalizedFieldArtifactVerifier()
+                    .residuals(jar, fieldInternalizationPlan);
+        }
+        ArtifactAuditCheck fieldCheck = residuals.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.internalizedFieldResiduals",
+                        fieldInternalizationPlan.approvedFieldIds().isEmpty()
+                                ? "NO_INTERNALIZED_FIELDS"
+                                : "INTERNALIZED_FIELDS_REMOVED",
+                        fieldInternalizationPlan.approvedFieldIds().isEmpty()
+                                ? "no native-internalized fields were planned"
+                                : "approved field declarations and references are absent from the final JAR")
+                : ArtifactAuditCheck.failed(
+                        "jar.internalizedFieldResiduals",
+                        "INTERNALIZED_FIELD_RESIDUAL",
+                        "residual approved field surfaces: " + residuals);
+        ArrayList<ArtifactAuditCheck> checks = new ArrayList<>(base.checks());
+        checks.add(fieldCheck);
+        return new ArtifactAuditResult(
+                residuals.isEmpty(),
+                checks,
+                base.checkedSensitiveFacts(),
+                base.observedOnlySensitiveFacts(),
+                base.skippedSensitiveFacts());
     }
 
     public ArtifactAuditResult skipped(String reasonCode, String message) {
@@ -410,6 +458,7 @@ public class ArtifactAudit {
         List<String> required = List.of(
                 "diagnostics.json",
                 "artifact-audit.json",
+                "field-internalization-report.json",
                 "frontend-skip-report.json",
                 "known-blockers.json",
                 "lowering-report.json",

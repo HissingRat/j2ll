@@ -92,7 +92,7 @@ invoke lowering 应消费 runtime analysis facts：
 - `STATIC` / `SPECIAL`：可直接 lower。
 - `VIRTUAL` / `INTERFACE` 单目标：按 `DevirtualizationPlan` lower 成 direct call 或 direct helper。
 - 多目标但目标集合完整：保留 runtime dispatch helper 或 method table helper。
-- unknown、external 或 skipped target：生成 JVM helper fallback plan；包含该 call site 的 method 记录为 `halfLowered`，并由 packaging 按 `fallbackMode` 存储 fallback bytecode target。
+- unknown、external 或 skipped target：生成 JVM helper fallback plan；包含该 call site 的 method 记录为 `halfLowered`，并由 packaging 使用固定的 `nativeEmbeddedClassBlob` 策略存储 fallback bytecode target。
 
 class initialization、null check、access check、exception behavior 必须在 lowering 或 runtime helper 中有明确归属。不能因为 devirtualized 就丢失 JVM 可见语义。
 

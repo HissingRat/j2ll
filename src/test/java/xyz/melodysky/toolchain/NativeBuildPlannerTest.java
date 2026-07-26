@@ -116,6 +116,18 @@ class NativeBuildPlannerTest {
     }
 
     @Test
+    void derivesDeterministicInternalLibraryNameFromProtectionSeed() {
+        String first = NativeLibraryName.derive("seed-a");
+        String repeated = NativeLibraryName.derive("seed-a");
+        String different = NativeLibraryName.derive("seed-b");
+
+        assertEquals(first, repeated);
+        assertTrue(NativeLibraryName.isSafe(first));
+        assertTrue(first.matches("j2ll_[0-9a-f]{16}"));
+        assertTrue(!first.equals(different));
+    }
+
+    @Test
     void marksTargetsUnbuildableWhenCurrentRuntimeHasNoJniHeaders(@TempDir Path temp) {
         NativeBuildPlan plan = new NativeBuildPlanner(
                         Optional.empty(),

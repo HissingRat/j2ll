@@ -1,15 +1,14 @@
 package xyz.melodysky.ir.pass.protection;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
-import xyz.melodysky.ir.model.IrTerminatorKind;
-import xyz.melodysky.ir.model.IrType;
-import xyz.melodysky.ir.model.IrValue;
 
 public final class BasicBlockSplittingPass implements ProtectionPass {
     @Override
@@ -19,7 +18,7 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
 
     @Override
     public boolean enabled(ProtectionConfig config) {
-        return config.enabled() && (config.basicBlockSplitting() || config.fakeBranches());
+        return config.enabled() && config.basicBlockSplitting();
     }
 
     @Override
@@ -27,7 +26,7 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
         if (isStubBackedMethod(method)) {
             return false;
         }
-        return isSafeSingleBlock(method);
+        return splitCandidate(method) != null;
     }
 
     @Override
@@ -43,56 +42,86 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
         if (!enabled(config) || !applicable(method)) {
             return method;
         }
-        IrBlock original = method.blocks().get(0);
+        IrBlock original = splitCandidate(method);
+        if (original == null) {
+            return method;
+        }
         ProtectionRandom random = new ProtectionRandom(config.seed());
-        String token = random.token(name(), method.methodKey(), 10);
-        String entryName = original.name();
-        String fakeName = "fake_" + token;
-        String bodyName = "split_" + token;
+        String token = random.token(name(), method.methodKey() + ":" + original.name(), 10);
+        String suffixName = uniqueBlockName(method, "split_" + token);
+        int splitIndex = splitIndex(original, token);
 
-        ArrayList<IrInstruction> entryInstructions = new ArrayList<>();
-        IrValue left = new IrValue("%j2ll_fb_" + token + "_a", IrType.I32);
-        IrValue right = new IrValue("%j2ll_fb_" + token + "_b", IrType.I32);
-        IrValue condition = new IrValue("%j2ll_fb_" + token + "_cond", IrType.I1);
-        entryInstructions.add(IrInstruction.constInt(left, 1));
-        entryInstructions.add(IrInstruction.constInt(right, 1));
-        entryInstructions.add(IrInstruction.binary(condition, IrOpcode.CMP_EQ_I32, left, right));
-
-        IrBlock entry = new IrBlock(
-                entryName,
-                List.of(),
-                entryInstructions,
-                IrTerminator.branch(condition, bodyName, fakeName));
-        IrBlock fake = new IrBlock(fakeName, List.of(), IrTerminator.gotoBlock(bodyName));
-        IrBlock body = new IrBlock(
-                bodyName,
-                List.of(),
+        IrBlock prefix = new IrBlock(
+                original.name(),
+                original.parameters(),
                 original.exceptionCatchTypes(),
                 original.exceptionEdges(),
-                original.instructions(),
+                original.instructions().subList(0, splitIndex),
+                IrTerminator.gotoBlock(suffixName));
+        IrBlock suffix = new IrBlock(
+                suffixName,
+                List.of(),
+                List.of(),
+                List.of(),
+                original.instructions().subList(splitIndex, original.instructions().size()),
                 original.terminator());
+
+        ArrayList<IrBlock> blocks = new ArrayList<>(method.blocks().size() + 1);
+        for (IrBlock block : method.blocks()) {
+            if (block == original) {
+                blocks.add(prefix);
+                blocks.add(suffix);
+            } else {
+                blocks.add(block);
+            }
+        }
         return new IrMethod(
                 method.owner(),
                 method.name(),
                 method.descriptor(),
                 method.returnType(),
                 method.parameters(),
-                List.of(entry, fake, body));
+                blocks);
     }
 
-    private boolean isSafeSingleBlock(IrMethod method) {
-        if (method.blocks().size() != 1) {
-            return false;
+    private IrBlock splitCandidate(IrMethod method) {
+        for (IrBlock block : method.blocks()) {
+            if (isSafeBlock(block)) {
+                return block;
+            }
         }
-        IrBlock block = method.blocks().get(0);
-        if (!block.parameters().isEmpty()
+        return null;
+    }
+
+    private boolean isSafeBlock(IrBlock block) {
+        if (block.instructions().size() < 2
+                || !block.parameters().isEmpty()
                 || block.isExceptionHandler()
-                || !block.exceptionEdges().isEmpty()
-                || block.terminator().kind() != IrTerminatorKind.RETURN) {
+                || !block.exceptionCatchTypes().isEmpty()
+                || !block.exceptionEdges().isEmpty()) {
             return false;
         }
         return block.instructions().stream().allMatch(instruction -> instruction.exceptionSites().isEmpty()
                 && !isSensitiveOpcode(instruction.opcode()));
+    }
+
+    private int splitIndex(IrBlock block, String token) {
+        int availableBoundaries = block.instructions().size() - 1;
+        long tokenValue = Long.parseUnsignedLong(token, 16);
+        return 1 + (int) Long.remainderUnsigned(tokenValue, availableBoundaries);
+    }
+
+    private String uniqueBlockName(IrMethod method, String preferredName) {
+        Set<String> names = new HashSet<>();
+        method.blocks().stream().map(IrBlock::name).forEach(names::add);
+        if (!names.contains(preferredName)) {
+            return preferredName;
+        }
+        int suffix = 1;
+        while (names.contains(preferredName + "_" + suffix)) {
+            suffix++;
+        }
+        return preferredName + "_" + suffix;
     }
 
     private boolean isStubBackedMethod(IrMethod method) {

@@ -13,6 +13,7 @@ import xyz.melodysky.backend.llvm.model.LlvmBasicBlock;
 import xyz.melodysky.backend.llvm.model.LlvmDeclaration;
 import xyz.melodysky.backend.llvm.model.LlvmFunction;
 import xyz.melodysky.backend.llvm.model.LlvmInstruction;
+import xyz.melodysky.backend.llvm.model.LlvmIrCallIndirectionRef;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
 import xyz.melodysky.backend.llvm.model.LlvmParameter;
@@ -36,6 +37,7 @@ public final class LlvmModuleLowerer {
     private final LlvmNameMangler nameMangler;
     private final LlvmTypeLowerer typeLowerer = new LlvmTypeLowerer();
     private final RuntimeHelperCatalog runtimeHelpers = RuntimeHelperCatalog.defaultCatalog();
+    private final NativeFieldLlvmLowering nativeFields = new NativeFieldLlvmLowering();
 
     public LlvmModuleLowerer() {
         this(new LlvmNameMangler());
@@ -146,13 +148,15 @@ public final class LlvmModuleLowerer {
     }
 
     private List<LlvmDeclaration> runtimeHelperDeclarations() {
-        return runtimeHelpers.helpers().stream()
+        ArrayList<LlvmDeclaration> declarations = new ArrayList<>(runtimeHelpers.helpers().stream()
                 .map(helper -> new LlvmDeclaration(
                         helper.llvmSymbol(),
                         helper.llvmReturnType(),
                         helper.llvmParameterTypes(),
                         helper.name()))
-                .toList();
+                .toList());
+        declarations.addAll(nativeFields.declarations());
+        return List.copyOf(declarations);
     }
 
     private LlvmFunction lowerMethod(
@@ -174,14 +178,20 @@ public final class LlvmModuleLowerer {
                 .map(parameter -> new LlvmParameter(typeLowerer.lower(parameter.type()), parameter.name()))
                 .forEach(parameters::add);
         Map<String, List<PhiIncoming>> phiIncoming = phiIncoming(method);
-        List<LlvmBasicBlock> blocks = method.blocks().stream()
-                .map(block -> lowerBlock(
-                        block,
-                        phiIncoming.getOrDefault(block.name(), List.of()),
-                        directCallMethodKeys,
-                        staticCallMethodKeys,
-                        functionAbis))
-                .toList();
+        boolean cacheReferenceSidecar = nativeFields.usesReferenceSidecar(method);
+        ArrayList<LlvmBasicBlock> blocks = new ArrayList<>();
+        if (cacheReferenceSidecar) {
+            blocks.add(referenceSidecarPrologue(method));
+        }
+        for (IrBlock block : method.blocks()) {
+            blocks.add(lowerBlock(
+                    block,
+                    phiIncoming.getOrDefault(block.name(), List.of()),
+                    directCallMethodKeys,
+                    staticCallMethodKeys,
+                    functionAbis,
+                    cacheReferenceSidecar));
+        }
         return new LlvmFunction(
                 nameMangler.functionName(method),
                 linkage,
@@ -191,12 +201,37 @@ public final class LlvmModuleLowerer {
                 blocks);
     }
 
+    private LlvmBasicBlock referenceSidecarPrologue(IrMethod method) {
+        if (method.blocks().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "reference field sidecar requires a method entry block");
+        }
+        if (!method.blocks().get(0).parameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "reference field sidecar requires a parameter-free method entry block");
+        }
+        Set<String> names = method.blocks().stream()
+                .map(IrBlock::name)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        String base = "j2ll.nfs.prologue." + stableHash(method.methodKey());
+        String name = base;
+        int suffix = 1;
+        while (names.contains(name)) {
+            name = base + "." + suffix++;
+        }
+        return new LlvmBasicBlock(
+                name,
+                nativeFields.referenceSidecarCacheInitialization(),
+                LlvmTerminator.gotoBlock(method.blocks().get(0).name()));
+    }
+
     private LlvmBasicBlock lowerBlock(
             IrBlock block,
             List<PhiIncoming> phiIncoming,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys,
-            Map<String, LlvmFunctionAbi> functionAbis) {
+            Map<String, LlvmFunctionAbi> functionAbis,
+            boolean usesReferenceSidecar) {
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
         for (int index = 0; index < block.parameters().size(); index++) {
             IrValue parameter = block.parameters().get(index);
@@ -220,11 +255,20 @@ public final class LlvmModuleLowerer {
                     block.name(),
                     instructionIndex));
         }
+        if (usesReferenceSidecar && exitsFunction(block)) {
+            instructions.add(nativeFields.referenceSidecarCleanup());
+        }
         LlvmTerminator terminator = lowerTerminator(block);
         return new LlvmBasicBlock(
                 block.name(),
                 instructions,
                 terminator);
+    }
+
+    private boolean exitsFunction(IrBlock block) {
+        return block.terminator().kind() == IrTerminatorKind.RETURN
+                || (block.terminator().kind() == IrTerminatorKind.THROW
+                        && block.exceptionEdges().size() != 1);
     }
 
     private Map<String, List<PhiIncoming>> phiIncoming(IrMethod method) {
@@ -331,6 +375,12 @@ public final class LlvmModuleLowerer {
                     directCallMethodKeys,
                     staticCallMethodKeys,
                     functionAbis,
+                    stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
+        }
+        if (instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC) {
+            return nativeFields.lower(
+                    instruction,
                     stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
         }
         return List.of(lowerInstruction(instruction, directCallMethodKeys, functionAbis));
@@ -452,7 +502,7 @@ public final class LlvmModuleLowerer {
                     ARRAY_LOAD_I32, ARRAY_LOAD_I64, ARRAY_LOAD_F32, ARRAY_LOAD_F64, ARRAY_LOAD_REF,
                     ARRAY_STORE_I32, ARRAY_STORE_I64, ARRAY_STORE_F32, ARRAY_STORE_F64, ARRAY_STORE_REF,
                     CHECKCAST, INSTANCEOF -> throw new IllegalStateException("handled earlier");
-            case GET_STATIC, PUT_STATIC, GET_FIELD, PUT_FIELD,
+            case GET_STATIC, PUT_STATIC, GET_NATIVE_STATIC, PUT_NATIVE_STATIC, GET_FIELD, PUT_FIELD,
                     CALL_STATIC, CALL_SPECIAL, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC, CALL_RUNTIME_HELPER ->
                     throw new IllegalStateException("handled earlier");
             case MONITOR_ENTER, MONITOR_EXIT, MONITOR_EXIT_ON_EXCEPTION -> throw new IllegalStateException("handled earlier");
@@ -634,6 +684,8 @@ public final class LlvmModuleLowerer {
     private boolean isFieldAccess(IrOpcode opcode) {
         return opcode == IrOpcode.GET_STATIC
                 || opcode == IrOpcode.PUT_STATIC
+                || opcode == IrOpcode.GET_NATIVE_STATIC
+                || opcode == IrOpcode.PUT_NATIVE_STATIC
                 || opcode == IrOpcode.GET_FIELD
                 || opcode == IrOpcode.PUT_FIELD;
     }
@@ -683,11 +735,13 @@ public final class LlvmModuleLowerer {
             String args = directCallArguments(targetAbi, instruction.operands());
             if (instruction.result().isPresent()) {
                 String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-                return LlvmInstruction.raw(
+                return preserveIrCallIndirection(instruction, LlvmInstruction.raw(
                         Optional.of(instruction.result().orElseThrow().name()),
-                        "call " + type + " @" + target + "(" + args + ")");
+                        "call " + type + " @" + target + "(" + args + ")"));
             }
-            return LlvmInstruction.raw(Optional.empty(), "call void @" + target + "(" + args + ")");
+            return preserveIrCallIndirection(
+                    instruction,
+                    LlvmInstruction.raw(Optional.empty(), "call void @" + target + "(" + args + ")"));
         }
         if (isConstructorCallHelperInstruction(instruction)) {
             String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
@@ -733,6 +787,17 @@ public final class LlvmModuleLowerer {
                     "call " + type + " @" + prefix + symbol + "(" + args + ")");
         }
         return LlvmInstruction.raw(Optional.empty(), "call void @" + prefix + symbol + "(" + args + ")");
+    }
+
+    private LlvmInstruction preserveIrCallIndirection(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            LlvmInstruction lowered) {
+        return instruction.callIndirection()
+                .map(reference -> lowered.withIrCallIndirection(new LlvmIrCallIndirectionRef(
+                        reference.groupId(),
+                        reference.entryId(),
+                        reference.mode())))
+                .orElse(lowered);
     }
 
     private String directCallArguments(LlvmFunctionAbi targetAbi, List<IrValue> operands) {
@@ -1536,7 +1601,9 @@ public final class LlvmModuleLowerer {
                 || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
-                        || instruction.opcode() == IrOpcode.PUT_STATIC);
+                        || instruction.opcode() == IrOpcode.PUT_STATIC
+                        || instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                        || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC);
     }
 
     private String fieldHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1544,6 +1611,8 @@ public final class LlvmModuleLowerer {
             case GET_STATIC -> switch (instruction.result().orElseThrow().type()) {
                 case I32 -> RuntimeHelperKind.FIELD_GET_STATIC_I32;
                 case I64 -> RuntimeHelperKind.FIELD_GET_STATIC_I64;
+                case F32 -> RuntimeHelperKind.FIELD_GET_STATIC_F32;
+                case F64 -> RuntimeHelperKind.FIELD_GET_STATIC_F64;
                 case REFERENCE -> RuntimeHelperKind.FIELD_GET_STATIC_REF;
                 default -> throw new IllegalArgumentException("unsupported static field get type "
                         + instruction.result().orElseThrow().type());
@@ -1551,6 +1620,8 @@ public final class LlvmModuleLowerer {
             case PUT_STATIC -> switch (instruction.operands().get(0).type()) {
                 case I32 -> RuntimeHelperKind.FIELD_PUT_STATIC_I32;
                 case I64 -> RuntimeHelperKind.FIELD_PUT_STATIC_I64;
+                case F32 -> RuntimeHelperKind.FIELD_PUT_STATIC_F32;
+                case F64 -> RuntimeHelperKind.FIELD_PUT_STATIC_F64;
                 case REFERENCE -> RuntimeHelperKind.FIELD_PUT_STATIC_REF;
                 default -> throw new IllegalArgumentException("unsupported static field put type "
                         + instruction.operands().get(0).type());
@@ -1558,6 +1629,8 @@ public final class LlvmModuleLowerer {
             case GET_FIELD -> switch (instruction.result().orElseThrow().type()) {
                 case I32 -> RuntimeHelperKind.FIELD_GET_FIELD_I32;
                 case I64 -> RuntimeHelperKind.FIELD_GET_FIELD_I64;
+                case F32 -> RuntimeHelperKind.FIELD_GET_FIELD_F32;
+                case F64 -> RuntimeHelperKind.FIELD_GET_FIELD_F64;
                 case REFERENCE -> RuntimeHelperKind.FIELD_GET_FIELD_REF;
                 default -> throw new IllegalArgumentException("unsupported field get type "
                         + instruction.result().orElseThrow().type());
@@ -1565,6 +1638,8 @@ public final class LlvmModuleLowerer {
             case PUT_FIELD -> switch (instruction.operands().get(1).type()) {
                 case I32 -> RuntimeHelperKind.FIELD_PUT_FIELD_I32;
                 case I64 -> RuntimeHelperKind.FIELD_PUT_FIELD_I64;
+                case F32 -> RuntimeHelperKind.FIELD_PUT_FIELD_F32;
+                case F64 -> RuntimeHelperKind.FIELD_PUT_FIELD_F64;
                 case REFERENCE -> RuntimeHelperKind.FIELD_PUT_FIELD_REF;
                 default -> throw new IllegalArgumentException("unsupported field put type "
                         + instruction.operands().get(1).type());

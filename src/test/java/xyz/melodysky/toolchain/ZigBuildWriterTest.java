@@ -1,6 +1,7 @@
 package xyz.melodysky.toolchain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,11 +16,13 @@ class ZigBuildWriterTest {
     Path temp;
 
     @Test
-    void generatedBuildZigPlansSelectedTargetMatrixInOneWorkspace() throws Exception {
+    void generatedBuildZigExposesRealCompileAndLinkBoundariesPerTarget() throws Exception {
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
         ZigSourceSet sources = new ZigSourceSet(
                 List.of(workspace.llvmDirectory().resolve("pkg_A.ll")),
-                List.of(workspace.jniDirectory().resolve("wrapper.c"), workspace.runtimeDirectory().resolve("helper.c")),
+                List.of(
+                        workspace.jniDirectory().resolve("wrapper.c"),
+                        workspace.runtimeDirectory().resolve("helper.c")),
                 List.of(),
                 List.of());
         NativeBuildPlan plan = new NativeBuildPlan(List.of(
@@ -29,101 +32,18 @@ class ZigBuildWriterTest {
 
         new ZigBuildWriter().write(workspace, "j2lltest", plan, new ZigInputSet(sources));
 
-        String expected = """
-                const std = @import("std");
-
-                pub fn build(b: *std.Build) void {
-                    const optimize = .ReleaseSafe;
-                    const progress_markers = b.addWriteFiles();
-
-                    const target_linux_arm64 = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .linux, .os_version_min = .{ .semver = .{ .major = 3, .minor = 7, .patch = 0 } }, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 } });
-                    const module_linux_arm64 = b.createModule(.{
-                        .target = target_linux_arm64,
-                        .optimize = optimize,
-                        .strip = true,
-                        .link_libc = true,
-                    });
-                    module_linux_arm64.addCSourceFiles(.{
-                        .root = b.path("."),
-                        .files = &.{ "jni/wrapper.c", "runtime/helper.c" },
-                        .language = .c,
-                        .flags = &.{ "-g0", "-fvisibility=hidden", "-ffile-compilation-dir=.", "-fdebug-compilation-dir=." },
-                    });
-                    module_linux_arm64.addObjectFile(b.path("llvm/pkg_A.ll"));
-                    const lib_linux_arm64 = b.addLibrary(.{
-                        .linkage = .dynamic,
-                        .name = "j2lltest",
-                        .root_module = module_linux_arm64,
-                    });
-                    const install_linux_arm64 = b.addInstallArtifact(lib_linux_arm64, .{
-                        .dest_dir = .{ .override = .prefix },
-                        .dest_sub_path = "native/arm64-linux.so",
-                    });
-                    const marker_linux_arm64 = progress_markers.add("linux-arm64.done", "j2ll-target-complete-v1:linux-arm64\\n");
-                    const install_marker_linux_arm64 = b.addInstallFileWithDir(marker_linux_arm64, .prefix, "logs/zig-progress/linux-arm64.done");
-                    install_marker_linux_arm64.step.dependOn(&install_linux_arm64.step);
-                    b.getInstallStep().dependOn(&install_marker_linux_arm64.step);
-
-                    const target_macos_x64 = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos, .os_version_min = .{ .semver = .{ .major = 10, .minor = 15, .patch = 0 } } });
-                    const module_macos_x64 = b.createModule(.{
-                        .target = target_macos_x64,
-                        .optimize = optimize,
-                        .strip = true,
-                        .link_libc = true,
-                    });
-                    module_macos_x64.addCSourceFiles(.{
-                        .root = b.path("."),
-                        .files = &.{ "jni/wrapper.c", "runtime/helper.c" },
-                        .language = .c,
-                        .flags = &.{ "-g0", "-fvisibility=hidden", "-ffile-compilation-dir=.", "-fdebug-compilation-dir=." },
-                    });
-                    module_macos_x64.addObjectFile(b.path("llvm/pkg_A.ll"));
-                    const lib_macos_x64 = b.addLibrary(.{
-                        .linkage = .dynamic,
-                        .name = "j2lltest",
-                        .root_module = module_macos_x64,
-                    });
-                    lib_macos_x64.discard_local_symbols = true;
-                    const install_macos_x64 = b.addInstallArtifact(lib_macos_x64, .{
-                        .dest_dir = .{ .override = .prefix },
-                        .dest_sub_path = "native/x64-macos.dylib",
-                    });
-                    const marker_macos_x64 = progress_markers.add("macos-x64.done", "j2ll-target-complete-v1:macos-x64\\n");
-                    const install_marker_macos_x64 = b.addInstallFileWithDir(marker_macos_x64, .prefix, "logs/zig-progress/macos-x64.done");
-                    install_marker_macos_x64.step.dependOn(&install_macos_x64.step);
-                    b.getInstallStep().dependOn(&install_marker_macos_x64.step);
-
-                    const target_windows_x64 = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
-                    const module_windows_x64 = b.createModule(.{
-                        .target = target_windows_x64,
-                        .optimize = optimize,
-                        .strip = true,
-                        .link_libc = true,
-                    });
-                    module_windows_x64.addCSourceFiles(.{
-                        .root = b.path("."),
-                        .files = &.{ "jni/wrapper.c", "runtime/helper.c" },
-                        .language = .c,
-                        .flags = &.{ "-g0", "-fvisibility=hidden", "-ffile-compilation-dir=.", "-fdebug-compilation-dir=." },
-                    });
-                    module_windows_x64.addObjectFile(b.path("llvm/pkg_A.ll"));
-                    const lib_windows_x64 = b.addLibrary(.{
-                        .linkage = .dynamic,
-                        .name = "j2lltest",
-                        .root_module = module_windows_x64,
-                    });
-                    const install_windows_x64 = b.addInstallArtifact(lib_windows_x64, .{
-                        .dest_dir = .{ .override = .prefix },
-                        .implib_dir = .disabled,
-                        .dest_sub_path = "native/x64-windows.dll",
-                    });
-                    const marker_windows_x64 = progress_markers.add("windows-x64.done", "j2ll-target-complete-v1:windows-x64\\n");
-                    const install_marker_windows_x64 = b.addInstallFileWithDir(marker_windows_x64, .prefix, "logs/zig-progress/windows-x64.done");
-                    install_marker_windows_x64.step.dependOn(&install_windows_x64.step);
-                    b.getInstallStep().dependOn(&install_marker_windows_x64.step);
-                }
-                """;
-        assertEquals(expected, Files.readString(workspace.buildZig()));
+        String buildZig = Files.readString(workspace.buildZig());
+        assertTrue(buildZig.contains("const progress_markers = b.addWriteFiles();"));
+        assertFalse(buildZig.contains(".addCSourceFiles("));
+        assertTrue(buildZig.contains(".pic = true"));
+        assertTrue(buildZig.contains(".implib_dir = .disabled"));
+        assertTrue(buildZig.contains("lib_macos_x64.discard_local_symbols = true"));
+        for (TargetTriple target : List.of(
+                TargetTriple.LINUX_ARM64,
+                TargetTriple.MACOS_X64,
+                TargetTriple.WINDOWS_X64)) {
+            assertTargetGraph(buildZig, workspace, target);
+        }
 
         String manifest = Files.readString(workspace.manifest());
         assertTrue(manifest.contains("\"libraryName\": \"j2lltest\""));
@@ -131,6 +51,74 @@ class ZigBuildWriterTest {
         assertTrue(manifest.contains("\"target\": \"linux-arm64\""));
         assertTrue(manifest.contains("\"target\": \"macos-x64\""));
         assertTrue(manifest.contains("\"target\": \"windows-x64\""));
+    }
+
+    @Test
+    void prebuiltObjectsStayLinkInputsAndDoNotBecomeCompileProgressUnits() {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        Path prebuilt = temp.resolve("input.o");
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(unit(TargetTriple.LINUX_X64)));
+        ZigSourceSet sources = new ZigSourceSet(
+                List.of(),
+                List.of(),
+                List.of(prebuilt),
+                List.of());
+
+        String buildZig =
+                new ZigBuildWriter().buildZig(workspace, "j2lltest", plan, sources, true);
+
+        assertTrue(buildZig.contains(".addObjectFile(.{ .cwd_relative = "));
+        assertFalse(buildZig.contains("compile_marker_linux_x64"));
+        assertTrue(buildZig.contains(
+                "j2ll-target-linking-v1:linux-x64:0\\n"));
+    }
+
+    @Test
+    void largeMixedSourceSetUsesBoundedStaticCompileUnitsWithRealMarkers() {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(unit(TargetTriple.LINUX_X64)));
+        List<Path> cSources = java.util.stream.IntStream.range(0, 65)
+                .mapToObj(index -> workspace.jniDirectory().resolve("input-" + index + ".c"))
+                .toList();
+        List<Path> llvmSources = List.of(
+                workspace.llvmDirectory().resolve("first.ll"),
+                workspace.llvmDirectory().resolve("second.ll"));
+        ZigSourceSet sources = new ZigSourceSet(
+                llvmSources,
+                cSources,
+                List.of(),
+                List.of());
+
+        String buildZig =
+                new ZigBuildWriter().buildZig(workspace, "j2lltest", plan, sources, true);
+        ZigBuildProgressPlan.TargetPlan target =
+                ZigBuildProgressPlan.forSources(plan, sources).targets().get(0);
+
+        assertEquals(ZigBuildProgressPlan.MAX_COMPILE_UNITS, target.compileUnits().size());
+        assertEquals(
+                ZigBuildProgressPlan.MAX_COMPILE_UNITS,
+                countOccurrences(buildZig, ".linkage = .static"));
+        assertEquals(
+                ZigBuildProgressPlan.MAX_COMPILE_UNITS,
+                countOccurrences(buildZig, "module_linux_x64.linkLibrary(compile_linux_x64_"));
+        for (ZigBuildProgressPlan.CompileUnit compileUnit : target.compileUnits()) {
+            String unitSymbol = "linux_x64_" + compileUnit.id().replace('-', '_');
+            assertTrue(buildZig.contains(
+                    "install_compile_marker_" + unitSymbol
+                            + ".step.dependOn(&compile_" + unitSymbol + ".step)"));
+        }
+        for (Path source : java.util.stream.Stream.concat(
+                        cSources.stream(),
+                        llvmSources.stream())
+                .toList()) {
+            String relative = workspace.buildDirectory()
+                    .toAbsolutePath()
+                    .normalize()
+                    .relativize(source.toAbsolutePath().normalize())
+                    .toString()
+                    .replace('\\', '/');
+            assertEquals(1, countOccurrences(buildZig, "\"" + relative + "\""), relative);
+        }
     }
 
     @Test
@@ -171,7 +159,7 @@ class ZigBuildWriterTest {
 
         String buildZig = Files.readString(workspace.buildZig());
         assertTrue(buildZig.contains("const target_macos_arm64"));
-        assertTrue(!buildZig.contains("const target_linux_x64"));
+        assertFalse(buildZig.contains("const target_linux_x64"));
         String manifest = Files.readString(workspace.manifest());
         assertTrue(manifest.contains("\"selectedTargets\""));
         assertTrue(manifest.contains("\"requiredTargets\""));
@@ -181,22 +169,25 @@ class ZigBuildWriterTest {
         assertTrue(manifest.contains("\"failedTargets\""));
         assertTrue(manifest.contains("\"status\": \"failed\""));
         assertTrue(manifest.contains("\"reasonCode\": \"ZIG_TARGET_UNBUILDABLE\""));
-        assertTrue(manifest.contains("\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""));
+        assertTrue(manifest.contains(
+                "\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""));
     }
 
     @Test
-    void resolvedBinaryStripPolicyControlsZigModule() {
+    void resolvedBinaryStripPolicyControlsEveryZigModule() {
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
         NativeBuildPlan plan = new NativeBuildPlan(List.of(unit(TargetTriple.LINUX_X64)));
+        ZigSourceSet sources = new ZigSourceSet(
+                List.of(workspace.llvmDirectory().resolve("input.ll")),
+                List.of(workspace.jniDirectory().resolve("input.c")),
+                List.of(),
+                List.of());
 
-        String buildZig = new ZigBuildWriter().buildZig(
-                workspace,
-                "j2lltest",
-                plan,
-                new ZigSourceSet(List.of(), List.of(), List.of(), List.of()),
-                false);
+        String buildZig =
+                new ZigBuildWriter().buildZig(workspace, "j2lltest", plan, sources, false);
 
-        assertTrue(buildZig.contains(".strip = false"));
+        assertFalse(buildZig.contains(".strip = true"));
+        assertTrue(countOccurrences(buildZig, ".strip = false") == 3);
     }
 
     @Test
@@ -212,6 +203,65 @@ class ZigBuildWriterTest {
                         plan,
                         new ZigSourceSet(List.of(), List.of(), List.of(), List.of()),
                         true));
+    }
+
+    private void assertTargetGraph(
+            String buildZig,
+            ZigBuildWorkspace workspace,
+            TargetTriple target) {
+        String symbol = target.safeSymbol();
+        String progressRoot = workspace.workspaceRoot()
+                .toAbsolutePath()
+                .normalize()
+                .relativize(ZigTargetCompletionMonitor.progressDirectory(workspace))
+                .toString()
+                .replace('\\', '/');
+        assertTrue(buildZig.contains(
+                "const compile_" + symbol + "_c_0 = b.addLibrary"));
+        assertTrue(buildZig.contains(
+                "const compile_" + symbol + "_c_1 = b.addLibrary"));
+        assertTrue(buildZig.contains(
+                "const compile_" + symbol + "_llvm_0 = b.addLibrary"));
+        assertTrue(buildZig.contains(
+                "module_" + symbol + ".linkLibrary(compile_" + symbol + "_c_0)"));
+        assertTrue(buildZig.contains(
+                "module_" + symbol + ".linkLibrary(compile_" + symbol + "_c_1)"));
+        assertTrue(buildZig.contains(
+                "module_" + symbol + ".linkLibrary(compile_" + symbol + "_llvm_0)"));
+        assertTrue(buildZig.contains(
+                "install_linking_marker_" + symbol
+                        + ".step.dependOn(&install_compile_marker_" + symbol + "_c_0.step)"));
+        assertTrue(buildZig.contains(
+                "lib_" + symbol + ".step.dependOn(&install_linking_marker_" + symbol + ".step)"));
+        assertTrue(buildZig.contains(
+                "install_marker_" + symbol + ".step.dependOn(&install_" + symbol + ".step)"));
+        assertTrue(buildZig.contains(
+                "j2ll-target-linking-v1:" + target.directoryName() + ":3\\n"));
+        assertTrue(buildZig.contains(
+                "j2ll-target-complete-v1:" + target.directoryName() + "\\n"));
+        assertTrue(buildZig.contains(
+                "\"" + progressRoot + "/" + target.directoryName() + ".c-0.done\""));
+        assertTrue(buildZig.contains(
+                "\"" + progressRoot + "/" + target.directoryName() + ".linking\""));
+        assertTrue(buildZig.contains(
+                "\"" + progressRoot + "/" + target.directoryName() + ".done\""));
+        String prefix = target.zigOsTag().equals("macos") ? "_" : "";
+        assertTrue(buildZig.contains(
+                "lib_" + symbol + ".forceUndefinedSymbol(\""
+                        + prefix + "JNI_OnLoad\")"));
+        assertTrue(buildZig.contains(
+                "lib_" + symbol + ".forceUndefinedSymbol(\""
+                        + prefix + "j2ll_register\")"));
+    }
+
+    private int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private NativeBuildUnit unit(TargetTriple target) {

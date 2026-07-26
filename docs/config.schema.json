@@ -11,12 +11,9 @@
     "javaHome",
     "runtimeImage",
     "worldModel",
-    "javaSupportTier",
-    "fallbackMode",
     "outputDirectory",
     "whiteList",
     "blackList",
-    "libraryName",
     "embeddedLibraryDirectory",
     "signaturePolicy",
     "signing",
@@ -33,11 +30,6 @@
       "type": "string",
       "enum": ["CLOSED_WORLD", "PARTIAL_WORLD", "JDK_EXTERNAL_WORLD", "UNKNOWN_DYNAMIC_WORLD"]
     },
-    "javaSupportTier": {
-      "type": "string",
-      "enum": ["TIER_0", "TIER_1", "TIER_2", "TIER_3", "TIER_4", "TIER_5"]
-    },
-    "fallbackMode": { "const": "nativeEmbeddedClassBlob" },
     "outputDirectory": { "type": "string", "minLength": 1 },
     "whiteList": { "type": "array", "items": { "type": "string" } },
     "blackList": { "type": "array", "items": { "type": "string" } },
@@ -53,10 +45,6 @@
         "macosX64": { "type": "boolean" },
         "macosArm64": { "type": "boolean" }
       }
-    },
-    "libraryName": {
-      "type": ["string", "null"],
-      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
     },
     "embeddedLibraryDirectory": {
       "type": "string",
@@ -107,19 +95,27 @@
             "methodInlining",
             "methodSplitting",
             "callIndirection",
-            "methodTableHiding"
+            "fieldInternalization",
+            "methodTableHiding",
+            "blockNameObfuscation"
           ],
           "properties": {
             "enabled": { "type": "boolean", "default": true },
-            "controlFlowFlattening": { "$ref": "#/$defs/pass" },
-            "fakeBranches": { "$ref": "#/$defs/pass" },
-            "basicBlockSplitting": { "$ref": "#/$defs/pass" },
-            "constantEncryption": { "$ref": "#/$defs/pass" },
-            "stringEncryption": { "$ref": "#/$defs/stringPass" },
-            "methodInlining": { "$ref": "#/$defs/pass" },
-            "methodSplitting": { "$ref": "#/$defs/pass" },
-            "callIndirection": { "$ref": "#/$defs/pass" },
-            "methodTableHiding": { "$ref": "#/$defs/pass" }
+            "controlFlowFlattening": { "type": "boolean", "default": true },
+            "fakeBranches": { "type": "boolean", "default": true },
+            "basicBlockSplitting": { "type": "boolean", "default": true },
+            "constantEncryption": { "type": "boolean", "default": true },
+            "stringEncryption": { "type": "boolean", "default": true },
+            "methodInlining": { "type": "boolean", "default": true },
+            "methodSplitting": { "type": "boolean", "default": true },
+            "callIndirection": { "type": "boolean", "default": true },
+            "fieldInternalization": {
+              "type": "boolean",
+              "default": false,
+              "description": "Requires CLOSED_WORLD, or interactive build-time approval for current-input-JAR-only analysis. The approval is per run and does not change worldModel."
+            },
+            "methodTableHiding": { "type": "boolean", "default": true },
+            "blockNameObfuscation": { "type": "boolean", "default": true }
           }
         },
         "llvm": {
@@ -131,22 +127,15 @@
             "opaquePredicates",
             "blockLayoutPerturbation",
             "indirectCalls",
-            "globalLayout",
-            "visibilityHardening"
+            "globalLayout"
           ],
           "properties": {
             "enabled": { "type": "boolean", "default": true },
-            "nameObfuscation": { "$ref": "#/$defs/pass" },
-            "opaquePredicates": { "$ref": "#/$defs/pass" },
-            "blockLayoutPerturbation": { "$ref": "#/$defs/pass" },
-            "indirectCalls": { "$ref": "#/$defs/pass" },
-            "globalLayout": { "$ref": "#/$defs/pass" },
-            "visibilityHardening": {
-              "type": "object",
-              "additionalProperties": true,
-              "required": ["enabled"],
-              "properties": { "enabled": { "type": "boolean", "default": true } }
-            }
+            "nameObfuscation": { "type": "boolean", "default": true },
+            "opaquePredicates": { "type": "boolean", "default": true },
+            "blockLayoutPerturbation": { "type": "boolean", "default": true },
+            "indirectCalls": { "type": "boolean", "default": true },
+            "globalLayout": { "type": "boolean", "default": true }
           }
         },
         "binary": {
@@ -161,24 +150,6 @@
             "symbolAudit": { "type": "boolean", "default": true }
           }
         }
-      }
-    }
-  },
-  "$defs": {
-    "pass": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": ["enabled"],
-      "properties": {
-        "enabled": { "type": "boolean", "default": true }
-      }
-    },
-    "stringPass": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": ["enabled"],
-      "properties": {
-        "enabled": { "type": "boolean", "default": true }
       }
     }
   }

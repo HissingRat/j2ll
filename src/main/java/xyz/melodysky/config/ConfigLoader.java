@@ -21,7 +21,6 @@ import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.toolchain.HostPlatform;
-import xyz.melodysky.toolchain.NativeLibraryName;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class ConfigLoader {
@@ -32,13 +31,10 @@ public final class ConfigLoader {
             "javaHome",
             "runtimeImage",
             "worldModel",
-            "javaSupportTier",
-            "fallbackMode",
             "outputDirectory",
             "whiteList",
             "blackList",
             "target",
-            "libraryName",
             "embeddedLibraryDirectory",
             "signaturePolicy",
             "signing",
@@ -62,19 +58,18 @@ public final class ConfigLoader {
             "methodInlining",
             "methodSplitting",
             "callIndirection",
-            "methodTableHiding");
+            "fieldInternalization",
+            "methodTableHiding",
+            "blockNameObfuscation");
     private static final Set<String> LLVM_FIELDS = Set.of(
             "enabled",
             "nameObfuscation",
             "opaquePredicates",
             "blockLayoutPerturbation",
             "indirectCalls",
-            "globalLayout",
-            "visibilityHardening");
+            "globalLayout");
     private static final Set<String> BINARY_FIELDS = Set.of(
             "enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit");
-    private static final Set<String> PASS_FIELDS = Set.of("enabled");
-    private static final Set<String> VISIBILITY_HARDENING_FIELDS = Set.of("enabled");
 
     public ConfigLoadResult load(Path configPath) throws IOException {
         try (Reader reader = Files.newBufferedReader(configPath)) {
@@ -98,17 +93,26 @@ public final class ConfigLoader {
                     "unsupported schemaVersion " + schemaVersion));
         }
 
-        FallbackMode fallbackMode = parseFallbackMode(root, diagnostics);
         AnalysisWorld worldModel = parseEnum(
                 root.get("worldModel").getAsString(),
                 AnalysisWorld.class,
                 "worldModel",
                 diagnostics);
-        JavaSupportTier javaSupportTier = parseEnum(
-                root.get("javaSupportTier").getAsString(),
-                JavaSupportTier.class,
-                "javaSupportTier",
-                diagnostics);
+        JsonObject protectionObject = root.getAsJsonObject("protection");
+        JsonObject irProtectionObject = protectionObject.getAsJsonObject("ir");
+        boolean fieldInternalizationEnabled = protectionObject.get("enabled").getAsBoolean()
+                && irProtectionObject.get("enabled").getAsBoolean()
+                && irProtectionObject
+                .get("fieldInternalization")
+                .getAsBoolean();
+        if (fieldInternalizationEnabled && worldModel != AnalysisWorld.CLOSED_WORLD) {
+            diagnostics.add(Diagnostic.warning(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD,
+                    "protection.ir.fieldInternalization requires worldModel=CLOSED_WORLD; "
+                            + "build requires confirmation before using current-input-JAR-only analysis")
+                    .withDecision("confirmationRequired"));
+        }
         SignaturePolicy signaturePolicy = parseSignaturePolicy(root, diagnostics);
         List<Selector> whiteList = parseSelectors("whiteList", root.getAsJsonArray("whiteList"), diagnostics);
         List<Selector> blackList = parseSelectors("blackList", root.getAsJsonArray("blackList"), diagnostics);
@@ -129,15 +133,6 @@ public final class ConfigLoader {
                     "embeddedLibraryDirectory must be a relative Java package path "
                             + "such as native0 or xyz/Melody/natives"));
         }
-        String libraryName = nullableString(root, "libraryName");
-        if (libraryName != null && !NativeLibraryName.isSafe(libraryName)) {
-            diagnostics.add(Diagnostic.error(
-                    DiagnosticStage.CONFIG,
-                    ConfigDiagnostics.INVALID_FIELD_VALUE,
-                    "libraryName must start with an ASCII letter and contain at most 64 "
-                            + "ASCII letters, digits, '_' or '-'"));
-        }
-
         SigningConfig signing = parseSigning(base, root.get("signing"), diagnostics);
         if (signaturePolicy == SignaturePolicy.RESIGN && signing == null) {
             diagnostics.add(Diagnostic.error(
@@ -166,14 +161,11 @@ public final class ConfigLoader {
                 nullablePath(base, root, "javaHome"),
                 nullablePath(base, root, "runtimeImage"),
                 worldModel,
-                javaSupportTier,
-                fallbackMode,
                 outputDirectory,
                 whiteList,
                 blackList,
                 target,
                 targets,
-                libraryName,
                 embeddedLibraryDirectory,
                 signaturePolicy,
                 signing,
@@ -203,29 +195,25 @@ public final class ConfigLoader {
         }
         JsonObject ir = validateObject(protection, "ir", IR_FIELDS, "protection.ir", diagnostics);
         if (ir != null) {
-            validatePass(ir, "controlFlowFlattening", "protection.ir.controlFlowFlattening", diagnostics);
-            validatePass(ir, "fakeBranches", "protection.ir.fakeBranches", diagnostics);
-            validatePass(ir, "basicBlockSplitting", "protection.ir.basicBlockSplitting", diagnostics);
-            validatePass(ir, "constantEncryption", "protection.ir.constantEncryption", diagnostics);
-            validatePass(ir, "stringEncryption", "protection.ir.stringEncryption", diagnostics);
-            validatePass(ir, "methodInlining", "protection.ir.methodInlining", diagnostics);
-            validatePass(ir, "methodSplitting", "protection.ir.methodSplitting", diagnostics);
-            validatePass(ir, "callIndirection", "protection.ir.callIndirection", diagnostics);
-            validatePass(ir, "methodTableHiding", "protection.ir.methodTableHiding", diagnostics);
+            validateBoolean(ir, "controlFlowFlattening", "protection.ir.controlFlowFlattening", diagnostics);
+            validateBoolean(ir, "fakeBranches", "protection.ir.fakeBranches", diagnostics);
+            validateBoolean(ir, "basicBlockSplitting", "protection.ir.basicBlockSplitting", diagnostics);
+            validateBoolean(ir, "constantEncryption", "protection.ir.constantEncryption", diagnostics);
+            validateBoolean(ir, "stringEncryption", "protection.ir.stringEncryption", diagnostics);
+            validateBoolean(ir, "methodInlining", "protection.ir.methodInlining", diagnostics);
+            validateBoolean(ir, "methodSplitting", "protection.ir.methodSplitting", diagnostics);
+            validateBoolean(ir, "callIndirection", "protection.ir.callIndirection", diagnostics);
+            validateBoolean(ir, "fieldInternalization", "protection.ir.fieldInternalization", diagnostics);
+            validateBoolean(ir, "methodTableHiding", "protection.ir.methodTableHiding", diagnostics);
+            validateBoolean(ir, "blockNameObfuscation", "protection.ir.blockNameObfuscation", diagnostics);
         }
         JsonObject llvm = validateObject(protection, "llvm", LLVM_FIELDS, "protection.llvm", diagnostics);
         if (llvm != null) {
-            validatePass(llvm, "nameObfuscation", "protection.llvm.nameObfuscation", diagnostics);
-            validatePass(llvm, "opaquePredicates", "protection.llvm.opaquePredicates", diagnostics);
-            validatePass(llvm, "blockLayoutPerturbation", "protection.llvm.blockLayoutPerturbation", diagnostics);
-            validatePass(llvm, "indirectCalls", "protection.llvm.indirectCalls", diagnostics);
-            validatePass(llvm, "globalLayout", "protection.llvm.globalLayout", diagnostics);
-            validateObject(
-                    llvm,
-                    "visibilityHardening",
-                    VISIBILITY_HARDENING_FIELDS,
-                    "protection.llvm.visibilityHardening",
-                    diagnostics);
+            validateBoolean(llvm, "nameObfuscation", "protection.llvm.nameObfuscation", diagnostics);
+            validateBoolean(llvm, "opaquePredicates", "protection.llvm.opaquePredicates", diagnostics);
+            validateBoolean(llvm, "blockLayoutPerturbation", "protection.llvm.blockLayoutPerturbation", diagnostics);
+            validateBoolean(llvm, "indirectCalls", "protection.llvm.indirectCalls", diagnostics);
+            validateBoolean(llvm, "globalLayout", "protection.llvm.globalLayout", diagnostics);
         }
         validateObject(protection, "binary", BINARY_FIELDS, "protection.binary", diagnostics);
     }
@@ -304,19 +292,16 @@ public final class ConfigLoader {
         return validateObject(owner, field, expected, path, diagnostics);
     }
 
-    private void validatePass(JsonObject owner, String field, String path, List<Diagnostic> diagnostics) {
-        validateObject(owner, field, PASS_FIELDS, path, diagnostics);
-    }
-
-    private FallbackMode parseFallbackMode(JsonObject root, List<Diagnostic> diagnostics) {
-        try {
-            return FallbackMode.parse(root.get("fallbackMode").getAsString());
-        } catch (IllegalArgumentException exception) {
+    private void validateBoolean(JsonObject owner, String field, String path, List<Diagnostic> diagnostics) {
+        if (!owner.has(field)) {
+            return;
+        }
+        JsonElement value = owner.get(field);
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) {
             diagnostics.add(Diagnostic.error(
                     DiagnosticStage.CONFIG,
-                    ConfigDiagnostics.UNSUPPORTED_FALLBACK_MODE,
-                    exception.getMessage()));
-            return null;
+                    ConfigDiagnostics.INVALID_FIELD_VALUE,
+                    "config field must be a boolean: " + path));
         }
     }
 
@@ -436,28 +421,27 @@ public final class ConfigLoader {
     private IrProtectionConfig parseIrProtection(JsonObject ir) {
         return new IrProtectionConfig(
                 ir.get("enabled").getAsBoolean(),
-                parsePass(ir.getAsJsonObject("controlFlowFlattening")),
-                parsePass(ir.getAsJsonObject("fakeBranches")),
-                parsePass(ir.getAsJsonObject("basicBlockSplitting")),
-                parsePass(ir.getAsJsonObject("constantEncryption")),
-                parsePass(ir.getAsJsonObject("stringEncryption")),
-                parsePass(ir.getAsJsonObject("methodInlining")),
-                parsePass(ir.getAsJsonObject("methodSplitting")),
-                parsePass(ir.getAsJsonObject("callIndirection")),
-                parsePass(ir.getAsJsonObject("methodTableHiding")));
+                ir.get("controlFlowFlattening").getAsBoolean(),
+                ir.get("fakeBranches").getAsBoolean(),
+                ir.get("basicBlockSplitting").getAsBoolean(),
+                ir.get("constantEncryption").getAsBoolean(),
+                ir.get("stringEncryption").getAsBoolean(),
+                ir.get("methodInlining").getAsBoolean(),
+                ir.get("methodSplitting").getAsBoolean(),
+                ir.get("callIndirection").getAsBoolean(),
+                ir.get("fieldInternalization").getAsBoolean(),
+                ir.get("methodTableHiding").getAsBoolean(),
+                ir.get("blockNameObfuscation").getAsBoolean());
     }
 
     private LlvmProtectionConfig parseLlvmProtection(JsonObject llvm) {
         return new LlvmProtectionConfig(
                 llvm.get("enabled").getAsBoolean(),
-                parsePass(llvm.getAsJsonObject("nameObfuscation")),
-                parsePass(llvm.getAsJsonObject("opaquePredicates")),
-                parsePass(llvm.getAsJsonObject("blockLayoutPerturbation")),
-                parsePass(llvm.getAsJsonObject("indirectCalls")),
-                parsePass(llvm.getAsJsonObject("globalLayout")),
-                new VisibilityHardeningConfig(llvm.getAsJsonObject("visibilityHardening")
-                        .get("enabled")
-                        .getAsBoolean()));
+                llvm.get("nameObfuscation").getAsBoolean(),
+                llvm.get("opaquePredicates").getAsBoolean(),
+                llvm.get("blockLayoutPerturbation").getAsBoolean(),
+                llvm.get("indirectCalls").getAsBoolean(),
+                llvm.get("globalLayout").getAsBoolean());
     }
 
     private BinaryProtectionConfig parseBinaryProtection(JsonObject binary) {
@@ -467,10 +451,6 @@ public final class ConfigLoader {
                 binary.get("strip").getAsBoolean(),
                 binary.get("removePdb").getAsBoolean(),
                 binary.get("symbolAudit").getAsBoolean());
-    }
-
-    private PassConfig parsePass(JsonObject pass) {
-        return new PassConfig(pass.get("enabled").getAsBoolean());
     }
 
     private List<Path> classPath(Path baseDirectory, JsonArray entries) {

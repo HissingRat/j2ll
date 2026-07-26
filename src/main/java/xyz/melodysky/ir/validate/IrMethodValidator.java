@@ -61,6 +61,7 @@ public final class IrMethodValidator {
                         instruction.operands(),
                         location,
                         diagnostics);
+                validateCallIndirection(instruction, location, diagnostics);
                 instruction.result().ifPresent(defined::add);
             }
             validateHandlerShape(block, location, diagnostics);
@@ -308,6 +309,51 @@ public final class IrMethodValidator {
                         || operands.get(1).type() != IrType.REFERENCE)) {
             diagnostics.add(classInitMismatch(location, "IR class initialization failure helper expects class and exception references"));
         }
+    }
+
+    private void validateCallIndirection(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            DiagnosticLocation location,
+            List<Diagnostic> diagnostics) {
+        if (instruction.callIndirection().isEmpty()) {
+            return;
+        }
+        var reference = instruction.callIndirection().orElseThrow();
+        xyz.melodysky.ir.model.IrCallInvokeKind opcodeKind;
+        try {
+            opcodeKind = xyz.melodysky.ir.model.IrCallInvokeKind.fromOpcode(instruction.opcode());
+        } catch (IllegalArgumentException exception) {
+            diagnostics.add(callIndirectionMismatch(
+                    location,
+                    "IR call-indirection reference is attached to non-direct call opcode "
+                            + instruction.opcode()));
+            return;
+        }
+        if (opcodeKind != reference.originalInvokeKind()) {
+            diagnostics.add(callIndirectionMismatch(
+                    location,
+                    "IR call-indirection invoke kind does not match the original call opcode"));
+        }
+        xyz.melodysky.ir.model.IrCallSignature actual =
+                xyz.melodysky.ir.model.IrCallSignature.fromInstruction(instruction);
+        if (!actual.equals(reference.signature())) {
+            diagnostics.add(callIndirectionMismatch(
+                    location,
+                    "IR call-indirection signature does not match call operands/result"));
+        }
+        if (instruction.symbol().isEmpty()) {
+            diagnostics.add(callIndirectionMismatch(
+                    location,
+                    "IR call-indirection instruction must retain its semantic target symbol"));
+        }
+    }
+
+    private Diagnostic callIndirectionMismatch(DiagnosticLocation location, String message) {
+        return Diagnostic.error(
+                        DiagnosticStage.VALIDATION,
+                        IrValidationDiagnostics.IR_CALL_INDIRECTION_MISMATCH,
+                        message)
+                .at(location);
     }
 
     private Diagnostic classInitMismatch(DiagnosticLocation location, String message) {

@@ -100,6 +100,8 @@ public enum IrOpcode {
     INSTANCEOF,
     GET_STATIC,
     PUT_STATIC,
+    GET_NATIVE_STATIC,
+    PUT_NATIVE_STATIC,
     GET_FIELD,
     PUT_FIELD,
     CALL_STATIC,

@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativeTargetProgress;
+import xyz.melodysky.progress.NativeTargetState;
 
 final class LegacyProgressLayout {
     private static final int LABEL_WIDTH = 14;
@@ -31,18 +33,12 @@ final class LegacyProgressLayout {
         }
     }
 
-    record NativeTarget(String name, boolean completed) {
-        NativeTarget {
-            name = TerminalText.sanitize(name);
-        }
-    }
-
     record View(
             BuildStage stage,
             String detail,
             Work methodWork,
             Work llvmWork,
-            List<NativeTarget> nativeTargets) {
+            List<NativeTargetProgress> nativeTargets) {
         View {
             detail = TerminalText.sanitize(detail);
             methodWork = methodWork == null ? Work.unknown() : methodWork;
@@ -115,19 +111,7 @@ final class LegacyProgressLayout {
 
     private List<String> nativeLines(View view, int width, boolean completed) {
         if (completed) {
-            if (view.nativeTargets().isEmpty()) {
-                return List.of(doneLine("Build native", -1L, "done", width, false));
-            }
-            long targetCount = view.nativeTargets().size();
-            return List.of(progressLine(
-                    "Build native",
-                    targetCount,
-                    targetCount,
-                    targetCount + "/" + targetCount,
-                    "done",
-                    width,
-                    true,
-                    false));
+            return List.of(completedNativeLine(view, width));
         }
         BuildStage stage = view.stage();
         if (stage == BuildStage.NATIVE_BUILD && !view.nativeTargets().isEmpty()) {
@@ -152,44 +136,89 @@ final class LegacyProgressLayout {
 
     private List<String> activeNativeTargetLines(View view, int width) {
         long completed = view.nativeTargets().stream()
-                .filter(NativeTarget::completed)
+                .filter(NativeTargetProgress::completed)
                 .count();
         long total = view.nativeTargets().size();
-        ArrayList<String> lines = new ArrayList<>(view.nativeTargets().size() + 2);
+        if (completed == total) {
+            return List.of(completedNativeLine(view, width));
+        }
+        ArrayList<String> lines = new ArrayList<>(view.nativeTargets().size() + 1);
         lines.add(progressLine(
                 "Build native",
                 completed,
                 total,
                 completed + "/" + total,
-                "targets complete",
+                "targets completed",
                 width,
                 completed == total,
                 false));
-        for (NativeTarget target : view.nativeTargets()) {
-            lines.add(targetStatusLine(target, width));
+        for (NativeTargetProgress target : view.nativeTargets()) {
+            lines.add(targetProgressLine(target, width));
         }
-        lines.add(stageLine(
-                completed == total ? "finishing" : "building",
-                "Zig build graph",
-                width));
         return List.copyOf(lines);
     }
 
-    private String targetStatusLine(NativeTarget target, int width) {
-        String status = target.completed()
-                ? "done"
-                : width < 32 ? "build/link" : "building/linking";
-        int statusWidth = TerminalText.displayWidth(status);
+    private String completedNativeLine(View view, int width) {
+        if (view.nativeTargets().isEmpty()) {
+            return doneLine("Build native", -1L, "done", width, false);
+        }
+        long targetCount = view.nativeTargets().size();
+        return progressLine(
+                "Build native",
+                targetCount,
+                targetCount,
+                targetCount + "/" + targetCount,
+                "targets completed",
+                width,
+                true,
+                false);
+    }
+
+    private String targetProgressLine(
+            NativeTargetProgress target,
+            int width) {
+        boolean compact = width < 48;
+        String state = stateText(target.state(), compact);
+        String percentage = percentageText(target);
+        String suffix = state + "  " + percentage;
+        int suffixWidth = TerminalText.displayWidth(suffix);
+        int barWidth = Math.max(
+                MIN_BAR_WIDTH,
+                Math.min(
+                        NORMAL_BAR_WIDTH,
+                        width - LABEL_WIDTH - suffixWidth - 5));
         int labelWidth = Math.max(
                 1,
-                Math.min(LABEL_WIDTH, width - statusWidth - 1));
-        String label = TerminalText.abbreviateHead(target.name(), labelWidth);
+                Math.min(
+                        LABEL_WIDTH,
+                        width - barWidth - suffixWidth - 5));
+        String label = TerminalText.abbreviateHead(target.target(), labelWidth);
         String line = String.format(
                 Locale.ROOT,
-                "%-" + labelWidth + "s %s",
+                "%-" + labelWidth + "s %s %s",
                 label,
-                status);
+                progressBar(
+                        target.completedUnits(),
+                        target.totalUnits(),
+                        barWidth,
+                        target.completed()),
+                suffix);
         return TerminalText.fitLine(line, width);
+    }
+
+    private String stateText(
+            NativeTargetState state,
+            boolean compact) {
+        return switch (state) {
+            case BUILDING -> compact ? "build" : "building";
+            case LINKING -> compact ? "link" : "linking";
+            case COMPLETED -> compact ? "done" : "completed";
+        };
+    }
+
+    private String percentageText(NativeTargetProgress target) {
+        int percentage = target.percentage();
+        return percentage < 0 ? "--%" : percentage + "%";
     }
 
     private List<String> finalizeLines(View view, int width, boolean completed) {

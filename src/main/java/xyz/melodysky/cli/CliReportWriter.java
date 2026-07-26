@@ -4,6 +4,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
+import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
+import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
+import xyz.melodysky.analysis.world.WholeProgramAnalysisScope;
 import xyz.melodysky.config.ConfigLoadResult;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.config.SignaturePolicy;
@@ -15,6 +19,7 @@ import xyz.melodysky.report.ArtifactAudit;
 import xyz.melodysky.report.ArtifactAuditReportWriter;
 import xyz.melodysky.report.DryRunReportWriter;
 import xyz.melodysky.report.FailureReportWriter;
+import xyz.melodysky.report.FieldInternalizationReportWriter;
 import xyz.melodysky.report.FrontendSkipReportWriter;
 import xyz.melodysky.report.KnownBlockersWriter;
 import xyz.melodysky.report.OpcodeSupportMatrixWriter;
@@ -112,6 +117,10 @@ final class CliReportWriter {
                 buildPlan,
                 diagnostics.stream().map(diagnostic -> diagnostic.code().value()).toList()));
         writeEmptyStageReports(reports, config.protection().seed());
+        writeFieldInternalizationNotRun(
+                reports,
+                config,
+                WholeProgramAnalysisPolicy.strict());
         boolean hasErrors = diagnostics.stream()
                 .anyMatch(diagnostic -> diagnostic.severity().wireName().equals("error"));
         if (hasErrors) {
@@ -125,7 +134,8 @@ final class CliReportWriter {
             Path workspace,
             ResolvedConfig config,
             List<Diagnostic> diagnostics,
-            ZigBuildException zigFailure)
+            ZigBuildException zigFailure,
+            WholeProgramAnalysisPolicy wholeProgramPolicy)
             throws IOException {
         WorkspaceLayout layout = new WorkspaceLayout(workspace);
         Path reports = layout.reportsDirectory();
@@ -133,7 +143,7 @@ final class CliReportWriter {
         Path outputJar = layout.outputJar(config.jarFile());
         NativeBuildPlan buildPlan = new NativeBuildPlanner().plan(
                 workspace,
-                NativeLibraryName.resolve(config.libraryName(), config.protection().seed()),
+                NativeLibraryName.derive(config.protection().seed()),
                 config.targets());
         if (zigFailure != null) {
             buildPlan = buildPlan.withBuildFailures(
@@ -162,7 +172,33 @@ final class CliReportWriter {
                         "FINAL_ARTIFACT_NOT_WRITTEN",
                         "native toolchain failed before final output JAR was written")));
         writeEmptyStageReports(reports, config.protection().seed());
+        writeFieldInternalizationNotRun(reports, config, wholeProgramPolicy);
         writeSummaryAndIndex(workspace, "build", false);
+    }
+
+    private void writeFieldInternalizationNotRun(
+            Path reports,
+            ResolvedConfig config,
+            WholeProgramAnalysisPolicy wholeProgramPolicy) throws IOException {
+        boolean enabled = config.protection().enabled()
+                && config.protection().ir().enabled()
+                && config.protection().ir().fieldInternalization();
+        WholeProgramAnalysisScope scope = enabled
+                ? wholeProgramPolicy.scopeFor(
+                        WholeProgramAnalysisFeature.FIELD_INTERNALIZATION,
+                        config.worldModel())
+                : WholeProgramAnalysisScope.NOT_REQUIRED;
+        Files.writeString(
+                reports.resolve("field-internalization-report.json"),
+                new FieldInternalizationReportWriter().json(
+                        new NativeFieldInternalizationPlan(List.of()),
+                        enabled,
+                        false,
+                        new xyz.melodysky.toolchain.NativeImplementationPlan(List.of()),
+                        config.worldModel(),
+                        scope,
+                        false,
+                        false));
     }
 
     private void writeEmptyStageReports(Path reports, String protectionSeed) throws IOException {
@@ -172,6 +208,12 @@ final class CliReportWriter {
                 new ReportJsonWriter().loweringJson(List.of(), List.of(), List.of()));
         Files.writeString(reports.resolve("protection-report.json"),
                 new ProtectionReportWriter().json(protectionSeed, List.of()));
+        Files.writeString(
+                reports.resolve("field-internalization-report.json"),
+                new FieldInternalizationReportWriter().json(
+                        new NativeFieldInternalizationPlan(List.of()),
+                        false,
+                        false));
         Files.writeString(reports.resolve("symbol-audit.json"), new SymbolAuditReportWriter().json(List.of()));
         Files.writeString(reports.resolve("support-matrix.json"), new SupportMatrixWriter().json());
         Files.writeString(reports.resolve("opcode-support-matrix.json"), new OpcodeSupportMatrixWriter().json());

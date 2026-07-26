@@ -1,15 +1,15 @@
 package xyz.melodysky.ir.pass.protection;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.config.BinaryProtectionConfig;
 import xyz.melodysky.config.IrProtectionConfig;
 import xyz.melodysky.config.LlvmProtectionConfig;
-import xyz.melodysky.config.PassConfig;
-import xyz.melodysky.config.VisibilityHardeningConfig;
 import xyz.melodysky.ir.pass.PassDiagnostics;
 
 class ProtectionAvailabilityReporterTest {
@@ -23,6 +23,9 @@ class ProtectionAvailabilityReporterTest {
         assertTrue(diagnostics.stream()
                 .anyMatch(diagnostic -> diagnostic.code().equals(PassDiagnostics.PROTECTION_PASS_NOT_IMPLEMENTED)
                         && diagnostic.message().contains("controlFlowFlattening")));
+        assertTrue(diagnostics.stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(PassDiagnostics.PROTECTION_PASS_NOT_IMPLEMENTED)
+                        && diagnostic.message().contains("fieldInternalization")));
         assertTrue(diagnostics.stream()
                 .noneMatch(diagnostic -> diagnostic.message().contains("basicBlockSplitting")));
         assertTrue(diagnostics.stream()
@@ -42,13 +45,10 @@ class ProtectionAvailabilityReporterTest {
     }
 
     @Test
-    void currentImplementationDoesNotWarnForImplementedIndirectCalls() {
+    void currentImplementationDoesNotWarnForImplementedPasses() {
         var diagnostics = ProtectionAvailabilityReporter.currentImplementation().report(config());
 
-        assertTrue(diagnostics.stream()
-                .noneMatch(diagnostic -> diagnostic.message().contains("indirectCalls")));
-        assertTrue(diagnostics.stream()
-                .anyMatch(diagnostic -> diagnostic.message().contains("opaquePredicates")));
+        assertEquals(List.of(), diagnostics);
     }
 
     private xyz.melodysky.config.ProtectionConfig config() {
@@ -57,27 +57,24 @@ class ProtectionAvailabilityReporterTest {
                 "seed",
                 new IrProtectionConfig(
                         true,
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass()),
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true),
                 new LlvmProtectionConfig(
                         true,
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        pass(),
-                        new VisibilityHardeningConfig(true)),
+                        true,
+                        true,
+                        true,
+                        true,
+                        true),
                 new BinaryProtectionConfig(true, true, true, true, true));
-    }
-
-    private PassConfig pass() {
-        return new PassConfig(true);
     }
 }

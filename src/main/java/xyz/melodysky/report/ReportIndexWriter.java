@@ -26,6 +26,7 @@ public final class ReportIndexWriter {
     private static final Set<String> REQUIRED_FOR_BETA = Set.of(
             "diagnostics.json",
             "artifact-audit.json",
+            "field-internalization-report.json",
             "frontend-skip-report.json",
             "known-blockers.json",
             "lowering-report.json",
@@ -40,6 +41,7 @@ public final class ReportIndexWriter {
     private static final Set<String> REQUIRED_FOR_RC = Set.of(
             "diagnostics.json",
             "artifact-audit.json",
+            "field-internalization-report.json",
             "frontend-skip-report.json",
             "known-blockers.json",
             "lowering-report.json",
@@ -55,6 +57,7 @@ public final class ReportIndexWriter {
             "diagnostics.json",
             "failure-report.json",
             "artifact-audit.json",
+            "field-internalization-report.json",
             "packaging-report.json",
             "release-readiness.json",
             "summary.json",

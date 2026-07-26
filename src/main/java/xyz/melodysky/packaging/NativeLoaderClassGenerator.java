@@ -34,6 +34,9 @@ public final class NativeLoaderClassGenerator implements Opcodes {
         Objects.requireNonNull(artifacts, "artifacts");
         ClassNode loader = relocateTemplate(plan.internalName());
         replaceEnsureLoaded(loader, plan.internalName(), artifacts);
+        new LoaderClassValueSidecarInjector().inject(
+                loader,
+                plan.referenceSidecarSize());
         if (!plan.includeFallbackDefinition()) {
             removeFallbackDefinition(loader);
         }

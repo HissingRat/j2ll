@@ -1,11 +1,13 @@
 package xyz.melodysky.cli;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.fusesource.jansi.AnsiConsole;
+import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
 import xyz.melodysky.cli.progress.LegacyProgressRenderer;
 import xyz.melodysky.config.ConfigLoadResult;
 import xyz.melodysky.config.ResolvedConfig;
@@ -39,7 +41,7 @@ public final class J2llCli {
         AnsiConsole.systemInstall();
         int code;
         try {
-            code = run(args, System.out, System.err);
+            code = run(args, defaultConfirmationInput(), System.out, System.err);
         } finally {
             AnsiConsole.systemUninstall();
         }
@@ -49,6 +51,14 @@ public final class J2llCli {
     }
 
     public static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
+        return run(args, defaultConfirmationInput(), out, err);
+    }
+
+    public static int run(
+            String[] args,
+            InputStream input,
+            PrintStream out,
+            PrintStream err) throws IOException {
         CliParseResult parsed = new CliArgumentsParser().parse(args);
         if (parsed.hasErrors() || parsed.options().isEmpty()) {
             parsed.errors().forEach(error -> err.println("error=" + error));
@@ -71,6 +81,24 @@ public final class J2llCli {
             return validate(options.configPath(), loaded, out, err);
         }
 
+        ResolvedConfig config = null;
+        WholeProgramAnalysisPolicy wholeProgramPolicy = WholeProgramAnalysisPolicy.strict();
+        if (!loaded.hasErrors() && loaded.config().isPresent()) {
+            config = new CliConfigOverrides().applyDebug(
+                    loaded.config().orElseThrow(),
+                    options.debug() && options.mode() == CliMode.BUILD);
+            if (options.mode() == CliMode.BUILD) {
+                WholeProgramConfirmation.Result confirmation =
+                        new WholeProgramConfirmation().confirm(config, input, err);
+                if (!confirmation.accepted()) {
+                    return 2;
+                }
+                wholeProgramPolicy = confirmation.policy();
+            } else {
+                printConfigWarnings(loaded, err);
+            }
+        }
+
         Path workspace;
         try {
             workspace = new BuildWorkspaceAllocator().create(
@@ -85,20 +113,27 @@ public final class J2llCli {
             return 2;
         }
 
-        ResolvedConfig config = new CliConfigOverrides().applyDebug(
-                loaded.config().orElseThrow(),
-                options.debug() && options.mode() == CliMode.BUILD);
+        ResolvedConfig resolvedConfig = java.util.Objects.requireNonNull(config, "config");
         return options.mode() == CliMode.DRY_RUN
-                ? dryRun(options.configPath(), workspace, config, loaded, out, err)
-                : build(config, workspace, out, err);
+                ? dryRun(options.configPath(), workspace, resolvedConfig, loaded, out, err)
+                : build(resolvedConfig, workspace, wholeProgramPolicy, out, err);
     }
 
-    private static int build(ResolvedConfig config, Path workspace, PrintStream out, PrintStream err)
+    private static int build(
+            ResolvedConfig config,
+            Path workspace,
+            WholeProgramAnalysisPolicy wholeProgramPolicy,
+            PrintStream out,
+            PrintStream err)
             throws IOException {
         LegacyProgressRenderer progress = LegacyProgressRenderer.forCli(err);
         MainlinePipelineResult result;
         try {
-            result = new MainlinePipeline().run(config, workspace, progress);
+            result = new MainlinePipeline().run(
+                    config,
+                    workspace,
+                    progress,
+                    wholeProgramPolicy);
         } catch (IOException exception) {
             progress.finished(false);
             Diagnostic diagnostic = Diagnostic.error(
@@ -109,7 +144,8 @@ public final class J2llCli {
                     workspace,
                     config,
                     java.util.List.of(diagnostic),
-                    exception instanceof ZigBuildException zigFailure ? zigFailure : null);
+                    exception instanceof ZigBuildException zigFailure ? zigFailure : null,
+                    wholeProgramPolicy);
             err.println(CLI_DIAGNOSTICS.primaryFailure(java.util.List.of(diagnostic)));
             CLI_DIAGNOSTICS.primaryHint(java.util.List.of(diagnostic)).ifPresent(hint -> err.println("hint=" + hint));
             err.println("reportsDir=" + workspace.resolve("reports"));
@@ -160,6 +196,7 @@ public final class J2llCli {
         }
         out.println("config=ok");
         out.println("configPath=" + configPath);
+        printConfigWarnings(config, err);
         return 0;
     }
 
@@ -170,7 +207,7 @@ public final class J2llCli {
             ConfigLoadResult loaded,
             PrintStream out,
             PrintStream err) throws IOException {
-        String libraryName = NativeLibraryName.resolve(config.libraryName(), config.protection().seed());
+        String libraryName = NativeLibraryName.derive(config.protection().seed());
         NativeBuildPlan buildPlan = new NativeBuildPlanner().plan(workspace, libraryName, config.targets());
         DiagnosticBag diagnostics = new DiagnosticBag();
         loaded.diagnostics().forEach(diagnostics::add);
@@ -258,6 +295,10 @@ public final class J2llCli {
                   --config    config file path (default: Config.json)
                   --debug     write CFG, runtime, SSA, LLVM, and C intermediate artifacts
 
+                whole-program features:
+                  interactive build may request Y/N approval for current-input-JAR-only analysis;
+                  unattended input without an explicit answer fails closed
+
                 exit codes: 0 success, 2 config, 3 frontend/lowering, 4 native target/toolchain,
                             5 packaging/signing, 6 artifact audit, 7 readiness, 1 unexpected
                 """;
@@ -278,5 +319,17 @@ public final class J2llCli {
         err.println("reportsDir=" + workspace.resolve("reports"));
         err.println("summaryReport=" + workspace.resolve("reports/summary.json"));
         err.println("reportIndex=" + workspace.resolve("reports/index.json"));
+    }
+
+    private static void printConfigWarnings(ConfigLoadResult config, PrintStream err) {
+        config.diagnostics().stream()
+                .filter(diagnostic -> diagnostic.severity().wireName().equals("warning"))
+                .sorted()
+                .forEach(diagnostic -> err.println(
+                        "warning=" + diagnostic.code().value() + " " + diagnostic.message()));
+    }
+
+    private static InputStream defaultConfirmationInput() {
+        return CliConfirmationInput.systemInput();
     }
 }

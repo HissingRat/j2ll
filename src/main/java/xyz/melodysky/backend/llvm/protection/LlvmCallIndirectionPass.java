@@ -29,7 +29,7 @@ public final class LlvmCallIndirectionPass {
     }
 
     public LlvmCallIndirectionResult run(LlvmModule module, LlvmProtectionConfig config) {
-        if (!config.enabled()) {
+        if (!config.enabled() || !config.indirectCalls()) {
             return new LlvmCallIndirectionResult(module, List.of(), List.of(), "PROTECTION_PASS_DISABLED");
         }
         Map<String, LlvmFunction> functionsByName = new LinkedHashMap<>();

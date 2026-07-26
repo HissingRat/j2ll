@@ -4,15 +4,21 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import xyz.melodysky.config.SignaturePolicy;
 import xyz.melodysky.packaging.JarPreservationReport;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
+import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.SignatureActionReport;
@@ -92,6 +98,36 @@ public final class PackagingReportWriter {
             List<NativeEmbeddedFallbackBlob> fallbackBlobs,
             JarPreservationReport preservationReport,
             SignatureActionReport signatureActionReport) {
+        return packagingJson(
+                outputJar,
+                signaturePolicy,
+                generatedLoaders,
+                rewrittenMethods,
+                embeddedLibraries,
+                registeredNativeMethods,
+                MethodTableHidingPlan.disabled(),
+                exportedSymbols,
+                zigBuildResult,
+                nativeBuildPlan,
+                fallbackBlobs,
+                preservationReport,
+                signatureActionReport);
+    }
+
+    public String packagingJson(
+            Path outputJar,
+            SignaturePolicy signaturePolicy,
+            List<String> generatedLoaders,
+            List<MethodRewriteDecision> rewrittenMethods,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<NativeRegistrationEntry> registeredNativeMethods,
+            MethodTableHidingPlan methodTableHidingPlan,
+            List<String> exportedSymbols,
+            ZigNativeBuildResult zigBuildResult,
+            NativeBuildPlan nativeBuildPlan,
+            List<NativeEmbeddedFallbackBlob> fallbackBlobs,
+            JarPreservationReport preservationReport,
+            SignatureActionReport signatureActionReport) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
         root.addProperty("reportVersion", 1);
@@ -106,6 +142,7 @@ public final class PackagingReportWriter {
         root.add("zigToolchain", zigToolchain(zigBuildResult, nativeBuildPlan, embeddedLibraries));
         root.add("registeredNativeMethods", registeredNativeMethods(registeredNativeMethods));
         root.add("registrationGroups", registrationGroups(registeredNativeMethods));
+        root.add("methodTableHiding", methodTableHiding(methodTableHidingPlan));
         root.add("exportedSymbols", stringArray(exportedSymbols));
         root.add("fallbackBlobs", fallbackBlobs(fallbackBlobs));
         return GSON.toJson(root) + "\n";
@@ -375,6 +412,37 @@ public final class PackagingReportWriter {
         return groups;
     }
 
+    private JsonObject methodTableHiding(MethodTableHidingPlan plan) {
+        Objects.requireNonNull(plan, "methodTableHidingPlan");
+        JsonObject object = new JsonObject();
+        object.addProperty("enabled", plan.enabled());
+        object.addProperty("status", plan.changed() ? "RAN" : "SKIPPED");
+        nullableString(object, "planId", plan.enabled() ? plan.planId() : null);
+        object.addProperty("ownerCount", plan.owners().size());
+        object.addProperty("bindingCount", plan.owners().stream()
+                .mapToInt(owner -> owner.metadataOrder().size())
+                .sum());
+
+        JsonArray owners = new JsonArray();
+        plan.owners().stream()
+                .sorted(Comparator.comparing(owner -> sha256(owner.registrationOwner())))
+                .forEach(owner -> {
+                    JsonObject ownerObject = new JsonObject();
+                    ownerObject.addProperty("ownerHash", sha256(owner.registrationOwner()));
+                    ownerObject.addProperty("bindingCount", owner.metadataOrder().size());
+                    JsonArray bindingTokens = new JsonArray();
+                    owner.metadataOrder().stream()
+                            .map(entry -> entry.token())
+                            .sorted(Long::compareUnsigned)
+                            .map(this::unsignedHex)
+                            .forEach(bindingTokens::add);
+                    ownerObject.add("bindingTokens", bindingTokens);
+                    owners.add(ownerObject);
+                });
+        object.add("owners", owners);
+        return object;
+    }
+
     private JsonArray fallbackBlobs(List<NativeEmbeddedFallbackBlob> fallbackBlobs) {
         JsonArray array = new JsonArray();
         fallbackBlobs.stream()
@@ -421,5 +489,19 @@ public final class PackagingReportWriter {
         JsonArray array = new JsonArray();
         values.stream().sorted().forEach(array::add);
         return array;
+    }
+
+    private String unsignedHex(long value) {
+        String hex = Long.toUnsignedString(value, 16);
+        return "0".repeat(16 - hex.length()) + hex;
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 }

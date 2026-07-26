@@ -28,13 +28,10 @@ class ConfigSchemaDocsTest {
                 "javaHome",
                 "runtimeImage",
                 "worldModel",
-                "javaSupportTier",
-                "fallbackMode",
                 "outputDirectory",
                 "whiteList",
                 "blackList",
                 "target",
-                "libraryName",
                 "embeddedLibraryDirectory",
                 "signaturePolicy",
                 "signing",
@@ -42,14 +39,6 @@ class ConfigSchemaDocsTest {
                 "protection"), properties);
         assertFalse(required.contains("target"), "target remains optional and defaults to the current host");
         assertTrue(schema.get("additionalProperties").getAsBoolean(), "runtime warns on unknown fields instead of failing");
-        assertEquals(Set.of("TIER_0", "TIER_1", "TIER_2", "TIER_3", "TIER_4", "TIER_5"),
-                strings(schema.getAsJsonObject("properties")
-                        .getAsJsonObject("javaSupportTier")
-                        .getAsJsonArray("enum")));
-        assertEquals("nativeEmbeddedClassBlob", schema.getAsJsonObject("properties")
-                .getAsJsonObject("fallbackMode")
-                .get("const")
-                .getAsString());
     }
 
     @Test
@@ -62,6 +51,45 @@ class ConfigSchemaDocsTest {
                 assertFalse(result.hasErrors(), example + " diagnostics: " + result.diagnostics());
             }
         }
+    }
+
+    @Test
+    void protectionPassLeavesAreBooleans() throws Exception {
+        JsonObject schema = readJson(DOCS.resolve("config.schema.json"));
+        JsonObject protectionProperties = schema.getAsJsonObject("properties")
+                .getAsJsonObject("protection")
+                .getAsJsonObject("properties");
+        JsonObject irProperties = protectionProperties.getAsJsonObject("ir").getAsJsonObject("properties");
+        JsonObject llvmProperties = protectionProperties.getAsJsonObject("llvm").getAsJsonObject("properties");
+
+        for (String field : Set.of(
+                "controlFlowFlattening",
+                "fakeBranches",
+                "basicBlockSplitting",
+                "constantEncryption",
+                "stringEncryption",
+                "methodInlining",
+                "methodSplitting",
+                "callIndirection",
+                "fieldInternalization",
+                "methodTableHiding",
+                "blockNameObfuscation")) {
+            assertEquals("boolean", irProperties.getAsJsonObject(field).get("type").getAsString(), field);
+        }
+        for (String field : Set.of(
+                "nameObfuscation",
+                "opaquePredicates",
+                "blockLayoutPerturbation",
+                "indirectCalls",
+                "globalLayout")) {
+            assertEquals("boolean", llvmProperties.getAsJsonObject(field).get("type").getAsString(), field);
+        }
+
+        assertTrue(strings(protectionProperties
+                        .getAsJsonObject("ir")
+                        .getAsJsonArray("required"))
+                .contains("blockNameObfuscation"));
+        assertFalse(llvmProperties.has("visibilityHardening"));
     }
 
     @Test

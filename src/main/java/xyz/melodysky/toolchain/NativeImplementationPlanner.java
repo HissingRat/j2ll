@@ -15,6 +15,8 @@ import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.model.NativeFieldSlotRef;
+import xyz.melodysky.analysis.field.NativeFieldStorageKind;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
@@ -27,6 +29,7 @@ public final class NativeImplementationPlanner {
     private final LlvmNameMangler llvmNameMangler;
     private final HostJniCSourceGenerator templateGenerator = new HostJniCSourceGenerator();
     private final JniTypeMapper typeMapper = new JniTypeMapper();
+    private final NativeExceptionFlowSupport exceptionFlowSupport = new NativeExceptionFlowSupport();
 
     public NativeImplementationPlanner() {
         this(new LlvmNameMangler());
@@ -62,6 +65,22 @@ public final class NativeImplementationPlanner {
             Map<String, IrMethod> irMethods,
             Set<String> nativeEmbeddedFallbackMethodKeys,
             Set<String> availableProgramMethodKeys) {
+        return plan(
+                registrationPlan,
+                decisions,
+                irMethods,
+                nativeEmbeddedFallbackMethodKeys,
+                availableProgramMethodKeys,
+                Set.of());
+    }
+
+    public NativeImplementationPlan plan(
+            NativeRegistrationPlan registrationPlan,
+            List<MethodRewriteDecision> decisions,
+            Map<String, IrMethod> irMethods,
+            Set<String> nativeEmbeddedFallbackMethodKeys,
+            Set<String> availableProgramMethodKeys,
+            Set<String> compilerInternalMethodKeys) {
         ArrayList<NativeMethodImplementation> implementations = new ArrayList<>();
         Map<String, NativeRegistrationEntry> entriesByMethod = new LinkedHashMap<>();
         Map<String, MethodRewriteDecision> decisionsByMethod = new LinkedHashMap<>();
@@ -78,7 +97,7 @@ public final class NativeImplementationPlanner {
             entriesByMethod.put(decision.method().methodKey(), entry);
             decisionsByMethod.put(decision.method().methodKey(), decision);
         }
-        LinkedHashSet<String> supportedLlvmMethods = new LinkedHashSet<>();
+        LinkedHashSet<String> supportedLlvmMethods = new LinkedHashSet<>(compilerInternalMethodKeys);
         boolean changed;
         do {
             changed = false;
@@ -339,6 +358,9 @@ public final class NativeImplementationPlanner {
                 && !containsMonitorHelper(method)) {
             return false;
         }
+        if (exceptionFlowSupport.hasUnsupportedProtectedJvmFlow(method)) {
+            return false;
+        }
         if (!supportsJvmHostedDescriptor(decision.method().descriptor())) {
             return false;
         }
@@ -360,7 +382,7 @@ public final class NativeImplementationPlanner {
                         && !isExceptionAwareHelperInstruction(instruction)) {
                     return false;
                 }
-                if (!supportsLlvmInstruction(instruction, directCallTargets, availableProgramMethods, methodHasExceptionShape(method))) {
+                if (!supportsLlvmInstruction(instruction, directCallTargets, availableProgramMethods)) {
                     return false;
                 }
             }
@@ -418,8 +440,7 @@ public final class NativeImplementationPlanner {
     private boolean supportsLlvmInstruction(
             IrInstruction instruction,
             Set<String> directCallTargets,
-            Set<String> availableProgramMethods,
-            boolean methodHasExceptionShape) {
+            Set<String> availableProgramMethods) {
         if (isThrowableSemanticFallbackCall(instruction)) {
             return false;
         }
@@ -576,13 +597,22 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean supportsFieldInstruction(IrInstruction instruction) {
-        if (instruction.opcode() == IrOpcode.GET_STATIC) {
+        if (instruction.opcode() == IrOpcode.GET_STATIC
+                || instruction.opcode() == IrOpcode.GET_NATIVE_STATIC) {
             return instruction.operands().isEmpty()
-                    && instruction.result().map(IrValue::type).filter(this::isSupportedFieldType).isPresent();
+                    && instruction.result().map(IrValue::type).filter(type ->
+                            instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                                    ? nativeFieldKindMatches(instruction, type)
+                                    : isSupportedFieldType(type)).isPresent();
         }
-        if (instruction.opcode() == IrOpcode.PUT_STATIC) {
+        if (instruction.opcode() == IrOpcode.PUT_STATIC
+                || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC) {
             return instruction.operands().size() == 1
-                    && isSupportedFieldType(instruction.operands().get(0).type());
+                    && (instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC
+                            ? nativeFieldKindMatches(
+                                    instruction,
+                                    instruction.operands().get(0).type())
+                            : isSupportedFieldType(instruction.operands().get(0).type()));
         }
         if (instruction.opcode() == IrOpcode.GET_FIELD) {
             return instruction.operands().size() == 1
@@ -598,7 +628,28 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean isSupportedFieldType(IrType type) {
-        return type == IrType.I32 || type == IrType.I64 || type == IrType.REFERENCE;
+        return type == IrType.I32
+                || type == IrType.I64
+                || type == IrType.F32
+                || type == IrType.F64
+                || type == IrType.REFERENCE;
+    }
+
+    private boolean nativeFieldKindMatches(IrInstruction instruction, IrType type) {
+        return instruction.symbol()
+                .flatMap(NativeFieldSlotRef::parse)
+                .map(slot -> nativeFieldIrType(slot.kind()) == type)
+                .orElse(false);
+    }
+
+    private IrType nativeFieldIrType(NativeFieldStorageKind kind) {
+        return switch (kind) {
+            case BOOLEAN, BYTE, SHORT, CHAR, INT -> IrType.I32;
+            case LONG -> IrType.I64;
+            case FLOAT -> IrType.F32;
+            case DOUBLE -> IrType.F64;
+            case REFERENCE -> IrType.REFERENCE;
+        };
     }
 
     private boolean supportsArrayInstruction(IrInstruction instruction) {
@@ -696,6 +747,8 @@ public final class NativeImplementationPlanner {
     private boolean isFieldAccess(IrOpcode opcode) {
         return opcode == IrOpcode.GET_STATIC
                 || opcode == IrOpcode.PUT_STATIC
+                || opcode == IrOpcode.GET_NATIVE_STATIC
+                || opcode == IrOpcode.PUT_NATIVE_STATIC
                 || opcode == IrOpcode.GET_FIELD
                 || opcode == IrOpcode.PUT_FIELD;
     }
@@ -806,7 +859,31 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean isSupportedReferenceArraySymbol(String symbol) {
-        return symbol.startsWith("referenceArray:") && !symbol.substring("referenceArray:".length()).startsWith("[");
+        if (!symbol.startsWith("referenceArray:")) {
+            return false;
+        }
+        String component = symbol.substring("referenceArray:".length());
+        return !component.isEmpty()
+                && (!component.startsWith("[") || isValidArrayDescriptor(component));
+    }
+
+    private boolean isValidArrayDescriptor(String descriptor) {
+        int componentIndex = 0;
+        while (componentIndex < descriptor.length()
+                && descriptor.charAt(componentIndex) == '[') {
+            componentIndex++;
+        }
+        if (componentIndex == 0 || componentIndex >= descriptor.length()) {
+            return false;
+        }
+        char componentType = descriptor.charAt(componentIndex);
+        if ("ZBSCIJFD".indexOf(componentType) >= 0) {
+            return componentIndex + 1 == descriptor.length();
+        }
+        return componentType == 'L'
+                && componentIndex + 2 < descriptor.length()
+                && descriptor.charAt(descriptor.length() - 1) == ';'
+                && descriptor.indexOf(';', componentIndex + 1) == descriptor.length() - 1;
     }
 
     private boolean isClassInitGuardInstruction(IrInstruction instruction) {
@@ -1418,7 +1495,11 @@ public final class NativeImplementationPlanner {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(instruction -> isFieldAccess(instruction.opcode()))
-                .map(instruction -> instruction.symbol().orElseThrow())
+                .map(instruction -> (instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                                || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC
+                                ? "native-slot:"
+                                : "")
+                        + instruction.symbol().orElseThrow())
                 .distinct()
                 .sorted()
                 .toList();
@@ -1643,7 +1724,9 @@ public final class NativeImplementationPlanner {
                 || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
-                        || instruction.opcode() == IrOpcode.PUT_STATIC);
+                        || instruction.opcode() == IrOpcode.PUT_STATIC
+                        || instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                        || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC);
     }
 
     private boolean isEnvBackedRuntimeHelperSymbol(String symbol) {
@@ -1680,11 +1763,6 @@ public final class NativeImplementationPlanner {
     private boolean containsThrowTerminator(IrMethod method) {
         return method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW);
-    }
-
-    private boolean methodHasExceptionShape(IrMethod method) {
-        return method.blocks().stream().anyMatch(block ->
-                        block.isExceptionHandler() || !block.exceptionEdges().isEmpty());
     }
 
     private boolean isThrowableSemanticFallbackCall(IrInstruction instruction) {

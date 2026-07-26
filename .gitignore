@@ -118,3 +118,7 @@ zig-*.zip.minisig
 .nb-gradle/
 
 .DS_Store
+
+### Python ###
+__pycache__/
+*.py[cod]

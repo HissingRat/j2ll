@@ -1,6 +1,7 @@
 package xyz.melodysky.report;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonParser;
@@ -14,8 +15,11 @@ import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
+import xyz.melodysky.packaging.MethodTableHidingPlan;
+import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.SignatureActionReport;
 import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.ManagedZig;
@@ -118,6 +122,14 @@ class PackagingReportWriterTest {
                       ]
                     }
                   ],
+                  "methodTableHiding": {
+                    "enabled": false,
+                    "status": "SKIPPED",
+                    "planId": null,
+                    "ownerCount": 0,
+                    "bindingCount": 0,
+                    "owners": []
+                  },
                   "exportedSymbols": [
                     "JNI_OnLoad",
                     "j2ll_register"
@@ -207,6 +219,14 @@ class PackagingReportWriterTest {
                   },
                   "registeredNativeMethods": [],
                   "registrationGroups": [],
+                  "methodTableHiding": {
+                    "enabled": false,
+                    "status": "SKIPPED",
+                    "planId": null,
+                    "ownerCount": 0,
+                    "bindingCount": 0,
+                    "owners": []
+                  },
                   "exportedSymbols": [],
                   "fallbackBlobs": [
                     {
@@ -399,5 +419,80 @@ class PackagingReportWriterTest {
         assertTrue(json.contains("\"action\": \"resign\""));
         assertTrue(json.contains("\"reasonCode\": \"SIGNATURE_RESIGNED\""));
         assertTrue(json.contains("\"META-INF/OLD.SF\""));
+    }
+
+    @Test
+    void writesStableHashOnlyMethodTableHidingEvidence() {
+        List<NativeRegistrationEntry> registrations = List.of(
+                new NativeRegistrationEntry(
+                        "secret/pkg/Beta",
+                        "hiddenBeta",
+                        "(Ljava/lang/String;)V",
+                        "j2ll_secret_beta"),
+                new NativeRegistrationEntry(
+                        "secret/pkg/Alpha",
+                        "hiddenAdd",
+                        "(II)I",
+                        "j2ll_secret_add"),
+                new NativeRegistrationEntry(
+                        "secret/pkg/Alpha",
+                        "hiddenPing",
+                        "()V",
+                        "j2ll_secret_ping"));
+        MethodTableHidingPlan hidingPlan = new MethodTableHidingPlanner().plan(
+                new NativeRegistrationPlan(registrations),
+                true,
+                0x4d54485f5245504fL);
+
+        String json = new PackagingReportWriter().packagingJson(
+                Path.of("input.jar"),
+                SignaturePolicy.FAIL,
+                List.of(),
+                List.of(),
+                List.of(),
+                registrations,
+                hidingPlan,
+                List.of(),
+                null,
+                new NativeBuildPlan(List.of()),
+                List.of(),
+                xyz.melodysky.packaging.JarPreservationReport.empty(),
+                SignatureActionReport.none(false));
+
+        var evidence = JsonParser.parseString(json)
+                .getAsJsonObject()
+                .getAsJsonObject("methodTableHiding");
+        assertTrue(evidence.get("enabled").getAsBoolean());
+        assertEquals("RAN", evidence.get("status").getAsString());
+        assertEquals(hidingPlan.planId(), evidence.get("planId").getAsString());
+        assertTrue(evidence.get("planId").getAsString().matches("mth_[0-9a-f]{32}"));
+        assertEquals(2, evidence.get("ownerCount").getAsInt());
+        assertEquals(3, evidence.get("bindingCount").getAsInt());
+
+        var owners = evidence.getAsJsonArray("owners").asList().stream()
+                .map(element -> element.getAsJsonObject())
+                .toList();
+        assertEquals(2, owners.size());
+        List<String> ownerHashes = owners.stream()
+                .map(owner -> owner.get("ownerHash").getAsString())
+                .toList();
+        assertEquals(ownerHashes.stream().sorted().toList(), ownerHashes);
+        assertTrue(ownerHashes.stream().allMatch(hash -> hash.matches("[0-9a-f]{64}")));
+        assertEquals(3, owners.stream()
+                .mapToInt(owner -> owner.get("bindingCount").getAsInt())
+                .sum());
+        owners.forEach(owner -> {
+            List<String> tokens = owner.getAsJsonArray("bindingTokens").asList().stream()
+                    .map(element -> element.getAsString())
+                    .toList();
+            assertEquals(tokens.stream().sorted().toList(), tokens);
+            assertTrue(tokens.stream().allMatch(token -> token.matches("[0-9a-f]{16}")));
+        });
+
+        String evidenceJson = evidence.toString();
+        assertFalse(evidenceJson.contains("secret/pkg/Alpha"));
+        assertFalse(evidenceJson.contains("hiddenAdd"));
+        assertFalse(evidenceJson.contains("(II)I"));
+        assertFalse(evidenceJson.contains("j2ll_secret_add"));
     }
 }

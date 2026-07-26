@@ -423,18 +423,84 @@ class ProtectionPipelineTest {
     }
 
     @Test
-    void basicBlockSplittingAddsOpaqueFakeBranch() {
-        IrMethod method = method();
+    void basicBlockSplittingOnlySplitsInstructionsWhenEnabledAlone() {
+        IrMethod method = splittableMethod();
 
-        var result = ProtectionPipeline.defaultPipeline().runDetailed(method, ProtectionConfig.enabled(17));
+        var result = splitAndFakePipeline().runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(2, result.method().blocks().size());
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.GOTO));
+        assertFalse(result.method().blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.BRANCH));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("RAN")));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_PASS_DISABLED")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void fakeBranchesOnlyAddsDetourWhenEnabledAlone() {
+        IrMethod method = splittableMethod();
+
+        var result = splitAndFakePipeline().runDetailed(method, splitAndFakeConfig(false, true));
 
         assertEquals(3, result.method().blocks().size());
         assertTrue(result.method().blocks().stream()
-                .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.GOTO));
+                .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.BRANCH));
         assertTrue(result.method().blocks().stream()
                 .flatMap(block -> block.instructions().stream())
-                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CMP_EQ_I32));
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.XOR_I32));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_PASS_DISABLED")));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("RAN")));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void basicBlockSplittingAndFakeBranchesCanBothRunOnOneMethod() {
+        IrMethod method = splittableMethod();
+
+        var result = splitAndFakePipeline().runDetailed(method, splitAndFakeConfig(true, true));
+
+        assertEquals(4, result.method().blocks().size());
+        assertTrue(result.method().blocks().stream().anyMatch(block -> block.name().startsWith("split_")));
+        assertTrue(result.method().blocks().stream().anyMatch(block -> block.name().startsWith("fake_detour_")));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("RAN")));
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("RAN")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    private ProtectionPipeline splitAndFakePipeline() {
+        return new ProtectionPipeline(List.of(new BasicBlockSplittingPass(), new FakeBranchesPass()));
+    }
+
+    private ProtectionConfig splitAndFakeConfig(boolean split, boolean fake) {
+        return new ProtectionConfig(true, 17, false, false, false, split, fake, false);
+    }
+
+    private IrMethod splittableMethod() {
+        IrValue input = new IrValue("%p0", IrType.I32);
+        IrValue one = new IrValue("%one", IrType.I32);
+        IrValue result = new IrValue("%result", IrType.I32);
+        return new IrMethod(
+                "pkg/Sample",
+                "calculate",
+                "(I)I",
+                IrType.I32,
+                List.of(input),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.constInt(one, 1),
+                                IrInstruction.binary(result, IrOpcode.ADD_I32, input, one)),
+                        IrTerminator.returnValue(result))));
     }
 
     private IrMethod method() {

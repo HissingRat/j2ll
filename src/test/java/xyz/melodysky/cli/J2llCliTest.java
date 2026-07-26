@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -59,6 +61,7 @@ class J2llCliTest implements Opcodes {
         assertTrue(failure.contains("\"finalArtifactWritten\": false"), failure);
         assertTrue(failure.contains("\"stage\": \"CONFIG\""), failure);
         assertTrue(failure.contains("\"reasonCode\": \"MISSING_REQUIRED_FIELD\""), failure);
+        assertFieldInternalizationEvidence(workspace);
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
         assertFalse(Files.exists(workspace.resolve("config-failed.jar")));
@@ -188,6 +191,122 @@ class J2llCliTest implements Opcodes {
     }
 
     @Test
+    void buildPromptsAndUsesUserApprovedCurrentJarOnlyScope() throws Exception {
+        Path inputJar = temp.resolve("current-jar-only.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/example.txt",
+                "resource".getBytes(StandardCharsets.UTF_8)));
+        Path config = temp.resolve("current-jar-only.json");
+        Files.writeString(
+                config,
+                configJson(inputJar, "[]", targetJson())
+                        .replace("\"classPath\": []", "\"classPath\": [\"missing-dependency.jar\"]")
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                new ByteArrayInputStream("invalid\nY\n".getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertEquals(0, code, stderr);
+        assertEquals(
+                2,
+                countOccurrences(
+                        stderr,
+                        "fieldInternalization requires CLOSED_WORLD, continue? (Y/N)"));
+        assertTrue(stderr.contains("Please answer Y or N."), stderr);
+        assertTrue(stderr.contains(
+                "analysisScope=fieldInternalization:currentJarOnlyUserApproved"), stderr);
+        Path workspace = pathValue(stdout, "reportsDir").getParent();
+        String fieldReport = Files.readString(
+                workspace.resolve("reports/field-internalization-report.json"));
+        assertTrue(fieldReport.contains("\"configuredWorldModel\": \"PARTIAL_WORLD\""), fieldReport);
+        assertTrue(fieldReport.contains("\"scope\": \"CURRENT_JAR_ONLY\""), fieldReport);
+        assertTrue(fieldReport.contains("\"authorization\": \"USER_CONFIRMED\""), fieldReport);
+        assertTrue(fieldReport.contains("\"classPathAnalyzed\": false"), fieldReport);
+        assertTrue(fieldReport.contains(
+                "\"externalObserverPolicy\": \"OUT_OF_SCOPE_USER_ACCEPTED\""), fieldReport);
+        String diagnostics = Files.readString(workspace.resolve("reports/diagnostics.json"));
+        assertTrue(diagnostics.contains(
+                "\"code\": \"WHOLE_PROGRAM_CURRENT_JAR_ONLY_USER_APPROVED\""), diagnostics);
+        assertTrue(Files.readString(workspace.resolve("config.resolved.json"))
+                .contains("\"worldModel\": \"PARTIAL_WORLD\""));
+    }
+
+    @Test
+    void buildAnswerNoExitsBeforeCreatingWorkspace() throws Exception {
+        Path config = temp.resolve("declined-current-jar-only.json");
+        Files.writeString(
+                config,
+                configJson(temp.resolve("input.jar"), "[]", targetJson())
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                new ByteArrayInputStream("N\n".getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(2, code);
+        assertTrue(out.toString(StandardCharsets.UTF_8).isEmpty());
+        assertTrue(err.toString(StandardCharsets.UTF_8)
+                .contains("cancelled=fieldInternalization requires CLOSED_WORLD"));
+        assertFalse(Files.exists(temp.resolve("out")));
+    }
+
+    @Test
+    void buildEndOfInputFailsClosedBeforeCreatingWorkspace() throws Exception {
+        Path config = temp.resolve("eof-current-jar-only.json");
+        Files.writeString(
+                config,
+                configJson(temp.resolve("input.jar"), "[]", targetJson())
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                InputStream.nullInputStream(),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(2, code);
+        assertTrue(err.toString(StandardCharsets.UTF_8)
+                .contains("confirmation was not provided"));
+        assertFalse(Files.exists(temp.resolve("out")));
+    }
+
+    @Test
+    void validateDoesNotConsumeWholeProgramConfirmationInput() throws Exception {
+        Path config = temp.resolve("validate-current-jar-only.json");
+        Files.writeString(
+                config,
+                configJson(temp.resolve("input.jar"), "[]", targetJson())
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString(), "--validate"},
+                inputThatMustNotBeRead(),
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(0, code);
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("config=ok"));
+        assertTrue(err.toString(StandardCharsets.UTF_8)
+                .contains("FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD"));
+        assertFalse(err.toString(StandardCharsets.UTF_8).contains("(Y/N)"));
+        assertFalse(Files.exists(temp.resolve("out")));
+    }
+
+    @Test
     void validateCommandReportsConfigFailureWithoutPipelineArtifacts() throws Exception {
         Path config = temp.resolve("validate-bad.json");
         Files.writeString(config, """
@@ -232,6 +351,7 @@ class J2llCliTest implements Opcodes {
         Path workspace = dryRunReport.getParent().getParent();
         assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
         assertFalse(Files.exists(workspace.resolve("native")));
+        assertFieldInternalizationEvidence(workspace);
         String dryRun = Files.readString(workspace.resolve("reports/dry-run-report.json"));
         assertTrue(dryRun.contains("\"inputJarParsed\": true"), dryRun);
         assertTrue(dryRun.contains("\"requestedMethodCount\": 1"), dryRun);
@@ -240,6 +360,68 @@ class J2llCliTest implements Opcodes {
         assertTrue(packaging.contains("\"targetArtifacts\""), packaging);
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
+    }
+
+    @Test
+    void dryRunReportsPendingConfirmationWithoutReadingInput() throws Exception {
+        Path inputJar = temp.resolve("dry-run-current-jar-only.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/example.txt",
+                "resource".getBytes(StandardCharsets.UTF_8)));
+        Path config = temp.resolve("dry-run-current-jar-only.json");
+        Files.writeString(
+                config,
+                configJson(inputJar, "[]", targetJson())
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString(), "--dry-run"},
+                inputThatMustNotBeRead(),
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(0, code, err.toString(StandardCharsets.UTF_8));
+        assertFalse(err.toString(StandardCharsets.UTF_8).contains("(Y/N)"));
+        Path workspace = pathValue(out.toString(StandardCharsets.UTF_8), "reportsDir").getParent();
+        String diagnostics = Files.readString(workspace.resolve("reports/diagnostics.json"));
+        assertTrue(diagnostics.contains(
+                "\"code\": \"FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD\""), diagnostics);
+        assertTrue(diagnostics.contains("\"decision\": \"confirmationRequired\""), diagnostics);
+    }
+
+    @Test
+    void closedWorldBuildDoesNotPromptOrReadConfirmationInput() throws Exception {
+        Path inputJar = temp.resolve("closed-world.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/example.txt",
+                "resource".getBytes(StandardCharsets.UTF_8)));
+        Path config = temp.resolve("closed-world.json");
+        Files.writeString(
+                config,
+                configJson(inputJar, "[]", targetJson())
+                        .replace("\"worldModel\": \"PARTIAL_WORLD\"", "\"worldModel\": \"CLOSED_WORLD\"")
+                        .replace("\"fieldInternalization\": false", "\"fieldInternalization\": true"));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                inputThatMustNotBeRead(),
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(0, code, err.toString(StandardCharsets.UTF_8));
+        assertFalse(err.toString(StandardCharsets.UTF_8).contains("(Y/N)"));
+        Path workspace = pathValue(out.toString(StandardCharsets.UTF_8), "reportsDir").getParent();
+        String report = Files.readString(
+                workspace.resolve("reports/field-internalization-report.json"));
+        assertTrue(report.contains("\"configuredWorldModel\": \"CLOSED_WORLD\""), report);
+        assertTrue(report.contains(
+                "\"scope\": \"INPUT_JAR_AND_CONFIGURED_CLASSPATH\""), report);
+        assertTrue(report.contains("\"authorization\": \"CONFIG_SATISFIED\""), report);
+        assertTrue(report.contains("\"classPathAnalyzed\": true"), report);
     }
 
     @Test
@@ -388,6 +570,7 @@ class J2llCliTest implements Opcodes {
         assertTrue(stderr.contains("reportIndex="));
         Path workspace = pathValue(stderr, "reportsDir").getParent();
         String packaging = Files.readString(workspace.resolve("reports/packaging-report.json"));
+        assertFieldInternalizationEvidence(workspace);
         assertTrue(packaging.contains("\"failureKind\": \"zigBuildFailed\""), packaging);
         assertTrue(packaging.contains("\"requiredCapability\": \"managedZig0.15.2CrossTargetSharedLibrary\""), packaging);
         assertTrue(Files.readString(workspace.resolve("native/zig-workspace/build.zig"))
@@ -433,6 +616,7 @@ class J2llCliTest implements Opcodes {
         assertTrue(stderr.contains("checksum mismatch"), stderr);
         assertTrue(stderr.contains("hint="), stderr);
         Path workspace = pathValue(stderr, "reportsDir").getParent();
+        assertFieldInternalizationEvidence(workspace);
         assertTrue(Files.readString(workspace.resolve("reports/failure-report.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
@@ -483,6 +667,34 @@ class J2llCliTest implements Opcodes {
         return J2llCli.exitCodeForDiagnostics(List.of(Diagnostic.error(stage, DiagnosticCode.of(code), code)));
     }
 
+    private InputStream inputThatMustNotBeRead() {
+        return new InputStream() {
+            @Override
+            public int read() {
+                throw new AssertionError("confirmation input must not be read");
+            }
+        };
+    }
+
+    private int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
+    }
+
+    private void assertFieldInternalizationEvidence(Path workspace) throws Exception {
+        Path report = workspace.resolve("reports/field-internalization-report.json");
+        assertTrue(Files.isRegularFile(report), "missing " + report);
+        String json = Files.readString(report);
+        assertTrue(json.contains("\"decisions\""), json);
+        String index = Files.readString(workspace.resolve("reports/index.json"));
+        assertTrue(index.contains("reports/field-internalization-report.json"), index);
+    }
+
     private Path pathValue(String output, String key) {
         String prefix = key + "=";
         return output.lines()
@@ -501,13 +713,10 @@ class J2llCliTest implements Opcodes {
                   "javaHome": null,
                   "runtimeImage": null,
                   "worldModel": "PARTIAL_WORLD",
-                  "javaSupportTier": "TIER_5",
-                  "fallbackMode": "nativeEmbeddedClassBlob",
                   "outputDirectory": "out",
                   "whiteList": %s,
                   "blackList": [],
                   "target": %s,
-                  "libraryName": "j2llcli",
                   "embeddedLibraryDirectory": "native0",
                   "signaturePolicy": "fail",
                   "signing": null,
@@ -523,24 +732,25 @@ class J2llCliTest implements Opcodes {
                     "seed": "cli-seed",
                     "ir": {
                       "enabled": true,
-                      "controlFlowFlattening": { "enabled": true },
-                      "fakeBranches": { "enabled": true },
-                      "basicBlockSplitting": { "enabled": true },
-                      "constantEncryption": { "enabled": true },
-                      "stringEncryption": { "enabled": true },
-                      "methodInlining": { "enabled": true },
-                      "methodSplitting": { "enabled": true },
-                      "callIndirection": { "enabled": true },
-                      "methodTableHiding": { "enabled": true }
+                      "controlFlowFlattening": true,
+                      "fakeBranches": true,
+                      "basicBlockSplitting": true,
+                      "constantEncryption": true,
+                      "stringEncryption": true,
+                      "methodInlining": true,
+                      "methodSplitting": true,
+                      "callIndirection": true,
+                      "fieldInternalization": false,
+                      "methodTableHiding": true,
+                      "blockNameObfuscation": true
                     },
                     "llvm": {
                       "enabled": true,
-                      "nameObfuscation": { "enabled": true },
-                      "opaquePredicates": { "enabled": true },
-                      "blockLayoutPerturbation": { "enabled": true },
-                      "indirectCalls": { "enabled": true },
-                      "globalLayout": { "enabled": true },
-                      "visibilityHardening": { "enabled": true }
+                      "nameObfuscation": true,
+                      "opaquePredicates": true,
+                      "blockLayoutPerturbation": true,
+                      "indirectCalls": true,
+                      "globalLayout": true
                     },
                     "binary": {
                       "enabled": true,

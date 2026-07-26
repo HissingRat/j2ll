@@ -30,6 +30,7 @@ public final class ReleaseReadinessGate {
     private static final List<String> REQUIRED_REPORTS = List.of(
             "diagnostics.json",
             "artifact-audit.json",
+            "field-internalization-report.json",
             "frontend-skip-report.json",
             "known-blockers.json",
             "lowering-report.json",
@@ -54,6 +55,12 @@ public final class ReleaseReadinessGate {
         }
         checkContains(checks, reports.resolve("packaging-report.json"), "packaging.targetArtifacts", "\"targetArtifacts\"", "TARGET_ARTIFACTS_REPORTED");
         checkContains(checks, reports.resolve("artifact-audit.json"), "artifactAudit.checks", "\"checks\"", "ARTIFACT_AUDIT_REPORTED");
+        checkContains(
+                checks,
+                reports.resolve("field-internalization-report.json"),
+                "fieldInternalization.decisions",
+                "\"decisions\"",
+                "FIELD_INTERNALIZATION_REPORTED");
         checkArtifactAuditStatus(checks, reports);
         checkReportIndexIntegrity(checks, workspaceRoot, reports);
         checkContains(checks, reports.resolve("packaging-report.json"), "packaging.signatureAction", "\"signatureAction\"", "SIGNATURE_ACTION_REPORTED");

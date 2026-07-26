@@ -13,7 +13,8 @@ public record IrInstruction(
         Optional<Float> floatLiteral,
         Optional<Double> doubleLiteral,
         Optional<String> symbol,
-        List<IrExceptionSite> exceptionSites) {
+        List<IrExceptionSite> exceptionSites,
+        Optional<IrCallIndirectionRef> callIndirection) {
     public IrInstruction {
         Objects.requireNonNull(result, "result");
         Objects.requireNonNull(opcode, "opcode");
@@ -24,6 +25,30 @@ public record IrInstruction(
         Objects.requireNonNull(doubleLiteral, "doubleLiteral");
         Objects.requireNonNull(symbol, "symbol");
         exceptionSites = List.copyOf(Objects.requireNonNull(exceptionSites, "exceptionSites"));
+        Objects.requireNonNull(callIndirection, "callIndirection");
+    }
+
+    public IrInstruction(
+            Optional<IrValue> result,
+            IrOpcode opcode,
+            List<IrValue> operands,
+            Optional<Integer> intLiteral,
+            Optional<Long> longLiteral,
+            Optional<Float> floatLiteral,
+            Optional<Double> doubleLiteral,
+            Optional<String> symbol,
+            List<IrExceptionSite> exceptionSites) {
+        this(
+                result,
+                opcode,
+                operands,
+                intLiteral,
+                longLiteral,
+                floatLiteral,
+                doubleLiteral,
+                symbol,
+                exceptionSites,
+                Optional.empty());
     }
 
     public IrInstruction(
@@ -225,6 +250,20 @@ public record IrInstruction(
                 List.of());
     }
 
+    public IrInstruction withCallIndirection(IrCallIndirectionRef reference) {
+        return new IrInstruction(
+                result,
+                opcode,
+                operands,
+                intLiteral,
+                longLiteral,
+                floatLiteral,
+                doubleLiteral,
+                symbol,
+                exceptionSites,
+                Optional.of(Objects.requireNonNull(reference, "reference")));
+    }
+
     public IrInstruction withExceptionSite(IrExceptionSite site) {
         java.util.ArrayList<IrExceptionSite> sites = new java.util.ArrayList<>(exceptionSites);
         sites.add(site);
@@ -237,6 +276,7 @@ public record IrInstruction(
                 floatLiteral,
                 doubleLiteral,
                 symbol,
-                sites);
+                sites,
+                callIndirection);
     }
 }

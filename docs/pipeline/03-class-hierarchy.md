@@ -67,7 +67,7 @@ UNKNOWN_DYNAMIC_WORLD
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 作为外部 runtime/library 处理。JDK method 多数走 runtime/JVM helper 或专门 intrinsic。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader 或 runtime generated class 改变类型世界。只能做保守 call graph 和 guarded/fallback-friendly lowering。
 
-`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。任何需要更强 world model 的 analysis/protection pass 都必须在 preflight 阶段声明需求；如果 `classPath`、JDK metadata 或配置不能满足，则明确报错并提示关闭该 pass 或补全输入。
+`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。任何需要更强 world model 的 analysis/protection pass 都必须声明 execution requirement。`fieldInternalization` 在非 closed world 的真实 build 中使用统一 Y/N gate：Y 只给该 feature 授权 current-input-JAR-only scope，不改写 hierarchy 的 `worldModel` 且不解析配置 classpath；N/EOF fail closed。validate/dry-run 只报告待确认 warning。未来 whole-program analysis 应复用同一 requirement/policy 模型，而不是各自读取 stdin。
 
 输入、JDK metadata 和 preflight 行为的详细矩阵以 `docs/io-config-output-contract.md` 为准，避免 hierarchy guide 和用户可见 config 契约分叉。
 

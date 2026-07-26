@@ -31,6 +31,7 @@ j2ll 的主输入是一个 Java JAR 文件。
 - requested lowering set 中的每个 method 都必须产生稳定、可解释的结果。
 - `lowered` method 必须完成 native lowering、rewritten bytecode、native registration 和 selected target native build。
 - `halfLowered` method 必须完成 native entry lowering 和 native registration，但至少一个 operation 或 call site 通过 JVM helper fallback 执行。它必须产生明确 warning，不导致构建失败。
+- SSA 已完成但 final native planner 无法安全生成 LLVM/template body 的 ordinary method，可以自动提升为 encoded `nativeEmbeddedClassBlob` fallback；最终状态必须是 `halfLowered`，不能继续报告 `lowered`。其中受 user try/catch edge 保护的 JNI/runtime-helper 可抛指令使用稳定 reason code `UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW`。若连 bytecode-preserving fallback 也不可用，则最终状态必须是 `frontendSkipped` + `NATIVE_IMPLEMENTATION_UNAVAILABLE`，并从 rewrite/registration/packaging facts 中移除。
 - `frontendSkipped` method 保留原始 bytecode，并在 `reports/lowering-report.json` 中记录 skip stage、reason code、human-readable reason 和是否影响调用方 lowering。
 - `notApplicable` method 是 selector 命中但不需要或不能做 native body rewrite 的方法，例如 abstract method、already-native method、没有 Code attribute 的 interface method 或 annotation element。它不是失败，也不是 `frontendSkipped`。
 - `failed` 表示无法安全保留语义或无法继续构建；只要 requested lowering set 中出现 `failed`，整个构建失败。
@@ -42,7 +43,7 @@ j2ll 的主输入是一个 Java JAR 文件。
 - unsupported classfile version、preview feature 或 malformed-but-loadable attribute。
 - unsupported bytecode opcode、stack map pattern、exception shape、monitor shape。
 - 某个 feature 没有硬依赖缺失，但当前 method shape 暂不适用。
-- selector 命中的 method 与当前 tier gate 不匹配。
+- selector 命中的 method 超出当前 compiler capability boundary。
 
 缺少 enabled analysis/protection pass 声明的硬依赖，例如 `classPath`、JDK runtime metadata 或 native toolchain capability，不属于普通 skip；它是 config/preflight error，j2ll 必须提示补齐输入或关闭对应 feature 后退出。
 
@@ -56,7 +57,7 @@ j2ll 的主输入是一个 Java JAR 文件。
 默认配置文件名是：
 
 ```text
-config.json
+Config.json
 ```
 
 命令行可以指定其他路径。配置中的相对路径以 config 文件所在目录为基准解析。
@@ -71,8 +72,6 @@ config.json
   "javaHome": null,
   "runtimeImage": null,
   "worldModel": "PARTIAL_WORLD",
-  "javaSupportTier": "TIER_5",
-  "fallbackMode": "nativeEmbeddedClassBlob",
   "outputDirectory": "out",
   "whiteList": [],
   "blackList": [],
@@ -84,7 +83,6 @@ config.json
     "macosX64": true,
     "macosArm64": true
   },
-  "libraryName": null,
   "embeddedLibraryDirectory": "native0",
   "signaturePolicy": "fail",
   "signing": null,
@@ -100,24 +98,25 @@ config.json
     "seed": null,
     "ir": {
       "enabled": true,
-      "controlFlowFlattening": { "enabled": true },
-      "fakeBranches": { "enabled": true },
-      "basicBlockSplitting": { "enabled": true },
-      "constantEncryption": { "enabled": true },
-      "stringEncryption": { "enabled": true },
-      "methodInlining": { "enabled": true },
-      "methodSplitting": { "enabled": true },
-      "callIndirection": { "enabled": true },
-      "methodTableHiding": { "enabled": true }
+      "controlFlowFlattening": true,
+      "fakeBranches": true,
+      "basicBlockSplitting": true,
+      "constantEncryption": true,
+      "stringEncryption": true,
+      "methodInlining": true,
+      "methodSplitting": true,
+      "callIndirection": true,
+      "fieldInternalization": false,
+      "methodTableHiding": true,
+      "blockNameObfuscation": true
     },
     "llvm": {
       "enabled": true,
-      "nameObfuscation": { "enabled": true },
-      "opaquePredicates": { "enabled": true },
-      "blockLayoutPerturbation": { "enabled": true },
-      "indirectCalls": { "enabled": true },
-      "globalLayout": { "enabled": true },
-      "visibilityHardening": { "enabled": true }
+      "nameObfuscation": true,
+      "opaquePredicates": true,
+      "blockLayoutPerturbation": true,
+      "indirectCalls": true,
+      "globalLayout": true
     },
     "binary": {
       "enabled": true,
@@ -193,7 +192,7 @@ The default build mode and `--dry-run` allocate a workspace automatically at `<r
 - `7`: strict release-readiness failure.
 - `1`: unexpected internal error or an uncategorized fatal diagnostic.
 
-On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. Full-build progress is written only to stderr. Interactive terminals use optimized legacy phase regions: compiler work is shown as `Read bytecode` / `Lower to IR` / `Emit LLVM IR`; native preparation/build uses one aggregate `Build native` row, one stable row per selected target, and one `Stage` row; packaging/audit/report writing is shown as `Finalize JAR`. While Zig is running, each target row is indeterminate and says `building/linking`; it changes to `done` only after the corresponding final non-empty DLL/SO/dylib is observed at its planned flat workspace output path. The aggregate native bar advances by observed completed targets, not by parsing Zig output or inventing compile/link percentages. Once the native phase completes, its per-target rows collapse to one aggregate completed row before finalization begins. A phase transition completes the previous region and starts the next region; only the active region is erased and redrawn in place. Normal-width terminals use 28-character bars, while narrow terminals may shorten the bar before truncating the label, real count, or useful detail. Redirected/CI output receives exactly one control-sequence-free `[current/total]` line per high-level stage plus the short success result; target completion callbacks do not add log lines. Method lowering and LLVM emission report real current/total counts, including honest zero-work states. The managed Zig command remains one matrix-wide opaque invocation and may schedule independent targets concurrently, but the TUI must not concatenate all target names into one detail, parse unstable Zig console text, fabricate per-target percentages, or claim an execution order. On failure the complete active progress region is only cleared and terminated before stderr prints the primary human-readable failure; the renderer must not insert a redundant `BUILD FAILED` or Gradle-style actionable-stage summary ahead of that diagnostic. One short `hint=...` line is printed when available, followed by the reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
+On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. Full-build progress is written only to stderr. Interactive terminals use optimized legacy phase regions: compiler work is shown as `Read bytecode` / `Lower to IR` / `Emit LLVM IR`; native preparation may use `Build native` / `Stage`, while the active target graph uses one aggregate `Build native` row and one stable row per selected target; packaging/audit/report writing is shown as `Finalize JAR`. Each target percentage is exactly the number of completed Zig build-graph work units divided by the total graph units planned for that target. Large source sets are deterministically balanced into at most 64 observable compile units per target so marker count and polling I/O remain bounded. `BUILDING`, `LINKING`, and `COMPLETED` states (rendered as `building`, `linking`, and `completed`) must follow real graph boundaries, not console-text parsing or elapsed-time estimates. Entering `LINKING` need not advance the counter, so the bar may remain at the final compilation percentage until linking finishes. A target reaches `100%` / `COMPLETED` only after its final non-empty DLL/SO/dylib has been installed at the planned flat workspace output path. The aggregate `Build native` bar remains a real completed-target count; as soon as every target is complete, all target rows collapse immediately to one aggregate completed row before finalization begins. A phase transition completes the previous region and starts the next region; only the active region is erased and redrawn in place. Normal-width terminals use 28-character bars, while narrow terminals may shorten the bar before truncating the label, real count, or useful detail. Redirected/CI output receives exactly one control-sequence-free `[current/total]` line per high-level stage plus the short success result; target progress callbacks do not add log lines. Method lowering and LLVM emission report real current/total counts, including honest zero-work states. Managed Zig remains one matrix-wide invocation and may schedule independent targets concurrently. The TUI must not concatenate all target names into one detail, parse unstable Zig console text, claim an execution order, or describe graph-unit percentages as Zig/Clang/LLVM compiler-internal progress. On failure the complete active progress region is only cleared and terminated before stderr prints the primary human-readable failure; the renderer must not insert a redundant `BUILD FAILED` or Gradle-style actionable-stage summary ahead of that diagnostic. One short `hint=...` line is printed when available, followed by the reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
 
 Minimal command:
 
@@ -249,33 +248,18 @@ Analysis world model. Required. Allowed values:
 - `JDK_EXTERNAL_WORLD`
 - `UNKNOWN_DYNAMIC_WORLD`
 
-Recommended default is `PARTIAL_WORLD`: application classes from the input JAR are analyzed directly, `classPath` is used when present, and missing external/library facts stay conservative. Any analysis/protection pass that requires a stronger world model must declare that requirement in preflight; if the configured world model, `classPath` or JDK metadata cannot satisfy it, j2ll exits with a clear error telling the user to provide the missing input or disable that feature.
+Recommended default is `PARTIAL_WORLD`: application classes from the input JAR are analyzed directly, `classPath` is used when present, and missing external/library facts stay conservative. Any analysis/protection pass that requires a stronger world model must declare that requirement before execution. `fieldInternalization` is the first shared confirmation-gate consumer: outside `CLOSED_WORLD`, build asks whether to continue with a feature-scoped current-input-JAR-only analysis. This execution decision never mutates the configured `worldModel`.
 
 World model validation matrix:
 
 | Value | Minimum required inputs | Main consequence |
 | --- | --- | --- |
-| `CLOSED_WORLD` | input JAR, complete `classPath`, JDK metadata from `javaHome` or `runtimeImage`, and no enabled dynamic-loading escape hatch | Historical wire name for a complete JVM classpath analysis assumption. Allows aggressive devirtualization and method table hiding while the output still runs on the JVM. Missing class metadata is a preflight error. |
+| `CLOSED_WORLD` | input JAR, every application/library entry needed by the analysis in `classPath`, and no unreported external observer/dynamic-loading escape hatch | Historical wire name for the user's complete-world assertion. It directly satisfies `fieldInternalization` and can enable aggressive devirtualization. j2ll scans supplied inputs and rejects unresolved/dynamic facts it observes, but cannot prove an omitted agent, external JNI library or generated class does not exist. |
 | `PARTIAL_WORLD` | input JAR; optional `classPath` and JDK metadata | Recommended default. Missing external metadata is allowed but produces conservative external nodes and fallback-friendly analysis. |
 | `JDK_EXTERNAL_WORLD` | input JAR plus enough JDK identity metadata to classify JDK classes | Application classes are analyzed; JDK methods mostly use intrinsics, runtime helpers or JVM helper fallback. |
 | `UNKNOWN_DYNAMIC_WORLD` | input JAR only | Reflection, custom classloaders and generated classes are assumed possible. Analysis must stay conservative and avoid protection decisions that require a complete classpath. |
 
-`javaSupportTier`
-
-Maximum Java support tier requested by the config. Required. Allowed values are `TIER_0` through `TIER_5`; see `docs/java-support-tiers.md`.
-
-This field is a feature gate and diagnostics policy, not a marketing claim. If a method requires a feature above the configured tier, it is reported as `frontendSkipped` with a tier reason. If a feature is inside the configured tier but not implemented yet, the method may become `frontendSkipped`, `halfLowered` through JVM helper fallback, or `failed` depending on whether j2ll can preserve runnable semantics.
-
-`fallbackMode`
-
-JVM helper fallback body storage strategy. Required. Schema version 1 supports:
-
-- `nativeEmbeddedClassBlob`: primary strategy. Fallback bytecode needed by `halfLowered` methods is compressed/encrypted into the selected native libraries. At runtime the native/JVM helper layer decrypts it, defines a hidden or generated helper class for the current classloader, and invokes that helper through JNI or a Java bootstrap method.
-
-Intentionally not supported in schema version 1:
-
-- `generatedClass`: do not emit a plain generated fallback class containing original method bodies in the output JAR.
-- No other fallback modes are defined. Unknown fallback modes are config errors.
+Fallback bytecode storage is not configurable. Schema version 1 always uses `nativeEmbeddedClassBlob`: bytecode needed by `halfLowered` methods is compressed and encoded into the selected native libraries. At runtime the native/JVM helper layer decodes it, defines a hidden or generated helper class for the current classloader, and invokes that helper through JNI or a Java bootstrap method. Plain generated fallback classes containing original method bodies are never emitted into the output JAR.
 
 `outputDirectory`
 
@@ -368,9 +352,9 @@ Managed Zig `0.15.2` maps these fields to a fixed structural cross-build matrix:
 
 All selected targets are compiled and linked by one generated `build.zig` and one matrix-wide `zig build` invocation. Successful structural cross-build means the target DLL/SO/dylib was produced and passed format/architecture/export audit; the support matrix records this as `ZIG_CROSS_TARGET_SUPPORTED`. It does not by itself claim child-JVM execution on a non-host OS. Non-host runtime E2E remains separate release evidence with reason `CROSS_TARGET_RUNTIME_E2E_PENDING`.
 
-`libraryName`
+Java support tiers are compiler-development and release-evidence categories, not a user-selectable config gate. j2ll inspects each selected method and automatically records the strongest safe outcome as `lowered`, `halfLowered`, `frontendSkipped`, `notApplicable` or `failed`.
 
-Optional logical native library base name. If `null`, j2ll generates a deterministic name from the input artifact and resolved config. This name is used for native build metadata and loader metadata. Selected target libraries are still embedded into the output jar under `embeddedLibraryDirectory`.
+j2ll also derives its logical Zig/native build name internally as a deterministic `j2ll_<hash>` token. It is not configurable and does not affect the fixed per-target library filenames below.
 
 `embeddedLibraryDirectory`
 
@@ -470,7 +454,7 @@ The CLI `--debug` flag overrides all five switches to `true` for that run. This 
 
 `protection`
 
-Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and enables all implemented protection passes.
+Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and all non-semantic-surface-changing implemented passes. `fieldInternalization` is implemented but defaults to `false` because it deliberately removes approved fields from Java reflection.
 
 Fields:
 
@@ -482,9 +466,11 @@ Fields:
 
 Protection availability behavior:
 
-- If config enables a known protection pass that has not been implemented yet, j2ll emits a warning and ignores that pass.
+- Current schema v1 IR/LLVM pass fields all have real implementations. If a future known field is present in a build where its pass is unavailable, j2ll emits a warning and ignores that pass rather than silently claiming it ran.
 - If a protection pass is implemented but not applicable to a specific method, j2ll skips that pass for that method and emits a warning; the method is not marked `frontendSkipped` only because one protection pass is inapplicable.
 - If a protection pass declares a hard requirement such as `classPath`, JDK metadata or target toolchain support and the requirement is missing, preflight emits a clear error and exits. The error must name the pass and tell the user to provide the missing input or disable that pass.
+
+The eight previously tracked work items are now wired as bounded v1 subsets: IR/program `methodInlining`, `methodSplitting`, `callIndirection`, `fieldInternalization`; packaging/native registration `methodTableHiding`; LLVM `opaquePredicates`, `blockLayoutPerturbation` and `globalLayout`. All eight now have passing Windows real-Zig host child-JVM evidence and six-target feature-specific build-graph/content/privacy/export evidence. This does not imply non-host JVM execution or stable optimized machine-code retention: broader host boundary shapes, optimizer/linker retention limits and non-host OS/JVM runtime status are tracked separately in `docs/protection-implementation-checklist.md`.
 
 ### Protection IR Fields
 
@@ -495,18 +481,37 @@ Master switch for SSA IR protection passes.
 Pass fields:
 
 - `controlFlowFlattening`: dispatcher-based CFG flattening.
-- `fakeBranches`: opaque predicates and fake branches.
-- `basicBlockSplitting`: split large basic blocks.
+- `fakeBranches`: run the independent `FakeBranchesPass`, inserting a deterministic predicate gate and detour where the IR shape is safe. This changes protected IR, but managed Zig uses `ReleaseSafe`; when no suitable dynamic parameter exists and the pass uses its constant predicate fallback, LLVM may fold away the native branch. The field therefore does not guarantee that every emitted binary retains an opaque branch.
+- `basicBlockSplitting`: run the independent `BasicBlockSplittingPass`, splitting an eligible basic block at a deterministic instruction boundary without also inserting a fake branch.
 - `constantEncryption`: encode/decode numeric constants.
 - `stringEncryption`: encrypt string literals and emit decode helpers.
-- `methodInlining`: inline selected methods.
-- `methodSplitting`: outline selected method fragments.
-- `callIndirection`: route calls through tables/dispatchers/helpers.
-- `methodTableHiding`: hide method table and dispatch mapping metadata.
+- `methodInlining`: inline the bounded pure-scalar SSA subset of statically proven `static` or same-owner private-self direct callees. Reflection/fallback/exception/monitor/JMM/call/field-sensitive callees are skipped per pass.
+- `methodSplitting`: outline a bounded pure-scalar single-block suffix with explicit scalar live-in and one scalar live-out into a compiler-internal LLVM helper. It does not add a Java method.
+- `callIndirection`: attach a typed IR table/dispatcher plan to proven same-owner static/private-special calls, then lower that explicit plan to hidden LLVM pointer tables. The current per-owner backend rejects virtual/interface (including devirtualized single-target) and cross-owner direct calls with `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE`; it does not reinterpret their JVM bridge semantics.
+- `fieldInternalization`: migrate strictly eligible `private static` primitive/reference state out of the Java field declaration and remove the field from the output class. Primitive values use descriptor-aware native raw-bit slots; references/arrays use a JVM-managed per-defining-Class `ClassValue<Object[]>` sidecar. Default is `false`; `CLOSED_WORLD` runs directly, while another world requires build-time Y approval for current-JAR-only analysis. See the dedicated contract below.
+- `methodTableHiding`: split native registration metadata and function-pointer tables, join them by deterministic masked tokens, and keep the mapping/decoder internal. JVM `RegisterNatives` still receives the real owner/name/descriptor at runtime.
+- `blockNameObfuscation`: deterministically replace IR basic-block names and remap all terminator, exception-edge and exception-site handler references.
 
-Each pass has:
+Each pass field is a required boolean: `true` enables the pass and `false` disables it. `fieldInternalization` defaults to `false`; the other examples may enable the implemented bounded subsets. `fakeBranches`, `basicBlockSplitting` and `blockNameObfuscation` are separate fields, passes and protection-report rows.
 
-- `enabled`: enable this pass.
+#### `fieldInternalization` Contract
+
+Enabling this field is an explicit acceptance that a plan-approved field will no longer be visible to `Class.getDeclaredField(s)`, serialization field discovery, agents or other Java bytecode after rewriting. The current v1 implementation therefore fails closed:
+
+- If `worldModel` is not `CLOSED_WORLD`, a real build writes the warning to stderr and asks `fieldInternalization requires CLOSED_WORLD, continue? (Y/N)`. Y authorizes only this feature and invocation; N or EOF exits with code 2 before workspace allocation, pipeline execution or Zig. A terminal is detected through `System.console` with an `isatty(stdin)` fallback for PTY/IDE/MSYS-style launches; pre-supplied stdin such as a piped `Y` is also accepted. An unattended/CI launch with no buffered answer becomes immediate EOF instead of hanging. Invalid interactive input is re-prompted.
+- Y does not rewrite `worldModel`. The field report retains the configured value, records `scope=CURRENT_JAR_ONLY`, `authorization=USER_CONFIRMED`, `classPathAnalyzed=false`, and `externalObserverPolicy=OUT_OF_SCOPE_USER_ACCEPTED`.
+- `--validate` and `--dry-run` do not execute field analysis and therefore do not consume stdin. They succeed when the remaining config/preflight is valid, emit the `FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD` warning, and record `decision=confirmationRequired`; the subsequent real build still asks.
+
+- Only an input base-class `private static boolean/byte/short/char/int/long/float/double` or JVM reference/array field is eligible. The exact supported JVM descriptors are `Z/B/S/C/I/J/F/D`, `L...;`, and `[...]`.
+- The field must be non-final, non-volatile, non-synthetic/non-enum-generated, have no ConstantValue, Signature, annotation or type annotation, and its owner must have no `<clinit>`, serializable semantics or multi-release counterpart.
+- Every observed access currently must come from a same-owner static method whose final implementation is `LLVM_NATIVE_PATH`. Classpath, cross-owner/nestmate, instance, Java stub, template, fallback and unselected access all keep the field in the JVM.
+- Declared closed-world analysis scans input plus supplied classpath for field bytecodes, LDC field handles and invokedynamic/ConstantDynamic bootstrap arguments, resolving symbolic owners to the declaration. Current-JAR-only analysis deliberately does not parse configured classpath entries. It ignores unresolved external field references whose symbolic owner is outside the input JAR, while unresolved references whose symbolic owner belongs to the input JAR still block approval.
+- Reflection, Unsafe, VarHandle, MethodHandle, JNI/native loading, serialization, agent/instrumentation or dynamic-class-loading surface blocks approval.
+- Approved IR accesses carry an opaque slot id plus an exact storage kind. Primitive storage is keyed by the actual defining `jclass` using `jweak` and `IsSameObject`, cleans stale weak references lazily, and uses relaxed atomic `uint64_t` raw-bit storage to avoid native data-race undefined behavior while retaining ordinary-field semantics. Boolean uses its low bit, byte/short/char use JVM truncation plus sign/sign/zero extension, and float/double use LLVM bitcasts so NaN payloads and negative zero survive.
+- Reference/array storage remains on the JVM heap. The single generated `Loader.class` is conditionally made a `ClassValue` whose value is an `Object[]` sidecar for each defining `Class`. `ClassValue` is the cross-call cache; each native function activation uses a native-stack cache cell to obtain the JNI local sidecar reference lazily on its first executed field access, reuse it for the remaining accesses, and release it on every exit. A branch that does not execute a field access does not call `ClassValue.get`. No strong native global reference is created.
+- The final native implementation plan is revalidated before Zig; packaging rechecks the field declaration before removal; artifact audit rejects any remaining declaration, bytecode access or field handle/bootstrap reference.
+
+Ineligible fields stay in the output class and continue through the existing JNI field helper path. Protection inapplicability does not change method lowering status.
 
 ### Protection LLVM Fields
 
@@ -517,15 +522,22 @@ Master switch for LLVM module model protection passes.
 Pass fields:
 
 - `nameObfuscation`: de-semanticize LLVM function/global names.
-- `opaquePredicates`: insert LLVM-level opaque predicates.
-- `blockLayoutPerturbation`: reorder LLVM basic block layout.
+- `opaquePredicates`: add a defined-integer, side-effect-free always-true gate to eligible conditional branches. The current model transform is real, but `ReleaseSafe` may fold it out of the final binary.
+- `blockLayoutPerturbation`: keep the entry block fixed and reorder non-entry LLVM block emission for eligible functions. It does not promise final linker/machine-code address order.
 - `indirectCalls`: lower eligible direct calls to native-level indirection.
-- `globalLayout`: perturb globals/string/data layout.
-- `visibilityHardening`: normalize linkage and visibility before native build.
+- `globalLayout`: reorder only complete `private`/`internal` LLVM globals among their existing candidate emission slots. Definitions, references, alignment/section/mutability and non-local retention roots remain unchanged; generated-C tables are outside this pass.
+
+Each pass field is a boolean: `true` enables the pass and `false` disables it.
 
 LLVM protection operates on `backend.llvm.model`. It must not mutate `.ll` text using string replacement.
 
+`visibilityHardening` is not a schema v1 field. Java implementation functions and protection tables use hidden/internal LLVM linkage as a non-disableable backend baseline, and every final dynamic library must pass the export allowlist audit regardless of `protection.enabled` or `protection.llvm.enabled`.
+
 Current schema v1 implements `indirectCalls` for same-class selected static/private direct LLVM calls by inserting hidden signature-group function-pointer tables named `j2ll_cit_<sha256>` into the LLVM module model and the Zig workspace `.ll` input. The protection report uses reason code `CALL_INDIRECTION_TABLE` when a table is emitted and `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE` when table mode has no eligible direct call. A hidden dispatcher switch fallback named `j2ll_cid_<sha256>` remains available and reports `CALL_INDIRECTION_DISPATCHER`. Table, dispatcher and Java implementation symbols are internal/native hidden symbols and must not appear in `reports/symbol-audit.json` as dynamic exports.
+
+The IR `callIndirection` field is independent: it produces `IR_CALL_INDIRECTION` semantic-plan evidence and `IR_CALL_INDIRECTION_BACKEND` evidence when the explicit plan becomes an internal `j2ll_ircit_<sha256>` LLVM table. The LLVM `indirectCalls` pass leaves those already-indirect sites alone.
+
+`opaquePredicates`, `blockLayoutPerturbation` and `globalLayout` all run before text emission on `LlvmModule`, validate input and output, and emit `RAN` / `SKIPPED` / `FAILED` report rows. Their current bounded model semantics, passing Windows real-Zig host and six-target structural evidence, and remaining optimized-machine/non-host runtime limits are listed in `docs/protection-implementation-checklist.md`.
 
 ### Protection Binary Fields
 
@@ -535,10 +547,10 @@ Master switch for binary hardening.
 
 Fields:
 
-- `hideInternalSymbols`: make internal Java method/native helper symbols hidden or internal.
+- `hideInternalSymbols`: request the configurable binary-hardening layer for additional internal helper/symbol hiding; Java implementation/protection symbols remain hidden/internal as a mandatory backend baseline even when this field or `protection.binary.enabled` is `false`.
 - `strip`: strip unneeded symbols in release artifacts.
 - `removePdb`: do not package Windows PDB files and remove accidental `.pdb` outputs.
-- `symbolAudit`: inspect final dynamic libraries and fail if exported symbols exceed the allowlist.
+- `symbolAudit`: request binary-hardening audit reporting; the final export allowlist audit remains a mandatory success gate and cannot be disabled by this field or `protection.binary.enabled`.
 
 ## Output Workspace
 
@@ -560,6 +572,7 @@ build_yyyy-MM-dd_HH-mm-ss[-n]/
     artifact-audit.json
     diagnostics.json
     failure-report.json
+    field-internalization-report.json
     frontend-skip-report.json
     known-blockers.json
     lowering-report.json
@@ -586,6 +599,7 @@ build_yyyy-MM-dd_HH-mm-ss[-n]/
     runtime/
     dumps/
   logs/
+    zig-build.log
 ```
 
 `config.resolved.json`
@@ -604,6 +618,8 @@ The final JAR also contains j2ll metadata entries written before signing/resigni
 
 These metadata entries must not contain sensitive plaintext or a raw protection seed.
 
+`logs/zig-build.log` is written when the managed Zig build is invoked and retains its command plus compiler/linker output for failure diagnosis. `logs/zig-progress/` is not an output artifact: it contains short-lived build-graph markers only while the matrix invocation is running and the whole directory is deleted after success, failure or interruption.
+
 `reports/diagnostics.json`
 
 All diagnostics with stable ordering. Each entry includes a short user-facing `hint` when the reason code has a stable remediation path, for example selector grammar, missing `schemaVersion`, Zig target preflight, signed input policy or artifact-audit plaintext leak.
@@ -614,11 +630,15 @@ Written for failed config or pipeline runs. It summarizes error diagnostics with
 
 `reports/artifact-audit.json`
 
-Artifact audit v2.2 result. Successful pipeline runs audit the output JAR and embedded native resources for plaintext generated fallback `.class` entries, legacy output paths, exactly one correctly named Java 17 `<embeddedLibraryDirectory>/Loader.class`, absence of the retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH_STABLE_SURFACE`, StringConcat constant carrier, and `NATIVE_METADATA_STRING` facts are blocking on their connected surfaces. `NATIVE_METADATA_STRING` covers registration owners, sufficiently distinctive member names, referenced internal class names and native runtime error text; generated C stores those JNI-required bytes as deterministic encoded writable arrays and decodes them once at `j2ll_register`, while generated wrapper/LLVM/bootstrap identifiers are hash-only. This is an at-rest static-string boundary, not a claim that runtime memory or JNI arguments are secret. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names remain hash-only observed evidence. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`; complex fallback blob facts remain observed-only for plaintext literal gating but have blocking binary metadata/carrier checks. The checks array also records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths, fallback blob binary metadata and final JAR metadata. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
+Artifact audit v2.2 result. Successful pipeline runs audit the output JAR and embedded native resources for plaintext generated fallback `.class` entries, legacy output paths, exactly one correctly named Java 17 `<embeddedLibraryDirectory>/Loader.class`, absence of the retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `j2ll_ircit_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. When field internalization approves a field, audit also blocks on any residual output-class declaration, `FieldInsn`, LDC field handle, or invokedynamic/ConstantDynamic bootstrap field reference. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH_STABLE_SURFACE`, StringConcat constant carrier, and `NATIVE_METADATA_STRING` facts are blocking on their connected surfaces. `NATIVE_METADATA_STRING` covers registration owners, sufficiently distinctive member names, referenced internal class names and native runtime error text; generated C stores those JNI-required bytes as deterministic encoded writable arrays and decodes them once at `j2ll_register`, while generated wrapper/LLVM/bootstrap identifiers are hash-only. This is an at-rest static-string boundary, not a claim that runtime memory or JNI arguments are secret. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names remain hash-only observed evidence. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`; complex fallback blob facts remain observed-only for plaintext literal gating but have blocking binary metadata/carrier checks. The checks array also records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths, fallback blob binary metadata and final JAR metadata. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
 
 `reports/frontend-skip-report.json`
 
 Every requested method that became `frontendSkipped`, including selector, class, method, descriptor, skip stage, reason code and human-readable reason. `notApplicable` selector matches are reported in `reports/lowering-report.json`, not here.
+
+`reports/field-internalization-report.json`
+
+Required readiness evidence even when the feature is disabled or has no candidate. It records `schemaVersion`, `reportVersion`, effective `enabled`, hybrid storage policy, primitive/reference/cache/global-reference/lifecycle policies, and stable decisions. Each decision uses a hash-only `fieldIdHash`, status `INTERNALIZED` or `KEPT`, exact `storageKind`, storage location, optional reference-sidecar index, optional opaque `nativeSlotId`, access methods, actual final native implementation paths, `removedFromOutputClass`, and ordered reason codes. Raw field owner/name/descriptor are not written to this report.
 
 `reports/lowering-report.json`
 
@@ -630,7 +650,7 @@ Deterministic opcode/category/status/reason/test coverage matrix used by release
 
 `reports/packaging-report.json`
 
-Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result.
+Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. When method-table hiding is enabled, it also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and binding tokens. It does not write raw owner/member mapping in that object.
 
 `reports/protection-report.json`
 
@@ -654,7 +674,7 @@ Diff-stable human summary derived from `reports/summary.json`. It lists final st
 
 `reports/index.json`
 
-Stable report manifest for the workspace. It lists every generated `.json` / `.md` report except itself, plus `config.resolved.json` and `intermediates/intermediates-manifest.json` when present. Each entry includes `path`, `reportVersion`, `sha256`, `requiredForReadiness`, `requiredForBeta`, `requiredForRc`, `producedOnFailure` and coarse `status`. Final JAR `META-INF/j2ll/reports-manifest.json` includes the expected report names, including `index.json` and `summary.md`, plus `reportIndex` / `reportHashSource`; the workspace index is the authoritative source for emitted report hashes, and readiness validates required report existence/hash plus final JAR report-manifest consistency.
+Stable report manifest for the workspace. It lists every generated `.json` / `.md` report except itself, plus `config.resolved.json` and `intermediates/intermediates-manifest.json` when present. Each entry includes `path`, `reportVersion`, `sha256`, `requiredForReadiness`, `requiredForBeta`, `requiredForRc`, `producedOnFailure` and coarse `status`. `field-internalization-report.json` is required readiness/beta/RC/failure evidence, including when the pass is disabled. Final JAR `META-INF/j2ll/reports-manifest.json` includes the expected report names, including `field-internalization-report.json`, `index.json` and `summary.md`, plus `reportIndex` / `reportHashSource`; the workspace index is the authoritative source for emitted report hashes, and readiness validates required report existence/hash plus final JAR report-manifest consistency.
 
 `reports/release-readiness.json`
 
@@ -682,7 +702,7 @@ Strict readiness consumes release suite summaries by profile:
 - `smoke`: narrow compiler/runtime sanity evidence.
 - `standard`: regular helper/fallback/protection regression evidence.
 - `beta`: user-facing usability evidence. Requires CLI jar smoke, docs examples validation, report index evidence, minimal LLVM native evidence and mixed helper/fallback evidence. `beta-blocker` rows must be covered by suite evidence or accepted workaround evidence; otherwise `betaProfilePassed=false`. Future or explicit non-goal blockers remain visible but do not block beta when they have evidence/future path.
-- `rc`: release-candidate evidence. Requires all RC categories, blocker evidence, determinism, signing/packaging preservation, artifact audit failure evidence and injected/actual required-target failure hygiene evidence. Real six-target structural artifacts are verified separately by `ZigCrossTargetBuildTest`.
+- `rc`: release-candidate evidence. Requires all RC categories, blocker evidence, determinism, signing/packaging preservation, artifact audit failure evidence and injected/actual required-target failure hygiene evidence. Generic real six-target toolchain artifacts are verified by `ZigCrossTargetBuildTest`; protection-specific shared-source/build-graph/content/privacy/export evidence is verified by `ProtectionCrossTargetEvidenceTest`.
 
 Sample project docs live under `docs/samples/`, currently `basic-cli-app.md` and `reflection-service-app.md`. They include source snippets, config shape, commands, expected output and report highlights, and are tested so they do not drift away from `docs/examples/*.json`.
 
@@ -753,7 +773,7 @@ Location fields are nullable only when the diagnostic is not tied to a method or
       "status": "frontendSkipped",
       "stage": "LOWERING",
       "reasonCode": "UNSUPPORTED_OPCODE",
-      "reason": "jsr/ret is not supported by the configured tier",
+      "reason": "jsr/ret is outside the current compiler capability boundary",
       "affectsCallers": true
     }
   ]
@@ -950,7 +970,39 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
 }
 ```
 
-Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result records a stable `reasonCode`; examples include `OK`, `FLOAT_CONSTANT_ENCRYPTION`, `DOUBLE_CONSTANT_ENCRYPTION`, `CONTROL_FLOW_FLATTENING`, `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`, `CALL_INDIRECTION_TABLE`, `CALL_INDIRECTION_DISPATCHER`, `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE`, `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `NO_PRIMITIVE_CONSTANTS`, `PROTECTION_CFG_SHAPE_NOT_SUPPORTED`, `PROTECTION_STUB_BACKED_METHOD`, `PROTECTION_MONITOR_SENSITIVE_SKIP` and `CALL_INDIRECTION_UNSUPPORTED_SHAPE`. Disabled pass and per-method inapplicability both use `SKIPPED`. Configured but unimplemented pass warnings also appear in diagnostics and must not silently change a method lowering status.
+`reports/field-internalization-report.json` minimum shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "reportVersion": 1,
+  "enabled": true,
+  "storagePolicy": "descriptorAwareHybrid",
+  "primitiveStoragePolicy": "perDefiningJclassWeakIdentityAtomicBits",
+  "referenceStoragePolicy": "jvmClassValueObjectArray",
+  "atomicPolicy": "relaxedAtomicPrimitiveBits",
+  "cachePolicy": "jvmClassValuePerDefiningClass+lazyPerNativeFunctionActivationLocalRef",
+  "globalReferencePolicy": "noStrongNativeGlobalRefs",
+  "lifecyclePolicy": "primitiveJweakLazyCleanup+referenceClassValueLifecycle",
+  "unloadAware": true,
+  "decisions": [
+    {
+      "fieldIdHash": "sha256-of-owner-name-descriptor",
+      "status": "INTERNALIZED",
+      "storageKind": "REFERENCE",
+      "storageLocation": "jvmClassValueSidecar",
+      "referenceSidecarIndex": 0,
+      "nativeSlotId": "j2ll_nfs_<opaque-token>",
+      "accessMethods": ["pkg/Foo#get!()Ljava/lang/Object;", "pkg/Foo#set!(Ljava/lang/Object;)V"],
+      "finalImplementationPaths": ["LLVM_NATIVE_PATH"],
+      "removedFromOutputClass": true,
+      "reasonCodes": ["FIELD_INTERNALIZATION_ELIGIBLE"]
+    }
+  ]
+}
+```
+
+Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result records a stable `reasonCode`; examples include `OK`, `METHOD_INLINING`, `METHOD_INLINING_NO_CANDIDATE`, `METHOD_SPLITTING`, `METHOD_SPLITTING_NO_SAFE_REGION`, `IR_CALL_INDIRECTION_TABLE`, `IR_CALL_INDIRECTION_BACKEND_NO_CANDIDATE`, `FIELD_INTERNALIZATION`, `FIELD_INTERNALIZATION_NO_CANDIDATE`, `METHOD_TABLE_HIDING_SPLIT_TOKEN_TABLE`, `LLVM_OPAQUE_PREDICATES`, `LLVM_OPAQUE_PREDICATES_NO_CANDIDATE`, `LLVM_BLOCK_LAYOUT_PERTURBATION`, `LLVM_BLOCK_LAYOUT_NO_CANDIDATE`, `LLVM_GLOBAL_LAYOUT`, `LLVM_GLOBAL_LAYOUT_NO_CANDIDATE`, `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`, `CALL_INDIRECTION_TABLE`, `CALL_INDIRECTION_DISPATCHER`, `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `PROTECTION_STUB_BACKED_METHOD` and `PROTECTION_MONITOR_SENSITIVE_SKIP`. Disabled pass and method/module inapplicability both use `SKIPPED`; neither changes method lowering status. Validator/final-plan failure uses `FAILED` and prevents an invalid transformed artifact from continuing.
 
 `reports/symbol-audit.json` minimum shape:
 
@@ -996,7 +1048,7 @@ The final output jar must contain:
 <embeddedLibraryDirectory>/arm64-macos.dylib
 ```
 
-The generated class is a Java 17 classfile whose internal name is exactly `<embeddedLibraryDirectory>/Loader`. It always contains the native target selection, SHA-256 verification, extraction and loading path. Its `defineHiddenFallback(Class, byte[])` method is present only when the implementation plan actually uses `nativeEmbeddedClassBlob`; otherwise that method is removed without removing native loading. No separate `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or legacy `j2ll/generated/<artifact-id>/NativeLoader.class` entry is emitted. j2ll uses this loader plus `RegisterNatives`; Java method implementation functions remain internal/hidden and are not exported as JNI method-name symbols.
+The generated class is a Java 17 classfile whose internal name is exactly `<embeddedLibraryDirectory>/Loader`. It always contains the native target selection, SHA-256 verification, extraction and loading path. Its `defineHiddenFallback(Class, byte[])` method is present only when the implementation plan actually uses `nativeEmbeddedClassBlob`; otherwise that method is removed without removing native loading. If the final field-internalization plan contains references/arrays, the same physical Loader directly extends `ClassValue` and conditionally owns the private per-defining-Class `Object[]` sidecar accessor; no companion or nested class is emitted. No separate `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or legacy `j2ll/generated/<artifact-id>/NativeLoader.class` entry is emitted. j2ll uses this loader plus `RegisterNatives`; Java method implementation functions remain internal/hidden and are not exported as JNI method-name symbols.
 
 ### Method Rewrite Strategies
 
@@ -1051,6 +1103,17 @@ No rewrite is attempted for methods without lowerable method bodies:
 - annotation elements without Code.
 
 These methods are recorded for audit when matched by selectors. They do not fail the build and do not count as `frontendSkipped`.
+
+### Field Declaration Rewrite
+
+Method rewrite strategy and field internalization are separate plans. When `fieldInternalization` approves a field:
+
+- every approved access has already been rewritten to an opaque native slot and revalidated against the final `NativeImplementationPlan`;
+- packaging removes exactly the approved `FieldNode` only if its access flags, descriptor and metadata still satisfy the plan;
+- any plan/declaration mismatch is `FIELD_INTERNALIZATION_REWRITE_FAILED`, fails closed, and prevents a final JAR;
+- the packaged JAR is scanned again for residual declaration, field instruction, field MethodHandle and bootstrap field reference before artifact audit can pass.
+
+No other field, method or class attribute is removed by this transform. A `KEPT` decision is an exact no-op for that field.
 
 ### Repackaging Rules
 
@@ -1126,9 +1189,9 @@ JVM helper fallback 是 native-lowered method 在某个 operation 或 call site 
 - 方法结果记录为 `halfLowered`，不是 `failed`。
 - 每个 `halfLowered` method 必须产生 warning diagnostic，reason code 建议使用 `JVM_HELPER_FALLBACK`。
 - lowering report 必须记录 fallback call sites、fallback target 和 fallback reason。
-- 需要原 bytecode 或可调用 Java target 通过 `fallbackMode` 指定的方式可达。
+- 需要原 bytecode 或可调用 Java target 通过固定的 `nativeEmbeddedClassBlob` 存储策略可达。
 - 性能较差，保护强度较弱，但语义更稳。
-- 如果 fallback 需要原 method body，packaging 必须生成 fallback bytecode target，并按 `fallbackMode` 存储它，同时在 sidecar/report 中记录它和原 method 的映射。schema v1 的 ordinary method body fallback 使用同 owner package helper class 的 static synthetic `invoke` 方法；instance original method 的 helper descriptor 会把 owner instance 作为第一个参数。packaging report 必须记录 `fallbackInvokeDescriptor` 和 `fallbackReasonCode`，用于把 encoded helper ABI 与 lowering fallback reason 关联起来。
+- 如果 fallback 需要原 method body，packaging 必须生成 fallback bytecode target，并使用固定的 `nativeEmbeddedClassBlob` 策略存储它，同时在 sidecar/report 中记录它和原 method 的映射。schema v1 的 ordinary method body fallback 使用同 owner package helper class 的 static synthetic `invoke` 方法；instance original method 的 helper descriptor 会把 owner instance 作为第一个参数。packaging report 必须记录 `fallbackInvokeDescriptor` 和 `fallbackReasonCode`，用于把 encoded helper ABI 与 lowering fallback reason 关联起来。
 - JVM helper fallback 不导致构建失败。只有 output jar 无法保持可运行语义时，才允许把该 method 转为 `frontendSkipped` 或 `failed`。
 
 `nativeEmbeddedClassBlob` 要求：
@@ -1144,16 +1207,16 @@ JVM helper fallback 是 native-lowered method 在某个 operation 或 call site 
 
 ### World Model
 
-World model 是分析阶段对“程序类世界是否完整”的假设。它会影响 CHA/RTA、devirtualization、call indirection、method table hiding 等能力。
+World model 是分析阶段对“程序类世界是否完整”的假设。它会影响 CHA/RTA、devirtualization、IR call indirection 和 field internalization。当前 `methodTableHiding` 只隐藏已经确定的 native registration mapping，不改变 Java dispatch，因此本身不要求 `CLOSED_WORLD`。
 
 常见模型：
 
-- `CLOSED_WORLD`：历史 wire name，表示输入 JAR、`classPath` 和 JDK metadata 覆盖分析需要的 JVM classes。可以做更激进 devirtualization 和 method table rewriting，但输出仍是 JVM-hosted JAR。
+- `CLOSED_WORLD`：历史 wire name，表示用户声明输入 JAR 与提供的 `classPath` 覆盖分析所需 JVM classes，且没有未声明的 external observer/dynamic loading。它允许更激进 devirtualization，并直接满足 `fieldInternalization` 的 world requirement；输出仍是 JVM-hosted JAR。
 - `PARTIAL_WORLD`：应用 class 大体已知，但外部库或运行时可能不完整。分析必须对 external type 保守。
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 主要作为外部 runtime/library 处理。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader、runtime generated class 改变类型世界。只能做非常保守的 dispatch 优化。
 
-`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。如果某个 protection/analysis pass 需要更强 world model，但 config、`classPath` 或 JDK metadata 不能满足，应 preflight error 并提示关闭该 pass 或补全输入。
+`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。需要 whole-program scope 的功能统一通过 execution requirement 描述。当前 `fieldInternalization` 在 build 中允许用户显式 Y 接受 current-JAR-only 边界；其他未实现降级的 requirement 仍应 fail closed。任何批准都必须 feature-scoped、仅本次 invocation 有效并进入 diagnostics/对应报告，不能把配置改写为 `CLOSED_WORLD`。
 
 ### Loader And Native Registration
 
@@ -1195,7 +1258,7 @@ For every method reported as `halfLowered`:
 - The corresponding native implementation exists in every selected target dynamic library.
 - The native registration plan includes that method.
 - The native implementation may call JVM helper fallback for recorded operation/call sites.
-- The fallback plan stores any generated fallback bytecode target according to `fallbackMode`; schema version 1 stores it in native embedded fallback blobs, not as plain JAR classes.
+- The fallback plan stores any generated fallback bytecode target in native embedded fallback blobs, not as plain JAR classes.
 - The lowering report records the method as `halfLowered` and diagnostics include a warning.
 
 For every method reported as `frontendSkipped`:
@@ -1379,6 +1442,7 @@ config.resolved.json
 reports/artifact-audit.json
 reports/diagnostics.json
 reports/failure-report.json
+reports/field-internalization-report.json
 reports/frontend-skip-report.json
 reports/known-blockers.json
 reports/lowering-report.json
@@ -1389,7 +1453,7 @@ reports/release-readiness.json
 reports/release-suite-summary.json
 reports/support-matrix.json
 reports/symbol-audit.json
-logs/
+logs/zig-build.log
 intermediates/
 ```
 

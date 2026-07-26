@@ -373,6 +373,51 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
+    void selectsLlvmPathForArrayComponentReferenceAllocation() {
+        ParsedClass parsedClass = parse(
+                "pkg/ByteMatrices.class",
+                AsmFixtureBuilder.classWithReferenceArrayAllocation(
+                        "pkg/ByteMatrices",
+                        "[B"));
+        MethodRewriteDecision decision = decision(parsedClass, "array");
+        IrMethod irMethod = irMethod(parsedClass, "array");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                Map.of(decision.method().methodKey(), irMethod));
+
+        NativeMethodImplementation implementation =
+                plan.implementationFor(decision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_ALLOCATION_HELPER_IR", implementation.reasonCode());
+        assertEquals(List.of("referenceArray:[B"), implementation.allocationKeys());
+        assertTrue(implementation.passesJniEnv());
+    }
+
+    @Test
+    void doesNotSelectLlvmPathWhenNestedArrayExceptionMustReachJavaHandler() {
+        ParsedClass parsedClass = parse(
+                "pkg/ProtectedByteMatrices.class",
+                AsmFixtureBuilder.classWithProtectedReferenceArrayAllocation(
+                        "pkg/ProtectedByteMatrices",
+                        "[B"));
+        MethodRewriteDecision decision = decision(parsedClass, "array");
+        IrMethod irMethod = irMethod(parsedClass, "array");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                Map.of(decision.method().methodKey(), irMethod));
+
+        assertTrue(plan.implementationFor(decision.method().methodKey()).isEmpty());
+    }
+
+    @Test
     void selectsLlvmPathForObjectAllocationAndConstructorHelperSubset() {
         ParsedClass parsedClass = parse("pkg/Alloc.class", AsmFixtureBuilder.classWithAllocation("pkg/Alloc", "pkg/Thing"));
         MethodRewriteDecision decision = decision(parsedClass, "make");

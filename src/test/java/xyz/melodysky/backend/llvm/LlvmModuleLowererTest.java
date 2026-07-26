@@ -3,6 +3,7 @@ package xyz.melodysky.backend.llvm;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
 import java.util.Optional;
@@ -21,6 +22,8 @@ import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.runtime.FieldIdentityToken;
+import xyz.melodysky.analysis.field.NativeFieldStorageKind;
+import xyz.melodysky.ir.model.NativeFieldSlotRef;
 
 class LlvmModuleLowererTest {
     @Test
@@ -190,6 +193,198 @@ class LlvmModuleLowererTest {
         assertTrue(text.contains("call i32 @j2ll_rt_field_get_field_i32(ptr %j2ll_env, ptr %p0, i64 "
                 + FieldIdentityToken.token(instanceFieldKey) + ")"));
         assertTrue(!text.contains("@j2ll_get_field_pkg_Fields_value_I"));
+    }
+
+    @Test
+    void lowersTypedNativeFieldSlotsAndLazilyCachesReferenceSidecarPerFunctionActivation() {
+        IrValue i32 = new IrValue("%p0", IrType.I32);
+        IrValue i64 = new IrValue("%p1", IrType.I64);
+        IrValue f32 = new IrValue("%p2", IrType.F32);
+        IrValue f64 = new IrValue("%p3", IrType.F64);
+        IrValue ref = new IrValue("%p4", IrType.REFERENCE);
+        List<IrInstruction> instructions = new java.util.ArrayList<>();
+        for (NativeFieldStorageKind kind : List.of(
+                NativeFieldStorageKind.BOOLEAN,
+                NativeFieldStorageKind.BYTE,
+                NativeFieldStorageKind.SHORT,
+                NativeFieldStorageKind.CHAR,
+                NativeFieldStorageKind.INT)) {
+            instructions.add(IrInstruction.fieldGet(
+                    new IrValue("%get." + kind.wireName(), IrType.I32),
+                    IrOpcode.GET_NATIVE_STATIC,
+                    List.of(),
+                    nativeSlot(kind, -1)));
+            instructions.add(IrInstruction.fieldPut(
+                    IrOpcode.PUT_NATIVE_STATIC,
+                    List.of(i32),
+                    nativeSlot(kind, -1)));
+        }
+        instructions.add(IrInstruction.fieldGet(
+                new IrValue("%get.j", IrType.I64),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.LONG, -1)));
+        instructions.add(IrInstruction.fieldPut(
+                IrOpcode.PUT_NATIVE_STATIC,
+                List.of(i64),
+                nativeSlot(NativeFieldStorageKind.LONG, -1)));
+        instructions.add(IrInstruction.fieldGet(
+                new IrValue("%get.f", IrType.F32),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.FLOAT, -1)));
+        instructions.add(IrInstruction.fieldPut(
+                IrOpcode.PUT_NATIVE_STATIC,
+                List.of(f32),
+                nativeSlot(NativeFieldStorageKind.FLOAT, -1)));
+        instructions.add(IrInstruction.fieldGet(
+                new IrValue("%get.d", IrType.F64),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.DOUBLE, -1)));
+        instructions.add(IrInstruction.fieldPut(
+                IrOpcode.PUT_NATIVE_STATIC,
+                List.of(f64),
+                nativeSlot(NativeFieldStorageKind.DOUBLE, -1)));
+        instructions.add(IrInstruction.fieldGet(
+                new IrValue("%get.r0", IrType.REFERENCE),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.REFERENCE, 0)));
+        instructions.add(IrInstruction.fieldPut(
+                IrOpcode.PUT_NATIVE_STATIC,
+                List.of(ref),
+                nativeSlot(NativeFieldStorageKind.REFERENCE, 0)));
+        instructions.add(IrInstruction.fieldGet(
+                new IrValue("%get.r1", IrType.REFERENCE),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.REFERENCE, 1)));
+        IrMethod method = new IrMethod(
+                "pkg/State",
+                "exercise",
+                "(IJFDLjava/lang/Object;)V",
+                IrType.VOID,
+                List.of(i32, i64, f32, f64, ref),
+                List.of(new IrBlock("entry", instructions, IrTerminator.returnVoid())));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+                new IrClass("pkg/State", List.of(method))));
+
+        for (String helper : List.of(
+                "call i32 @j2ll_nfs_get_z(",
+                "call void @j2ll_nfs_put_z(",
+                "call i32 @j2ll_nfs_get_b(",
+                "call void @j2ll_nfs_put_b(",
+                "call i32 @j2ll_nfs_get_s(",
+                "call void @j2ll_nfs_put_s(",
+                "call i32 @j2ll_nfs_get_c(",
+                "call void @j2ll_nfs_put_c(",
+                "call i32 @j2ll_nfs_get_i32(",
+                "call void @j2ll_nfs_put_i32(",
+                "call i64 @j2ll_nfs_get_i64(",
+                "call void @j2ll_nfs_put_i64(",
+                "call i32 @j2ll_nfs_get_f32_bits(",
+                "call void @j2ll_nfs_put_f32_bits(",
+                "call i64 @j2ll_nfs_get_f64_bits(",
+                "call void @j2ll_nfs_put_f64_bits(")) {
+            assertTrue(text.contains(helper), helper + "\n" + text);
+        }
+        assertTrue(text.contains("bitcast i32"));
+        assertTrue(text.contains("bitcast float %p2 to i32"));
+        assertTrue(text.contains("bitcast i64"));
+        assertTrue(text.contains("bitcast double %p3 to i64"));
+        assertEquals(1, occurrences(text, "%j2ll_nfs_ref_cache = alloca ptr"), text);
+        assertEquals(1, occurrences(text, "store ptr null, ptr %j2ll_nfs_ref_cache"), text);
+        assertTrue(text.contains("j2ll.nfs.prologue."));
+        assertTrue(text.indexOf("j2ll.nfs.prologue.") < text.indexOf("entry:"));
+        assertEquals(
+                3,
+                occurrences(text, "call ptr @j2ll_nfs_reference_sidecar_cached("),
+                text);
+        assertEquals(
+                1,
+                occurrences(text, "call void @j2ll_nfs_release_reference_sidecar("),
+                text);
+        assertEquals(2, occurrences(text, "call ptr @j2ll_nfs_get_ref("), text);
+        assertEquals(1, occurrences(text, "call void @j2ll_nfs_put_ref("), text);
+        assertTrue(text.contains("ptr %j2ll.nfs.sidecar."));
+        assertFalse(text.contains("call ptr @j2ll_nfs_reference_sidecar("));
+        assertFalse(text.contains("pkg/State#"));
+    }
+
+    @Test
+    void referenceSidecarCachePrologueIsNotReenteredByABackedgeToTheIrEntry() {
+        IrInstruction read = IrInstruction.fieldGet(
+                new IrValue("%value", IrType.REFERENCE),
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.REFERENCE, 0));
+        IrMethod method = new IrMethod(
+                "pkg/State",
+                "spin",
+                "()V",
+                IrType.VOID,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(read),
+                        IrTerminator.gotoBlock("entry"))));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+                new IrClass("pkg/State", List.of(method))));
+
+        assertEquals(1, occurrences(text, "%j2ll_nfs_ref_cache = alloca ptr"), text);
+        assertEquals(1, occurrences(text, "store ptr null, ptr %j2ll_nfs_ref_cache"), text);
+        assertEquals(1, occurrences(text, "call ptr @j2ll_nfs_reference_sidecar_cached("), text);
+        assertTrue(text.indexOf("j2ll.nfs.prologue.") < text.indexOf("entry:"));
+        assertTrue(text.contains("br label %entry"));
+        assertFalse(text.contains("call void @j2ll_nfs_release_reference_sidecar("));
+    }
+
+    @Test
+    void rejectsNativeFieldSlotKindThatDoesNotMatchSsaType() {
+        IrValue wrong = new IrValue("%wrong", IrType.F32);
+        IrInstruction instruction = IrInstruction.fieldGet(
+                wrong,
+                IrOpcode.GET_NATIVE_STATIC,
+                List.of(),
+                nativeSlot(NativeFieldStorageKind.BYTE, -1));
+        IrMethod method = new IrMethod(
+                "pkg/State",
+                "wrong",
+                "()F",
+                IrType.F32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(instruction),
+                        IrTerminator.returnValue(wrong))));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> new LlvmModuleLowerer().lowerClass(
+                        new IrClass("pkg/State", List.of(method))));
+
+        assertTrue(error.getMessage().contains("does not match slot kind BYTE"));
+    }
+
+    private String nativeSlot(NativeFieldStorageKind kind, int referenceIndex) {
+        return new NativeFieldSlotRef(
+                        kind,
+                        "j2ll_nfs_" + kind.wireName() + Math.max(referenceIndex, 0),
+                        kind.reference() ? referenceIndex : -1)
+                .encoded();
+    }
+
+    private int occurrences(String text, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = text.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     @Test

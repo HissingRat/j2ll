@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativeTargetProgress;
+import xyz.melodysky.progress.NativeTargetState;
 
 class LegacyProgressRendererTest {
     @Test
@@ -74,27 +76,62 @@ class LegacyProgressRendererTest {
                 BuildStage.NATIVE_BUILD,
                 "2 targets");
         renderer.nativeTargetsStarted(List.of("linux-arm64", "windows-x64"));
+        renderer.nativeTargetProgress(progress(
+                "linux-arm64",
+                NativeTargetState.BUILDING,
+                1,
+                4));
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.BUILDING,
+                0,
+                5));
         List<String> buildingScreen = TerminalScreen.render(bytes);
-        assertEquals(7, buildingScreen.size(), buildingScreen.toString());
-        assertTrue(buildingScreen.get(3).contains("0/2  targets complete"), buildingScreen.toString());
+        assertEquals(6, buildingScreen.size(), buildingScreen.toString());
+        assertTrue(buildingScreen.get(3).contains("0/2  targets completed"), buildingScreen.toString());
         assertTrue(buildingScreen.get(4).startsWith("linux-arm64"), buildingScreen.toString());
-        assertTrue(buildingScreen.get(4).contains("building/linking"), buildingScreen.toString());
+        assertTrue(buildingScreen.get(4).contains("building  25%"), buildingScreen.toString());
         assertTrue(buildingScreen.get(5).startsWith("windows-x64"), buildingScreen.toString());
-        assertTrue(buildingScreen.get(5).contains("building/linking"), buildingScreen.toString());
-        assertTrue(buildingScreen.get(6).startsWith("Stage          building"), buildingScreen.toString());
+        assertTrue(buildingScreen.get(5).contains("building  0%"), buildingScreen.toString());
+        assertFalse(buildingScreen.stream().anyMatch(line -> line.startsWith("Stage")));
         assertFalse(buildingScreen.get(3).contains("0/0"), buildingScreen.toString());
 
-        renderer.nativeTargetCompleted("windows-x64");
-        List<String> oneCompletedScreen = TerminalScreen.render(bytes);
-        assertTrue(oneCompletedScreen.get(3).contains("1/2  targets complete"), oneCompletedScreen.toString());
-        assertTrue(oneCompletedScreen.get(4).contains("building/linking"), oneCompletedScreen.toString());
-        assertTrue(oneCompletedScreen.get(5).endsWith("done"), oneCompletedScreen.toString());
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.LINKING,
+                4,
+                5));
+        List<String> linkingScreen = TerminalScreen.render(bytes);
+        assertTrue(linkingScreen.get(3).contains("0/2  targets completed"), linkingScreen.toString());
+        assertTrue(linkingScreen.get(5).contains("linking  80%"), linkingScreen.toString());
 
-        renderer.nativeTargetCompleted("linux-arm64");
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.COMPLETED,
+                5,
+                5));
+        List<String> oneCompletedScreen = TerminalScreen.render(bytes);
+        assertTrue(oneCompletedScreen.get(3).contains("1/2  targets completed"), oneCompletedScreen.toString());
+        assertTrue(oneCompletedScreen.get(4).contains("building  25%"), oneCompletedScreen.toString());
+        assertTrue(oneCompletedScreen.get(5).contains("completed  100%"), oneCompletedScreen.toString());
+
+        renderer.nativeTargetProgress(progress(
+                "linux-arm64",
+                NativeTargetState.LINKING,
+                3,
+                4));
+        renderer.nativeTargetProgress(progress(
+                "linux-arm64",
+                NativeTargetState.COMPLETED,
+                4,
+                4));
         List<String> allCompletedScreen = TerminalScreen.render(bytes);
+        assertEquals(4, allCompletedScreen.size(), allCompletedScreen.toString());
         assertTrue(allCompletedScreen.get(3).contains(
-                "[============================] 2/2  targets complete"), allCompletedScreen.toString());
-        assertTrue(allCompletedScreen.get(6).startsWith("Stage          finishing"), allCompletedScreen.toString());
+                "[============================] 2/2  targets completed"), allCompletedScreen.toString());
+        assertFalse(allCompletedScreen.stream().anyMatch(line -> line.startsWith("Stage")));
+        assertFalse(allCompletedScreen.stream().anyMatch(line -> line.startsWith("linux-arm64")));
+        assertFalse(allCompletedScreen.stream().anyMatch(line -> line.startsWith("windows-x64")));
 
         renderer.stageStarted(BuildStage.JAR_PACKAGING, "output.jar");
         renderer.stageStarted(BuildStage.ARTIFACT_AUDIT, "output.jar");
@@ -105,7 +142,7 @@ class LegacyProgressRendererTest {
         List<String> completedScreen = TerminalScreen.render(bytes);
         assertEquals(6, completedScreen.size(), completedScreen.toString());
         assertTrue(completedScreen.get(3).startsWith(
-                "Build native   [============================] 2/2  done"), completedScreen.toString());
+                "Build native   [============================] 2/2  targets completed"), completedScreen.toString());
         assertTrue(completedScreen.get(4).contains(
                 "Finalize JAR   [============================] 3/3  done"), completedScreen.toString());
         assertEquals("BUILD SUCCESSFUL in 3s", completedScreen.get(5));
@@ -120,8 +157,21 @@ class LegacyProgressRendererTest {
 
         renderer.stageStarted(BuildStage.NATIVE_BUILD, "2 targets");
         renderer.nativeTargetsStarted(List.of("linux-arm64", "windows-x64"));
-        renderer.nativeTargetCompleted("windows-x64");
-        renderer.nativeTargetCompleted("linux-arm64");
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.LINKING,
+                4,
+                5));
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.COMPLETED,
+                5,
+                5));
+        renderer.nativeTargetProgress(progress(
+                "linux-arm64",
+                NativeTargetState.COMPLETED,
+                4,
+                4));
         renderer.finished(true);
 
         String output = bytes.toString(StandardCharsets.UTF_8);
@@ -226,15 +276,27 @@ class LegacyProgressRendererTest {
 
         renderer.stageStarted(BuildStage.NATIVE_BUILD, "2 targets");
         renderer.nativeTargetsStarted(List.of("linux-arm64", "windows-x64"));
-        renderer.nativeTargetCompleted("windows-x64");
+        renderer.nativeTargetProgress(progress(
+                "linux-arm64",
+                NativeTargetState.BUILDING,
+                1,
+                4));
+        renderer.nativeTargetProgress(progress(
+                "windows-x64",
+                NativeTargetState.LINKING,
+                4,
+                5));
 
         List<String> lines = TerminalScreen.render(bytes);
-        assertEquals(4, lines.size(), lines.toString());
-        assertTrue(lines.get(0).contains("1/2"), lines.toString());
+        assertEquals(3, lines.size(), lines.toString());
+        assertTrue(lines.get(0).contains("0/2"), lines.toString());
         assertTrue(lines.get(1).contains("linux-arm64"), lines.toString());
-        assertTrue(lines.get(1).contains("building/linking"), lines.toString());
+        assertTrue(lines.get(1).contains("[>"), lines.toString());
+        assertTrue(lines.get(1).contains("build"), lines.toString());
+        assertTrue(lines.get(1).contains("25%"), lines.toString());
         assertTrue(lines.get(2).contains("windows-x64"), lines.toString());
-        assertTrue(lines.get(2).contains("done"), lines.toString());
+        assertTrue(lines.get(2).contains("link"), lines.toString());
+        assertTrue(lines.get(2).contains("80%"), lines.toString());
         assertTrue(lines.stream().allMatch(line -> TerminalText.displayWidth(line) <= 32), lines.toString());
     }
 
@@ -264,6 +326,14 @@ class LegacyProgressRendererTest {
                 interactive,
                 width,
                 now::get);
+    }
+
+    private static NativeTargetProgress progress(
+            String target,
+            NativeTargetState state,
+            long completed,
+            long total) {
+        return new NativeTargetProgress(target, state, completed, total);
     }
 
     private static void assertInteractiveRegionFits(

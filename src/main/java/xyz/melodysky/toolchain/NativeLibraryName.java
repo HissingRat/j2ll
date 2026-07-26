@@ -11,14 +11,7 @@ public final class NativeLibraryName {
     private NativeLibraryName() {
     }
 
-    public static String resolve(String configuredName, String protectionSeed) {
-        if (configuredName != null && !configuredName.isBlank()) {
-            if (!isSafe(configuredName)) {
-                throw new IllegalArgumentException(
-                        "libraryName must match " + SAFE_NAME_PATTERN);
-            }
-            return configuredName;
-        }
+    public static String derive(String protectionSeed) {
         try {
             String seedHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(protectionSeed.getBytes(StandardCharsets.UTF_8)));

@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 public final class ZigBuildInvoker {
-    private static final long PROGRESS_POLL_INTERVAL_MILLIS = 100L;
+    private static final long PROGRESS_POLL_INTERVAL_MILLIS = 200L;
 
     private final ZigCommandRunner runner;
 
@@ -47,11 +47,20 @@ public final class ZigBuildInvoker {
     public void invoke(ManagedZig zig, ZigBuildWorkspace workspace) throws IOException {
         ZigBuildInvocation invocation = invocation(zig, workspace);
         Files.createDirectories(invocation.logFile().getParent());
-        ZigCommandResult result = runner.run(
-                invocation.command(),
-                invocation.workingDirectory(),
-                ZigWorkspaceEnvironment.environment(workspace.workspaceRoot()));
-        writeLogAndCheck(invocation, result);
+        Throwable failure = null;
+        try {
+            ZigTargetCompletionMonitor.cleanupDirectory(workspace);
+            ZigCommandResult result = runner.run(
+                    invocation.command(),
+                    invocation.workingDirectory(),
+                    ZigWorkspaceEnvironment.environment(workspace.workspaceRoot()));
+            writeLogAndCheck(invocation, result);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            cleanupProgress(workspace, failure);
+        }
     }
 
     public void invoke(
@@ -66,17 +75,54 @@ public final class ZigBuildInvoker {
             ZigBuildWorkspace workspace,
             NativeBuildPlan buildPlan,
             NativeBuildProgressListener progressListener) throws IOException {
+        invoke(
+                zig,
+                workspace,
+                buildPlan,
+                ZigBuildProgressPlan.linkOnly(buildPlan),
+                progressListener);
+    }
+
+    public void invoke(
+            ManagedZig zig,
+            ZigBuildWorkspace workspace,
+            NativeBuildPlan buildPlan,
+            ZigSourceSet sources,
+            NativeBuildProgressListener progressListener) throws IOException {
+        invoke(
+                zig,
+                workspace,
+                buildPlan,
+                ZigBuildProgressPlan.forSources(buildPlan, sources),
+                progressListener);
+    }
+
+    private void invoke(
+            ManagedZig zig,
+            ZigBuildWorkspace workspace,
+            NativeBuildPlan buildPlan,
+            ZigBuildProgressPlan progressPlan,
+            NativeBuildProgressListener progressListener) throws IOException {
         Objects.requireNonNull(progressListener, "progressListener");
         ZigBuildInvocation invocation = invocation(zig, workspace);
         Files.createDirectories(invocation.logFile().getParent());
         ZigTargetCompletionMonitor monitor =
-                new ZigTargetCompletionMonitor(workspace, buildPlan, progressListener);
-        monitor.prepare();
-        progressListener.buildStarted(buildPlan.units().stream()
-                .map(NativeBuildUnit::target)
-                .toList());
-        ZigCommandResult result = runWithProgress(invocation, workspace, monitor);
-        writeLogAndCheck(invocation, result);
+                new ZigTargetCompletionMonitor(workspace, progressPlan, progressListener);
+        Throwable failure = null;
+        try {
+            monitor.prepare();
+            progressListener.buildStarted(buildPlan.units().stream()
+                    .map(NativeBuildUnit::target)
+                    .toList());
+            monitor.poll();
+            ZigCommandResult result = runWithProgress(invocation, workspace, monitor);
+            writeLogAndCheck(invocation, result);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            cleanupProgress(workspace, failure);
+        }
     }
 
     private ZigCommandResult runWithProgress(
@@ -143,6 +189,20 @@ public final class ZigBuildInvoker {
                     + "; see " + invocation.logFile().toAbsolutePath()
                     + System.lineSeparator()
                     + tail);
+        }
+    }
+
+    private void cleanupProgress(
+            ZigBuildWorkspace workspace,
+            Throwable invocationFailure) throws IOException {
+        try {
+            ZigTargetCompletionMonitor.cleanupDirectory(workspace);
+        } catch (IOException cleanupFailure) {
+            if (invocationFailure != null) {
+                invocationFailure.addSuppressed(cleanupFailure);
+                return;
+            }
+            throw cleanupFailure;
         }
     }
 }

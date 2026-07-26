@@ -1593,6 +1593,31 @@ public final class AsmFixtureBuilder implements Opcodes {
         return writer.toByteArray();
     }
 
+    public static byte[] classWithProtectedReferenceArrayAllocation(String internalName, String elementType) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "array", "(I)I", null, null);
+        org.objectweb.asm.Label start = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label handler = new org.objectweb.asm.Label();
+        method.visitTryCatchBlock(start, end, handler, "java/lang/NegativeArraySizeException");
+        method.visitCode();
+        method.visitLabel(start);
+        method.visitVarInsn(ILOAD, 0);
+        method.visitTypeInsn(ANEWARRAY, elementType);
+        method.visitInsn(ARRAYLENGTH);
+        method.visitLabel(end);
+        method.visitInsn(IRETURN);
+        method.visitLabel(handler);
+        method.visitInsn(POP);
+        method.visitInsn(ICONST_M1);
+        method.visitInsn(IRETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     public static byte[] classWithArrayOperationMethods(String internalName) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
