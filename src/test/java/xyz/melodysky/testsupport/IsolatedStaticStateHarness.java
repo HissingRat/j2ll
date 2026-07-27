@@ -65,17 +65,17 @@ public final class IsolatedStaticStateHarness {
             boolean cleared = first.getMethod("getObject").invoke(null) == null;
             System.out.println("object=" + same + "/" + held + "/" + cleared);
             first.getMethod("setObject", Object.class).invoke(null, "llvm-value");
-            String fallbackRead =
-                    (String) first.getMethod("fallbackRead").invoke(null);
-            String fallbackWrite = (String) first.getMethod(
-                            "fallbackWrite",
+            String skippedRead =
+                    (String) first.getMethod("skippedRead").invoke(null);
+            String skippedWrite = (String) first.getMethod(
+                            "skippedWrite",
                             String.class)
-                    .invoke(null, "fallback-value");
+                    .invoke(null, "skipped-value");
             Object llvmRead = first.getMethod("getObject").invoke(null);
-            System.out.println("fallback-shared="
-                    + fallbackRead
+            System.out.println("skipped-shared="
+                    + skippedRead
                     + "/"
-                    + fallbackWrite
+                    + skippedWrite
                     + "/"
                     + llvmRead);
             System.out.println("second-types="

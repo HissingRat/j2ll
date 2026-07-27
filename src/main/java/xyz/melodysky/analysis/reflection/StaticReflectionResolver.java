@@ -184,7 +184,7 @@ public final class StaticReflectionResolver implements Opcodes {
                         || methodInsn.name.equals("getFields")
                         || methodInsn.name.equals("getDeclaredConstructors")
                         || methodInsn.name.equals("getConstructors"))) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.REFLECTION_UNSUPPORTED_SCAN,
@@ -214,7 +214,7 @@ public final class StaticReflectionResolver implements Opcodes {
             boolean initialize) {
         Optional<String> binaryName = operands.isEmpty() ? Optional.empty() : operands.get(0).stringValue();
         if (binaryName.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING,
@@ -224,7 +224,7 @@ public final class StaticReflectionResolver implements Opcodes {
         }
         String internalName = binaryNameToInternal(binaryName.orElseThrow());
         if (metadataIndex.findClass(internalName).isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.UNRESOLVED_REFLECTION_CLASS,
@@ -249,7 +249,7 @@ public final class StaticReflectionResolver implements Opcodes {
         Optional<String> name = operands.size() > 1 ? operands.get(1).stringValue() : Optional.empty();
         Optional<List<String>> parameters = operands.size() > 2 ? operands.get(2).classArrayDescriptors() : Optional.empty();
         if (owner.isEmpty() || name.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING,
@@ -258,7 +258,7 @@ public final class StaticReflectionResolver implements Opcodes {
             return Optional.empty();
         }
         if (parameters.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_PARAMETERS,
@@ -285,7 +285,7 @@ public final class StaticReflectionResolver implements Opcodes {
                 .filter(method -> parameterDescriptors(method.descriptor()).equals(parameters.orElseThrow()))
                 .findFirst();
         if (target.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.UNRESOLVED_REFLECTION_METHOD,
@@ -315,7 +315,7 @@ public final class StaticReflectionResolver implements Opcodes {
         Optional<String> owner = receiverClassInternalName(operands);
         Optional<String> name = operands.size() > 1 ? operands.get(1).stringValue() : Optional.empty();
         if (owner.isEmpty() || name.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING,
@@ -328,7 +328,7 @@ public final class StaticReflectionResolver implements Opcodes {
                 .filter(field -> field.name().equals(name.orElseThrow()))
                 .findFirst();
         if (target.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.UNRESOLVED_REFLECTION_FIELD,
@@ -355,7 +355,7 @@ public final class StaticReflectionResolver implements Opcodes {
         Optional<String> owner = receiverClassInternalName(operands);
         Optional<List<String>> parameters = operands.size() > 1 ? operands.get(1).classArrayDescriptors() : Optional.empty();
         if (owner.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING,
@@ -364,7 +364,7 @@ public final class StaticReflectionResolver implements Opcodes {
             return Optional.empty();
         }
         if (parameters.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTION_PARAMETERS,
@@ -388,7 +388,7 @@ public final class StaticReflectionResolver implements Opcodes {
         String descriptor = "(" + String.join("", parameters.orElseThrow()) + ")V";
         Optional<MethodMetadata> target = metadataIndex.findMethod(owner.orElseThrow(), "<init>", descriptor);
         if (target.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.UNRESOLVED_REFLECTION_CONSTRUCTOR,
@@ -415,7 +415,7 @@ public final class StaticReflectionResolver implements Opcodes {
             ReflectionPlanBuilder builder) {
         Optional<ReflectionMethodTarget> target = operands.isEmpty() ? Optional.empty() : operands.get(0).methodTarget();
         if (target.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTIVE_METHOD,
@@ -441,7 +441,7 @@ public final class StaticReflectionResolver implements Opcodes {
             ReflectionPlanBuilder builder) {
         Optional<ReflectionMethodTarget> target = operands.isEmpty() ? Optional.empty() : operands.get(0).methodTarget();
         if (target.isEmpty()) {
-            fallback(
+            recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
                     StaticReflectionDiagnostics.DYNAMIC_REFLECTIVE_CONSTRUCTOR,
@@ -511,13 +511,13 @@ public final class StaticReflectionResolver implements Opcodes {
         return stack.isEmpty() ? ReflectionValue.unknown("stack-underflow") : stack.peek();
     }
 
-    private void fallback(
+    private void recordUnsupportedSite(
             ParsedMethod method,
             int instructionIndex,
             String reasonCode,
             String reason,
             ReflectionPlanBuilder builder) {
-        builder.fallbacks.add(new ReflectionFallbackSite(
+        builder.unsupportedSites.add(new ReflectionUnsupportedSite(
                 method.owner(),
                 method.name(),
                 method.descriptor(),
@@ -581,10 +581,10 @@ public final class StaticReflectionResolver implements Opcodes {
         private final ArrayList<ReflectionClassTarget> classTargets = new ArrayList<>();
         private final ArrayList<ReflectionMethodTarget> methodTargets = new ArrayList<>();
         private final ArrayList<ReflectionFieldTarget> fieldTargets = new ArrayList<>();
-        private final ArrayList<ReflectionFallbackSite> fallbacks = new ArrayList<>();
+        private final ArrayList<ReflectionUnsupportedSite> unsupportedSites = new ArrayList<>();
 
         private ReflectionPlan build() {
-            return new ReflectionPlan(classTargets, methodTargets, fieldTargets, fallbacks);
+            return new ReflectionPlan(classTargets, methodTargets, fieldTargets, unsupportedSites);
         }
     }
 

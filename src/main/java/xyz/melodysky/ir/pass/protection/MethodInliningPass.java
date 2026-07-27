@@ -159,9 +159,6 @@ public final class MethodInliningPass {
         if (candidate.reflectionSensitive()) {
             return MethodInliningReason.REFLECTION_SENSITIVE;
         }
-        if (candidate.fallbackSensitive()) {
-            return MethodInliningReason.FALLBACK_SENSITIVE;
-        }
         if (callGraph.isRecursiveEdge(candidate.callerMethodKey(), candidate.calleeMethodKey())) {
             return MethodInliningReason.RECURSIVE;
         }

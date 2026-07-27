@@ -20,7 +20,6 @@ import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchyStage;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.analysis.reflection.StaticReflectionResolver;
-import xyz.melodysky.analysis.runtime.FallbackBoundaryAnalyzer;
 import xyz.melodysky.analysis.runtime.RuntimeAnalysisPipeline;
 import xyz.melodysky.analysis.runtime.RuntimeTypeResult;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
@@ -60,9 +59,6 @@ import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.ClassRewriteResult;
 import xyz.melodysky.packaging.EmbeddedLibraryLayout;
-import xyz.melodysky.packaging.FallbackBlobInput;
-import xyz.melodysky.packaging.FallbackBlobPlanner;
-import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.packaging.JarPreservationReport;
 import xyz.melodysky.packaging.JarRepackager;
 import xyz.melodysky.packaging.MethodRewriteDecision;
@@ -71,7 +67,6 @@ import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeLoaderClassGenerator;
-import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeOriginalClassRewriter;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
@@ -91,7 +86,7 @@ import xyz.melodysky.report.ArtifactAuditResult;
 import xyz.melodysky.report.ArtifactAuditReportWriter;
 import xyz.melodysky.report.FailureReportWriter;
 import xyz.melodysky.report.FieldInternalizationReportWriter;
-import xyz.melodysky.report.FrontendSkipReportWriter;
+import xyz.melodysky.report.SkippedMethodReportWriter;
 import xyz.melodysky.report.KnownBlockersWriter;
 import xyz.melodysky.report.LoweringReportAssembler;
 import xyz.melodysky.report.OpcodeSupportMatrixWriter;
@@ -149,7 +144,6 @@ public final class MainlinePipeline {
     private final MethodRewritePlanner rewritePlanner = new MethodRewritePlanner();
     private final NativeOriginalClassRewriter classRewriter = new NativeOriginalClassRewriter();
     private final LoweringReportAssembler loweringReportAssembler = new LoweringReportAssembler();
-    private final FallbackBoundaryAnalyzer fallbackBoundaryAnalyzer = new FallbackBoundaryAnalyzer();
     private final ProtectionEvidenceAssembler protectionEvidenceAssembler =
             new ProtectionEvidenceAssembler();
     private final java.util.function.Function<String, String> signatureEnvironment;
@@ -190,6 +184,23 @@ public final class MainlinePipeline {
             Path workspaceRoot,
             BuildProgressListener progress,
             WholeProgramAnalysisPolicy wholeProgramPolicy) throws IOException {
+        return run(
+                config,
+                workspaceRoot,
+                progress,
+                wholeProgramPolicy,
+                SkippedMethodApproval.rejectAll());
+    }
+
+    public MainlinePipelineResult run(
+            ResolvedConfig config,
+            Path workspaceRoot,
+            BuildProgressListener progress,
+            WholeProgramAnalysisPolicy wholeProgramPolicy,
+            SkippedMethodApproval skippedMethodApproval) throws IOException {
+        java.util.Objects.requireNonNull(
+                skippedMethodApproval,
+                "skippedMethodApproval");
         MainlineProgress buildProgress = new MainlineProgress(progress);
         buildProgress.inputInspection(config.jarFile());
         DiagnosticBag diagnostics = new DiagnosticBag();
@@ -255,7 +266,7 @@ public final class MainlinePipeline {
             }
         }
         RuntimeLoaderPlan loaderNamespacePlan =
-                RuntimeLoaderPlan.create(config.embeddedLibraryDirectory(), false);
+                RuntimeLoaderPlan.create(config.embeddedLibraryDirectory());
         diagnostics.addAll(new RuntimeLoaderCollisionValidator().validate(
                 config.jarFile(),
                 loaderNamespacePlan));
@@ -284,7 +295,8 @@ public final class MainlinePipeline {
 
         buildProgress.methodSelection(program.classes().size());
         SelectorMatchResult selection = selectorMatcher.expand(program, config.whiteList(), config.blackList());
-        selection = excludeVersionedMultiReleaseBaseMethods(selection, versionedClassNames(config.jarFile()));
+        Set<String> versionedClassNames =
+                versionedClassNames(config.jarFile());
         diagnostics.addAll(selection.diagnostics());
         buildProgress.methodsSelected(selection.requestedMethods().size());
 
@@ -345,6 +357,28 @@ public final class MainlinePipeline {
         for (ParsedMethod method : selection.requestedMethods()) {
             methodIndex++;
             buildProgress.methodLoweringProgress(methodIndex, requestedMethodCount, method.methodKey());
+            if (versionedClassNames.contains(method.owner())) {
+                String reason = "base class has a META-INF/versions counterpart; "
+                        + "preserving the original method avoids registering a native "
+                        + "binding against a runtime-selected versioned class";
+                ssaResults.add(SsaMethodResult.skipped(
+                        method,
+                        DiagnosticStage.LOWERING,
+                        "MULTI_RELEASE_VERSIONED_CLASS",
+                        reason));
+                diagnostics.add(Diagnostic.warning(
+                                DiagnosticStage.LOWERING,
+                                xyz.melodysky.diagnostic.DiagnosticCode.of(
+                                        "MULTI_RELEASE_VERSIONED_CLASS"),
+                                reason)
+                        .at(xyz.melodysky.diagnostic.DiagnosticLocation
+                                .methodLocation(
+                                        method.owner(),
+                                        method.name(),
+                                        method.descriptor()))
+                        .withDecision(LoweringStatus.SKIPPED.wireName()));
+                continue;
+            }
             var cfgResult = cfgBuilder.build(method);
             diagnostics.addAll(cfgResult.diagnostics());
             cfgResult.artifact().ifPresent(result -> cfgByMethod.put(method.methodKey(), result));
@@ -385,7 +419,6 @@ public final class MainlinePipeline {
                 registrationPlan,
                 rewriteDecisions,
                 protectedIr,
-                nativeEmbeddedFallbackMethodKeys(ssaResults),
                 availableProgramMethodKeys);
         ProgramIrProtectionResult programProtection =
                 new ProgramIrProtectionCoordinator(llvmNameMangler).run(
@@ -423,17 +456,13 @@ public final class MainlinePipeline {
                 registrationPlan,
                 rewriteDecisions,
                 nativeIr,
-                nativeEmbeddedFallbackMethodKeys(ssaResults),
                 nativeAvailableMethodKeys,
                 programProtection.compilerInternalMethods().keySet());
         FinalNativeCoverageResult finalNativeCoverage =
-                new FinalNativeCoverageResolver(implementationPlanner).resolve(
+                new FinalNativeCoverageResolver().resolve(
                         rewriteDecisions,
                         implementationPlan,
-                        ssaResults,
-                        nativeIr,
-                        nativeAvailableMethodKeys,
-                        programProtection.compilerInternalMethods().keySet());
+                        ssaResults);
         diagnostics.addAll(finalNativeCoverage.diagnostics());
         rewriteDecisions = finalNativeCoverage.implementedRewriteDecisions();
         implementationPlan = finalNativeCoverage.finalImplementationPlan();
@@ -446,8 +475,6 @@ public final class MainlinePipeline {
                 protectionReports,
                 config,
                 seed);
-        implementationPlan = new FallbackSidecarNativePlanReconciler()
-                .reconcile(implementationPlan, fieldInternalizationPlan);
         List<Diagnostic> fieldFinalPlanDiagnostics =
                 new FieldInternalizationFinalPlanValidator().validate(
                         fieldInternalizationPlan,
@@ -471,7 +498,6 @@ public final class MainlinePipeline {
                 seed));
         RuntimeLoaderPlan runtimeLoaderPlan = RuntimeLoaderPlan.create(
                 config.embeddedLibraryDirectory(),
-                implementationPlan.hasNativeEmbeddedFallback(),
                 fieldInternalizationPlan.referenceSidecarSize());
         NativeLlvmCompilation llvmCompilation = new NativeLlvmCompiler(
                         llvmLowerer,
@@ -576,7 +602,7 @@ public final class MainlinePipeline {
         }
         Map<String, String> llvmTextByClass = llvmCompilation.textByOwner();
 
-        Map<String, LoweringStatus> statuses = methodStatuses(program, selection, ssaResults);
+        Map<String, LoweringStatus> statuses = methodStatuses(ssaResults);
         IntermediateArtifactLayout layout = new IntermediateArtifactLayoutPlanner().plan(classArtifactInputs(program, statuses));
         buildProgress.intermediateWriting(config.intermediates().enabled());
         writeIntermediates(
@@ -599,24 +625,43 @@ public final class MainlinePipeline {
                 NativeLibraryName.derive(config.protection().seed()),
                 config.targets());
         diagnostics.addAll(targetPreflightDiagnostics(nativeBuildPlan));
-        buildProgress.nativeBuild(nativeBuildPlan, !implementationPlan.implementations().isEmpty());
-        Optional<ZigNativeBuildResult> nativeBuildResult = new ZigNativeLibraryBuilder(
-                llvmNameMangler,
-                llvmProtectionConfig,
-                config.protection().enabled()
-                        && config.protection().ir().enabled()
-                        && config.protection().ir().methodTableHiding(),
-                config.protection().enabled()
-                        && config.protection().binary().enabled()
-                        && config.protection().binary().strip()).build(
-                workspaceRoot,
-                runtimeLoaderPlan,
-                nativeBuildPlan,
-                implementationPlan,
-                nativeIr,
-                buildProgress.nativeBuildProgress(),
-                methodTableHidingPlan,
-                llvmCompilation);
+        List<SkippedMethod> skippedMethods =
+                new SkippedMethodCollector().collect(ssaResults);
+        if (!diagnostics.hasErrors() && !skippedMethods.isEmpty()) {
+            buildProgress.beforeUserInput();
+        }
+        SkippedMethodGate.Result skippedMethodGate =
+                new SkippedMethodGate().evaluate(
+                        skippedMethods,
+                        diagnostics.hasErrors(),
+                        skippedMethodApproval);
+        diagnostics.addAll(skippedMethodGate.diagnostics());
+        SkippedMethodGateDecision skippedMethodGateDecision =
+                skippedMethodGate.decision();
+
+        Optional<ZigNativeBuildResult> nativeBuildResult = Optional.empty();
+        if (!diagnostics.hasErrors()) {
+            buildProgress.nativeBuild(
+                    nativeBuildPlan,
+                    !implementationPlan.implementations().isEmpty());
+            nativeBuildResult = new ZigNativeLibraryBuilder(
+                    llvmNameMangler,
+                    llvmProtectionConfig,
+                    config.protection().enabled()
+                            && config.protection().ir().enabled()
+                            && config.protection().ir().methodTableHiding(),
+                    config.protection().enabled()
+                            && config.protection().binary().enabled()
+                            && config.protection().binary().strip()).build(
+                    workspaceRoot,
+                    runtimeLoaderPlan,
+                    nativeBuildPlan,
+                    implementationPlan,
+                    nativeIr,
+                    buildProgress.nativeBuildProgress(),
+                    methodTableHidingPlan,
+                    llvmCompilation);
+        }
         List<SymbolAuditReportWriter.LibraryAuditReport> symbolAudits =
                 symbolAudits(nativeBuildPlan, nativeBuildResult);
         diagnostics.addAll(symbolAuditDiagnostics(symbolAudits));
@@ -675,11 +720,6 @@ public final class MainlinePipeline {
                 nativeBuildResult.map(ZigNativeBuildResult::exportedSymbols).orElse(List.of()),
                 nativeBuildResult.orElse(null),
                 nativeBuildPlan,
-                fallbackBlobs(
-                        layout,
-                        ssaResults,
-                        implementationPlan,
-                        fieldInternalizationPlan),
                 preservationReport,
                 signatureAction));
         ArtifactAuditResult artifactAuditResult = artifactAudit.skipped(
@@ -729,7 +769,8 @@ public final class MainlinePipeline {
                 fieldInternalization,
                 methodTableHidingPlan,
                 preservationReport,
-                signatureAction);
+                signatureAction,
+                skippedMethodGateDecision);
 
         return new MainlinePipelineResult(
                 workspaceRoot,
@@ -866,7 +907,6 @@ public final class MainlinePipeline {
                 List.of(),
                 null,
                 buildPlan,
-                List.of(),
                 preservationReport,
                 signatureAction));
         Files.writeString(workspaceRoot.resolve("reports/artifact-audit.json"),
@@ -903,8 +943,8 @@ public final class MainlinePipeline {
         Map<String, ParsedMethod> requested = new HashMap<>();
         requestedMethods.forEach(method -> requested.put(method.methodKey(), method));
         Set<String> rewriteable = ssaResults.stream()
-                .filter(result -> result.status() == LoweringStatus.LOWERED
-                        || result.status() == LoweringStatus.HALF_LOWERED)
+                .filter(result -> result.status()
+                        == LoweringStatus.NATIVE_LOWERED)
                 .map(result -> result.sourceMethod().methodKey())
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         ArrayList<MethodRewriteDecision> decisions = new ArrayList<>();
@@ -1004,7 +1044,9 @@ public final class MainlinePipeline {
             FieldInternalizationPipelineResult fieldInternalization,
             MethodTableHidingPlan methodTableHidingPlan,
             JarPreservationReport preservationReport,
-            SignatureActionReport signatureAction) throws IOException {
+            SignatureActionReport signatureAction,
+            SkippedMethodGateDecision skippedMethodGateDecision)
+            throws IOException {
         Path reports = workspaceRoot.resolve("reports");
         NativeRegistrationPlan implementedRegistrationPlan = implementationPlan.registrationPlan();
         Files.writeString(workspaceRoot.resolve("config.resolved.json"), new ResolvedConfigReportWriter().json(config));
@@ -1013,7 +1055,11 @@ public final class MainlinePipeline {
             Files.writeString(reports.resolve("failure-report.json"),
                     new FailureReportWriter().json(diagnostics.diagnostics(), false));
         }
-        Files.writeString(reports.resolve("frontend-skip-report.json"), new FrontendSkipReportWriter().json(ssaResults));
+        Files.writeString(
+                reports.resolve("skipped-method-report.json"),
+                new SkippedMethodReportWriter().json(
+                        ssaResults,
+                        skippedMethodGateDecision));
         Files.writeString(reports.resolve("lowering-report.json"), new ReportJsonWriter().loweringJson(
                 loweringReportAssembler.assemble(
                         program,
@@ -1022,7 +1068,7 @@ public final class MainlinePipeline {
                         rewriteDecisions,
                         implementedRegistrationPlan,
                         implementationPlan),
-                selection.notApplicable(),
+                selection.ineligible(),
                 selection.excluded()));
         Files.writeString(reports.resolve("packaging-report.json"), new PackagingReportWriter().packagingJson(
                 workspaceRoot.relativize(outputJar),
@@ -1035,11 +1081,6 @@ public final class MainlinePipeline {
                 nativeBuildResult.map(ZigNativeBuildResult::exportedSymbols).orElse(List.of()),
                 nativeBuildResult.orElse(null),
                 nativeBuildPlan,
-                fallbackBlobs(
-                        layout,
-                        ssaResults,
-                        implementationPlan,
-                        fieldInternalization.plan()),
                 preservationReport,
                 signatureAction));
         Files.writeString(reports.resolve("artifact-audit.json"), new ArtifactAuditReportWriter().json(artifactAuditResult));
@@ -1177,39 +1218,6 @@ public final class MainlinePipeline {
                 "nativeMetadataSurface"));
     }
 
-    private SelectorMatchResult excludeVersionedMultiReleaseBaseMethods(
-            SelectorMatchResult selection,
-            Set<String> versionedClassNames) {
-        if (versionedClassNames.isEmpty()) {
-            return selection;
-        }
-        ArrayList<ParsedMethod> requested = new ArrayList<>();
-        ArrayList<MethodEligibility> notApplicable = new ArrayList<>(selection.notApplicable());
-        for (ParsedMethod method : selection.requestedMethods()) {
-            if (!versionedClassNames.contains(method.owner())) {
-                requested.add(method);
-                continue;
-            }
-            notApplicable.add(MethodEligibility.notApplicable(
-                    method.owner(),
-                    method.name(),
-                    method.descriptor(),
-                    "<multi-release-versioned-class>",
-                    "MULTI_RELEASE_VERSIONED_CLASS",
-                    "base class has a META-INF/versions counterpart; preserving original bytecode avoids registering natives on the runtime-selected versioned class"));
-        }
-        return new SelectorMatchResult(
-                requested,
-                notApplicable.stream()
-                        .sorted(java.util.Comparator
-                                .comparing(MethodEligibility::owner)
-                                .thenComparing(MethodEligibility::name)
-                                .thenComparing(MethodEligibility::descriptor))
-                        .toList(),
-                selection.excluded(),
-                selection.diagnostics());
-    }
-
     private Set<String> versionedClassNames(Path jarFile) throws IOException {
         try (JarFile jar = new JarFile(jarFile.toFile(), false)) {
             return jar.stream()
@@ -1321,14 +1329,6 @@ public final class MainlinePipeline {
                     "STRING_CONCAT_CONSTANT_CARRIER_STABLE_SURFACE",
                     "stableGeneratedCSurface");
         }
-        if (implementation != null
-                && implementation.reasonCode().equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK")) {
-            return fact.withAuditClassification(
-                    "FALLBACK_BLOB_COMPLEX",
-                    "observedOnly",
-                    "FALLBACK_BLOB_SURFACE_NOT_FULLY_AUDITED",
-                    "fallbackComplexObservedOnly");
-        }
         return fact.withAuditClassification(
                 implementation == null ? "HELPER_PATH" : implementation.path().name(),
                 "observedOnly",
@@ -1410,58 +1410,6 @@ public final class MainlinePipeline {
         return List.copyOf(diagnostics);
     }
 
-    private List<NativeEmbeddedFallbackBlob> fallbackBlobs(
-            IntermediateArtifactLayout layout,
-            List<SsaMethodResult> ssaResults,
-            NativeImplementationPlan implementationPlan,
-            NativeFieldInternalizationPlan fieldInternalizationPlan) {
-        Set<String> implementedFallbacks = implementationPlan.implementations().stream()
-                .filter(implementation -> implementation.reasonCode()
-                        .equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK"))
-                .map(NativeMethodImplementation::methodKey)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        ArrayList<FallbackBlobInput> inputs = new ArrayList<>();
-        for (SsaMethodResult result : ssaResults) {
-            if (result.status() != LoweringStatus.HALF_LOWERED
-                    || !implementedFallbacks.contains(result.sourceMethod().methodKey())) {
-                continue;
-            }
-            ParsedMethod method = result.sourceMethod();
-            MethodArtifact artifact = methodArtifact(layout, method.methodKey());
-            inputs.add(new FallbackBlobInput(
-                    artifact.methodId(),
-                    method.methodKey(),
-                    method.owner(),
-                    method.name(),
-                    method.descriptor(),
-                    method.accessFlags().isStatic(),
-                    method.methodNode(),
-                    fallbackBoundaryAnalyzer.reasonCode(result),
-                    FallbackSidecarFieldAccess.forMethod(
-                            fieldInternalizationPlan,
-                            method.methodKey())));
-        }
-        return new FallbackBlobPlanner().plan(inputs);
-    }
-
-    private Set<String> nativeEmbeddedFallbackMethodKeys(List<SsaMethodResult> ssaResults) {
-        return ssaResults.stream()
-                .filter(result -> result.status() == LoweringStatus.HALF_LOWERED)
-                .map(result -> result.sourceMethod().methodKey())
-                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
-    }
-
-    private MethodArtifact methodArtifact(IntermediateArtifactLayout layout, String methodKey) {
-        for (ClassArtifact classArtifact : layout.classes()) {
-            for (MethodArtifact method : layout.methodsFor(classArtifact.internalName())) {
-                if ((method.owner() + "#" + method.name() + "!" + method.descriptor()).equals(methodKey)) {
-                    return method;
-                }
-            }
-        }
-        throw new IllegalStateException("missing method artifact for " + methodKey);
-    }
-
     private List<EmbeddedLibraryReport> embeddedLibraries(
             ResolvedConfig config,
             Optional<ZigNativeBuildResult> nativeBuildResult) {
@@ -1517,22 +1465,8 @@ public final class MainlinePipeline {
                 .toList();
     }
 
-    private Map<String, LoweringStatus> methodStatuses(
-            ParsedProgram program,
-            SelectorMatchResult selection,
-            List<SsaMethodResult> ssaResults) {
+    private Map<String, LoweringStatus> methodStatuses(List<SsaMethodResult> ssaResults) {
         Map<String, LoweringStatus> statuses = new HashMap<>();
-        for (ParsedClass parsedClass : program.classes()) {
-            for (ParsedMethod method : parsedClass.methods()) {
-                statuses.put(method.methodKey(), LoweringStatus.EXCLUDED);
-            }
-        }
-        selection.notApplicable().forEach(eligibility -> statuses.put(
-                eligibility.owner() + "#" + eligibility.name() + "!" + eligibility.descriptor(),
-                LoweringStatus.NOT_APPLICABLE));
-        selection.excluded().forEach(eligibility -> statuses.put(
-                eligibility.owner() + "#" + eligibility.name() + "!" + eligibility.descriptor(),
-                LoweringStatus.EXCLUDED));
         for (SsaMethodResult result : ssaResults) {
             statuses.put(result.sourceMethod().methodKey(), result.status());
         }
@@ -1544,11 +1478,15 @@ public final class MainlinePipeline {
         for (ParsedClass parsedClass : program.classes()) {
             ArrayList<MethodArtifactInput> methods = new ArrayList<>();
             for (ParsedMethod method : parsedClass.methods()) {
+                LoweringStatus status = statuses.get(method.methodKey());
+                if (status == null) {
+                    continue;
+                }
                 methods.add(new MethodArtifactInput(
                         method.owner(),
                         method.name(),
                         method.descriptor(),
-                        statuses.getOrDefault(method.methodKey(), LoweringStatus.EXCLUDED)));
+                        status));
             }
             inputs.add(new ClassArtifactInput(parsedClass.internalName(), parsedClass.sourceEntry(), methods));
         }

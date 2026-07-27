@@ -58,7 +58,7 @@ xyz.melodysky.frontend.classfile
 - max locals
 - max stack
 
-For abstract, already-native and other no-Code methods, `instructions`, `try/catch table`, `max locals` and `max stack` must be represented explicitly as absent/no-Code facts, not as an empty runnable method body. Selector eligibility later records such methods as `notApplicable` when matched.
+For abstract, already-native and other no-Code methods, `instructions`, `try/catch table`, `max locals` and `max stack` must be represented explicitly as absent/no-Code facts, not as an empty runnable method body. A selector match for one of these declarations is recorded later as separate eligibility evidence; it is not assigned an executable-method lowering status and does not participate in skipped-method confirmation.
 
 ASM tree 可以短期保留在 frontend 边界内，但中后端不要直接依赖 ASM 节点。
 

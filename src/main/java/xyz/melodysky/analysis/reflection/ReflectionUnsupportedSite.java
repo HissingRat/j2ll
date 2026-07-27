@@ -2,14 +2,14 @@ package xyz.melodysky.analysis.reflection;
 
 import java.util.Objects;
 
-public record ReflectionFallbackSite(
+public record ReflectionUnsupportedSite(
         String owner,
         String method,
         String descriptor,
         int instructionIndex,
         String reasonCode,
-        String reason) implements Comparable<ReflectionFallbackSite> {
-    public ReflectionFallbackSite {
+        String reason) implements Comparable<ReflectionUnsupportedSite> {
+    public ReflectionUnsupportedSite {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(descriptor, "descriptor");
@@ -22,7 +22,7 @@ public record ReflectionFallbackSite(
     }
 
     @Override
-    public int compareTo(ReflectionFallbackSite other) {
+    public int compareTo(ReflectionUnsupportedSite other) {
         int byOwner = owner.compareTo(other.owner);
         if (byOwner != 0) {
             return byOwner;

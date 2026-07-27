@@ -18,7 +18,6 @@ public record LoweringReportMethod(
         String registrationOwner,
         String nativeImplementationPath,
         List<HelperBackedSiteReport> helperBackedSites,
-        List<FallbackSiteReport> fallbackSites,
         String reasonCode,
         String reason) {
     public LoweringReportMethod {
@@ -30,6 +29,5 @@ public record LoweringReportMethod(
         accessFlags = List.copyOf(Objects.requireNonNull(accessFlags, "accessFlags"));
         compilerFlags = List.copyOf(Objects.requireNonNull(compilerFlags, "compilerFlags"));
         helperBackedSites = List.copyOf(Objects.requireNonNull(helperBackedSites, "helperBackedSites"));
-        fallbackSites = List.copyOf(Objects.requireNonNull(fallbackSites, "fallbackSites"));
     }
 }

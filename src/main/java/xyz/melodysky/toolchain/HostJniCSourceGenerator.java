@@ -15,11 +15,6 @@ import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrValue;
-import xyz.melodysky.packaging.EncodedFallbackBlob;
-import xyz.melodysky.packaging.FallbackBlobCodec;
-import xyz.melodysky.packaging.FallbackHelperClass;
-import xyz.melodysky.packaging.FallbackHelperClassFactory;
-import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
@@ -30,21 +25,15 @@ import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.runtime.MethodIdentityToken;
 import xyz.melodysky.runtime.jni.JniMethodDescriptor;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
-import xyz.melodysky.toolchain.ClassArtifactPath;
 
 public final class HostJniCSourceGenerator implements Opcodes {
     private final JniTypeMapper typeMapper = new JniTypeMapper();
-    private final ClassArtifactPath artifactPath = new ClassArtifactPath();
-    private final FallbackHelperClassFactory fallbackHelperClassFactory = new FallbackHelperClassFactory();
-    private final FallbackBlobCodec fallbackBlobCodec = new FallbackBlobCodec();
-
     public String generate(NativeImplementationPlan implementationPlan) {
         List<Binding> bindings = bindings(implementationPlan);
         return generate(
                 implementationPlan,
                 RuntimeLoaderPlan.create(
                         "native0",
-                        implementationPlan.hasNativeEmbeddedFallback(),
                         HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings)));
     }
 
@@ -73,10 +62,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
             NativeImplementationPlan implementationPlan,
             RuntimeLoaderPlan runtimeLoaderPlan,
             MethodTableHidingPlan methodTablePlan) {
-        if (implementationPlan.hasNativeEmbeddedFallback()
-                != runtimeLoaderPlan.includeFallbackDefinition()) {
-            throw new IllegalArgumentException("runtime Loader fallback capability does not match native implementation plan");
-        }
         List<Binding> bindings = bindings(implementationPlan);
         if (HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings)
                 != runtimeLoaderPlan.referenceSidecarSize()) {
@@ -98,11 +83,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 #include <string.h>
 
                 """);
-        builder.append(HostJniFallbackRuntimeSource.helperSource());
-        if (runtimeLoaderPlan.includeFallbackDefinition()) {
-            builder.append(HostJniFallbackRuntimeSource.fallbackHelperSource(
-                    runtimeLoaderPlan.internalName()));
-        }
+        builder.append(HostJniRegistrationRuntimeSource.helperSource());
         if (bindings.stream().anyMatch(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)) {
             HostJniAllocationRuntimeSource.append(builder, bindings);
             builder.append(HostJniJvmSemanticsSources.classInitHelperSource());
@@ -130,11 +111,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 runtimeLoaderPlan);
         HostJniFieldRuntimeSource.append(builder, bindings);
         for (Binding binding : bindings) {
-            if (isNativeEmbeddedFallbackBinding(binding)) {
-                builder.append(fallbackClass(binding).extraSource());
-            }
-        }
-        for (Binding binding : bindings) {
             if (binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH) {
                 appendLlvmForwardDeclaration(builder, binding);
             }
@@ -147,57 +123,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
         }
         builder.append(registrationSource);
         return new CMetadataStringObfuscator().obfuscate(builder.toString());
-    }
-
-    public String generate(NativeRegistrationPlan registrationPlan, List<MethodRewriteDecision> decisions) {
-        return generate(new NativeImplementationPlanner().plan(registrationPlan, decisions, Map.of()));
-    }
-
-    public NativeRegistrationPlan supportedHostPlan(
-            NativeRegistrationPlan registrationPlan,
-            List<MethodRewriteDecision> decisions) {
-        return new NativeRegistrationPlan(supportedBindings(registrationPlan, decisions).stream()
-                .map(Binding::entry)
-                .toList());
-    }
-
-    private List<Binding> supportedBindings(
-            NativeRegistrationPlan registrationPlan,
-            List<MethodRewriteDecision> decisions) {
-        ArrayList<Binding> bindings = new ArrayList<>();
-        for (NativeRegistrationEntry entry : registrationPlan.entries()) {
-            Optional<MethodRewriteDecision> maybeDecision = decisionFor(entry, decisions);
-            if (maybeDecision.isEmpty()) {
-                continue;
-            }
-            MethodRewriteDecision decision = maybeDecision.orElseThrow();
-            if ((decision.strategy() == MethodRewriteStrategy.NOT_APPLICABLE
-                            || decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB)
-                    || !supportsTemplate(decision)) {
-                continue;
-            }
-            bindings.add(new Binding(
-                    entry,
-                    decision,
-                    NativeImplementationPath.TEMPLATE_JNI_PATH,
-                    Optional.empty(),
-                    false,
-                    false,
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    List.of(),
-                    Optional.empty(),
-                    "TEMPLATE_JNI_SEMANTICS",
-                    bindingDescriptor(entry, decision)));
-        }
-        return bindings.stream().sorted(Comparator.comparing(Binding::entry)).toList();
     }
 
     private List<Binding> bindings(NativeImplementationPlan implementationPlan) {
@@ -226,16 +151,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .toList();
     }
 
-    private Optional<MethodRewriteDecision> decisionFor(
-            NativeRegistrationEntry entry,
-            List<MethodRewriteDecision> decisions) {
-        return decisions.stream()
-                .filter(decision -> decision.registrationOwner().equals(entry.registrationOwner()))
-                .filter(decision -> decision.generatedHelperName().orElse(decision.method().name()).equals(entry.methodName()))
-                .filter(decision -> registeredDescriptor(decision).equals(entry.descriptor()))
-                .findFirst();
-    }
-
     private JniMethodDescriptor bindingDescriptor(NativeRegistrationEntry entry, MethodRewriteDecision decision) {
         if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
                 || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB
@@ -251,51 +166,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 decision.method().name(),
                 decision.method().descriptor(),
                 decision.method().accessFlags().isStatic());
-    }
-
-    private String registeredDescriptor(MethodRewriteDecision decision) {
-        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            String descriptor = decision.method().descriptor();
-            int close = descriptor.indexOf(')');
-            return "(L" + decision.method().owner() + ";" + descriptor.substring(1, close) + ")V";
-        }
-        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return "()V";
-        }
-        return decision.method().descriptor();
-    }
-
-    public boolean supportsTemplate(MethodRewriteDecision decision) {
-        String name = decision.method().name();
-        String descriptor = decision.method().descriptor();
-        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            return false;
-        }
-        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return false;
-        }
-        return switch (name) {
-            case "add" -> descriptor.equals("(II)I");
-            case "mul" -> descriptor.equals("(II)I");
-            case "inc" -> descriptor.equals("(I)I");
-            case "addLong" -> descriptor.equals("(JJ)J");
-            case "addFloat" -> descriptor.equals("(FF)F");
-            case "addDouble" -> descriptor.equals("(DD)D");
-            case "truth" -> descriptor.equals("(Z)Z");
-            case "mix" -> descriptor.equals("(ZIJFD)D");
-            case "setLast" -> descriptor.equals("(I)V") && decision.method().accessFlags().isStatic();
-            case "addBase" -> descriptor.equals("(I)I") && !decision.method().accessFlags().isStatic();
-            case "bump" -> descriptor.equals("(I)V") && !decision.method().accessFlags().isStatic();
-            case "value" -> descriptor.equals("()I") && !decision.method().accessFlags().isStatic();
-            case "echo" -> descriptor.equals("(Ljava/lang/String;)Ljava/lang/String;");
-            case "length" -> descriptor.equals("(Ljava/lang/String;)I");
-            case "label" -> descriptor.equals("()Ljava/lang/String;") && !decision.method().accessFlags().isStatic();
-            case "sum" -> descriptor.equals("([I)I");
-            case "copyPlusOne" -> descriptor.equals("([I)[I");
-            case "failIfNegative" -> descriptor.equals("(I)I");
-            case "substring" -> descriptor.equals("(Ljava/lang/String;)Ljava/lang/String;");
-            default -> false;
-        };
     }
 
     private void appendLlvmForwardDeclaration(StringBuilder builder, Binding binding) {
@@ -421,10 +291,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
             } else {
                 appendClassInitializerBodyHelper(builder);
             }
-            return;
-        }
-        if (isNativeEmbeddedFallbackBinding(binding)) {
-            appendNativeEmbeddedFallbackInvoke(builder, binding);
             return;
         }
         switch (name) {
@@ -1157,133 +1023,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("    }\n");
     }
 
-    private void appendNativeEmbeddedFallbackInvoke(StringBuilder builder, Binding binding) {
-        boolean sidecarAware = !fallbackSidecarAccesses(binding).isEmpty();
-        if (!binding.descriptor().staticMethod()) {
-            builder.append("    jclass owner = (*env)->GetObjectClass(env, self);\n")
-                    .append("    if (owner == NULL) {\n");
-            appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
-            builder.append("    }\n");
-        }
-        builder.append("    jclass helper = j2ll_define_fallback_")
-                .append(safeSymbol(binding.entry().nativeSymbol()))
-                .append("(env, owner);\n")
-                .append("    if (helper == NULL) {\n");
-        if (!binding.descriptor().staticMethod()) {
-            builder.append("        (*env)->DeleteLocalRef(env, owner);\n");
-        }
-        appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
-        builder.append("    }\n");
-        if (sidecarAware) {
-            builder.append(
-                            "    jobjectArray j2ll_fallback_sidecar = (jobjectArray)j2ll_nfs_reference_sidecar(env, owner);\n")
-                    .append(binding.descriptor().staticMethod()
-                            ? ""
-                            : "    (*env)->DeleteLocalRef(env, owner);\n")
-                    .append("    if (j2ll_fallback_sidecar == NULL) {\n");
-            appendDefaultReturn(
-                    builder,
-                    binding.descriptor().javaReturnDescriptor());
-            builder.append("    }\n");
-        } else if (!binding.descriptor().staticMethod()) {
-            builder.append("    (*env)->DeleteLocalRef(env, owner);\n");
-        }
-        builder.append(
-                        "    jmethodID method = (*env)->GetStaticMethodID(env, helper, \"")
-                .append(FallbackHelperClassFactory.HELPER_METHOD_NAME)
-                .append("\", \"")
-                .append(escapeCString(fallbackHelperDescriptor(binding)))
-                .append("\");\n")
-                .append("    if (method == NULL) {\n");
-        if (sidecarAware) {
-            builder.append(
-                    "        (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
-        }
-        appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
-        builder.append("    }\n");
-        appendFallbackCall(builder, binding, sidecarAware);
-    }
-
-    private void appendFallbackCall(
-            StringBuilder builder,
-            Binding binding,
-            boolean sidecarAware) {
-        String call = "(*env)->"
-                + jniStaticCall(binding.descriptor().javaReturnDescriptor())
-                + "(env, helper, method"
-                + fallbackArguments(binding, sidecarAware)
-                + ")";
-        String returnDescriptor = binding.descriptor().javaReturnDescriptor();
-        if (returnDescriptor.equals("V")) {
-            builder.append("    ").append(call).append(";\n");
-            if (sidecarAware) {
-                builder.append(
-                        "    (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
-            }
-            builder.append("    return;\n");
-        } else {
-            builder.append("    ")
-                    .append(binding.descriptor().jniReturnType())
-                    .append(" j2ll_fallback_result = (")
-                    .append(binding.descriptor().jniReturnType())
-                    .append(")")
-                    .append(call)
-                    .append(";\n");
-            if (sidecarAware) {
-                builder.append(
-                        "    (*env)->DeleteLocalRef(env, j2ll_fallback_sidecar);\n");
-            }
-            builder.append("    return j2ll_fallback_result;\n");
-        }
-    }
-
-    private String fallbackArguments(
-            Binding binding,
-            boolean sidecarAware) {
-        ArrayList<String> arguments = new ArrayList<>();
-        if (!binding.descriptor().staticMethod()) {
-            arguments.add("self");
-        }
-        for (int index = 0; index < binding.descriptor().javaParameterDescriptors().size(); index++) {
-            arguments.add("arg" + index);
-        }
-        if (sidecarAware) {
-            arguments.add("j2ll_fallback_sidecar");
-        }
-        return arguments.isEmpty()
-                ? ""
-                : ", " + String.join(", ", arguments);
-    }
-
-    private String fallbackHelperDescriptor(Binding binding) {
-        return fallbackHelperClassFactory.helperDescriptor(
-                binding.decision().method().owner(),
-                binding.decision().method().descriptor(),
-                binding.decision().method().accessFlags().isStatic(),
-                !fallbackSidecarAccesses(binding).isEmpty());
-    }
-
-    private List<FallbackSidecarFieldAccess> fallbackSidecarAccesses(
-            Binding binding) {
-        return FallbackSidecarFieldAccess.parseMarkers(
-                binding.fieldKeys());
-    }
-
-    private String jniStaticCall(String returnDescriptor) {
-        return switch (returnDescriptor) {
-            case "V" -> "CallStaticVoidMethod";
-            case "Z" -> "CallStaticBooleanMethod";
-            case "B" -> "CallStaticByteMethod";
-            case "C" -> "CallStaticCharMethod";
-            case "S" -> "CallStaticShortMethod";
-            case "I" -> "CallStaticIntMethod";
-            case "J" -> "CallStaticLongMethod";
-            case "F" -> "CallStaticFloatMethod";
-            case "D" -> "CallStaticDoubleMethod";
-            default -> "CallStaticObjectMethod";
-        };
-    }
-
     private void appendDefaultReturn(StringBuilder builder, String returnDescriptor) {
         if (returnDescriptor.equals("V")) {
             builder.append("        return;\n");
@@ -1303,12 +1042,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
             builder.append("        return NULL;\n");
         }
     }
-
-    private boolean isNativeEmbeddedFallbackBinding(Binding binding) {
-        return binding.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
-                && binding.reasonCode().equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK");
-    }
-
 
     private String runtimeHelperBaseSymbol(String symbol) {
         int separator = symbol.indexOf('|');
@@ -2624,213 +2357,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append("}\n");
     }
 
-    private FallbackClass fallbackClass(Binding binding) {
-        String originalMethodId = artifactPath.methodId(
-                binding.decision().method().owner(),
-                binding.decision().method().name(),
-                binding.decision().method().descriptor());
-        FallbackHelperClass helperClass = fallbackHelperClassFactory.create(
-                originalMethodId,
-                binding.decision().method(),
-                fallbackSidecarAccesses(binding));
-        EncodedFallbackBlob encoded = fallbackBlobCodec.encode(
-                helperClass.bytes(),
-                originalMethodId + "\n" + binding.decision().method().methodKey());
-        String symbol = "j2ll_define_fallback_" + safeSymbol(binding.entry().nativeSymbol());
-        StringBuilder extra = new StringBuilder();
-        extra.append("static const unsigned char ")
-                .append(symbol)
-                .append("_encoded[] = {");
-        appendCByteArray(extra, encoded.encodedBytes());
-        extra.append("\n};\n")
-                .append("static const unsigned char ")
-                .append(symbol)
-                .append("_key[] = {");
-        appendCByteArray(extra, encoded.keyBytes());
-        extra.append("\n};\n")
-                .append("typedef struct ")
-                .append(symbol)
-                .append("_cache_entry {\n")
-                .append("    jobject loader;\n")
-                .append("    jclass clazz;\n")
-                .append("    struct ")
-                .append(symbol)
-                .append("_cache_entry* next;\n")
-                .append("} ")
-                .append(symbol)
-                .append("_cache_entry;\n")
-                .append("static ")
-                .append(symbol)
-                .append("_cache_entry* ")
-                .append(symbol)
-                .append("_cache = NULL;\n")
-                .append("static unsigned char* ")
-                .append(symbol)
-                .append("_decode(JNIEnv* env, size_t* decoded_length) {\n")
-                .append("    size_t encoded_length = sizeof(")
-                .append(symbol)
-                .append("_encoded);\n")
-                .append("    if (!j2ll_verify_sha256_hex(env, ")
-                .append(symbol)
-                .append("_encoded, encoded_length, \"")
-                .append(encoded.encodedSha256())
-                .append("\")) {\n")
-                .append("        if (!(*env)->ExceptionCheck(env)) {\n")
-                .append("            j2ll_throw_new(env, \"java/lang/SecurityException\", \"fallback encoded SHA-256 mismatch\");\n")
-                .append("        }\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    unsigned char* compressed = (unsigned char*)malloc(encoded_length);\n")
-                .append("    if (compressed == NULL) {\n")
-                .append("        j2ll_throw_new(env, \"java/lang/OutOfMemoryError\", \"fallback blob decode allocation failed\");\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    for (size_t index = 0; index < encoded_length; index++) {\n")
-                .append("        unsigned char stream = (unsigned char)(")
-                .append(symbol)
-                .append("_key[index % sizeof(")
-                .append(symbol)
-                .append("_key)] ^ ((index * 31u + (index >> 3)) & 0xffu));\n")
-                .append("        compressed[index] = (unsigned char)(")
-                .append(symbol)
-                .append("_encoded[index] ^ stream);\n")
-                .append("    }\n")
-                .append("    if (encoded_length < 4) {\n")
-                .append("        free(compressed);\n")
-                .append("        j2ll_throw_new(env, \"java/lang/ClassFormatError\", \"fallback blob is truncated\");\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    size_t original_length = ((size_t)compressed[0] << 24) | ((size_t)compressed[1] << 16) | ((size_t)compressed[2] << 8) | (size_t)compressed[3];\n")
-                .append("    unsigned char* decoded = (unsigned char*)malloc(original_length == 0 ? 1 : original_length);\n")
-                .append("    if (decoded == NULL) {\n")
-                .append("        free(compressed);\n")
-                .append("        j2ll_throw_new(env, \"java/lang/OutOfMemoryError\", \"fallback class allocation failed\");\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    size_t write = 0;\n")
-                .append("    for (size_t index = 4; index < encoded_length; index += 2) {\n")
-                .append("        if (index + 1 >= encoded_length || compressed[index] == 0 || write + compressed[index] > original_length) {\n")
-                .append("            free(compressed);\n")
-                .append("            free(decoded);\n")
-                .append("            j2ll_throw_new(env, \"java/lang/ClassFormatError\", \"fallback blob decode failed\");\n")
-                .append("            return NULL;\n")
-                .append("        }\n")
-                .append("        memset(decoded + write, compressed[index + 1], compressed[index]);\n")
-                .append("        write += compressed[index];\n")
-                .append("    }\n")
-                .append("    free(compressed);\n")
-                .append("    if (write != original_length) {\n")
-                .append("        free(decoded);\n")
-                .append("        j2ll_throw_new(env, \"java/lang/ClassFormatError\", \"fallback blob length mismatch\");\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    if (!j2ll_verify_sha256_hex(env, decoded, original_length, \"")
-                .append(encoded.originalSha256())
-                .append("\")) {\n")
-                .append("        free(decoded);\n")
-                .append("        if (!(*env)->ExceptionCheck(env)) {\n")
-                .append("            j2ll_throw_new(env, \"java/lang/SecurityException\", \"fallback decoded SHA-256 mismatch\");\n")
-                .append("        }\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    *decoded_length = original_length;\n")
-                .append("    return decoded;\n")
-                .append("}\n")
-                .append("static jclass ")
-                .append(symbol)
-                .append("(JNIEnv* env, jclass owner) {\n")
-                .append("    jobject loader = j2ll_owner_class_loader(env, owner);\n")
-                .append("    if ((*env)->ExceptionCheck(env)) {\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    for (")
-                .append(symbol)
-                .append("_cache_entry* entry = ")
-                .append(symbol)
-                .append("_cache; entry != NULL; entry = entry->next) {\n")
-                .append("        if ((*env)->IsSameObject(env, entry->loader, loader)) {\n")
-                .append("            if (loader != NULL) {\n")
-                .append("                (*env)->DeleteLocalRef(env, loader);\n")
-                .append("            }\n")
-                .append("            return entry->clazz;\n")
-                .append("        }\n")
-                .append("    }\n")
-                .append("    size_t decoded_length = 0;\n")
-                .append("    unsigned char* decoded = ")
-                .append(symbol)
-                .append("_decode(env, &decoded_length);\n")
-                .append("    if (decoded == NULL) {\n")
-                .append("        if (loader != NULL) {\n")
-                .append("            (*env)->DeleteLocalRef(env, loader);\n")
-                .append("        }\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    jclass local = j2ll_try_define_hidden_fallback(env, owner, decoded, decoded_length);\n")
-                .append("    if (local == NULL) {\n")
-                .append("        local = (*env)->DefineClass(env, \"")
-                .append(helperClass.internalName())
-                .append("\", loader, (const jbyte*)decoded, (jsize)decoded_length);\n")
-                .append("    }\n")
-                .append("    free(decoded);\n")
-                .append("    if (local == NULL) {\n")
-                .append("        if (loader != NULL) {\n")
-                .append("            (*env)->DeleteLocalRef(env, loader);\n")
-                .append("        }\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    jclass global_class = (jclass)(*env)->NewGlobalRef(env, local);\n")
-                .append("    if (global_class == NULL) {\n")
-                .append("        (*env)->DeleteLocalRef(env, local);\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    jobject global_loader = loader == NULL ? NULL : (*env)->NewGlobalRef(env, loader);\n")
-                .append("    if (loader != NULL && global_loader == NULL) {\n")
-                .append("        (*env)->DeleteGlobalRef(env, global_class);\n")
-                .append("        (*env)->DeleteLocalRef(env, local);\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    ")
-                .append(symbol)
-                .append("_cache_entry* entry = (")
-                .append(symbol)
-                .append("_cache_entry*)malloc(sizeof(")
-                .append(symbol)
-                .append("_cache_entry));\n")
-                .append("    if (entry == NULL) {\n")
-                .append("        if (global_loader != NULL) {\n")
-                .append("            (*env)->DeleteGlobalRef(env, global_loader);\n")
-                .append("        }\n")
-                .append("        (*env)->DeleteGlobalRef(env, global_class);\n")
-                .append("        (*env)->DeleteLocalRef(env, local);\n")
-                .append("        j2ll_throw_new(env, \"java/lang/OutOfMemoryError\", \"fallback cache allocation failed\");\n")
-                .append("        return NULL;\n")
-                .append("    }\n")
-                .append("    entry->loader = global_loader;\n")
-                .append("    entry->clazz = global_class;\n")
-                .append("    entry->next = ")
-                .append(symbol)
-                .append("_cache;\n")
-                .append("    ")
-                .append(symbol)
-                .append("_cache = entry;\n")
-                .append("    (*env)->DeleteLocalRef(env, local);\n")
-                .append("    if (loader != NULL) {\n")
-                .append("        (*env)->DeleteLocalRef(env, loader);\n")
-                .append("    }\n")
-                .append("    return global_class;\n")
-                .append("}\n\n");
-        return new FallbackClass(helperClass.internalName(), helperClass.bytes(), extra.toString());
-    }
-
-    private void appendCByteArray(StringBuilder builder, byte[] bytes) {
-        for (int index = 0; index < bytes.length; index++) {
-            if (index % 12 == 0) {
-                builder.append("\n    ");
-            }
-            builder.append(String.format(java.util.Locale.ROOT, "0x%02x, ", bytes[index] & 0xff));
-        }
-    }
-
     private Map<String, List<NativeRegistrationEntry>> entriesByOwner(NativeRegistrationPlan plan) {
         Map<String, List<NativeRegistrationEntry>> byOwner = new TreeMap<>();
         for (NativeRegistrationEntry entry : plan.entries()) {
@@ -2913,27 +2439,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
         return new FieldParts(key.substring(0, ownerEnd), key.substring(ownerEnd + 1), "");
     }
 
-    private String safeFallbackSegment(String value) {
-        StringBuilder result = new StringBuilder();
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            if ((ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z')
-                    || (ch >= '0' && ch <= '9')
-                    || ch == '_'
-                    || ch == '$') {
-                result.append(ch);
-            } else {
-                result.append('_');
-                if (ch > 127) {
-                    result.append(Integer.toHexString(ch).toLowerCase(java.util.Locale.ROOT));
-                    result.append('_');
-                }
-            }
-        }
-        return result.toString();
-    }
-
     record Binding(
             NativeRegistrationEntry entry,
             MethodRewriteDecision decision,
@@ -2954,9 +2459,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
             Optional<IrMethod> templateIrMethod,
             String reasonCode,
             JniMethodDescriptor descriptor) {
-    }
-
-    private record FallbackClass(String internalName, byte[] bytes, String extraSource) {
     }
 
     private record FieldParts(String owner, String name, String descriptor) {

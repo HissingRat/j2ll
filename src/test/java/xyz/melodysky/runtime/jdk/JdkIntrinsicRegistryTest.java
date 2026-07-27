@@ -30,55 +30,55 @@ class JdkIntrinsicRegistryTest {
         assertEquals(JdkMethodPolicy.RUNTIME_HELPER, substring.policy());
         assertEquals(RuntimeHelperKind.STRING_SUBSTRING_RANGE, substring.helperKind().orElseThrow());
 
-        var fallback = registry.lookup("java/lang/String", "substring", "(I)Ljava/lang/String;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, fallback.policy());
+        var unsupported = registry.lookup("java/lang/String", "substring", "(I)Ljava/lang/String;").orElseThrow();
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, unsupported.policy());
 
         var startsWith = registry.lookup("java/lang/String", "startsWith", "(Ljava/lang/String;)Z").orElseThrow();
         assertEquals(RuntimeHelperKind.STRING_STARTS_WITH, startsWith.helperKind().orElseThrow());
 
         var arrayListAdd = registry.lookup("java/util/ArrayList", "add", "(Ljava/lang/Object;)Z").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, arrayListAdd.policy());
-        assertEquals("JDK_COLLECTION_HELPER_FALLBACK: ArrayList.add uses JVM collection semantics", arrayListAdd.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, arrayListAdd.policy());
+        assertEquals("JDK_COLLECTION_HELPER_UNSUPPORTED: ArrayList.add uses JVM collection semantics", arrayListAdd.reason());
 
         var hashMapGet = registry.lookup("java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, hashMapGet.policy());
-        assertEquals("JDK_COLLECTION_HELPER_FALLBACK: HashMap.get uses JVM collection semantics", hashMapGet.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, hashMapGet.policy());
+        assertEquals("JDK_COLLECTION_HELPER_UNSUPPORTED: HashMap.get uses JVM collection semantics", hashMapGet.reason());
 
         var arraysAsList = registry.lookup("java/util/Arrays", "asList", "([Ljava/lang/Object;)Ljava/util/List;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, arraysAsList.policy());
-        assertEquals("JDK_COLLECTION_HELPER_FALLBACK: Arrays.asList uses JVM list semantics", arraysAsList.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, arraysAsList.policy());
+        assertEquals("JDK_COLLECTION_HELPER_UNSUPPORTED: Arrays.asList uses JVM list semantics", arraysAsList.reason());
 
         var emptyList = registry.lookup("java/util/Collections", "emptyList", "()Ljava/util/List;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, emptyList.policy());
-        assertEquals("JDK_COLLECTION_HELPER_FALLBACK: Collections.emptyList uses JVM collection semantics", emptyList.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, emptyList.policy());
+        assertEquals("JDK_COLLECTION_HELPER_UNSUPPORTED: Collections.emptyList uses JVM collection semantics", emptyList.reason());
 
         var optionalOrElse = registry.lookup("java/util/Optional", "orElse", "(Ljava/lang/Object;)Ljava/lang/Object;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, optionalOrElse.policy());
-        assertEquals("JDK_OPTIONAL_HELPER_FALLBACK: Optional.orElse uses JVM Optional semantics", optionalOrElse.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, optionalOrElse.policy());
+        assertEquals("JDK_OPTIONAL_HELPER_UNSUPPORTED: Optional.orElse uses JVM Optional semantics", optionalOrElse.reason());
 
         var stringFormat = registry.lookup("java/lang/String", "format", "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, stringFormat.policy());
-        assertEquals("JDK_FORMAT_HELPER_FALLBACK: String.format uses JVM formatter semantics", stringFormat.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, stringFormat.policy());
+        assertEquals("JDK_FORMAT_HELPER_UNSUPPORTED: String.format uses JVM formatter semantics", stringFormat.reason());
 
         var runtimeMessage = registry.lookup("java/lang/RuntimeException", "<init>", "(Ljava/lang/String;)V").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, runtimeMessage.policy());
         assertEquals("JDK_BRIDGE: RuntimeException(String) keeps JVM Throwable semantics", runtimeMessage.reason());
 
         var getCause = registry.lookup("java/lang/Throwable", "getCause", "()Ljava/lang/Throwable;").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, getCause.policy());
-        assertEquals("THROWABLE_HELPER_FALLBACK: Throwable.getCause keeps JVM cause semantics", getCause.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, getCause.policy());
+        assertEquals("THROWABLE_HELPER_UNSUPPORTED: Throwable.getCause keeps JVM cause semantics", getCause.reason());
 
         var threadStart = registry.lookup("java/lang/Thread", "start", "()V").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, threadStart.policy());
-        assertEquals("THREAD_HELPER_FALLBACK: Thread.start keeps JVM scheduler semantics", threadStart.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, threadStart.policy());
+        assertEquals("THREAD_HELPER_UNSUPPORTED: Thread.start keeps JVM scheduler semantics", threadStart.reason());
 
         var objectWait = registry.lookup("java/lang/Object", "wait", "()V").orElseThrow();
-        assertEquals(JdkMethodPolicy.JVM_HELPER_FALLBACK, objectWait.policy());
-        assertEquals("WAIT_NOTIFY_FALLBACK: Object.wait keeps JVM monitor queue semantics", objectWait.reason());
+        assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, objectWait.policy());
+        assertEquals("WAIT_NOTIFY_UNSUPPORTED: Object.wait keeps JVM monitor queue semantics", objectWait.reason());
     }
 
     @Test
-    void explicitlyBridgesRealWorldJdkInteropWithoutMethodFallback() {
+    void explicitlyBridgesRealWorldJdkInteropWithoutUnsupportedPolicy() {
         JdkIntrinsicRegistry registry = JdkIntrinsicRegistry.defaultRegistry();
         List<JdkMethodId> bridgedMethods = List.of(
                 method("java/lang/Enum", "<init>", "(Ljava/lang/String;I)V"),
@@ -123,7 +123,7 @@ class JdkIntrinsicRegistryTest {
     }
 
     @Test
-    void explicitlyBridgesSecondRealWorldJdkBatchWithoutMethodFallback() {
+    void explicitlyBridgesSecondRealWorldJdkBatchWithoutUnsupportedPolicy() {
         JdkIntrinsicRegistry registry = JdkIntrinsicRegistry.defaultRegistry();
         List<JdkMethodId> bridgedMethods = List.of(
                 method("java/lang/Byte", "byteValue", "()B"),

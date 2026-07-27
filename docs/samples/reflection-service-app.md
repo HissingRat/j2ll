@@ -94,7 +94,7 @@ Expected report highlights:
 
 - `reports/index.json` lists all emitted reports and SHA-256 hashes.
 - `packaging-report.json` keeps `META-INF/services/*` and module/multi-release metadata when present.
-- Constant reflection can use helper-backed lowering; dynamic names stay fallback-backed with explicit reason codes.
+- Constant reflection can use helper-backed lowering. Dynamic names use a validated JVM/JNI dispatch bridge when possible; otherwise the selected caller is `skipped` with an explicit reason code.
 - `protection-report.json` and `artifact-audit.json` remain hash-only for sensitive plaintext.
 
 Enable the current host target when you want to run this sample locally. You may also enable any of the other five fixed targets in the same build; managed Zig produces the selected DLL/SO/dylib matrix in one invocation, while only the host artifact is exercised by the local child JVM.

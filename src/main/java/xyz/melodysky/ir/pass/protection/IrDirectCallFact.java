@@ -7,7 +7,7 @@ import xyz.melodysky.ir.model.IrCallInvokeKind;
 /**
  * Analysis-owned resolution fact consumed by IR call-indirection planning.
  *
- * <p>Fallback and helper sensitivity are explicit so a protection pass cannot
+ * <p>Native-target availability and helper sensitivity are explicit so a protection pass cannot
  * accidentally turn a conservative JVM call decision into a native direct
  * target.</p>
  */
@@ -16,7 +16,7 @@ public record IrDirectCallFact(
         IrCallInvokeKind originalInvokeKind,
         IrDirectCallResolutionKind resolutionKind,
         Optional<String> directTargetMethodKey,
-        boolean fallbackRequired,
+        boolean nativeTargetUnavailable,
         boolean helperSensitive) {
     public IrDirectCallFact {
         Objects.requireNonNull(siteId, "siteId");
@@ -79,7 +79,7 @@ public record IrDirectCallFact(
                 false);
     }
 
-    public IrDirectCallFact requiringFallback() {
+    public IrDirectCallFact withoutNativeTarget() {
         return new IrDirectCallFact(
                 siteId,
                 originalInvokeKind,
@@ -95,7 +95,7 @@ public record IrDirectCallFact(
                 originalInvokeKind,
                 resolutionKind,
                 directTargetMethodKey,
-                fallbackRequired,
+                nativeTargetUnavailable,
                 true);
     }
 

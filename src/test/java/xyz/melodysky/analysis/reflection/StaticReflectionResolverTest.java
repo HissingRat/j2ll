@@ -60,25 +60,25 @@ class StaticReflectionResolverTest {
     }
 
     @Test
-    void dynamicStringReflectionProducesFallbackPlan() {
+    void dynamicStringReflectionProducesUnsupportedSite() {
         Fixture fixture = fixture();
         ReflectionPlan plan = new StaticReflectionResolver().resolve(fixture.program(), fixture.metadataIndex());
 
-        assertTrue(plan.hasFallbacks());
-        assertTrue(plan.fallbackSites().stream().anyMatch(fallback ->
-                fallback.method().equals("dynamicForName")
-                        && fallback.reasonCode().equals(StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING)));
-        assertFalse(plan.fallbackSites().stream().anyMatch(fallback -> fallback.reasonCode().isBlank()));
+        assertTrue(plan.hasUnsupportedSites());
+        assertTrue(plan.unsupportedSites().stream().anyMatch(site ->
+                site.method().equals("dynamicForName")
+                        && site.reasonCode().equals(StaticReflectionDiagnostics.DYNAMIC_REFLECTION_STRING)));
+        assertFalse(plan.unsupportedSites().stream().anyMatch(site -> site.reasonCode().isBlank()));
     }
 
     @Test
-    void reflectionMemberScanProducesStableUnsupportedScanFallback() {
+    void reflectionMemberScanProducesStableUnsupportedSite() {
         Fixture fixture = fixture();
         ReflectionPlan plan = new StaticReflectionResolver().resolve(fixture.program(), fixture.metadataIndex());
 
-        assertTrue(plan.fallbackSites().stream().anyMatch(fallback ->
-                fallback.method().equals("declaredMethods")
-                        && fallback.reasonCode().equals(StaticReflectionDiagnostics.REFLECTION_UNSUPPORTED_SCAN)));
+        assertTrue(plan.unsupportedSites().stream().anyMatch(site ->
+                site.method().equals("declaredMethods")
+                        && site.reasonCode().equals(StaticReflectionDiagnostics.REFLECTION_UNSUPPORTED_SCAN)));
     }
 
     @Test
@@ -108,6 +108,8 @@ class StaticReflectionResolverTest {
         assertTrue(dump.contains("\"method\": \"invokeTarget\""));
         assertTrue(dump.contains("\"kind\": \"REFLECTIVE_INVOKE\""));
         assertTrue(dump.contains("\"field\": \"field\""));
+        assertTrue(dump.contains("\"unsupportedSites\""));
+        assertFalse(dump.contains("\"fallbacks\""));
     }
 
     private Fixture fixture() {

@@ -36,13 +36,16 @@ public final class CorpusRunner {
             "diagnostics.json",
             "artifact-audit.json",
             "failure-report.json",
-            "frontend-skip-report.json",
+            "index.json",
             "known-blockers.json",
             "lowering-report.json",
             "opcode-support-matrix.json",
             "packaging-report.json",
             "protection-report.json",
             "release-readiness.json",
+            "skipped-method-report.json",
+            "summary.json",
+            "summary.md",
             "support-matrix.json",
             "symbol-audit.json");
 

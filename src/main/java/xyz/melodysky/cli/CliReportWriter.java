@@ -14,13 +14,14 @@ import xyz.melodysky.config.SignaturePolicy;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.packaging.JarPreservationReport;
 import xyz.melodysky.packaging.SignatureActionReport;
+import xyz.melodysky.pipeline.SkippedMethodGateEvidence;
 import xyz.melodysky.pipeline.WorkspaceLayout;
 import xyz.melodysky.report.ArtifactAudit;
 import xyz.melodysky.report.ArtifactAuditReportWriter;
 import xyz.melodysky.report.DryRunReportWriter;
 import xyz.melodysky.report.FailureReportWriter;
 import xyz.melodysky.report.FieldInternalizationReportWriter;
-import xyz.melodysky.report.FrontendSkipReportWriter;
+import xyz.melodysky.report.SkippedMethodReportWriter;
 import xyz.melodysky.report.KnownBlockersWriter;
 import xyz.melodysky.report.OpcodeSupportMatrixWriter;
 import xyz.melodysky.report.PackagingReportWriter;
@@ -61,7 +62,6 @@ final class CliReportWriter {
                 List.of(),
                 null,
                 buildPlan,
-                List.of(),
                 JarPreservationReport.empty(),
                 SignatureActionReport.none(false)));
         Files.writeString(reports.resolve("artifact-audit.json"),
@@ -81,7 +81,7 @@ final class CliReportWriter {
             boolean inputParsed,
             int parsedClassCount,
             int requestedMethodCount,
-            int notApplicableMethodCount,
+            int ineligibleMethodCount,
             int excludedMethodCount) throws IOException {
         WorkspaceLayout layout = new WorkspaceLayout(workspace);
         Path reports = layout.reportsDirectory();
@@ -99,7 +99,6 @@ final class CliReportWriter {
                 List.of(),
                 null,
                 buildPlan,
-                List.of(),
                 JarPreservationReport.empty(),
                 SignatureActionReport.none(false)));
         Files.writeString(reports.resolve("artifact-audit.json"),
@@ -112,7 +111,7 @@ final class CliReportWriter {
                 inputParsed,
                 parsedClassCount,
                 requestedMethodCount,
-                notApplicableMethodCount,
+                ineligibleMethodCount,
                 excludedMethodCount,
                 buildPlan,
                 diagnostics.stream().map(diagnostic -> diagnostic.code().value()).toList()));
@@ -135,7 +134,8 @@ final class CliReportWriter {
             ResolvedConfig config,
             List<Diagnostic> diagnostics,
             ZigBuildException zigFailure,
-            WholeProgramAnalysisPolicy wholeProgramPolicy)
+            WholeProgramAnalysisPolicy wholeProgramPolicy,
+            SkippedMethodGateEvidence skippedMethodGateEvidence)
             throws IOException {
         WorkspaceLayout layout = new WorkspaceLayout(workspace);
         Path reports = layout.reportsDirectory();
@@ -164,14 +164,16 @@ final class CliReportWriter {
                 List.of(),
                 null,
                 buildPlan,
-                List.of(),
                 JarPreservationReport.empty(),
                 SignatureActionReport.none(false)));
         Files.writeString(reports.resolve("artifact-audit.json"),
                 new ArtifactAuditReportWriter().json(new ArtifactAudit().skipped(
                         "FINAL_ARTIFACT_NOT_WRITTEN",
                         "native toolchain failed before final output JAR was written")));
-        writeEmptyStageReports(reports, config.protection().seed());
+        writeEmptyStageReports(
+                reports,
+                config.protection().seed(),
+                skippedMethodGateEvidence);
         writeFieldInternalizationNotRun(reports, config, wholeProgramPolicy);
         writeSummaryAndIndex(workspace, "build", false);
     }
@@ -202,8 +204,21 @@ final class CliReportWriter {
     }
 
     private void writeEmptyStageReports(Path reports, String protectionSeed) throws IOException {
-        Files.writeString(reports.resolve("frontend-skip-report.json"),
-                new FrontendSkipReportWriter().json(List.of()));
+        writeEmptyStageReports(
+                reports,
+                protectionSeed,
+                SkippedMethodGateEvidence.notAnalyzed());
+    }
+
+    private void writeEmptyStageReports(
+            Path reports,
+            String protectionSeed,
+            SkippedMethodGateEvidence skippedMethodGateEvidence)
+            throws IOException {
+        Files.writeString(
+                reports.resolve("skipped-method-report.json"),
+                new SkippedMethodReportWriter().json(
+                        skippedMethodGateEvidence));
         Files.writeString(reports.resolve("lowering-report.json"),
                 new ReportJsonWriter().loweringJson(List.of(), List.of(), List.of()));
         Files.writeString(reports.resolve("protection-report.json"),

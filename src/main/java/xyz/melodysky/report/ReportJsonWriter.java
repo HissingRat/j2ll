@@ -31,7 +31,7 @@ public final class ReportJsonWriter {
 
     public String loweringJson(
             List<LoweringReportMethod> requestedMethods,
-            List<MethodEligibility> notApplicable,
+            List<MethodEligibility> ineligible,
             List<MethodEligibility> excluded) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
@@ -45,7 +45,7 @@ public final class ReportJsonWriter {
                         .thenComparing(LoweringReportMethod::methodId))
                 .forEach(method -> requestedArray.add(loweringMethodJson(method)));
         root.add("requestedMethods", requestedArray);
-        root.add("notApplicable", eligibilityArray(notApplicable));
+        root.add("ineligible", eligibilityArray(ineligible));
         root.add("excluded", eligibilityArray(excluded));
         return GSON.toJson(root) + "\n";
     }
@@ -92,16 +92,6 @@ public final class ReportJsonWriter {
             helperBackedSites.add(siteJson);
         }
         object.add("helperBackedSites", helperBackedSites);
-        JsonArray fallbackSites = new JsonArray();
-        for (FallbackSiteReport site : method.fallbackSites()) {
-            JsonObject siteJson = new JsonObject();
-            siteJson.addProperty("instructionOffset", site.instructionOffset());
-            siteJson.addProperty("target", site.target());
-            siteJson.addProperty("reasonCode", site.reasonCode());
-            siteJson.addProperty("fallbackMode", site.fallbackMode());
-            fallbackSites.add(siteJson);
-        }
-        object.add("fallbackSites", fallbackSites);
         nullableString(object, "reasonCode", method.reasonCode());
         nullableString(object, "reason", method.reason());
         return object;

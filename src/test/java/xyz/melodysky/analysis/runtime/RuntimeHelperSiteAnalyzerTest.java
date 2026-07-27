@@ -1,5 +1,6 @@
 package xyz.melodysky.analysis.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -42,7 +43,7 @@ class RuntimeHelperSiteAnalyzerTest implements Opcodes {
                 IrInstruction.call(Optional.empty(), IrOpcode.CALL_STATIC, List.of(), jdkTarget));
 
         List<RuntimeHelperSite> sites = analyzer.analyze(
-                SsaMethodResult.lowered(source, irMethod),
+                SsaMethodResult.nativeLowered(source, irMethod),
                 Optional.empty(),
                 Optional.of(implementationWithDirectTarget(source, directTarget)),
                 NO_DEFAULT_INTERFACES);
@@ -63,12 +64,40 @@ class RuntimeHelperSiteAnalyzerTest implements Opcodes {
                         "j2ll_rt_string_length"));
 
         List<RuntimeHelperSite> sites = analyzer.analyze(
-                SsaMethodResult.lowered(source, irMethod),
+                SsaMethodResult.nativeLowered(source, irMethod),
                 Optional.empty(),
                 Optional.empty(),
                 NO_DEFAULT_INTERFACES);
 
         assertTrue(sites.contains(new RuntimeHelperSite("j2ll_rt_string_length", "STRING_HELPER")));
+    }
+
+    @Test
+    void reportsUnsupportedWaitNotifyAndDefaultInterfaceBoundariesWithoutFallbackNames() {
+        ParsedMethod source = sourceMethod();
+        String defaultTarget = "pkg/DefaultApi#run!()V";
+        String waitTarget = "java/lang/Object#wait!()V";
+        IrMethod irMethod = methodWith(
+                source,
+                IrInstruction.call(Optional.empty(), IrOpcode.CALL_SPECIAL, List.of(), defaultTarget),
+                IrInstruction.call(Optional.empty(), IrOpcode.CALL_INTERFACE, List.of(), defaultTarget),
+                IrInstruction.call(Optional.empty(), IrOpcode.CALL_VIRTUAL, List.of(), waitTarget));
+
+        List<RuntimeHelperSite> sites = analyzer.analyze(
+                SsaMethodResult.nativeLowered(source, irMethod),
+                Optional.empty(),
+                Optional.empty(),
+                new DefaultInterfaceAnalysis(Set.of(defaultTarget), Set.of("run!()V")));
+
+        assertTrue(sites.contains(new RuntimeHelperSite("call:" + waitTarget, "WAIT_NOTIFY_UNSUPPORTED")));
+        assertTrue(sites.contains(new RuntimeHelperSite(
+                "defaultInterfaceSuperUnsupported:" + defaultTarget,
+                "DEFAULT_INTERFACE_SUPER_UNSUPPORTED")));
+        assertTrue(sites.contains(new RuntimeHelperSite(
+                "defaultInterfaceDispatchUnsupported:" + defaultTarget,
+                "DEFAULT_INTERFACE_DISPATCH_UNSUPPORTED")));
+        assertFalse(sites.stream().anyMatch(site -> site.helper().contains("Fallback")
+                || site.reasonCode().contains("FALLBACK")));
     }
 
     private ParsedMethod sourceMethod() {

@@ -11,7 +11,6 @@ public record ZigBuildWorkspace(
         Path llvmDirectory,
         Path jniDirectory,
         Path runtimeDirectory,
-        Path fallbackDirectory,
         Path logsDirectory) {
     public ZigBuildWorkspace {
         Objects.requireNonNull(workspaceRoot, "workspaceRoot");
@@ -21,7 +20,6 @@ public record ZigBuildWorkspace(
         Objects.requireNonNull(llvmDirectory, "llvmDirectory");
         Objects.requireNonNull(jniDirectory, "jniDirectory");
         Objects.requireNonNull(runtimeDirectory, "runtimeDirectory");
-        Objects.requireNonNull(fallbackDirectory, "fallbackDirectory");
         Objects.requireNonNull(logsDirectory, "logsDirectory");
     }
 
@@ -35,7 +33,6 @@ public record ZigBuildWorkspace(
                 build.resolve("llvm"),
                 build.resolve("jni"),
                 build.resolve("runtime"),
-                build.resolve("fallback"),
                 workspaceRoot.resolve("logs"));
     }
 }

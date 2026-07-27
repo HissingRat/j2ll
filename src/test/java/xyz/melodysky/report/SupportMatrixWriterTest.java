@@ -12,7 +12,7 @@ class SupportMatrixWriterTest {
     @Test
     void writesDeterministicFeatureMatrix() {
         String json = new SupportMatrixWriter().json(List.of(
-                new SupportMatrixEntry("zeta", "FALLBACK", "Z_REASON", "ZTest"),
+                new SupportMatrixEntry("zeta", "SKIPPED", "Z_REASON", "ZTest"),
                 new SupportMatrixEntry("alpha", "LLVM_NATIVE_PATH", "A_REASON", "ATest")));
 
         assertEquals("""
@@ -30,7 +30,7 @@ class SupportMatrixWriterTest {
                     },
                     {
                       "feature": "zeta",
-                      "status": "FALLBACK",
+                      "status": "SKIPPED",
                       "reasonCode": "Z_REASON",
                       "testCoverage": "ZTest",
                       "coverageLevel": "unit",
@@ -51,14 +51,14 @@ class SupportMatrixWriterTest {
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
                 "UNSUPPORTED_MULTI_EXIT_FINALLY",
                 "UNSUPPORTED_NESTED_FINALLY",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
-                "VAR_HANDLE_DYNAMIC_FALLBACK",
-                "METHOD_HANDLE_CHAIN_FALLBACK",
-                "METHOD_HANDLE_PERMUTE_FALLBACK",
-                "METHOD_HANDLE_FILTER_FALLBACK",
-                "METHOD_HANDLE_FOLD_FALLBACK",
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED",
+                "VAR_HANDLE_DYNAMIC_UNSUPPORTED",
+                "METHOD_HANDLE_CHAIN_UNSUPPORTED",
+                "METHOD_HANDLE_PERMUTE_UNSUPPORTED",
+                "METHOD_HANDLE_FILTER_UNSUPPORTED",
+                "METHOD_HANDLE_FOLD_UNSUPPORTED",
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
-                "WAIT_NOTIFY_FALLBACK")) {
+                "WAIT_NOTIFY_UNSUPPORTED")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);
         }
         assertTrue(json.contains("\"testCoverage\": \"JvmHostedNativeRuntimeE2eTest\""));
@@ -102,7 +102,7 @@ class SupportMatrixWriterTest {
 
         for (String boundary : List.of(
                 "support-matrix.json",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED",
                 "UNSUPPORTED_MULTI_EXIT_FINALLY",
                 "SIGNATURE_RESIGNED")) {
             assertTrue(docs.contains(boundary), boundary);

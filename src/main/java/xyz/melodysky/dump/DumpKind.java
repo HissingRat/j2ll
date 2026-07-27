@@ -9,7 +9,6 @@ public enum DumpKind {
     SSA("ssa"),
     OPTIMIZED("optimized"),
     PROTECTION("protection"),
-    FALLBACK("fallback"),
     LLVM_MODEL("llvm-model"),
     LLVM_PROTECTION("llvm-protection"),
     LLVM("llvm"),

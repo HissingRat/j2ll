@@ -24,7 +24,7 @@ class SummaryMarkdownWriterTest {
                   "outputJar": "app.jar",
                   "reportsDir": "workspace/reports",
                   "diagnostics": {"errors": 0, "warnings": 1},
-                  "methods": {"lowered": 2, "halfLowered": 1, "frontendSkipped": 0, "notApplicable": 1, "failed": 0},
+                  "methods": {"nativeLowered": 2, "skipped": 1, "ineligible": 1, "excluded": 3},
                   "nativeTargets": [
                     {
                       "target": "linux-x64",
@@ -64,7 +64,10 @@ class SummaryMarkdownWriterTest {
         assertTrue(markdown.contains("- Status: passed"), markdown);
         assertTrue(markdown.contains("- Output JAR: app.jar"), markdown);
         assertTrue(markdown.contains("- Warnings: 1"), markdown);
-        assertTrue(markdown.contains("- Half lowered: 1"), markdown);
+        assertTrue(markdown.contains("- Native lowered: 2"), markdown);
+        assertTrue(markdown.contains("- Skipped: 1"), markdown);
+        assertTrue(markdown.contains("- Ineligible: 1"), markdown);
+        assertTrue(markdown.contains("- Excluded: 3"), markdown);
         assertTrue(markdown.contains("## Native Targets"), markdown);
         assertTrue(markdown.contains("- Built/buildable: macos-arm64 built native/arm64-macos.dylib"), markdown);
         assertTrue(markdown.contains("- Unbuildable: linux-x64 failed native/x64-linux.so failureKind=zigBuildFailed"), markdown);

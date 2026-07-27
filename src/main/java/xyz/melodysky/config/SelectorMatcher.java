@@ -19,7 +19,7 @@ public final class SelectorMatcher {
     public SelectorMatchResult expand(ParsedProgram program, List<Selector> whiteList, List<Selector> blackList) {
         List<Selector> effectiveWhiteList = whiteList.isEmpty() ? List.of(Selector.implicitAll()) : whiteList;
         Map<String, MatchedMethod> requested = new LinkedHashMap<>();
-        Map<String, MethodEligibility> notApplicable = new LinkedHashMap<>();
+        Map<String, MethodEligibility> ineligible = new LinkedHashMap<>();
         ArrayList<Diagnostic> diagnostics = new ArrayList<>();
 
         for (Selector selector : effectiveWhiteList) {
@@ -36,7 +36,7 @@ public final class SelectorMatcher {
                 if (eligibility.requested()) {
                     requested.put(method.methodKey(), new MatchedMethod(method, selector.raw()));
                 } else {
-                    notApplicable.put(method.methodKey(), eligibility);
+                    ineligible.put(method.methodKey(), eligibility);
                 }
             }
         }
@@ -66,20 +66,20 @@ public final class SelectorMatcher {
 
         for (String methodKey : blacklistedKeys) {
             requested.remove(methodKey);
-            notApplicable.remove(methodKey);
+            ineligible.remove(methodKey);
         }
 
         List<ParsedMethod> requestedMethods = requested.values().stream()
                 .map(MatchedMethod::method)
                 .sorted(METHOD_ORDER)
                 .toList();
-        List<MethodEligibility> notApplicableMethods = notApplicable.values().stream()
+        List<MethodEligibility> ineligibleMethods = ineligible.values().stream()
                 .sorted(ELIGIBILITY_ORDER)
                 .toList();
         List<MethodEligibility> excludedMethods = excluded.values().stream()
                 .sorted(ELIGIBILITY_ORDER)
                 .toList();
-        return new SelectorMatchResult(requestedMethods, notApplicableMethods, excludedMethods, diagnostics);
+        return new SelectorMatchResult(requestedMethods, ineligibleMethods, excludedMethods, diagnostics);
     }
 
     private SelectorExpansion expandSelector(ParsedProgram program, Selector selector) {
@@ -100,7 +100,7 @@ public final class SelectorMatcher {
 
     private MethodEligibility eligibilityFor(ParsedMethod method, String selector) {
         if (method.accessFlags().isAbstract()) {
-            return MethodEligibility.notApplicable(
+            return MethodEligibility.ineligible(
                     method.owner(),
                     method.name(),
                     method.descriptor(),
@@ -109,7 +109,7 @@ public final class SelectorMatcher {
                     "abstract method has no lowerable body");
         }
         if (method.accessFlags().isNative()) {
-            return MethodEligibility.notApplicable(
+            return MethodEligibility.ineligible(
                     method.owner(),
                     method.name(),
                     method.descriptor(),
@@ -118,7 +118,7 @@ public final class SelectorMatcher {
                     "already-native method does not need bytecode lowering");
         }
         if (!method.hasCode()) {
-            return MethodEligibility.notApplicable(
+            return MethodEligibility.ineligible(
                     method.owner(),
                     method.name(),
                     method.descriptor(),

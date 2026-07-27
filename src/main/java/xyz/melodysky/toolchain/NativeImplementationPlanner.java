@@ -27,7 +27,6 @@ public final class NativeImplementationPlanner {
     private static final Set<String> LLVM_SCALAR_DESCRIPTORS = Set.of("Z", "B", "C", "S", "I", "J", "F", "D");
 
     private final LlvmNameMangler llvmNameMangler;
-    private final HostJniCSourceGenerator templateGenerator = new HostJniCSourceGenerator();
     private final JniTypeMapper typeMapper = new JniTypeMapper();
     private final NativeExceptionFlowSupport exceptionFlowSupport = new NativeExceptionFlowSupport();
 
@@ -43,33 +42,23 @@ public final class NativeImplementationPlanner {
             NativeRegistrationPlan registrationPlan,
             List<MethodRewriteDecision> decisions,
             Map<String, IrMethod> irMethods) {
-        return plan(registrationPlan, decisions, irMethods, Set.of());
-    }
-
-    public NativeImplementationPlan plan(
-            NativeRegistrationPlan registrationPlan,
-            List<MethodRewriteDecision> decisions,
-            Map<String, IrMethod> irMethods,
-            Set<String> nativeEmbeddedFallbackMethodKeys) {
         return plan(
                 registrationPlan,
                 decisions,
                 irMethods,
-                nativeEmbeddedFallbackMethodKeys,
-                irMethods.keySet());
+                irMethods.keySet(),
+                Set.of());
     }
 
     public NativeImplementationPlan plan(
             NativeRegistrationPlan registrationPlan,
             List<MethodRewriteDecision> decisions,
             Map<String, IrMethod> irMethods,
-            Set<String> nativeEmbeddedFallbackMethodKeys,
             Set<String> availableProgramMethodKeys) {
         return plan(
                 registrationPlan,
                 decisions,
                 irMethods,
-                nativeEmbeddedFallbackMethodKeys,
                 availableProgramMethodKeys,
                 Set.of());
     }
@@ -78,7 +67,6 @@ public final class NativeImplementationPlanner {
             NativeRegistrationPlan registrationPlan,
             List<MethodRewriteDecision> decisions,
             Map<String, IrMethod> irMethods,
-            Set<String> nativeEmbeddedFallbackMethodKeys,
             Set<String> availableProgramMethodKeys,
             Set<String> compilerInternalMethodKeys) {
         ArrayList<NativeMethodImplementation> implementations = new ArrayList<>();
@@ -216,50 +204,9 @@ public final class NativeImplementationPlanner {
                         List.of(),
                         List.of(),
                         maybeIr));
-            } else if (nativeEmbeddedFallbackMethodKeys.contains(decision.method().methodKey())
-                    && supportsNativeEmbeddedFallback(decision)) {
-                implementations.add(new NativeMethodImplementation(
-                        entry,
-                        decision,
-                        NativeImplementationPath.TEMPLATE_JNI_PATH,
-                        Optional.empty(),
-                        "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK",
-                        false,
-                        false,
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        maybeIr));
-            } else if (templateGenerator.supportsTemplate(decision)) {
-                implementations.add(new NativeMethodImplementation(
-                        entry,
-                        decision,
-                        NativeImplementationPath.TEMPLATE_JNI_PATH,
-                        Optional.empty(),
-                        "TEMPLATE_JNI_SEMANTICS"));
             }
         }
         return new NativeImplementationPlan(implementations);
-    }
-
-    private boolean supportsNativeEmbeddedFallback(MethodRewriteDecision decision) {
-        if (decision.strategy() != MethodRewriteStrategy.NATIVE_ORIGINAL) {
-            return false;
-        }
-        if (!decision.method().hasCode()
-                || decision.method().name().equals("<init>")
-                || decision.method().name().equals("<clinit>")
-                || decision.method().accessFlags().isInterface()) {
-            return false;
-        }
-        return supportsJvmHostedDescriptor(decision.method().descriptor());
     }
 
     private boolean supportsGenericBodyHelper(MethodRewriteDecision decision, IrMethod method) {
@@ -441,7 +388,7 @@ public final class NativeImplementationPlanner {
             IrInstruction instruction,
             Set<String> directCallTargets,
             Set<String> availableProgramMethods) {
-        if (isThrowableSemanticFallbackCall(instruction)) {
+        if (isThrowableSemanticUnsupportedCall(instruction)) {
             return false;
         }
         if (isFieldAccess(instruction.opcode())) {
@@ -538,7 +485,10 @@ public final class NativeImplementationPlanner {
             case CONST_INT, CONST_LONG, CONST_FLOAT, CONST_DOUBLE,
                     ADD_I32, SUB_I32, MUL_I32,
                     ADD_I64, SUB_I64, MUL_I64,
-                    XOR_I32, XOR_I64,
+                    SHL_I32, SHR_I32, USHR_I32,
+                    AND_I32, OR_I32, XOR_I32,
+                    SHL_I64, SHR_I64, USHR_I64,
+                    AND_I64, OR_I64, XOR_I64,
                     BITCAST_I32_TO_F32, BITCAST_I64_TO_F64,
                     ADD_F32, SUB_F32, MUL_F32, DIV_F32, REM_F32, NEG_F32,
                     ADD_F64, SUB_F64, MUL_F64, DIV_F64, REM_F64, NEG_F64,
@@ -1765,7 +1715,7 @@ public final class NativeImplementationPlanner {
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW);
     }
 
-    private boolean isThrowableSemanticFallbackCall(IrInstruction instruction) {
+    private boolean isThrowableSemanticUnsupportedCall(IrInstruction instruction) {
         if (instruction.symbol().isEmpty()) {
             return false;
         }

@@ -228,7 +228,7 @@ final class RuntimeHelperSiteClassifier {
             return "THREAD_HELPER";
         }
         if (callBoundaries.isWaitNotifyCall(target)) {
-            return "WAIT_NOTIFY_FALLBACK";
+            return "WAIT_NOTIFY_UNSUPPORTED";
         }
         return null;
     }

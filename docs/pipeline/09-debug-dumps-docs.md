@@ -15,7 +15,6 @@ intermediates/dumps/runtime-analysis/*.json
 intermediates/dumps/ssa/*.ir
 intermediates/dumps/optimized/*.ir
 intermediates/dumps/protection/*.ir
-intermediates/dumps/fallback/*.json
 intermediates/dumps/llvm-model/*.json
 intermediates/dumps/llvm-protection/*.json
 intermediates/dumps/llvm/*.ll
@@ -40,7 +39,7 @@ dump 输出不是用户主界面，但对 rewrite 和回归定位非常重要。
 Release suite workspaces are test harness artifacts for release readiness, not a standalone runtime mode. They must preserve deterministic ordering and include:
 
 - `reports/release-suite-summary.json` with suite name, profile (`smoke`/`standard`/`rc`), required/missing categories, case name/category/features, expected support statuses, original/output child JVM exit/stdout/stderr, report paths, diagnostics, signature policy and protection variant.
-- the ordinary per-case reports: diagnostics, artifact audit, frontend skip, lowering, packaging, protection, symbol audit, support/opcode matrix, known blockers and release-readiness.
+- the ordinary per-case reports: diagnostics, artifact audit, skipped-method, lowering, packaging, protection, symbol audit, support/opcode matrix, known blockers and release-readiness.
 - useful failure diagnostics for expected failure cases such as invalid config, artifact audit failure, signed input rejected by `signaturePolicy: "fail"` or an injected/actual required-target capability, compile or link failure reported as `ZIG_TARGET_UNBUILDABLE`; selecting a non-host target alone is no longer a failure condition. Failed config/pipeline runs also write `failure-report.json` with `finalArtifactWritten=false`.
 - known blocker coverage evidence: each blocker reason is expected to appear in a suite case expected status/diagnostic plus `expectedSupportEvidence.reportLocation`, unless it is a frontend weird-bytecode seed reason. `release-readiness.json` v3/v4 mirrors this as `suiteCoverageByBlocker`, machine-readable `missingEvidence`, and summaries for `blockerEvidenceComplete`, `targetEvidenceComplete`, `finalArtifactWritten`, `determinismEvidenceComplete` and `strictModePassed`.
 

@@ -68,7 +68,7 @@ SourceDiscoveryResult
 - pipeline runner。
 - debug dump hook。
 - 最小 happy-path 测试。
-- 最小 unsupported/fallback 测试。
+- 最小 unsupported/skipped 测试。
 
 ## Legacy reference rules
 

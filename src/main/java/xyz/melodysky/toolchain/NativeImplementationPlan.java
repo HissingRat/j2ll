@@ -32,9 +32,4 @@ public record NativeImplementationPlan(List<NativeMethodImplementation> implemen
                 .toList();
     }
 
-    public boolean hasNativeEmbeddedFallback() {
-        return implementations.stream().anyMatch(implementation ->
-                implementation.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
-                        && implementation.reasonCode().equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK"));
-    }
 }

@@ -17,7 +17,6 @@ import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
-import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.SignatureActionReport;
@@ -133,8 +132,7 @@ class PackagingReportWriterTest {
                   "exportedSymbols": [
                     "JNI_OnLoad",
                     "j2ll_register"
-                  ],
-                  "fallbackBlobs": []
+                  ]
                 }
                 """, new PackagingReportWriter().packagingJson(
                 Path.of("input.jar"),
@@ -144,124 +142,12 @@ class PackagingReportWriterTest {
                 List.of(new EmbeddedLibraryReport("linux-x64", "native0/x64-linux.so", "012345")),
                 List.of(new NativeRegistrationEntry("pkg/Mathy", "add", "(II)I", "j2ll_pkg_Mathy_add_0123")),
                 List.of("j2ll_register", "JNI_OnLoad"),
-                null,
-                List.of()));
+                null));
     }
 
     @Test
-    void writesNativeEmbeddedFallbackBlobManifestMetadata() {
-        NativeEmbeddedFallbackBlob blob = new NativeEmbeddedFallbackBlob(
-                "run__8f3a21c0d4e5f607",
-                "pkg/Foo#run!()V",
-                "pkg/J2llFallback$run__8f3a21c0d4e5f607",
-                "()V",
-                "METHOD_HANDLE_CHAIN_FALLBACK",
-                "0".repeat(64),
-                "1".repeat(64),
-                "0".repeat(64),
-                "fallbackBlobEncodingV1",
-                123,
-                234,
-                "j2ll-rle-byte-pairs-v1",
-                "xor-sha256-key-stream-v1",
-                "8",
-                "nativeEmbeddedClassBlob",
-                "HiddenClass",
-                "FALLBACK_HIDDEN_CLASS",
-                true,
-                true,
-                "owner-private Lookup can define hidden fallback helper class",
-                "FALLBACK_CACHE_REUSE",
-                "lazyPerClassLoaderReuse",
-                "process",
-                "fallbackId+definingClassLoaderIdentity",
-                "processLifetime",
-                "globalRefPerFallbackClassAndClassLoader");
-
-        assertEquals("""
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "outputJar": "input.jar",
-                  "manifestPolicy": "preserved",
-                  "signaturePolicy": "fail",
-                  "preservationSummary": {
-                    "manifestPreserved": false,
-                    "serviceEntriesPreserved": 0,
-                    "moduleInfoPreserved": false,
-                    "multiRelease": false,
-                    "versionedEntriesPreserved": 0,
-                    "versionedClassPolicy": "baseClassesOnly"
-                  },
-                  "signatureAction": {
-                    "action": "none",
-                    "signedInput": false,
-                    "removedEntries": [],
-                    "reasonCode": "SIGNATURE_NOT_PRESENT",
-                    "reason": "input JAR is not signed"
-                  },
-                  "generatedLoaders": [],
-                  "rewrittenClasses": [],
-                  "embeddedLibraries": [],
-                  "zigToolchain": {
-                    "managed": true,
-                    "version": null,
-                    "executable": null,
-                    "buildZig": null,
-                    "verificationPolicy": null,
-                    "selectedTargets": [],
-                    "requiredTargets": [],
-                    "buildableTargets": [],
-                    "skippedTargets": [],
-                    "failedTargets": [],
-                    "targetArtifacts": [],
-                    "bootstrapEvents": []
-                  },
-                  "registeredNativeMethods": [],
-                  "registrationGroups": [],
-                  "methodTableHiding": {
-                    "enabled": false,
-                    "status": "SKIPPED",
-                    "planId": null,
-                    "ownerCount": 0,
-                    "bindingCount": 0,
-                    "owners": []
-                  },
-                  "exportedSymbols": [],
-                  "fallbackBlobs": [
-                    {
-                      "originalMethodId": "run__8f3a21c0d4e5f607",
-                      "originalMethodKey": "pkg/Foo#run!()V",
-                      "helperClassName": "pkg/J2llFallback$run__8f3a21c0d4e5f607",
-                      "fallbackInvokeDescriptor": "()V",
-                      "fallbackReasonCode": "METHOD_HANDLE_CHAIN_FALLBACK",
-                      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                      "originalSha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                      "encodedSha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                      "encodingVersion": "fallbackBlobEncodingV1",
-                      "originalSize": 123,
-                      "encodedSize": 234,
-                      "compressionAlgorithm": "j2ll-rle-byte-pairs-v1",
-                      "encryptionAlgorithm": "xor-sha256-key-stream-v1",
-                      "requiredJavaVersion": "8",
-                      "storageTarget": "nativeEmbeddedClassBlob",
-                      "definitionMechanism": "HiddenClass",
-                      "definitionMechanismReasonCode": "FALLBACK_HIDDEN_CLASS",
-                      "hiddenClassApiAvailable": true,
-                      "ownerLookupSupported": true,
-                      "definitionMechanismReason": "owner-private Lookup can define hidden fallback helper class",
-                      "cacheReasonCode": "FALLBACK_CACHE_REUSE",
-                      "classloaderReusePolicy": "lazyPerClassLoaderReuse",
-                      "cacheScope": "process",
-                      "cacheKey": "fallbackId+definingClassLoaderIdentity",
-                      "cacheLifetime": "processLifetime",
-                      "globalReferencePolicy": "globalRefPerFallbackClassAndClassLoader",
-                      "unloadAware": false,
-                      "futurePath": "replace process-lifetime global-ref cache with unload-aware weak/global-reference lifecycle discipline"
-                    }
-                  ]
-                }
-                """, new PackagingReportWriter().packagingJson(
+    void omitsRemovedFallbackBlobSurface() {
+        String json = new PackagingReportWriter().packagingJson(
                 Path.of("input.jar"),
                 SignaturePolicy.FAIL,
                 List.of(),
@@ -269,8 +155,10 @@ class PackagingReportWriterTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                null,
-                List.of(blob)));
+                null);
+
+        assertFalse(json.contains("fallbackBlobs"), json);
+        assertFalse(json.contains("nativeEmbeddedClassBlob"), json);
     }
 
     @Test
@@ -289,8 +177,7 @@ class PackagingReportWriterTest {
                 List.of(),
                 List.of(),
                 null,
-                plan,
-                List.of());
+                plan);
 
         assertTrue(json.contains("\"target\": \"linux-x64\""), json);
         assertTrue(json.contains("\"expectedArtifactPath\": \"workspace/native/x64-linux.so\""), json);
@@ -329,8 +216,7 @@ class PackagingReportWriterTest {
                 List.of(),
                 List.of(),
                 null,
-                plan,
-                List.of());
+                plan);
         var zig = JsonParser.parseString(json).getAsJsonObject().getAsJsonObject("zigToolchain");
         assertEquals(List.of("linux-x64", "macos-arm64"), zig.getAsJsonArray("buildableTargets").asList().stream()
                 .map(element -> element.getAsString())
@@ -380,8 +266,7 @@ class PackagingReportWriterTest {
                 List.of(),
                 List.of(),
                 result,
-                plan,
-                List.of());
+                plan);
 
         assertTrue(json.contains("\"targetArtifacts\""));
         assertTrue(json.contains("\"osClassifier\": \"windows\""));
@@ -411,7 +296,6 @@ class PackagingReportWriterTest {
                 List.of(),
                 null,
                 new NativeBuildPlan(List.of()),
-                List.of(),
                 xyz.melodysky.packaging.JarPreservationReport.empty(),
                 SignatureActionReport.resigned(true, List.of("META-INF/OLD.SF", "META-INF/OLD.RSA")));
 
@@ -455,7 +339,6 @@ class PackagingReportWriterTest {
                 List.of(),
                 null,
                 new NativeBuildPlan(List.of()),
-                List.of(),
                 xyz.melodysky.packaging.JarPreservationReport.empty(),
                 SignatureActionReport.none(false));
 

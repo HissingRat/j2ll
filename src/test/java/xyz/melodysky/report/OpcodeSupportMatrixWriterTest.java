@@ -10,7 +10,7 @@ class OpcodeSupportMatrixWriterTest {
     @Test
     void writesDeterministicOpcodeMatrixGolden() {
         String json = new OpcodeSupportMatrixWriter().json(List.of(
-                new OpcodeSupportEntry("z-op", "stack", "FALLBACK", "Z_REASON", "ZTest"),
+                new OpcodeSupportEntry("z-op", "stack", "SKIPPED", "Z_REASON", "ZTest"),
                 new OpcodeSupportEntry("a-op", "arithmetic", "LLVM_NATIVE_PATH", "A_REASON", "ATest"),
                 new OpcodeSupportEntry("b-op", "arithmetic", "HELPER_BACKED", "B_REASON", "BTest")));
 
@@ -40,7 +40,7 @@ class OpcodeSupportMatrixWriterTest {
                     {
                       "opcode": "z-op",
                       "category": "stack",
-                      "status": "FALLBACK",
+                      "status": "SKIPPED",
                       "reasonCode": "Z_REASON",
                       "testCoverage": "ZTest",
                       "coverageLevel": "unit",
@@ -67,7 +67,7 @@ class OpcodeSupportMatrixWriterTest {
         for (String reasonCode : List.of(
                 "LLVM_NATIVE_PATH",
                 "DISPATCH_HELPER",
-                "JVM_HELPER_FALLBACK",
+                "MULTIANEWARRAY_UNSUPPORTED",
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "UNSUPPORTED_FINALLY_SUBROUTINE")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);

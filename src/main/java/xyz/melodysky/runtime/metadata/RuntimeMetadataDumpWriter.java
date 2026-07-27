@@ -6,10 +6,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import java.util.List;
-import xyz.melodysky.analysis.reflection.ReflectionFallbackSite;
 import xyz.melodysky.analysis.reflection.ReflectionFieldTarget;
 import xyz.melodysky.analysis.reflection.ReflectionMethodTarget;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
+import xyz.melodysky.analysis.reflection.ReflectionUnsupportedSite;
 
 public final class RuntimeMetadataDumpWriter {
     private static final Gson GSON = new GsonBuilder()
@@ -72,18 +72,18 @@ public final class RuntimeMetadataDumpWriter {
         }
         object.add("fields", fields);
 
-        JsonArray fallbacks = new JsonArray();
-        for (ReflectionFallbackSite fallback : plan.fallbackSites()) {
-            JsonObject fallbackJson = new JsonObject();
-            fallbackJson.addProperty("class", fallback.owner());
-            fallbackJson.addProperty("method", fallback.method());
-            fallbackJson.addProperty("descriptor", fallback.descriptor());
-            fallbackJson.addProperty("instructionIndex", fallback.instructionIndex());
-            fallbackJson.addProperty("reasonCode", fallback.reasonCode());
-            fallbackJson.addProperty("reason", fallback.reason());
-            fallbacks.add(fallbackJson);
+        JsonArray unsupportedSites = new JsonArray();
+        for (ReflectionUnsupportedSite site : plan.unsupportedSites()) {
+            JsonObject siteJson = new JsonObject();
+            siteJson.addProperty("class", site.owner());
+            siteJson.addProperty("method", site.method());
+            siteJson.addProperty("descriptor", site.descriptor());
+            siteJson.addProperty("instructionIndex", site.instructionIndex());
+            siteJson.addProperty("reasonCode", site.reasonCode());
+            siteJson.addProperty("reason", site.reason());
+            unsupportedSites.add(siteJson);
         }
-        object.add("fallbacks", fallbacks);
+        object.add("unsupportedSites", unsupportedSites);
         return object;
     }
 

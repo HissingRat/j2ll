@@ -23,10 +23,6 @@ public final class NativeLoaderClassGenerator implements Opcodes {
     private static final String TEMPLATE_INTERNAL_NAME =
             "xyz/melodysky/runtime/loader/LoaderTemplate";
     private static final String TEMPLATE_RESOURCE = TEMPLATE_INTERNAL_NAME + ".class";
-    private static final String FALLBACK_METHOD_NAME = "defineHiddenFallback";
-    private static final String FALLBACK_METHOD_DESCRIPTOR =
-            "(Ljava/lang/Class;[B)Ljava/lang/Class;";
-
     public byte[] generate(
             RuntimeLoaderPlan plan,
             List<NativeLibraryArtifact> artifacts) throws IOException {
@@ -37,9 +33,6 @@ public final class NativeLoaderClassGenerator implements Opcodes {
         new LoaderClassValueSidecarInjector().inject(
                 loader,
                 plan.referenceSidecarSize());
-        if (!plan.includeFallbackDefinition()) {
-            removeFallbackDefinition(loader);
-        }
         stripDebugMetadata(loader);
         loader.version = V17;
 
@@ -119,13 +112,6 @@ public final class NativeLoaderClassGenerator implements Opcodes {
         method.visitInsn(RETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
-    }
-
-    private void removeFallbackDefinition(ClassNode loader) {
-        loader.methods.removeIf(method -> method.name.equals(FALLBACK_METHOD_NAME)
-                && method.desc.equals(FALLBACK_METHOD_DESCRIPTOR));
-        loader.innerClasses.removeIf(innerClass ->
-                innerClass.name.startsWith("java/lang/invoke/MethodHandles$"));
     }
 
     private void stripDebugMetadata(ClassNode loader) {

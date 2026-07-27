@@ -308,7 +308,7 @@ class MethodInliningPassTest {
     }
 
     @Test
-    void rejectsExceptionMonitorJmmAndFallbackSensitiveCallees() {
+    void rejectsExceptionMonitorJmmAndCallSensitiveCallees() {
         IrMethod exceptionCallee = binaryCallee("divide", IrOpcode.DIV_I32);
         assertRejected(exceptionCallee, MethodInliningReason.EXCEPTION_SENSITIVE);
 
@@ -344,8 +344,8 @@ class MethodInliningPassTest {
                         IrTerminator.returnValue(value)));
         assertRejected(jmmCallee, MethodInliningReason.MONITOR_JMM_SENSITIVE);
 
-        IrMethod fallbackCallee = method(
-                "fallback",
+        IrMethod callCallee = method(
+                "call",
                 "()V",
                 IrType.VOID,
                 List.of(),
@@ -357,7 +357,9 @@ class MethodInliningPassTest {
                                 List.of(),
                                 "j2ll_rt_helper")),
                         IrTerminator.returnVoid()));
-        assertRejected(fallbackCallee, MethodInliningReason.FALLBACK_SENSITIVE);
+        assertRejected(
+                callCallee,
+                MethodInliningReason.CALL_OR_FIELD_SENSITIVE);
     }
 
     @Test
@@ -367,20 +369,17 @@ class MethodInliningPassTest {
         MethodInliningCandidate baseline = staticCandidate(caller, callee);
 
         assertReason(
-                run(caller, callee, copy(baseline, false, true, true, false, false)),
+                run(caller, callee, copy(baseline, false, true, true, false)),
                 MethodInliningReason.NOT_SINGLE_TARGET);
         assertReason(
-                run(caller, callee, copy(baseline, true, false, true, false, false)),
+                run(caller, callee, copy(baseline, true, false, true, false)),
                 MethodInliningReason.NON_NATIVE_PATH);
         assertReason(
-                run(caller, callee, copy(baseline, true, true, false, false, false)),
+                run(caller, callee, copy(baseline, true, true, false, false)),
                 MethodInliningReason.NON_NATIVE_PATH);
         assertReason(
-                run(caller, callee, copy(baseline, true, true, true, true, false)),
+                run(caller, callee, copy(baseline, true, true, true, true)),
                 MethodInliningReason.REFLECTION_SENSITIVE);
-        assertReason(
-                run(caller, callee, copy(baseline, true, true, true, false, true)),
-                MethodInliningReason.FALLBACK_SENSITIVE);
     }
 
     @Test
@@ -527,7 +526,6 @@ class MethodInliningPassTest {
                 true,
                 true,
                 true,
-                false,
                 false);
     }
 
@@ -540,7 +538,6 @@ class MethodInliningPassTest {
                 true,
                 true,
                 true,
-                false,
                 false);
     }
 
@@ -549,8 +546,7 @@ class MethodInliningPassTest {
             boolean singleTarget,
             boolean callerNative,
             boolean calleeNative,
-            boolean reflectionSensitive,
-            boolean fallbackSensitive) {
+            boolean reflectionSensitive) {
         return new MethodInliningCandidate(
                 candidate.callerMethodKey(),
                 candidate.calleeMethodKey(),
@@ -559,8 +555,7 @@ class MethodInliningPassTest {
                 singleTarget,
                 callerNative,
                 calleeNative,
-                reflectionSensitive,
-                fallbackSensitive);
+                reflectionSensitive);
     }
 
     private IrProgram program(IrMethod... methods) {

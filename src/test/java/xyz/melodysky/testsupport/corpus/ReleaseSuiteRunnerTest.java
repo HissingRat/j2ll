@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,9 +16,11 @@ import java.util.Map;
 import java.util.jar.JarFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.ClassNode;
 import xyz.melodysky.report.ReleaseReadinessGate;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.toolchain.HostPlatform;
@@ -48,11 +52,11 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         assertTrue(summary.contains("\"requiredCategories\""));
         assertTrue(summary.contains("\"missingCategories\": []"));
         assertTrue(summary.indexOf("\"name\": \"a-mixed\"") < summary.indexOf("\"name\": \"z-minimal\""));
-        assertTrue(summary.contains("\"category\": \"mixed-helper-fallback\""));
-        assertTrue(summary.contains("\"LLVM_NATIVE_PATH\": \"expected\""));
-        assertTrue(summary.contains("\"JVM_HELPER_FALLBACK\": \"expected\""));
+        assertTrue(summary.contains("\"category\": \"mixed-helper-skipped\""));
+        assertTrue(summary.contains("\"nativeLowered\": \"expected\""));
+        assertTrue(summary.contains("\"skipped\": \"expected\""));
         assertTrue(summary.contains("\"expectedSupportEvidence\""));
-        assertTrue(summary.contains("\"reasonCode\": \"JVM_HELPER_FALLBACK\""));
+        assertTrue(summary.contains("\"reasonCode\": \"skipped\""));
         assertTrue(summary.contains("\"reportLocation\": \"reports/lowering-report.json\""));
         assertTrue(summary.contains("\"aggregate\""));
         assertTrue(summary.contains("\"totalCases\": 2"));
@@ -73,7 +77,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         assertTrue(summary.contains("\"requiredCategories\""));
         assertTrue(summary.contains("\"llvm-native\""));
         assertTrue(summary.contains("\"missingCategories\""));
-        assertTrue(summary.contains("\"mixed-helper-fallback\""));
+        assertTrue(summary.contains("\"mixed-helper-skipped\""));
         assertTrue(summary.contains("\"artifact-audit-failure\""));
         assertTrue(summary.contains("\"known-blocker-evidence\""));
     }
@@ -83,8 +87,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         CorpusCase betaCase = new CorpusCase(
                 "beta-command-smoke",
                 "cli-artifact-smoke",
-                List.of("docs-examples-validated", "report-index", "llvm-native", "mixed-helper-fallback"),
-                Map.of("LLVM_NATIVE_PATH", "expected"),
+                List.of("docs-examples-validated", "report-index", "llvm-native", "mixed-helper-skipped"),
+                Map.of("nativeLowered", "expected"),
                 "pkg.CorpusMain",
                 Map.of(
                         "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
@@ -285,7 +289,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
     }
 
     @Test
-    void reflectionMethodHandleAndLambdaReleaseCaseRunsWithFallbackReports() throws Exception {
+    void reflectionMethodHandleAndLambdaReleaseCasePreservesSkippedMethods() throws Exception {
         ReleaseSuiteResult result = new ReleaseSuiteRunner().run(new ReleaseSuite(
                 "dynamic-release",
                 List.of(reflectionMethodHandleLambdaCase())), temp);
@@ -301,18 +305,24 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         String loweringReport = Files.readString(run.reportPaths().reports().get("lowering-report.json"));
         String packagingReport = Files.readString(run.reportPaths().reports().get("packaging-report.json"));
         assertTrue(loweringReport.contains("REFLECTION_METHOD_HELPER"));
-        assertTrue(loweringReport.contains("METHOD_HANDLE_CHAIN_FALLBACK") || loweringReport.contains("JVM_HELPER_FALLBACK"));
+        assertTrue(loweringReport.contains("METHOD_HANDLE_CHAIN_UNSUPPORTED"));
         assertTrue(loweringReport.contains("LAMBDA_METAFACTORY_HELPER"));
-        assertTrue(packagingReport.contains("\"fallbackBlobs\""));
-        assertNoPlainFallbackClass(run);
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertSkippedMethodPreserved(
+                run,
+                "pkg/MhOps#dynamic!(Ljava/lang/invoke/MethodHandle;)I");
+        assertSkippedMethodPreserved(
+                run,
+                "pkg/LambdaOps#alt!()Ljava/lang/Runnable;");
+        assertNoEmbeddedBytecodeSurfaces(run);
         assertReadinessPassed(run);
     }
 
     @Test
-    void jdkFallbackReleaseCaseCoversCollectionsOptionalThrowableAndThread() throws Exception {
+    void jdkUnsupportedReleaseCasePreservesCollectionsOptionalThrowableAndThreadMethods() throws Exception {
         ReleaseSuiteResult result = new ReleaseSuiteRunner().run(new ReleaseSuite(
-                "jdk-fallback-release",
-                List.of(jdkFallbackCase())), temp);
+                "jdk-skipped-release",
+                List.of(jdkUnsupportedCase())), temp);
 
         CorpusRunResult run = result.cases().get(0);
         assertTrue(run.pipelineResult().successful(), run.pipelineResult().diagnostics().toString());
@@ -322,10 +332,15 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 thread-done
                 """, run.outputRun().stdout());
         String loweringReport = Files.readString(run.reportPaths().reports().get("lowering-report.json"));
-        assertTrue(loweringReport.contains("JDK_HELPER_FALLBACK") || loweringReport.contains("JDK_COLLECTION_HELPER"));
-        assertTrue(loweringReport.contains("THREAD_HELPER_FALLBACK") || loweringReport.contains("THREAD_HELPER"));
-        assertTrue(loweringReport.contains("THROWABLE_HELPER"));
-        assertNoPlainFallbackClass(run);
+        assertTrue(loweringReport.contains("JDK_COLLECTION_HELPER_UNSUPPORTED"), loweringReport);
+        assertTrue(loweringReport.contains("THREAD_HELPER_UNSUPPORTED"), loweringReport);
+        assertSkippedMethodPreserved(
+                run,
+                "pkg/JdkReleaseOps#summary!()Ljava/lang/String;");
+        assertSkippedMethodPreserved(
+                run,
+                "pkg/ThreadOps#runThread!(Ljava/lang/Thread;)V");
+        assertNoEmbeddedBytecodeSurfaces(run);
         assertReadinessPassed(run);
     }
 
@@ -381,21 +396,19 @@ class ReleaseSuiteRunnerTest implements Opcodes {
 
         String summary = Files.readString(result.summary());
         for (String reason : List.of(
-                "ALT_METAFACTORY_FALLBACK",
-                "FALLBACK_CACHE_REUSE",
-                "METHOD_HANDLE_CHAIN_FALLBACK",
-                "METHOD_HANDLE_PERMUTE_FALLBACK",
-                "METHOD_HANDLE_FILTER_FALLBACK",
-                "METHOD_HANDLE_FOLD_FALLBACK",
+                "ALT_METAFACTORY_UNSUPPORTED",
+                "METHOD_HANDLE_CHAIN_UNSUPPORTED",
+                "METHOD_HANDLE_PERMUTE_UNSUPPORTED",
+                "METHOD_HANDLE_FILTER_UNSUPPORTED",
+                "METHOD_HANDLE_FOLD_UNSUPPORTED",
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
-                "VAR_HANDLE_DYNAMIC_FALLBACK",
-                "WAIT_NOTIFY_FALLBACK")) {
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED",
+                "VAR_HANDLE_DYNAMIC_UNSUPPORTED",
+                "WAIT_NOTIFY_UNSUPPORTED")) {
             assertTrue(summary.contains(reason), reason);
         }
-        assertTrue(summary.contains("\"reportLocation\": \"reports/packaging-report.json\""));
-        assertTrue(summary.contains("\"reportLocation\": \"reports/frontend-skip-report.json\"")
-                || summary.contains("\"reportLocation\": \"reports/lowering-report.json\""));
+        assertTrue(summary.contains("\"reportLocation\": \"reports/skipped-method-report.json\""));
+        assertFalse(summary.contains("frontend-skip-report.json"), summary);
         assertTrue(summary.contains("\"name\": \"safe-finally-cleanup\""));
         for (CorpusRunResult run : result.cases()) {
             assertTrue(run.pipelineResult().successful() == run.corpusCase().expectedPipelineSuccess(), run.corpusCase().name());
@@ -431,15 +444,36 @@ class ReleaseSuiteRunnerTest implements Opcodes {
     }
 
     private void assertReadinessPassed(CorpusRunResult run) throws Exception {
+        assertRequiredSuccessReports(run);
         Path workspace = run.reportPaths().reports().values().iterator().next().getParent().getParent();
         var result = new ReleaseReadinessGate().evaluate(workspace);
         assertTrue(result.passed(), result.checks().toString());
     }
 
     private void assertStrictReadinessPassed(CorpusRunResult run) throws Exception {
+        assertRequiredSuccessReports(run);
         Path workspace = run.reportPaths().reports().values().iterator().next().getParent().getParent();
         var result = new ReleaseReadinessGate().evaluate(workspace, true);
         assertTrue(result.passed(), result.checks().toString());
+    }
+
+    private void assertRequiredSuccessReports(CorpusRunResult run) {
+        assertEquals(List.of(
+                "artifact-audit.json",
+                "diagnostics.json",
+                "index.json",
+                "known-blockers.json",
+                "lowering-report.json",
+                "opcode-support-matrix.json",
+                "packaging-report.json",
+                "protection-report.json",
+                "release-readiness.json",
+                "skipped-method-report.json",
+                "summary.json",
+                "summary.md",
+                "support-matrix.json",
+                "symbol-audit.json"), run.reportPaths().reports().keySet().stream().toList());
+        run.reportPaths().reports().forEach((name, path) -> assertTrue(Files.isRegularFile(path), name));
     }
 
     private CorpusCase minimalCase(String name, boolean protection) {
@@ -447,7 +481,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 name,
                 "llvm-native",
                 List.of("static-int", "llvm-native"),
-                Map.of("LLVM_NATIVE_PATH", "expected"),
+                Map.of("nativeLowered", "expected"),
                 "pkg.CorpusMain",
                 Map.of(
                         "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
@@ -464,19 +498,19 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
         entries.put("pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"));
         entries.put("pkg/StringBuilderOps.class", AsmFixtureBuilder.classWithJdkStringBuilderMethods("pkg/StringBuilderOps"));
-        entries.put("pkg/JdkFallback.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"));
+        entries.put("pkg/JdkUnsupported.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkUnsupported"));
         entries.put("pkg/MixedCorpusMain.class", mixedMainClass());
         return new CorpusCase(
                 name,
-                "mixed-helper-fallback",
-                List.of("llvm-native", "string-builder-helper", "nativeEmbeddedClassBlob"),
-                Map.of("LLVM_NATIVE_PATH", "expected", "JVM_HELPER_FALLBACK", "expected"),
+                "mixed-helper-skipped",
+                List.of("llvm-native", "string-builder-helper", "skipped-method-preservation"),
+                Map.of("nativeLowered", "expected", "skipped", "expected"),
                 "pkg.MixedCorpusMain",
                 entries,
                 List.of(
                         "pkg/CorpusMath#add!(II)I",
                         "pkg/StringBuilderOps#build!(Ljava/lang/String;I)Ljava/lang/String;",
-                        "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"),
+                        "pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;"),
                 protection,
                 "fail",
                 null,
@@ -592,16 +626,15 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "reflection-methodhandle-lambda",
                 "dynamic-runtime",
-                List.of("reflection", "method-handle", "lambda", "fallback"),
+                List.of("reflection", "method-handle", "lambda", "skipped-method-preservation"),
                 Map.of(
                         "REFLECTION_METHOD_HELPER", "expected",
                         "LAMBDA_METAFACTORY_HELPER", "expected",
-                        "ALT_METAFACTORY_FALLBACK", "expected",
-                        "FALLBACK_CACHE_REUSE", "expected",
-                        "METHOD_HANDLE_CHAIN_FALLBACK", "expected",
-                        "METHOD_HANDLE_PERMUTE_FALLBACK", "expected",
-                        "METHOD_HANDLE_FILTER_FALLBACK", "expected",
-                        "METHOD_HANDLE_FOLD_FALLBACK", "expected",
+                        "ALT_METAFACTORY_UNSUPPORTED", "expected",
+                        "METHOD_HANDLE_CHAIN_UNSUPPORTED", "expected",
+                        "METHOD_HANDLE_PERMUTE_UNSUPPORTED", "expected",
+                        "METHOD_HANDLE_FILTER_UNSUPPORTED", "expected",
+                        "METHOD_HANDLE_FOLD_UNSUPPORTED", "expected",
                         "METHOD_HANDLE_COLLECTOR_UNSUPPORTED", "expected"),
                 "pkg.DynamicMain",
                 entries,
@@ -620,22 +653,18 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 true);
     }
 
-    private CorpusCase jdkFallbackCase() {
+    private CorpusCase jdkUnsupportedCase() {
         LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
         entries.put("pkg/JdkReleaseOps.class", jdkReleaseOpsClass());
         entries.put("pkg/ThreadOps.class", AsmFixtureBuilder.classWithThreadStartJoinMethod("pkg/ThreadOps"));
         entries.put("pkg/NoopRunnable.class", noopRunnableClass());
-        entries.put("pkg/JdkFallbackMain.class", jdkFallbackMainClass());
+        entries.put("pkg/JdkUnsupportedMain.class", jdkUnsupportedMainClass());
         return new CorpusCase(
-                "jdk-fallback",
-                "jdk-fallback",
-                List.of("arraylist", "hashmap", "optional", "throwable", "thread"),
-                Map.of(
-                        "JDK_HELPER_FALLBACK", "expected",
-                        "THROWABLE_HELPER", "expected",
-                        "FALLBACK_CACHE_REUSE", "expected",
-                        "THREAD_HELPER_FALLBACK", "expected"),
-                "pkg.JdkFallbackMain",
+                "jdk-skipped",
+                "jdk-skipped",
+                List.of("arraylist", "hashmap", "optional", "throwable", "thread", "skipped-method-preservation"),
+                Map.of("skipped", "expected"),
+                "pkg.JdkUnsupportedMain",
                 entries,
                 List.of(
                         "pkg/JdkReleaseOps#summary!()Ljava/lang/String;",
@@ -661,11 +690,10 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "realistic-cli-app",
                 "realistic-cli-app",
-                List.of("main-class", "args-parsing", "string-builder", "jdk-fallback", "protection-all-on"),
+                List.of("main-class", "args-parsing", "string-builder", "jdk-skipped", "protection-all-on"),
                 Map.of(
-                        "LLVM_NATIVE_PATH", "expected",
-                        "JDK_HELPER_FALLBACK", "expected",
-                        "JVM_HELPER_FALLBACK", "expected"),
+                        "nativeLowered", "expected",
+                        "skipped", "expected"),
                 "pkg.RealisticCliMain",
                 entries,
                 List.of(
@@ -684,7 +712,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "realistic-reflection",
                 "realistic-reflection",
-                List.of("private-reflection", "dynamic-reflection-fallback", "method-handle-fallback"),
+                List.of("private-reflection", "dynamic-reflection-skipped", "method-handle-skipped"),
                 base.expectedSupportStatuses(),
                 base.mainClass(),
                 base.jarEntries(),
@@ -720,10 +748,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "unsafe-raw-memory",
                 "unsafe-boundary",
-                List.of("unsafe", "raw-memory", "fallback"),
-                Map.of(
-                        "UNSAFE_RAW_MEMORY_FALLBACK", "expected",
-                        "FALLBACK_CACHE_REUSE", "expected"),
+                List.of("unsafe", "raw-memory", "skipped-method-preservation"),
+                Map.of("UNSAFE_RAW_MEMORY_UNSUPPORTED", "expected"),
                 "pkg.UnsafeBoundaryMain",
                 entries,
                 List.of(
@@ -750,10 +776,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "dynamic-varhandle-boundary",
                 "varhandle-boundary",
-                List.of("varhandle", "dynamic-shape", "fallback"),
-                Map.of(
-                        "VAR_HANDLE_DYNAMIC_FALLBACK", "expected",
-                        "FALLBACK_CACHE_REUSE", "expected"),
+                List.of("varhandle", "dynamic-shape", "skipped-method-preservation"),
+                Map.of("VAR_HANDLE_DYNAMIC_UNSUPPORTED", "expected"),
                 "pkg.VarHandleBoundaryMain",
                 entries,
                 List.of(
@@ -775,7 +799,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                 "safe-finally-cleanup",
                 "exception-finally",
                 List.of("safe-finally", "single-exit-cleanup"),
-                Map.of("LLVM_NATIVE_PATH", "expected"),
+                Map.of("nativeLowered", "expected"),
                 "pkg.SafeFinallyMain",
                 entries,
                 List.of("pkg/SafeFinally#cleanup!()V"),
@@ -793,10 +817,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return new CorpusCase(
                 "wait-notify-boundary",
                 "thread-monitor-boundary",
-                List.of("wait-notify", "fallback"),
-                Map.of(
-                        "WAIT_NOTIFY_FALLBACK", "expected",
-                        "FALLBACK_CACHE_REUSE", "expected"),
+                List.of("wait-notify", "skipped-method-preservation"),
+                Map.of("WAIT_NOTIFY_UNSUPPORTED", "expected"),
                 "pkg.WaitNotifyBoundaryMain",
                 entries,
                 List.of("pkg/WaitNotifyOps#waitNotify!(Ljava/lang/Object;)V"),
@@ -915,7 +937,7 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitLdcInsn("abc");
-        main.visitMethodInsn(INVOKESTATIC, "pkg/JdkFallback", "substring", "(Ljava/lang/String;)Ljava/lang/String;", false);
+        main.visitMethodInsn(INVOKESTATIC, "pkg/JdkUnsupported", "substring", "(Ljava/lang/String;)Ljava/lang/String;", false);
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         endMain(main);
         writer.visitEnd();
@@ -947,8 +969,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return writer.toByteArray();
     }
 
-    private byte[] jdkFallbackMainClass() {
-        ClassWriter writer = mainClass("pkg/JdkFallbackMain");
+    private byte[] jdkUnsupportedMainClass() {
+        ClassWriter writer = mainClass("pkg/JdkUnsupportedMain");
         MethodVisitor main = beginMainThrows(writer, "java/lang/InterruptedException");
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         main.visitMethodInsn(INVOKESTATIC, "pkg/JdkReleaseOps", "summary", "()Ljava/lang/String;", false);
@@ -1386,10 +1408,137 @@ class ReleaseSuiteRunnerTest implements Opcodes {
         return main;
     }
 
-    private void assertNoPlainFallbackClass(CorpusRunResult run) throws Exception {
+    private void assertSkippedMethodPreserved(CorpusRunResult run, String selector) throws Exception {
+        SelectorParts parts = SelectorParts.parse(selector);
+        JsonObject skippedRoot = JsonParser.parseString(Files.readString(
+                        run.reportPaths().reports().get("skipped-method-report.json")))
+                .getAsJsonObject();
+        JsonObject skipped = reportMethod(
+                skippedRoot,
+                "entries",
+                parts,
+                true);
+        assertEquals("skipped", skipped.get("status").getAsString(), selector);
+        assertTrue(skipped.get("hasCode").getAsBoolean(), selector);
+
+        JsonObject loweringRoot = JsonParser.parseString(Files.readString(
+                        run.reportPaths().reports().get("lowering-report.json")))
+                .getAsJsonObject();
+        JsonObject lowering = reportMethod(
+                loweringRoot,
+                "requestedMethods",
+                parts,
+                false);
+        assertEquals("skipped", lowering.get("status").getAsString(), selector);
+        assertTrue(lowering.get("rewriteStrategy").isJsonNull(), selector);
+        assertTrue(lowering.get("nativeSymbol").isJsonNull(), selector);
+        assertTrue(lowering.get("registrationOwner").isJsonNull(), selector);
+        assertTrue(lowering.get("nativeImplementationPath").isJsonNull(), selector);
+
+        assertFalse(run.pipelineResult().nativeRegistrationPlan().entries().stream()
+                .anyMatch(entry -> entry.registrationOwner().equals(parts.owner())
+                        && entry.methodName().equals(parts.method())
+                        && entry.descriptor().equals(parts.descriptor())), selector);
+
+        var originalMethod = jarMethod(run.inputJar(), parts);
+        var outputMethod = jarMethod(run.pipelineResult().outputJar(), parts);
+        assertFalse((outputMethod.access & ACC_NATIVE) != 0, selector);
+        assertFalse((outputMethod.access & ACC_ABSTRACT) != 0, selector);
+        assertTrue(outputMethod.instructions != null && outputMethod.instructions.size() > 0, selector);
+        assertEquals(executableOpcodes(originalMethod), executableOpcodes(outputMethod), selector);
+    }
+
+    private JsonObject reportMethod(
+            JsonObject root,
+            String arrayName,
+            SelectorParts parts,
+            boolean matchSelector) {
+        for (var element : root.getAsJsonArray(arrayName)) {
+            JsonObject method = element.getAsJsonObject();
+            boolean matches = matchSelector
+                    ? method.get("selector").getAsString().equals(parts.selector())
+                    : method.get("class").getAsString().equals(parts.owner())
+                            && method.get("method").getAsString().equals(parts.method())
+                            && method.get("descriptor").getAsString().equals(parts.descriptor());
+            if (matches) {
+                return method;
+            }
+        }
+        throw new AssertionError("missing " + parts.selector() + " in " + arrayName);
+    }
+
+    private org.objectweb.asm.tree.MethodNode jarMethod(Path jarPath, SelectorParts parts) throws Exception {
+        try (JarFile jarFile = new JarFile(jarPath.toFile(), false)) {
+            var classEntry = jarFile.getJarEntry(parts.owner() + ".class");
+            assertTrue(classEntry != null, parts.owner());
+            ClassNode classNode = new ClassNode();
+            try (var input = jarFile.getInputStream(classEntry)) {
+                new ClassReader(input).accept(classNode, ClassReader.SKIP_DEBUG);
+            }
+            return classNode.methods.stream()
+                    .filter(method -> method.name.equals(parts.method())
+                            && method.desc.equals(parts.descriptor()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("missing output method " + parts.selector()));
+        }
+    }
+
+    private List<Integer> executableOpcodes(org.objectweb.asm.tree.MethodNode method) {
+        return java.util.Arrays.stream(method.instructions.toArray())
+                .map(instruction -> instruction.getOpcode())
+                .filter(opcode -> opcode >= 0)
+                .toList();
+    }
+
+    private void assertNoEmbeddedBytecodeSurfaces(CorpusRunResult run) throws Exception {
         String packagingReport = Files.readString(run.reportPaths().reports().get("packaging-report.json"));
-        assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
-        assertFalse(packagingReport.contains("\"storageTarget\": \"generatedClass\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertFalse(packagingReport.contains("nativeEmbeddedClassBlob"), packagingReport);
+        assertFalse(packagingReport.contains("fallbackBlobEncodingV1"), packagingReport);
+
+        String artifactAudit = Files.readString(run.reportPaths().reports().get("artifact-audit.json"));
+        assertTrue(artifactAudit.contains("NO_EMBEDDED_BYTECODE_WORKSPACE_SURFACES"), artifactAudit);
+
+        try (JarFile jarFile = new JarFile(run.pipelineResult().outputJar().toFile(), false)) {
+            List<String> entries = jarFile.stream().map(entry -> entry.getName()).toList();
+            assertFalse(entries.contains("xyz/melodysky/runtime/fallback/J2llFallbackSupport.class"), entries.toString());
+            assertFalse(entries.contains("xyz/melodysky/runtime/loader/J2llNativeLoaderSupport.class"), entries.toString());
+            assertFalse(entries.stream()
+                    .anyMatch(entry -> entry.startsWith("j2ll/generated/")
+                            && entry.endsWith("/NativeLoader.class")), entries.toString());
+
+            var manifestEntry = jarFile.getJarEntry("META-INF/j2ll/reports-manifest.json");
+            assertTrue(manifestEntry != null);
+            String manifest;
+            try (var input = jarFile.getInputStream(manifestEntry)) {
+                manifest = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            JsonObject manifestRoot = JsonParser.parseString(manifest).getAsJsonObject();
+            List<String> reports = new java.util.ArrayList<>();
+            manifestRoot.getAsJsonArray("reports").forEach(entry -> reports.add(entry.getAsString()));
+            assertTrue(reports.containsAll(List.of(
+                    "skipped-method-report.json",
+                    "index.json",
+                    "summary.json",
+                    "summary.md")), reports.toString());
+            assertFalse(manifest.contains("nativeEmbeddedClassBlob"), manifest);
+            assertFalse(manifest.contains("fallbackBlobs"), manifest);
+        }
+    }
+
+    private record SelectorParts(String selector, String owner, String method, String descriptor) {
+        private static SelectorParts parse(String selector) {
+            int ownerEnd = selector.indexOf('#');
+            int methodEnd = selector.indexOf('!', ownerEnd + 1);
+            if (ownerEnd <= 0 || methodEnd <= ownerEnd + 1 || methodEnd == selector.length() - 1) {
+                throw new IllegalArgumentException("invalid method selector: " + selector);
+            }
+            return new SelectorParts(
+                    selector,
+                    selector.substring(0, ownerEnd),
+                    selector.substring(ownerEnd + 1, methodEnd),
+                    selector.substring(methodEnd + 1));
+        }
     }
 
     private String runMismatch(CorpusRunResult run) {

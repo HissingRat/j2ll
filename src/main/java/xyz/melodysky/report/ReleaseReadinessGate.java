@@ -31,12 +31,15 @@ public final class ReleaseReadinessGate {
             "diagnostics.json",
             "artifact-audit.json",
             "field-internalization-report.json",
-            "frontend-skip-report.json",
             "known-blockers.json",
             "lowering-report.json",
             "opcode-support-matrix.json",
             "packaging-report.json",
             "protection-report.json",
+            "skipped-method-report.json",
+            "index.json",
+            "summary.json",
+            "summary.md",
             "support-matrix.json",
             "symbol-audit.json");
 
@@ -64,7 +67,6 @@ public final class ReleaseReadinessGate {
         checkArtifactAuditStatus(checks, reports);
         checkReportIndexIntegrity(checks, workspaceRoot, reports);
         checkContains(checks, reports.resolve("packaging-report.json"), "packaging.signatureAction", "\"signatureAction\"", "SIGNATURE_ACTION_REPORTED");
-        checkContains(checks, reports.resolve("packaging-report.json"), "packaging.fallbackBlobs", "\"fallbackBlobs\"", "FALLBACK_BLOBS_REPORTED");
         checkContains(checks, reports.resolve("symbol-audit.json"), "symbolAudit.libraries", "\"libraries\"", "SYMBOL_AUDIT_REPORTED");
         checkContains(checks, reports.resolve("support-matrix.json"), "supportMatrix.features", "\"features\"", "SUPPORT_MATRIX_REPORTED");
         checkContains(checks, reports.resolve("opcode-support-matrix.json"), "opcodeMatrix.opcodes", "\"opcodes\"", "OPCODE_MATRIX_REPORTED");
@@ -812,12 +814,14 @@ public final class ReleaseReadinessGate {
         List<String> required = List.of(
                 "reports/diagnostics.json",
                 "reports/artifact-audit.json",
-                "reports/frontend-skip-report.json",
+                "reports/field-internalization-report.json",
                 "reports/known-blockers.json",
                 "reports/lowering-report.json",
                 "reports/opcode-support-matrix.json",
                 "reports/packaging-report.json",
                 "reports/protection-report.json",
+                "reports/release-readiness.json",
+                "reports/skipped-method-report.json",
                 "reports/support-matrix.json",
                 "reports/symbol-audit.json",
                 "reports/summary.json",

@@ -60,6 +60,6 @@ Expected report highlights:
 
 - `reports/index.json` lists all emitted reports and SHA-256 hashes.
 - `reports/summary.md` shows audit/readiness status and method counts.
-- JDK collection calls may stay helper/fallback-backed; native code does not read collection internals.
+- Supported JDK collection calls remain `nativeLowered` through JVM/JNI helpers; if a call is outside the validated helper matrix, the selected caller is `skipped`. Native code does not read collection internals.
 
 Enable the current host target when you want to run this sample locally. You may also enable any of the other five fixed targets in the same build; managed Zig produces the selected DLL/SO/dylib matrix in one invocation, while only the host artifact is exercised by the local child JVM.

@@ -10,7 +10,7 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
-import xyz.melodysky.pipeline.LoweringStatus;
+import xyz.melodysky.pipeline.MethodEligibilityStatus;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class SelectorMatcherTest implements Opcodes {
@@ -55,11 +55,13 @@ class SelectorMatcherTest implements Opcodes {
 
         assertTrue(result.requestedMethods().stream().noneMatch(method -> method.name().equals("add")));
         assertEquals(1, result.excluded().size());
-        assertEquals(LoweringStatus.EXCLUDED, result.excluded().get(0).status());
+        assertEquals(
+                MethodEligibilityStatus.EXCLUDED,
+                result.excluded().get(0).status());
     }
 
     @Test
-    void recordsNotApplicableForAbstractNativeAndNoCodeInterfaceMethods() {
+    void recordsIneligibleForAbstractNativeAndNoCodeInterfaceMethods() {
         ParsedProgram program = program(
                 parsed("pkg/Api", AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api")),
                 parsed("pkg/NativeApi", AsmFixtureBuilder.classWithVoidMethod(
@@ -78,9 +80,9 @@ class SelectorMatcherTest implements Opcodes {
         assertEquals(1, result.requestedMethods().stream()
                 .filter(method -> method.owner().equals("pkg/Api") && method.name().equals("answer"))
                 .count());
-        assertEquals(2, result.notApplicable().size());
-        assertTrue(result.notApplicable().stream()
-                .allMatch(eligibility -> eligibility.status() == LoweringStatus.NOT_APPLICABLE));
+        assertEquals(2, result.ineligible().size());
+        assertTrue(result.ineligible().stream()
+                .allMatch(eligibility -> eligibility.status() == MethodEligibilityStatus.INELIGIBLE));
     }
 
     private ParsedProgram program(ParsedClass... classes) {

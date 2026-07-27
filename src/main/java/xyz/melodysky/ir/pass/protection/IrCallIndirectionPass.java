@@ -11,7 +11,7 @@ import xyz.melodysky.ir.model.IrProgram;
  *
  * <p>The caller supplies both call-resolution facts and the exact set of
  * methods proven to finish on {@code LLVM_NATIVE_PATH}. This pass never
- * upgrades unresolved, fallback, or helper-sensitive calls on its own.</p>
+ * upgrades unresolved, non-native, or helper-sensitive calls on its own.</p>
  */
 public final class IrCallIndirectionPass {
     private final IrCallIndirectionPlanner planner;

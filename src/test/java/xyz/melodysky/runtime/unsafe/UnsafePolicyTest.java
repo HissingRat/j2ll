@@ -68,13 +68,13 @@ class UnsafePolicyTest {
         UnsafePlan unsupported = policy.plan("sun/misc/Unsafe", "getByte", "(J)B");
         assertTrue(unsupported.unsafeOrVarHandleCall());
         assertFalse(unsupported.supported());
-        assertTrue(unsupported.reason().contains("UNSAFE_RAW_MEMORY_FALLBACK"));
+        assertTrue(unsupported.reason().contains("UNSAFE_RAW_MEMORY_UNSUPPORTED"));
         UnsafePlan dynamicVarHandle = policy.plan("java/lang/invoke/VarHandle", "withInvokeExactBehavior", "()Ljava/lang/invoke/VarHandle;");
-        assertTrue(dynamicVarHandle.reason().contains("VAR_HANDLE_DYNAMIC_FALLBACK"));
+        assertTrue(dynamicVarHandle.reason().contains("VAR_HANDLE_DYNAMIC_UNSUPPORTED"));
     }
 
     @Test
-    void rawOffHeapUnsafeMemoryApisAreStableFallbackBoundaries() {
+    void rawOffHeapUnsafeMemoryApisAreSkippedBoundaries() {
         UnsafePolicy policy = new UnsafePolicy();
 
         for (UnsafePlan plan : java.util.List.of(
@@ -88,7 +88,7 @@ class UnsafePolicyTest {
             assertTrue(plan.unsafeOrVarHandleCall());
             assertFalse(plan.supported());
             assertEquals(UnsafeOperationKind.UNSUPPORTED, plan.kind());
-            assertTrue(plan.reason().contains("UNSAFE_RAW_MEMORY_FALLBACK"));
+            assertTrue(plan.reason().contains("UNSAFE_RAW_MEMORY_UNSUPPORTED"));
         }
     }
 }

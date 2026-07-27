@@ -23,8 +23,8 @@ class IntermediateArtifactLayoutPlannerTest {
                         "pkg/Foo",
                         "pkg/Foo.class",
                         List.of(
-                                method("pkg/Foo", "doWork", "(I)V", LoweringStatus.LOWERED),
-                                method("pkg/Foo", "doWork", "(J)V", LoweringStatus.FRONTEND_SKIPPED)))));
+                                method("pkg/Foo", "doWork", "(I)V", LoweringStatus.NATIVE_LOWERED),
+                                method("pkg/Foo", "doWork", "(J)V", LoweringStatus.SKIPPED)))));
 
         List<MethodArtifact> methods = layout.methodsFor("pkg/Foo");
 
@@ -52,8 +52,8 @@ class IntermediateArtifactLayoutPlannerTest {
                         "pkg/Foo",
                         "pkg/Foo.class",
                         List.of(
-                                method("pkg/Foo", "same", "(I)V", LoweringStatus.LOWERED),
-                                method("pkg/Foo", "same", "(J)V", LoweringStatus.LOWERED)))));
+                                method("pkg/Foo", "same", "(I)V", LoweringStatus.NATIVE_LOWERED),
+                                method("pkg/Foo", "same", "(J)V", LoweringStatus.NATIVE_LOWERED)))));
 
         List<MethodArtifact> methods = layout.methodsFor("pkg/Foo");
 
@@ -68,7 +68,7 @@ class IntermediateArtifactLayoutPlannerTest {
                 new ClassArtifactInput(
                         "pkg/Foo$Bar",
                         "pkg/Foo$Bar.class",
-                        List.of(method("pkg/Foo$Bar", "<init>", "()V", LoweringStatus.NOT_APPLICABLE)))));
+                        List.of(method("pkg/Foo$Bar", "<init>", "()V", LoweringStatus.SKIPPED)))));
         ClassArtifact owner = layout.classes().get(0);
         IntermediateArtifactIndexWriter writer = new IntermediateArtifactIndexWriter();
 
@@ -78,7 +78,7 @@ class IntermediateArtifactLayoutPlannerTest {
         assertTrue(classIndex.contains("\"internalName\": \"pkg/Foo$Bar\""));
         assertTrue(classIndex.contains("\"directory\": \"pkg/Foo$Bar__"));
         assertTrue(methodIndex.contains("\"methodId\": \"_init___"));
-        assertTrue(methodIndex.contains("\"status\": \"notApplicable\""));
+        assertTrue(methodIndex.contains("\"status\": \"skipped\""));
     }
 
     @Test
@@ -87,7 +87,7 @@ class IntermediateArtifactLayoutPlannerTest {
                 new ClassArtifactInput(
                         "pkg/Foo",
                         "pkg/Foo.class",
-                        List.of(method("pkg/Foo", "add", "(II)I", LoweringStatus.LOWERED)))));
+                        List.of(method("pkg/Foo", "add", "(II)I", LoweringStatus.NATIVE_LOWERED)))));
         Path file = temp.resolve("intermediates/classes/pkg_Foo__abc/llvm/class.ll");
         Files.createDirectories(file.getParent());
         Files.writeString(file, "define hidden i32 @f() { ret i32 1 }\n");

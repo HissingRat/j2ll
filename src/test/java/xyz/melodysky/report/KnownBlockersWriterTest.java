@@ -51,20 +51,19 @@ class KnownBlockersWriterTest {
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
                 "UNSUPPORTED_MULTI_EXIT_FINALLY",
                 "UNSUPPORTED_NESTED_FINALLY",
-                "ALT_METAFACTORY_FALLBACK",
-                "METHOD_HANDLE_CHAIN_FALLBACK",
-                "METHOD_HANDLE_PERMUTE_FALLBACK",
-                "METHOD_HANDLE_FILTER_FALLBACK",
-                "METHOD_HANDLE_FOLD_FALLBACK",
+                "ALT_METAFACTORY_UNSUPPORTED",
+                "METHOD_HANDLE_CHAIN_UNSUPPORTED",
+                "METHOD_HANDLE_PERMUTE_UNSUPPORTED",
+                "METHOD_HANDLE_FILTER_UNSUPPORTED",
+                "METHOD_HANDLE_FOLD_UNSUPPORTED",
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
                 "CROSS_TARGET_RUNTIME_E2E_PENDING",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
-                "VAR_HANDLE_DYNAMIC_FALLBACK",
-                "FALLBACK_CACHE_REUSE",
-                "WAIT_NOTIFY_FALLBACK")) {
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED",
+                "VAR_HANDLE_DYNAMIC_UNSUPPORTED",
+                "WAIT_NOTIFY_UNSUPPORTED")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);
         }
-        assertTrue(json.contains("\"reportLocation\": \"reports/lowering-report.json\""));
+        assertTrue(json.contains("\"reportLocation\": \"reports/skipped-method-report.json\""));
         assertTrue(json.contains("\"reportLocation\": \"reports/packaging-report.json\""));
         assertTrue(json.contains("\"severity\": \"future-blocker\""));
         assertTrue(json.contains("\"targetMilestone\": \"explicit-nongoal\""));

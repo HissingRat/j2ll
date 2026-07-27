@@ -171,12 +171,6 @@ public final class NativeFieldInternalizationPlanner {
             FieldAccessImplementationPath path = pathResolver.finalPathFor(access.methodKey());
             if (path == null || path == FieldAccessImplementationPath.UNKNOWN) {
                 reasons.add(FieldInternalizationReason.ACCESS_PATH_UNKNOWN);
-            } else if (path == FieldAccessImplementationPath.JVM_SIDECAR_FALLBACK_PATH
-                    && NativeFieldStorageKind.fromDescriptor(field.descriptor())
-                            .filter(NativeFieldStorageKind::reference)
-                            .isPresent()) {
-                // The hidden fallback helper is rewritten separately to use
-                // the same ClassValue<Object[]> slot as LLVM native code.
             } else if (path != FieldAccessImplementationPath.LLVM_NATIVE_PATH) {
                 reasons.add(FieldInternalizationReason.ACCESS_PATH_NOT_LLVM_NATIVE);
             }

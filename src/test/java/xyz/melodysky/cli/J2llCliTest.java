@@ -355,6 +355,11 @@ class J2llCliTest implements Opcodes {
         String dryRun = Files.readString(workspace.resolve("reports/dry-run-report.json"));
         assertTrue(dryRun.contains("\"inputJarParsed\": true"), dryRun);
         assertTrue(dryRun.contains("\"requestedMethodCount\": 1"), dryRun);
+        assertTrue(dryRun.contains("\"skippedMethodAnalysisPerformed\": false"), dryRun);
+        assertTrue(dryRun.contains(
+                "\"skippedMethodConfirmation\": \"deferredUntilDefaultBuild\""), dryRun);
+        assertTrue(dryRun.contains(
+                "\"skippedMethodConfirmationDecision\": \"confirmationRequiredIfSkippedMethodsAreFound\""), dryRun);
         assertTrue(dryRun.contains("\"nativeBuildInvoked\": false"), dryRun);
         String packaging = Files.readString(workspace.resolve("reports/packaging-report.json"));
         assertTrue(packaging.contains("\"targetArtifacts\""), packaging);
@@ -585,10 +590,22 @@ class J2llCliTest implements Opcodes {
     void buildCommandReportsZigChecksumFailureWithExitCodeFour() throws Exception {
         Path inputJar = temp.resolve("cli-zig-checksum.jar");
         writeJar(inputJar, Map.of(
-                "pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
-                "pkg/CliMain.class", cliMainClass()));
+                "pkg/CorpusMath.class",
+                AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"),
+                "pkg/JdkUnsupported.class",
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
+                        "pkg/JdkUnsupported")));
         Path config = temp.resolve("config-zig-checksum.json");
-        Files.writeString(config, configJson(inputJar, "[\"pkg/CorpusMath#add!(II)I\"]", targetJson()));
+        Files.writeString(
+                config,
+                        configJson(
+                                inputJar,
+                                "[\"pkg/CorpusMath#add!(II)I\","
+                                        + "\"pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;\"]",
+                                targetJson())
+                        .replace(
+                                "\"fieldInternalization\": false",
+                                "\"fieldInternalization\": true"));
         Path j2llHome = temp.resolve("j2ll-home-checksum");
         Files.createDirectories(j2llHome);
         String archiveName = new ZigArchiveResolver().currentHostArchive().archiveName();
@@ -601,6 +618,8 @@ class J2llCliTest implements Opcodes {
             System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, j2llHome.toString());
             code = J2llCli.run(
                     new String[] {"--config", config.toString()},
+                    new ByteArrayInputStream(
+                            "Y\nY\n".getBytes(StandardCharsets.UTF_8)),
                     new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
                     new PrintStream(err, true, StandardCharsets.UTF_8));
         } finally {
@@ -613,14 +632,293 @@ class J2llCliTest implements Opcodes {
 
         assertEquals(4, code, err.toString(StandardCharsets.UTF_8));
         String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stderr.contains(
+                "analysisScope=fieldInternalization:currentJarOnlyUserApproved"), stderr);
+        assertTrue(stderr.contains(
+                "skippedMethods=retainedJavaBytecodeUserApproved"), stderr);
         assertTrue(stderr.contains("checksum mismatch"), stderr);
         assertTrue(stderr.contains("hint="), stderr);
         Path workspace = pathValue(stderr, "reportsDir").getParent();
         assertFieldInternalizationEvidence(workspace);
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"approved\""));
+        String skippedReport = Files.readString(
+                workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(skippedReport.contains(
+                "\"selector\": \"pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;\""));
+        assertTrue(skippedReport.contains(
+                "\"reasonCode\": \"JVM_HELPER_UNSUPPORTED\""));
         assertTrue(Files.readString(workspace.resolve("reports/failure-report.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/summary.json")).contains("\"finalArtifactWritten\": false"));
         assertTrue(Files.readString(workspace.resolve("reports/release-readiness.json")).contains("\"finalArtifactWritten\": false"));
         assertFalse(Files.exists(workspace.resolve(inputJar.getFileName())));
+    }
+
+    @Test
+    void laterZigFailurePreservesNotRequiredSkippedGateEvidence() throws Exception {
+        Path inputJar = temp.resolve("cli-zig-no-skipped.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/CorpusMath.class",
+                AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath")));
+        Path config = temp.resolve("config-zig-no-skipped.json");
+        Files.writeString(
+                config,
+                configJson(
+                        inputJar,
+                        "[\"pkg/CorpusMath#add!(II)I\"]",
+                        targetJson()));
+        Path j2llHome = temp.resolve("j2ll-home-no-skipped");
+        Files.createDirectories(j2llHome);
+        String archiveName =
+                new ZigArchiveResolver().currentHostArchive().archiveName();
+        Files.writeString(
+                j2llHome.resolve(archiveName),
+                "corrupt-zig-archive");
+
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        String previous =
+                System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
+        int code;
+        try {
+            System.setProperty(
+                    J2llHomeResolver.OVERRIDE_PROPERTY,
+                    j2llHome.toString());
+            code = J2llCli.run(
+                    new String[] {"--config", config.toString()},
+                    new ByteArrayInputStream(new byte[0]),
+                    new PrintStream(
+                            new ByteArrayOutputStream(),
+                            true,
+                            StandardCharsets.UTF_8),
+                    new PrintStream(
+                            err,
+                            true,
+                            StandardCharsets.UTF_8));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY);
+            } else {
+                System.setProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY,
+                        previous);
+            }
+        }
+
+        assertEquals(4, code, err.toString(StandardCharsets.UTF_8));
+        Path workspace = pathValue(
+                        err.toString(StandardCharsets.UTF_8),
+                        "reportsDir")
+                .getParent();
+        String skippedReport = Files.readString(
+                workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(skippedReport.contains(
+                "\"confirmationRequired\": false"));
+        assertTrue(skippedReport.contains(
+                "\"confirmationDecision\": \"notRequired\""));
+        assertTrue(skippedReport.contains("\"entries\": []"));
+    }
+
+    @Test
+    void skippedMethodGateRejectsExplicitNAndEofBeforeZig() throws Exception {
+        Path inputJar = temp.resolve("cli-skipped-gate.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/JdkUnsupported.class",
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
+                        "pkg/JdkUnsupported")));
+        Path config = temp.resolve("config-skipped-gate.json");
+        Files.writeString(
+                config,
+                configJson(
+                        inputJar,
+                        "[\"pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;\"]",
+                        targetJson()));
+        Path j2llHome = temp.resolve("j2ll-home-skipped-gate");
+        Files.createDirectories(j2llHome);
+        String archiveName =
+                new ZigArchiveResolver().currentHostArchive().archiveName();
+        Files.writeString(
+                j2llHome.resolve(archiveName),
+                "must-not-be-read-before-skipped-method-approval");
+
+        String previous = System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
+        try {
+            System.setProperty(
+                    J2llHomeResolver.OVERRIDE_PROPERTY,
+                    j2llHome.toString());
+            for (String answer : List.of("N\n", "")) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                ByteArrayOutputStream err = new ByteArrayOutputStream();
+                int code = J2llCli.run(
+                        new String[] {"--config", config.toString()},
+                        new ByteArrayInputStream(
+                                answer.getBytes(StandardCharsets.UTF_8)),
+                        new PrintStream(
+                                out,
+                                true,
+                                StandardCharsets.UTF_8),
+                        new PrintStream(
+                                err,
+                                true,
+                                StandardCharsets.UTF_8));
+
+                assertEquals(3, code, err.toString(StandardCharsets.UTF_8));
+                assertEquals("", out.toString(StandardCharsets.UTF_8));
+                String stderr = err.toString(StandardCharsets.UTF_8);
+                assertTrue(stderr.contains(
+                        "skippedMethod=pkg/JdkUnsupported#substring!"), stderr);
+                assertTrue(stderr.contains(
+                        "will not be native lowered"), stderr);
+                assertTrue(stderr.contains("continue? (Y/N)"), stderr);
+                assertTrue(stderr.contains(
+                        "cancelled=skipped methods were not approved"), stderr);
+                assertFalse(stderr.contains("checksum mismatch"), stderr);
+                Path workspace =
+                        pathValue(stderr, "reportsDir").getParent();
+                assertFalse(Files.exists(
+                        workspace.resolve("native/zig-workspace")));
+                assertFalse(Files.exists(
+                        workspace.resolve(inputJar.getFileName())));
+                assertTrue(Files.readString(
+                                workspace.resolve(
+                                        "reports/failure-report.json"))
+                        .contains("SKIPPED_METHODS_NOT_APPROVED"));
+            }
+        } finally {
+            if (previous == null) {
+                System.clearProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY);
+            } else {
+                System.setProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY,
+                        previous);
+            }
+        }
+    }
+
+    @Test
+    void explicitYBuildsJarWithOnlySkippedJavaMethodsWithoutZig()
+            throws Exception {
+        Path inputJar = temp.resolve("cli-skipped-approved.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/JdkUnsupported.class",
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
+                        "pkg/JdkUnsupported")));
+        Path config = temp.resolve("config-skipped-approved.json");
+        Files.writeString(
+                config,
+                configJson(
+                        inputJar,
+                        "[\"pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;\"]",
+                        targetJson()));
+        Path j2llHome = temp.resolve("j2ll-home-skipped-approved");
+        Files.createDirectories(j2llHome);
+        Files.writeString(
+                j2llHome.resolve(
+                        new ZigArchiveResolver()
+                                .currentHostArchive()
+                                .archiveName()),
+                "must-not-be-read-when-no-native-method-exists");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        String previous =
+                System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
+        int code;
+        try {
+            System.setProperty(
+                    J2llHomeResolver.OVERRIDE_PROPERTY,
+                    j2llHome.toString());
+            code = J2llCli.run(
+                    new String[] {"--config", config.toString()},
+                    new ByteArrayInputStream(
+                            "  y  \n".getBytes(StandardCharsets.UTF_8)),
+                    new PrintStream(out, true, StandardCharsets.UTF_8),
+                    new PrintStream(err, true, StandardCharsets.UTF_8));
+        } finally {
+            if (previous == null) {
+                System.clearProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY);
+            } else {
+                System.setProperty(
+                        J2llHomeResolver.OVERRIDE_PROPERTY,
+                        previous);
+            }
+        }
+
+        assertEquals(0, code, err.toString(StandardCharsets.UTF_8));
+        String stdout = out.toString(StandardCharsets.UTF_8);
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        Path outputJar = pathValue(stdout, "outputJar");
+        assertTrue(Files.isRegularFile(outputJar));
+        assertTrue(stderr.contains(
+                "skippedMethods=retainedJavaBytecodeUserApproved"), stderr);
+        assertFalse(stderr.contains("checksum mismatch"), stderr);
+        Path workspace = outputJar.getParent();
+        assertFalse(Files.exists(
+                workspace.resolve("native/zig-workspace")));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"approved\""));
+        var outputMethod = new xyz.melodysky.frontend.classfile.AsmClassParser()
+                .parseAll(new xyz.melodysky.frontend.classfile.JarClassFileSource(
+                        outputJar))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass("pkg/JdkUnsupported")
+                .orElseThrow()
+                .methods()
+                .stream()
+                .filter(method -> method.name().equals("substring"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(outputMethod.accessFlags().isNative());
+        assertTrue(outputMethod.hasCode());
+    }
+
+    @Test
+    void skippedMethodConfirmationInputFailureUsesLoweringExitCode()
+            throws Exception {
+        Path inputJar = temp.resolve("cli-skipped-input-error.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/JdkUnsupported.class",
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
+                        "pkg/JdkUnsupported")));
+        Path config = temp.resolve("config-skipped-input-error.json");
+        Files.writeString(
+                config,
+                configJson(
+                        inputJar,
+                        "[\"pkg/JdkUnsupported#substring!(Ljava/lang/String;)Ljava/lang/String;\"]",
+                        targetJson()));
+        InputStream brokenInput = new InputStream() {
+            @Override
+            public int read() throws java.io.IOException {
+                throw new java.io.IOException("test confirmation read failure");
+            }
+        };
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        int code = J2llCli.run(
+                new String[] {"--config", config.toString()},
+                brokenInput,
+                new PrintStream(
+                        new ByteArrayOutputStream(),
+                        true,
+                        StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        assertEquals(3, code, err.toString(StandardCharsets.UTF_8));
+        String stderr = err.toString(StandardCharsets.UTF_8);
+        assertTrue(stderr.contains(
+                "SKIPPED_METHOD_CONFIRMATION_INPUT_FAILED"), stderr);
+        assertFalse(stderr.contains("ZIG_TARGET_UNBUILDABLE"), stderr);
+        Path workspace = pathValue(stderr, "reportsDir").getParent();
+        assertFalse(Files.exists(workspace.resolve("native/zig-workspace")));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"inputError\""));
     }
 
     @Test

@@ -3,12 +3,8 @@ package xyz.melodysky.pipeline;
 import java.util.Locale;
 
 public enum LoweringStatus {
-    LOWERED("lowered"),
-    HALF_LOWERED("halfLowered"),
-    FRONTEND_SKIPPED("frontendSkipped"),
-    NOT_APPLICABLE("notApplicable"),
-    FAILED("failed"),
-    EXCLUDED("excluded");
+    NATIVE_LOWERED("nativeLowered"),
+    SKIPPED("skipped");
 
     private final String wireName;
 

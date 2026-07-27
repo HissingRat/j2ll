@@ -337,25 +337,29 @@ class IrCallIndirectionPassTest {
     }
 
     @Test
-    void fallbackAndCrossOwnerStaticAreExplicitlySkipped() {
+    void unavailableNativeTargetAndCrossOwnerStaticAreExplicitlySkipped() {
         IrMethod sameOwnerTarget = staticTarget("pkg/A", "sameOwner", 1);
-        IrMethod fallbackCaller = staticCaller("pkg/A", "fallback", sameOwnerTarget.methodKey());
-        IrCallSiteId fallbackSite = new IrCallSiteId(
-                fallbackCaller.methodKey(),
+        IrMethod unavailableCaller =
+                staticCaller("pkg/A", "unavailable", sameOwnerTarget.methodKey());
+        IrCallSiteId unavailableSite = new IrCallSiteId(
+                unavailableCaller.methodKey(),
                 "entry",
                 0);
-        IrProgram fallbackProgram = program(fallbackCaller, sameOwnerTarget);
-        IrNativeDirectTargets fallbackNativeTargets = new IrNativeDirectTargets(
-                List.of(fallbackCaller.methodKey(), sameOwnerTarget.methodKey()));
+        IrProgram unavailableProgram =
+                program(unavailableCaller, sameOwnerTarget);
+        IrNativeDirectTargets unavailableNativeTargets =
+                new IrNativeDirectTargets(List.of(
+                        unavailableCaller.methodKey(),
+                        sameOwnerTarget.methodKey()));
 
-        IrCallIndirectionResult fallback = new IrCallIndirectionPass().run(
-                fallbackProgram,
+        IrCallIndirectionResult unavailable = new IrCallIndirectionPass().run(
+                unavailableProgram,
                 new IrDirectCallFacts(List.of(IrDirectCallFact.bytecodeDirect(
-                                fallbackSite,
+                                unavailableSite,
                                 IrCallInvokeKind.STATIC,
                                 sameOwnerTarget.methodKey())
-                        .requiringFallback())),
-                fallbackNativeTargets,
+                        .withoutNativeTarget())),
+                unavailableNativeTargets,
                 IrCallIndirectionMode.TABLE,
                 3L,
                 true);
@@ -379,8 +383,8 @@ class IrCallIndirectionPassTest {
                 true);
 
         assertEquals(
-                IrCallIndirectionReasons.FALLBACK_REQUIRED,
-                fallback.skippedSites().get(0).reasonCode());
+                IrCallIndirectionReasons.NATIVE_TARGET_UNAVAILABLE,
+                unavailable.skippedSites().get(0).reasonCode());
         assertEquals(
                 IrCallIndirectionReasons.BACKEND_UNSUPPORTED_SHAPE,
                 missingGuard.skippedSites().get(0).reasonCode());

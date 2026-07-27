@@ -12,7 +12,7 @@ import xyz.melodysky.ir.model.IrTerminatorKind;
  * <p>Explicit {@code athrow} terminators can target an IR exception edge. JNI
  * and runtime-helper calls cannot yet transfer a pending JVM exception to an
  * in-method catch handler, so protected instructions that can raise a JVM
- * exception must stay on the bytecode-preserving fallback path.
+ * exception makes the selected caller unsupported and therefore skipped.
  */
 public final class NativeExceptionFlowSupport {
     private static final String SYNCHRONIZED_CLEANUP_BLOCK = "$sync_cleanup";

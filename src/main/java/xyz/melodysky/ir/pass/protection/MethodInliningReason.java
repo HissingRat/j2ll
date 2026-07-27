@@ -7,7 +7,8 @@ public final class MethodInliningReason {
     public static final String NOT_SINGLE_TARGET = "METHOD_INLINING_NOT_SINGLE_TARGET";
     public static final String NON_NATIVE_PATH = "METHOD_INLINING_NON_NATIVE_PATH";
     public static final String REFLECTION_SENSITIVE = "METHOD_INLINING_REFLECTION_SENSITIVE";
-    public static final String FALLBACK_SENSITIVE = "METHOD_INLINING_FALLBACK_SENSITIVE";
+    public static final String CALL_OR_FIELD_SENSITIVE =
+            "METHOD_INLINING_CALL_OR_FIELD_SENSITIVE";
     public static final String RECURSIVE = "METHOD_INLINING_RECURSIVE";
     public static final String CALLEE_TOO_LARGE = "METHOD_INLINING_CALLEE_TOO_LARGE";
     public static final String EXCEPTION_SENSITIVE = "METHOD_INLINING_EXCEPTION_SENSITIVE";

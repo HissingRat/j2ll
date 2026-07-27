@@ -24,7 +24,7 @@ import xyz.melodysky.toolchain.TargetTriple;
 class NativeLoaderClassGeneratorTest {
     @Test
     void emitsOneJava17LoaderAtEmbeddedLibraryDirectory() throws Exception {
-        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("xyz/Melody/natives", false);
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("xyz/Melody/natives");
         byte[] bytes = new NativeLoaderClassGenerator().generate(
                 plan,
                 List.of(artifact(TargetTriple.WINDOWS_X64, "xyz/Melody/natives/x64-windows.dll")));
@@ -50,25 +50,25 @@ class NativeLoaderClassGeneratorTest {
     }
 
     @Test
-    void includesHiddenFallbackBridgeOnlyWhenRequired() throws Exception {
-        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", true, 2);
+    void referenceSidecarDoesNotAddABytecodeDefinitionBridge() throws Exception {
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", 2);
         byte[] bytes = new NativeLoaderClassGenerator().generate(plan, List.of());
         ClassNode loader = read(bytes);
 
-        assertTrue(hasMethod(loader, "defineHiddenFallback", "(Ljava/lang/Class;[B)Ljava/lang/Class;"));
+        assertFalse(hasMethod(loader, "defineHiddenFallback", "(Ljava/lang/Class;[B)Ljava/lang/Class;"));
         assertTrue(hasMethod(
                 loader,
                 LoaderClassValueSidecarInjector.ACCESSOR_NAME,
                 LoaderClassValueSidecarInjector.ACCESSOR_DESCRIPTOR));
         assertEquals("java/lang/ClassValue", loader.superName);
         String constants = new String(bytes, StandardCharsets.ISO_8859_1);
-        assertTrue(constants.contains("java/lang/invoke/MethodHandles"), constants);
+        assertFalse(constants.contains("java/lang/invoke/MethodHandles"), constants);
         assertFalse(constants.contains("J2llFallbackSupport"), constants);
     }
 
     @Test
     void classValueSidecarCachesPerDefiningClassWithoutExtraGeneratedClass() throws Exception {
-        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", false, 3);
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", 3);
         byte[] bytes = new NativeLoaderClassGenerator().generate(plan, List.of());
         ClassNode node = read(bytes);
 
@@ -94,7 +94,7 @@ class NativeLoaderClassGeneratorTest {
     @Test
     void missingNativeResourceFailsBeforeSystemLoad() throws Exception {
         TargetTriple host = HostPlatform.detect().orElseThrow().target();
-        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0", false);
+        RuntimeLoaderPlan plan = RuntimeLoaderPlan.create("native0");
         byte[] bytes = new NativeLoaderClassGenerator().generate(
                 plan,
                 List.of(artifact(host, "native0/missing-library" + extension(host))));

@@ -9,9 +9,9 @@ public record DevirtualizationDecision(
         InvokeKind originalKind,
         List<CallTarget> resolvedTargets,
         Optional<CallTarget> directTarget,
-        boolean fallbackRequired,
+        boolean directNativeTargetUnavailable,
         String reason,
-        boolean jvmHelperFallbackRequired) {
+        boolean jvmDispatchRequired) {
     public DevirtualizationDecision {
         Objects.requireNonNull(callSiteId, "callSiteId");
         Objects.requireNonNull(originalKind, "originalKind");

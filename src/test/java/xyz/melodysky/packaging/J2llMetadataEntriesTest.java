@@ -21,7 +21,7 @@ import xyz.melodysky.toolchain.TargetTriple;
 
 class J2llMetadataEntriesTest {
     @Test
-    void reportsManifestRequiresFieldInternalizationReport() {
+    void reportsManifestRequiresFieldSkippedAndSummaryReports() {
         byte[] manifestBytes = new J2llMetadataEntries()
                 .entries(config(), Optional.empty())
                 .get("META-INF/j2ll/reports-manifest.json");
@@ -31,6 +31,10 @@ class J2llMetadataEntriesTest {
 
         assertTrue(java.util.stream.StreamSupport.stream(reports.spliterator(), false)
                 .anyMatch(report -> report.getAsString().equals("field-internalization-report.json")));
+        assertTrue(java.util.stream.StreamSupport.stream(reports.spliterator(), false)
+                .anyMatch(report -> report.getAsString().equals("skipped-method-report.json")));
+        assertTrue(java.util.stream.StreamSupport.stream(reports.spliterator(), false)
+                .anyMatch(report -> report.getAsString().equals("summary.json")));
     }
 
     private ResolvedConfig config() {

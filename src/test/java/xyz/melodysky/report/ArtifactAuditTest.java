@@ -47,14 +47,61 @@ class ArtifactAuditTest {
         String json = new ArtifactAuditReportWriter().json(result);
         assertTrue(json.contains("\"reasonCode\": \"NATIVE_LIBRARY_SHA256_MATCH\""));
         assertTrue(json.contains("\"reasonCode\": \"NATIVE_EXPORT_ALLOWLIST_PASSED\""));
-        assertTrue(json.contains("\"reasonCode\": \"NO_PLAIN_FALLBACK_CLASSES\""));
+        assertTrue(json.contains("\"reasonCode\": \"NO_EMBEDDED_METHOD_BYTECODE\""));
+        assertTrue(json.contains("\"reasonCode\": \"NO_EMBEDDED_BYTECODE_WORKSPACE_SURFACES\""));
         assertTrue(json.contains("\"name\": \"surface.outputJarEntries\""));
         assertTrue(json.contains("\"name\": \"surface.nativeLibraryResources\""));
         assertTrue(json.contains("\"name\": \"surface.symbolAuditOutput\""));
     }
 
     @Test
-    void failsPlainFallbackPdbWrongNativeHashHiddenExportAndPlaintext() throws Exception {
+    void rejectsLoaderWithRetiredEmbeddedBytecodeApi() throws Exception {
+        Path jar = temp.resolve("output.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        org.objectweb.asm.ClassWriter writer = new org.objectweb.asm.ClassWriter(0);
+        writer.visit(
+                org.objectweb.asm.Opcodes.V17,
+                org.objectweb.asm.Opcodes.ACC_PUBLIC,
+                "native0/Loader",
+                null,
+                "java/lang/Object",
+                null);
+        writer.visitMethod(
+                        org.objectweb.asm.Opcodes.ACC_PUBLIC
+                                | org.objectweb.asm.Opcodes.ACC_STATIC
+                                | org.objectweb.asm.Opcodes.ACC_NATIVE,
+                        "defineHiddenFallback",
+                        "()V",
+                        null,
+                        null)
+                .visitEnd();
+        writer.visitEnd();
+        writeJar(jar, withMetadata(
+                "native0/x64-linux.so",
+                sha256(nativeBytes),
+                Map.of(
+                        "native0/Loader.class", writer.toByteArray(),
+                        "native0/x64-linux.so", nativeBytes)));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        "native0/x64-linux.so",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of());
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"RUNTIME_LOADER_CLASS_INVALID\""), json);
+        assertTrue(json.contains("defineHiddenFallback()V"), json);
+    }
+
+    @Test
+    void failsEmbeddedBytecodePdbWrongNativeHashHiddenExportAndPlaintext() throws Exception {
         Path jar = temp.resolve("output.jar");
         writeJar(jar, withMetadata(
                 "native0/windows-x64/x64-windows.dll",
@@ -86,7 +133,7 @@ class ArtifactAuditTest {
         assertFalse(result.passed());
         String json = new ArtifactAuditReportWriter().json(result);
         for (String reason : List.of(
-                "PLAIN_FALLBACK_CLASS_ENTRY",
+                "EMBEDDED_METHOD_BYTECODE_ENTRY",
                 "WINDOWS_PDB_PACKAGED",
                 "NATIVE_LIBRARY_SHA256_MISMATCH",
                 "NATIVE_EXPORT_ALLOWLIST_FAILED",
@@ -301,47 +348,19 @@ class ArtifactAuditTest {
     }
 
     @Test
-    void fallbackBlobBinaryAuditPassesForConsistentMetadataAndEncodedCarrier() throws Exception {
-        Path jar = temp.resolve("fallback-clean.jar");
+    void rejectsLegacyFallbackWorkspaceSurfaceAndPackagingMetadata() throws Exception {
+        Path jar = temp.resolve("output.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
         writeJar(jar, withMetadata(
                 "native0/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/arm64-macos.dylib", nativeBytes)));
-        writeFallbackPackagingReport("123", "234", "0".repeat(64), "0".repeat(64));
-        Path c = temp.resolve("native/zig-workspace/jni/j2ll.c");
-        Files.createDirectories(c.getParent());
-        Files.writeString(c, "static const unsigned char encoded[] = {0x01, 0x02};");
-
-        ArtifactAuditResult result = new ArtifactAudit().audit(
-                temp,
-                jar,
-                "native0",
-                List.of(new EmbeddedLibraryReport(
-                        "macos-arm64",
-                        "native0/arm64-macos.dylib",
-                        sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
-                List.of());
-
-        assertTrue(result.passed(), result.checks().toString());
-        String json = new ArtifactAuditReportWriter().json(result);
-        assertTrue(json.contains("\"reasonCode\": \"FALLBACK_BLOB_BINARY_METADATA_CONSISTENT\""), json);
-        assertTrue(json.contains("\"reasonCode\": \"FALLBACK_BLOB_CARRIER_PLAINTEXT_ABSENT\""), json);
-    }
-
-    @Test
-    void fallbackBlobBinaryAuditFailsTamperedSizeOrHashAndPlaintextCarrier() throws Exception {
-        Path jar = temp.resolve("fallback-tampered.jar");
-        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
-                "native0/arm64-macos.dylib",
-                sha256(nativeBytes),
-                Map.of("native0/arm64-macos.dylib", nativeBytes)));
-        writeFallbackPackagingReport("0", "-1", "0".repeat(64), "not-a-sha");
-        Path c = temp.resolve("native/zig-workspace/jni/j2ll.c");
-        Files.createDirectories(c.getParent());
-        Files.writeString(c, "/* accidental leak pkg/Foo#run!()V and pkg/Foo */");
+        Path carrier = temp.resolve("native/zig-workspace/fallback-blobs/encoded.bin");
+        Files.createDirectories(carrier.getParent());
+        Files.write(carrier, new byte[] {1, 2, 3});
+        Path packagingReport = temp.resolve("reports/packaging-report.json");
+        Files.createDirectories(packagingReport.getParent());
+        Files.writeString(packagingReport, "{\"fallbackBlobs\":[]}\n");
 
         ArtifactAuditResult result = new ArtifactAudit().audit(
                 temp,
@@ -356,9 +375,9 @@ class ArtifactAuditTest {
 
         assertFalse(result.passed());
         String json = new ArtifactAuditReportWriter().json(result);
-        assertTrue(json.contains("\"reasonCode\": \"FALLBACK_BLOB_BINARY_METADATA_MISMATCH\""), json);
-        assertTrue(json.contains("\"reasonCode\": \"FALLBACK_BLOB_CARRIER_PLAINTEXT_FOUND\""), json);
-        assertFalse(json.contains("pkg/Foo#run!()V"), json);
+        assertTrue(json.contains("\"reasonCode\": \"EMBEDDED_BYTECODE_WORKSPACE_SURFACE\""), json);
+        assertTrue(json.contains("native/zig-workspace/fallback-blobs"), json);
+        assertTrue(json.contains("legacyFallbackMetadata"), json);
     }
 
     @Test
@@ -477,19 +496,22 @@ class ArtifactAuditTest {
         all.putIfAbsent(
                 "native0/Loader.class",
                 new NativeLoaderClassGenerator().generate(
-                        RuntimeLoaderPlan.create("native0", false),
+                        RuntimeLoaderPlan.create("native0"),
                         List.of()));
         List<String> reports = List.of(
                 "diagnostics.json",
                 "artifact-audit.json",
                 "field-internalization-report.json",
-                "frontend-skip-report.json",
+                "skipped-method-report.json",
                 "known-blockers.json",
                 "lowering-report.json",
                 "opcode-support-matrix.json",
                 "packaging-report.json",
                 "protection-report.json",
                 "release-readiness.json",
+                "index.json",
+                "summary.json",
+                "summary.md",
                 "support-matrix.json",
                 "symbol-audit.json");
         all.put("META-INF/j2ll/build-info.json", """
@@ -533,66 +555,6 @@ class ArtifactAuditTest {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
-    private void writeFallbackPackagingReport(String originalSize, String encodedSize, String sha256, String encodedSha256)
-            throws Exception {
-        Path report = temp.resolve("reports/packaging-report.json");
-        Files.createDirectories(report.getParent());
-        Files.writeString(report, """
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "zigToolchain": {
-                    "targetArtifacts": [
-                      {
-                        "target": "macos-arm64",
-                        "required": true,
-                        "currentHost": true,
-                        "buildable": true,
-                        "osClassifier": "macos",
-                        "archClassifier": "arm64",
-                        "libraryExtension": "dylib",
-                        "libraryName": "j2ll",
-                        "zigTarget": "aarch64-macos.11.0",
-                        "expectedArtifactPath": "native/arm64-macos.dylib",
-                        "expectedArtifactName": "arm64-macos.dylib",
-                        "expectedResourcePath": "native0/arm64-macos.dylib",
-                        "loaderExtractionPathPolicy": "contentAddressedTempCacheBySha256",
-                        "symbolVisibilityPolicy": "allowlistOnlyJniOnLoadAndBootstrap",
-                        "windowsPdbPolicy": "notApplicable",
-                        "actualArtifactPath": "native/arm64-macos.dylib",
-                        "actualJarPath": "native0/arm64-macos.dylib",
-                        "actualSha256": "%5$s",
-                        "exportedSymbols": ["JNI_OnLoad"],
-                        "status": "built",
-                        "reasonCode": "CURRENT_HOST_TARGET",
-                        "reason": "selected target matches the current JVM host and is buildable now",
-                        "requiredCapability": "managedZig0.15.2CrossTargetSharedLibrary",
-                        "platformSdkRequirement": "managed Zig 0.15.2 Mach-O/Darwin target support; no host macOS SDK required",
-                        "failureKind": "none",
-                        "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
-                      }
-                    ]
-                  },
-                  "fallbackBlobs": [
-                    {
-                      "originalMethodId": "run__1234",
-                      "originalMethodKey": "pkg/Foo#run!()V",
-                      "helperClassName": "pkg/J2llFallback$run__1234",
-                      "sha256": "%3$s",
-                      "originalSha256": "%4$s",
-                      "encodedSha256": "%4$s",
-                      "encodingVersion": "fallbackBlobEncodingV1",
-                      "originalSize": %1$s,
-                      "encodedSize": %2$s,
-                      "compressionAlgorithm": "j2ll-rle-byte-pairs-v1",
-                      "encryptionAlgorithm": "xor-sha256-key-stream-v1",
-                      "storageTarget": "nativeEmbeddedClassBlob"
-                    }
-                  ]
-                }
-                """.formatted(originalSize, encodedSize, sha256, encodedSha256, sha256("native".getBytes(StandardCharsets.UTF_8))));
-    }
-
     private void writeTargetArtifactPackagingReport(String actualJarPath, String actualSha256) throws Exception {
         Path report = temp.resolve("reports/packaging-report.json");
         Files.createDirectories(report.getParent());
@@ -631,8 +593,7 @@ class ArtifactAuditTest {
                         "buildLogTail": "preflight buildable; Zig build log is recorded after invocation"
                       }
                     ]
-                  },
-                  "fallbackBlobs": []
+                  }
                 }
                 """.formatted(actualJarPath, actualSha256));
     }

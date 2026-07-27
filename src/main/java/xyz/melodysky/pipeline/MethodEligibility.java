@@ -8,7 +8,7 @@ public record MethodEligibility(
         String descriptor,
         String selector,
         boolean requested,
-        LoweringStatus status,
+        MethodEligibilityStatus status,
         String reasonCode,
         String reason) {
     public MethodEligibility {
@@ -21,12 +21,6 @@ public record MethodEligibility(
         }
         if (!requested) {
             Objects.requireNonNull(status, "status");
-            if (status == LoweringStatus.LOWERED
-                    || status == LoweringStatus.HALF_LOWERED
-                    || status == LoweringStatus.FRONTEND_SKIPPED
-                    || status == LoweringStatus.FAILED) {
-                throw new IllegalArgumentException("eligibility cannot claim a lowering result before lowering runs");
-            }
         }
         if ((reasonCode == null) != (reason == null)) {
             throw new IllegalArgumentException("reasonCode and reason must be provided together");
@@ -37,7 +31,7 @@ public record MethodEligibility(
         return new MethodEligibility(owner, name, descriptor, selector, true, null, null, null);
     }
 
-    public static MethodEligibility notApplicable(
+    public static MethodEligibility ineligible(
             String owner,
             String name,
             String descriptor,
@@ -45,7 +39,7 @@ public record MethodEligibility(
             String reasonCode,
             String reason) {
         return new MethodEligibility(
-                owner, name, descriptor, selector, false, LoweringStatus.NOT_APPLICABLE, reasonCode, reason);
+                owner, name, descriptor, selector, false, MethodEligibilityStatus.INELIGIBLE, reasonCode, reason);
     }
 
     public static MethodEligibility excluded(
@@ -56,6 +50,6 @@ public record MethodEligibility(
             String reasonCode,
             String reason) {
         return new MethodEligibility(
-                owner, name, descriptor, selector, false, LoweringStatus.EXCLUDED, reasonCode, reason);
+                owner, name, descriptor, selector, false, MethodEligibilityStatus.EXCLUDED, reasonCode, reason);
     }
 }

@@ -10,8 +10,8 @@ import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.TreeMap;
 
 public final class SummaryReportWriter {
     private static final Gson GSON = new GsonBuilder()
@@ -115,18 +115,16 @@ public final class SummaryReportWriter {
     }
 
     private JsonObject methodSummary(JsonObject lowering) {
-        TreeMap<String, Integer> counts = new TreeMap<>();
-        counts.put("lowered", 0);
-        counts.put("halfLowered", 0);
-        counts.put("frontendSkipped", 0);
-        counts.put("notApplicable", 0);
-        counts.put("failed", 0);
+        LinkedHashMap<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("nativeLowered", 0);
+        counts.put("skipped", 0);
+        counts.put("ineligible", 0);
         counts.put("excluded", 0);
         for (JsonElement element : array(lowering, "requestedMethods")) {
             String status = text(element.getAsJsonObject(), "status");
             counts.computeIfPresent(status, (ignored, value) -> value + 1);
         }
-        counts.put("notApplicable", array(lowering, "notApplicable").size());
+        counts.put("ineligible", array(lowering, "ineligible").size());
         counts.put("excluded", array(lowering, "excluded").size());
         JsonObject object = new JsonObject();
         for (Map.Entry<String, Integer> entry : counts.entrySet()) {

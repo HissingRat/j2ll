@@ -161,11 +161,11 @@ public final class IrCallIndirectionValidator {
                     location,
                     "IR call-indirection rewrite changed the original invoke kind"));
         }
-        if (site.semantics().fallbackRequired()
+        if (site.semantics().nativeTargetUnavailable()
                 || !site.semantics().exceptionPropagationPreserved()) {
             diagnostics.add(error(
                     location,
-                    "IR call-indirection site does not preserve native exception/fallback semantics"));
+                    "IR call-indirection site does not preserve native target/exception semantics"));
         }
         if (actualKind.hasReceiver() != site.semantics().receiverNullCheckRequired()) {
             diagnostics.add(error(

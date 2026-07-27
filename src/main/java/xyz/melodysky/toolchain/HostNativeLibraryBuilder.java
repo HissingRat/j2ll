@@ -38,9 +38,8 @@ public final class HostNativeLibraryBuilder {
         if (host.isEmpty()) {
             return Optional.empty();
         }
-        RuntimeLoaderPlan runtimeLoaderPlan = RuntimeLoaderPlan.create(
-                embeddedLibraryDirectory,
-                implementationPlan.hasNativeEmbeddedFallback());
+        RuntimeLoaderPlan runtimeLoaderPlan =
+                RuntimeLoaderPlan.create(embeddedLibraryDirectory);
         Optional<ZigNativeBuildResult> result = delegate.build(
                 workspaceRoot,
                 runtimeLoaderPlan,

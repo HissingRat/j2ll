@@ -155,6 +155,26 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
     }
 
     @Override
+    public synchronized void beforeUserInput() {
+        if (finished) {
+            return;
+        }
+        if (interactive) {
+            region.clear();
+        }
+        currentStage = null;
+        currentPhase = null;
+        detail = "";
+        currentWorkKnown = false;
+        workCompleted = 0L;
+        workTotal = 0L;
+        nativeTargets.clear();
+        lastRenderAtNanos = Long.MIN_VALUE;
+        renderedWorkForCurrentStage = false;
+        output.flush();
+    }
+
+    @Override
     public synchronized void stageProgress(
             BuildStage stage,
             long completed,

@@ -132,7 +132,7 @@ class ProtectionCrossTargetEvidenceTest {
                 .getAsJsonObject("methodTableHiding");
         assertEquals("RAN", methodTable.get("status").getAsString());
         assertEquals(2, methodTable.get("ownerCount").getAsInt());
-        assertEquals(18, methodTable.get("bindingCount").getAsInt());
+        assertEquals(19, methodTable.get("bindingCount").getAsInt());
 
         Path generatedC = workspace.resolve("native/zig-workspace/jni")
                 .resolve(NativeLibraryName.derive(config.protection().seed()) + ".c");

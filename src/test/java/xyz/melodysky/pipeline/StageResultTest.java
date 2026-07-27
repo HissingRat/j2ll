@@ -12,23 +12,22 @@ import xyz.melodysky.diagnostic.DiagnosticStage;
 
 class StageResultTest {
     @Test
-    void conservativeResultCarriesFallbackWarningWithoutFailing() {
-        Diagnostic fallback = Diagnostic.warning(
+    void conservativeResultCarriesSkippedWarningWithoutFailing() {
+        Diagnostic skipped = Diagnostic.warning(
                         DiagnosticStage.LOWERING,
-                        DiagnosticCode.JVM_HELPER_FALLBACK,
-                        "operation uses JVM helper fallback")
-                .withDecision(LoweringStatus.HALF_LOWERED.wireName())
-                .withConservativeFallbackAvailable(true);
+                        DiagnosticCode.JVM_HELPER_UNSUPPORTED,
+                        "operation cannot be lowered natively")
+                .withDecision(LoweringStatus.SKIPPED.wireName());
 
         StageResult<String> result = StageResult.conservative(
                 DiagnosticStage.LOWERING,
                 "ssa-artifact",
-                List.of(fallback));
+                List.of(skipped));
 
         assertTrue(result.isConservative());
         assertFalse(result.hasErrors());
         assertEquals("ssa-artifact", result.artifact().orElseThrow());
-        assertEquals(List.of(fallback), result.diagnostics());
+        assertEquals(List.of(skipped), result.diagnostics());
     }
 
     @Test

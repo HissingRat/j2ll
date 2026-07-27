@@ -1,8 +1,13 @@
 # Java Support Tiers
 
-本文档定义 rewrite 后 j2ll 对 Java / JVM 特性的预期支持等级。所有 tier 都以 Java 17 或更新版本上的 JVM-hosted 输出 JAR 为前提：GC、class loading、thread scheduling、monitor、object identity 和 Java object lifetime 均由 JVM 负责。Packaging 生成的唯一 `<embeddedLibraryDirectory>/Loader.class` 固定为 Java 17 classfile。它不是一次性交付承诺，而是功能路线和测试矩阵的分层依据。新增 Java 特性时，应先确认它属于哪个 tier，再补对应 stage 和 tier 测试。
+本文档定义 rewrite 后 j2ll 对 Java/JVM 特性的支持等级。所有 tier 都以 Java 17 或更新版本上的 JVM-hosted 输出 JAR 为前提：GC、class loading、thread scheduling、monitor、object identity 和 Java object lifetime 均由 JVM 负责。唯一 `<embeddedLibraryDirectory>/Loader.class` 固定为 Java 17 classfile。
 
-Tier 是 compiler-development 和 release-evidence 分类，不是用户 Config 选项。j2ll 根据实际 method shape 和当前实现能力自动决定 lowering、helper/fallback 或 skip 结果。
+Tier 是 compiler-development 与 release-evidence 分类，不是用户 Config 选项。selector 命中的 Code-bearing method最终只有：
+
+- `nativeLowered`：由 LLVM、生成式 template/stub 或经过验证的 JNI/runtime helper-backed native implementation完成。
+- `skipped`：保留原 Java method/classfile 形态，不生成 native body，不进入 `RegisterNatives`。
+
+`excluded` 只描述 selector 外方法；pipeline/toolchain/packaging failure 是 build status。Schema v1 不增加 `requiredNative`，也不在 native artifact 中保存 selected method 的 bytecode副本。
 
 ## Tier 0: Classfile / JVM Core 基座
 
@@ -12,191 +17,167 @@ Tier 是 compiler-development 和 release-evidence 分类，不是用户 Config 
 
 - classfile parse：class、field、method、descriptor、access flag、constant pool。
 - method bytecode CFG：branch、switch、return、throw edge、exception handler edge。
-- StackMapTable / frame facts。
+- StackMapTable/frame facts。
 - JVM type model：primitive、reference、array、void、category-1/category-2。
-- 基础 verifier-like checks。
-- deterministic diagnostics / dumps。
-
-暂不要求：
-
-- 完整 bytecode lowering。
-- JDK library 语义。
-- runtime execution。
+- verifier-like checks 与 deterministic diagnostics/dumps。
 
 测试要求：
 
 - ASM 构造最小 class/method fixture。
-- descriptor / signature parse test。
-- CFG golden test。
-- malformed class / malformed method diagnostic test。
-- deterministic output test。
+- descriptor/signature parse、CFG golden、malformed input diagnostic。
+- deterministic output。
+
+Tier 0 尚未承诺 executable native lowering，但 selector audit仍不能丢掉命中的 declaration。
 
 ## Tier 1: 基础 Java 语言子集
 
-目标：普通 Java 方法能从 bytecode lowering 到 SSA，再到 LLVM。
+目标：普通 Java 方法能从 bytecode lower 到 SSA，再到 LLVM或生成式 native helper。
 
 功能范围：
 
-- 基本类型：`boolean`、`byte`、`short`、`char`、`int`、`long`、`float`、`double`。
-- arithmetic / compare / conversion。
+- `boolean/byte/short/char/int/long/float/double` arithmetic、compare、conversion。
 - local、field、static field。
-- object allocation：`new`、constructor、`this`。
-- array：primitive array、object array、multi-dimensional array。
-- method call：static、special、virtual。
-- constructor lowering：`<init>` 使用合法 Java stub + native body helper，不把 constructor 本身改成 native。
-- class init：`<clinit>` 使用 loader/bootstrap stub + native body helper，保持 JVM class initialization ordering。
-- null check、cast、`instanceof`。
-- `String` 常量和基础 string concat。
-
-暂不要求：
-
-- 完整 generics metadata。
-- 完整 exception/synchronized/thread 语义。
-- 完整 JDK library native 编译。
+- JVM-managed object/array allocation、constructor、`this`。
+- static/special/virtual call。
+- `<init>` 合法 Java stub + native body helper。
+- `<clinit>` loader/bootstrap stub + native body helper。
+- null check、cast、`instanceof`、String constant/concat。
 
 测试要求：
 
-- 每个 primitive 的 arithmetic / conversion parity test。
-- object/field/array lowering test。
-- JVM 运行结果 vs lowered/native 结果 differential test。
-- null/cast/array bounds exception test。
-- `<init>` / `<clinit>` ordering test。
+- primitive arithmetic/conversion parity。
+- object/field/array、null/cast/bounds、constructor/class-init ordering。
+- original JVM 与 output JAR child-JVM differential。
+
+有 Code 的 method 只有在全部用户语义都由 native implementation承担时才是 `nativeLowered`；否则整个 method 为 `skipped`。
 
 ## Tier 2: 常见 Java 语言特性
 
-目标：用户写的普通现代 Java 代码大部分能进入 pipeline。
+目标：用户写的普通现代 Java 代码大部分能进入 native pipeline。
 
 功能范围：
 
-- 泛型：erasure 后运行语义、bridge method、`Signature` metadata 保留。
-- lambda：`LambdaMetafactory` 常见形态。
-- invokedynamic：lambda、string concat、switch bootstrap 的常见 subset。
-- Interface Default Method：有 Code 的 default/static/private interface method 使用 interface method stub + generated native helper；无 Code 的 interface declaration 记录 `notApplicable`。
-- enum：`values`、`valueOf`、ordinal/name、switch over enum。
-- Annotation：classfile metadata 保留；运行时 annotation 可先走 JVM/runtime helper。
-- record / sealed class 可作为 metadata + 普通方法处理。
+- generics erasure、bridge method 与 `Signature` metadata保留。
+- LambdaMetafactory 常见 capture/non-capture shape。
+- string-concat 与常见 invokedynamic bootstrap。
+- 有 Code 的 default/static/private interface method使用合法 stub + generated native helper。
+- enum、annotation metadata、record/sealed metadata与普通方法。
 
-bridge、synthetic、enum-generated 和 record-generated methods 默认按普通有 Code 方法处理。它们的 flags 必须进入 sidecar/report，主要用于审计和测试覆盖，不代表默认 skip。
-
-暂不要求：
-
-- 动态 reflection 发现任意 generic/annotation metadata。
-- 完整 MethodHandle 组合语义。
-- 所有 invokedynamic bootstrap。
+Bridge、synthetic、enum-generated 和 record-generated methods默认按普通有 Code method处理；flags只进入 audit/report，不导致 skip。selector 命中的 abstract、already-native、无 Code interface declaration或 annotation element只记录 eligibility evidence，无 method status且不触发 confirmation。
 
 测试要求：
 
-- generic bridge dispatch test。
-- lambda capture / non-capture test。
-- default method conflict / override test。
-- interface static/private method stub test。
-- enum switch / `valueOf` / `values` test。
-- runtime visible/invisible annotation metadata test。
-- invokedynamic bootstrap whitelist test。
+- bridge/default/interface conflict/override。
+- lambda capture/non-capture、enum、annotation/record metadata。
+- invokedynamic bootstrap allowlist与 unsupported caller preservation。
 
 ## Tier 3: JVM 语义完整性层
 
-目标：语义不能静默出错，哪怕性能先保守。
+目标：exception、monitor、thread、JMM 和 GC语义不能静默出错。
 
 功能范围：
 
-- Exception：try/catch/finally、multi-catch、rethrow、suppressed 基础路径。
-- synchronized：`monitorenter` / `monitorexit`、异常退出释放 monitor。
-- Thread：先支持 JVM-hosted thread 互操作，不自建完整线程 runtime。
-- Java Memory Model：volatile、final field publication、monitor happens-before 的保守实现。
-- GC：由 JVM GC 管理；native-lowered code 通过 JNI reference / runtime helper 持有和传递 Java object。
-- runtime guard 预留：激进优化需要 guard/fallback 表达能力时，应保持可回退到 JVM 语义。
+- try/catch/finally、multi-catch、rethrow与受限 cleanup shape。
+- `monitorenter`/`monitorexit`、`ACC_SYNCHRONIZED` 和异常退出释放。
+- JVM-hosted Thread互操作，不实现 native scheduler。
+- volatile、final publication、monitor happens-before的保守 marker/helper。
+- JNI local/global reference lifetime。
+- 激进优化未来需要的 guard/slow-path；slow path必须是显式 JVM/JNI helper语义，不能重放 selected caller bytecode。
 
-暂不要求：
+当前边界：
 
-- 完整 deoptimization。
-- 完整 Java Memory Model 优化。
+- typed catch、handler parameter、显式 `athrow` 与 implicit exception-site metadata已进入 SSA/LLVM helper path。
+- 复杂 exception state merge、multi-exit/nested finally、monitor-finally interaction在未实现前将整个 selected method标记为 `skipped`。
+- synchronized method/block已有 JNI monitor E2E；尚未接入真实 helper matrix的 Thread/wait-notify shape统一 `skipped`，不伪造 native scheduler或 monitor queue。
 
 测试要求：
 
-- exception edge golden CFG + runtime parity。
-- finally 在正常/异常路径都执行。
-- synchronized 异常退出释放锁。
-- volatile read/write ordering smoke test。
-- 多线程 counter smoke test；wait/notify 当前是 JVM helper fallback boundary，不宣称 native monitor queue。
-- JNI local/global reference lifetime test。
-
-当前 clean-room 主线状态：
-
-- typed catch、handler exception parameter、显式 `athrow`、implicit exception site metadata 已进入 SSA；显式 `athrow` 已有 env-backed LLVM/JNI `Throw` bridge E2E，复杂 finally/exception state merge 仍保守。
-- catch-all/finally 复杂形状仍保守 `frontendSkipped`，避免漏掉异常路径语义。
-- `monitorenter` / `monitorexit`、`ACC_SYNCHRONIZED` method、识别出的 synchronized exceptional cleanup、volatile read/write、final field publication、monitor happens-before、Thread.start/join happens-before 已有 IR marker 和 LLVM helper/fence golden tests；synchronized block/method 已通过 JNI `MonitorEnter` / `MonitorExit` helper path 的 child JVM E2E。Thread `start/join` common path 通过 bytecode-preserving fallback 保持 JVM scheduler semantics；`Object.wait/notify` 当前作为 `WAIT_NOTIFY_FALLBACK` boundary，不实现 native monitor queue。
-- class initialization active-use skeleton 已覆盖 `getstatic` / `putstatic` / `invokestatic` / `new` guard，以及 `<clinit>` begin/end/failed helper；完整 recursive init runtime 和 classloader 并发仍是后续 runtime 工作。
+- exception/finally/synchronized runtime parity。
+- volatile/multithread smoke。
+- skipped method原 body保留、无 registration/native bytecode copy。
 
 ## Tier 4: JDK Runtime Interop
 
-目标：常见 Java Library 可用，通过 JVM-hosted helper、intrinsic 和 fallback 互操作。
+目标：常见 Java library通过 JVM-hosted intrinsic、runtime helper与普通 JNI/JVM dispatch可用。
 
 功能范围：
 
-- JVM-hosted JDK interop：`String`、`StringBuilder`、`ArrayList`、`HashMap`、`Arrays` narrow path、`Objects`、`Math`。
-- JDK intrinsic mapping：`Math.*`、`System.arraycopy`、`Object.getClass`。
-- library call policy：direct lowering / runtime helper / JVM fallback。
-- partial metadata model：`Class`、`Method`、`Field` 的静态可解析子集。
-- JDK class 不完整时保守 fallback。
+- String、StringBuilder、ArrayList、HashMap、Arrays、Collections、Optional、Objects、Math。
+- `System.arraycopy`、`Object.getClass` 等 intrinsic/helper。
+- direct lowering / runtime helper / validated JVM dispatch / skipped policy。
+- Class/Method/Field 的静态可解析 metadata subset。
 
-暂不要求：
+已接实 subset：
 
-- 完整 classloader/module system。
+- String/StringBuilder/StringConcat、System.arraycopy、Math、boxing、Objects。
+- common LambdaMetafactory、LDC MethodHandle direct target 与受限 adapter dispatch。
+- validated descriptor matrix内的 collection/formatter/Throwable/Thread/JDK calls可从 native implementation经 JNI dispatch执行。
+
+边界：
+
+- native code不读取 JDK collection/Throwable/Thread object layout，不伪造 Java array、Throwable stack trace 或 thread scheduler。
+- 超出 validated helper/dispatch matrix时，整个 selected caller为 `skipped`；原 method body留在原 class，不另存第二份。
+- 完整 MethodHandle interpreter、完整 altMetafactory semantics和复杂 lambda capture仍是后续 native support任务。
+
+Runtime Loader 只承载 native library选择、SHA-256校验、加载与注册；field internalization实际包含 reference/array slot时才按需加入 per-defining-Class `ClassValue<Object[]>` sidecar。Loader没有 class-definition或 embedded-bytecode decode API，也不生成 companion/nested runtime class。
 
 测试要求：
 
-- 当前 clean-room 主线已覆盖 `JdkIntrinsicRegistry` policy lookup、String/StringBuilder helper lowering、System.arraycopy helper、Math/boxing/Objects helper lowering、unsupported JDK fallback report、runtime helper declaration 和 stub generator。
-- 当前 host E2E 覆盖 `String.length/equals/isEmpty/charAt/startsWith/endsWith/substring(int,int)`、显式 `StringBuilder` append chain、StringConcatFactory `makeConcat` / common `makeConcatWithConstants`、LambdaMetafactory common `metafactory` helper、LDC MethodHandle direct `invokeExact`、System.arraycopy byte/int/long/double/object/overlap/null/oob/ArrayStoreException、Integer/Long/Boolean/Double boxing-unboxing、Objects.requireNonNull/equals 和 Math int/long/float/double abs/min/max。
-- `nativeEmbeddedClassBlob` fallback 已从 `String.substring(int)` smoke fixture 扩展为 ordinary `halfLowered` 方法的 bytecode-preserving helper `invoke` path；当前 child JVM E2E 覆盖 unsupported JDK call、dynamic Class.forName / dynamic getDeclaredMethod / dynamic parameter array reflection fallback、MethodHandle `bindTo` / `asType` / `dropArguments` adapter chain、`permuteArguments` / `filterArguments` reason-split fallback、collector-style `METHOD_HANDLE_COLLECTOR_UNSUPPORTED` fallback、unsupported altMetafactory two-capture serializable lambda（`ALT_METAFACTORY_FALLBACK`）、Throwable message/cause common path、Thread start/join common path、wait/notify boundary、instance receiver/reference return、fallback exception propagation 和 two-classloader isolation。完整 MethodHandle interpreter、完整 altMetafactory runtime class semantics 和复杂 lambda capture native helper 仍走 helper/fallback 边界。
-- Runtime Loader 始终包含 native loading，只有 implementation plan 实际使用 `nativeEmbeddedClassBlob` 时才保留 `defineHiddenFallback`；只有 final field plan 含 reference/array slot 时，同一个 Loader 才直接继承 `ClassValue` 并缓存 per-defining-Class `Object[]` sidecar。这里不会生成 companion/nested class，也不会用 native strong global ref 缓存 sidecar。旧 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 和 `j2ll/generated/**/NativeLoader.class` 不再输出。`embeddedLibraryDirectory` 必须是规范 Java internal package path，输入 base/MR 同名 Loader 在 Zig 前失败。同一 defining `ClassLoader` 中不同产物使用相同目录仍会得到同名 Loader，是明确已知边界；建议使用应用唯一目录，独立 ClassLoader 保持隔离。
-- `ArrayList.add/get/size/contains`、`HashMap.put/get/containsKey/overwrite`、`Arrays.copyOf/equals/fill/asList`、`Collections.emptyList/singletonList`、`Optional.of/ofNullable/isPresent/get/orElse`、`String.format(String,Object...)`、Throwable constructor/message/cause 和 Thread constructor/start/join 当前是明确 JVM fallback policy，通过 encoded fallback 保持 JVM collection/Optional/formatter/array-library/Throwable/Thread semantics；native code 不读取 JDK collection internals，也不伪造 Java array、Throwable stack trace 或 thread scheduler。
-- `System.arraycopy` primitive/object array test。
-- `Math` intrinsic test。
-- fallback helper declaration + runtime stub test。
+- intrinsic/helper/dispatch runtime parity。
+- unsupported JDK caller skipped reason与 preservation。
+- Loader最小 API surface和双 ClassLoader isolation。
 
 ## Tier 5: 静态高级特性
 
-目标：写死在代码里的动态特性可以通过静态 classpath 分析或 runtime metadata 提前处理。
+目标：写死在代码里的动态特性可以通过静态 classpath analysis或 runtime metadata提前处理。
 
 功能范围：
 
-- Reflection 静态解析：`Class.forName("a.B")`、`getDeclaredMethod("x", ...)`。
-- MethodHandle / VarHandle 常见静态形态。
-- JNI：native declaration、`RegisterNatives`、JNI call helper、reference lifetime。
-- invokedynamic 扩展：MethodHandle chain、constant dynamic subset。
-- Unsafe subset：array base offset、field offset、CAS、`allocateInstance` 需要强边界。
-- serialization / service loader 可作为后续静态 metadata 能力。
+- 常量 reflection目标、method/constructor/field invoke。
+- MethodHandle/VarHandle常见静态形态。
+- JNI declaration、`RegisterNatives`、reference lifetime。
+- ConstantDynamic与 invokedynamic扩展 subset。
+- Unsafe field/array token、CAS、`allocateInstance` 的严格 helper边界。
 
-暂不要求：
+当前状态：
 
-- 任意动态字符串 reflection。
-- 任意 classpath scanning。
-- 完整 Unsafe。
-- 完整 MethodHandle interpreter。
+- Runtime metadata index/dump覆盖 Signature、annotations、record、nest/inner、bridge/synthetic、class object/init facts。
+- 常量 reflection与 bounded `setAccessible(true)`已有 helper E2E；动态 reflection和 scan APIs只在 validated descriptor bridge内保持 `nativeLowered`。
+- MethodHandle common metadata/direct/adapter shape可走 native helper；unsupported bootstrap/adapter/capture shape的 selected caller为 `skipped`。
+- Unsafe/VarHandle bounded subset使用 metadata token和 JNI helper，不使用 native object address；raw-memory或更宽动态 shape为 `skipped`。
 
-测试要求：
+Release evidence：
 
-- static reflection metadata reachability test。
-- reflective constructor/method invoke parity。
-- JNI primitive/object argument ABI test。
-- MethodHandle `invokeExact` common shape test。
-- Unsafe CAS / field offset guarded test；offset must be asserted as a metadata token, not a native object layout offset.
-- unsupported dynamic reflection diagnostic test。
+- support/opcode matrix用 `NATIVE_LOWERED`、`HELPER_BACKED` 与 `SKIPPED` evidence；前两者都映射到 method outcome `nativeLowered`。
+- `reports/support-matrix.json` 与 `reports/opcode-support-matrix.json` 保存上述 machine-readable coverage；签名成功证据使用 `SIGNATURE_RESIGNED`。
+- artifact audit校验 native implementation/registration closure、skipped-body preservation、Loader API surface、metadata/hash/export/PDB、sensitive plaintext，以及 generated C/native/JAR没有 selected method bytecode副本。
+- release suite覆盖 native/helper paths、精确 skipped reasons、skipped confirmation的 Y/N/EOF、签名/target/audit failures与 realistic samples。
+- 六目标结构性交叉产物与 non-host OS/JVM runtime E2E分开记录。
 
-当前 clean-room 主线状态：
+## Skipped-Method Build Gate
 
-- Runtime metadata index/dump 已覆盖 Signature、runtime visible/invisible annotations、record components、nest/inner metadata、bridge/synthetic/record-generated flags、class object handle 和 class init state handle。
-- Static reflection resolver 已支持 class literal、常量 `Class.forName`、常量 `getDeclaredMethod` / `getDeclaredField` / `getDeclaredConstructor`、`Method.invoke` / `Constructor.newInstance` reachability；动态字符串、动态参数数组和 scan-style reflection 普通调用在 supported descriptor matrix 内通过 JVM dispatch bridge 保持 runnable semantics，超出 bridge matrix 或无法安全保留 owner bytecode context 的形态才 fallback/skip 并记录 reason。
-- Reflection first parity 已通过 child JVM E2E 覆盖常量 `Class.forName`、no-arg、reference、primitive 和 array 常量参数 descriptor 的 `getDeclaredMethod` / `getDeclaredConstructor`、`getDeclaredField`、`Method.invoke`、`Constructor.newInstance`、`Field.get` / `Field.set`、`Field.getInt` / `Field.setInt`、`Field.getBoolean` / `Field.setBoolean`、`Field.getLong` / `Field.setLong`、`Field.getDouble` / `Field.setDouble` helper path；`setAccessible(true)` 对 statically resolved Method/Constructor/Field object 走 JVM `AccessibleObject.setAccessible` helper，已覆盖 private method/constructor accessible smoke。动态 reflection、动态参数数组和 scan-style reflection (`getDeclaredMethods/getMethods/getDeclaredFields/getFields/getDeclaredConstructors/getConstructors`) 普通调用通过 dispatch bridge 保持 JVM 语义；更动态访问控制流和超出 bridge descriptor 的形态仍明确 fallback。
-- JNI 第一层已覆盖 descriptor -> JNI C type、static/instance implicit ABI、RegisterNatives table、JNI_OnLoad/bootstrap wrapper plan、reference lifetime/local frame/pending exception policy 和 exported-symbol allowlist。
-- MethodHandle/invokedynamic 已覆盖 altMetafactory common flags metadata、LDC MethodHandle + `invokeExact` direct target、ConstantDynamic `nullConstant` skeleton；MethodHandle `bindTo` / `asType` / `dropArguments` / `permuteArguments` / `filterArguments` / `foldArguments` / collector-style common adapter chain 已通过 JVM `MethodHandle.invokeWithArguments` bridge 接实。unsupported altMetafactory capture shape 和 unsupported bootstrap 仍 `halfLowered` fallback；完整 native MethodHandle interpreter 仍不是当前能力。
-- Unsafe/VarHandle bounded subset 已 helper-backed：field/array offsets、get/put、volatile get/put、CAS、`allocateInstance`、VarHandle get/set/volatile/CAS；当前真实 child JVM E2E 覆盖 statically resolved `Field` 的 `objectFieldOffset` token、`getInt` / `putInt`、monitor-backed `compareAndSwapInt` 和 JNI `AllocObject`-backed `allocateInstance`。Unsupported raw memory API 走 `halfLowered` fallback 并报告 `UNSAFE_RAW_MEMORY_FALLBACK`；更宽 VarHandle/typed accessor matrix 继续保守 fallback。
-- Release readiness additionally writes `reports/artifact-audit.json`, `reports/support-matrix.json`, `reports/opcode-support-matrix.json`, `reports/known-blockers.json`, `reports/release-readiness.json`, `reports/index.json`, `reports/summary.md` and `reports/summary.json`. The artifact audit verifies output JAR/native-resource hygiene, final JAR metadata/targetArtifacts consistency, reports manifest hash, hidden symbol export policy, native SHA-256 consistency, PDB exclusion, the ban on plaintext generated fallback classes, fallback blob binary metadata/carrier evidence and hash-only sensitive plaintext facts. `reports/index.json` v2 records report/config/intermediate paths, SHA-256, beta/RC/readiness required flags, failure-production flags and status; readiness validates required report hashes and final JAR reports-manifest consistency. Connected `LLVM_NATIVE_PATH` facts, stable TEMPLATE constructor/body helper string facts (`TEMPLATE_JNI_PATH_STABLE_SURFACE`) and StringConcat constant carrier stable generated-C facts are blocking when the literal is specific enough for stable audit; short/common literals and reflection/lambda/MethodHandle metadata facts remain observed-only. The support/opcode matrices include status (`LLVM_NATIVE_PATH` / `HELPER_BACKED` / `FALLBACK` / `FRONTEND_SKIPPED` / `NOT_APPLICABLE`), reason code, test coverage pointer, `coverageLevel` and `evidenceCount`. The blocker report includes stable ids plus severity/targetMilestone for current conservative boundaries such as `UNSAFE_RAW_MEMORY_FALLBACK`, `VAR_HANDLE_DYNAMIC_FALLBACK`, `UNSUPPORTED_MULTI_EXIT_FINALLY`, `UNSUPPORTED_EXCEPTION_STATE_MERGE`, `UNSUPPORTED_MONITOR_FINALLY_INTERACTION`, `UNSUPPORTED_NESTED_FINALLY`, `UNSUPPORTED_FINALLY_SUBROUTINE`, `ALT_METAFACTORY_FALLBACK`, `METHOD_HANDLE_CHAIN_FALLBACK`, `METHOD_HANDLE_PERMUTE_FALLBACK`, `METHOD_HANDLE_FILTER_FALLBACK`, `METHOD_HANDLE_FOLD_FALLBACK`, `METHOD_HANDLE_COLLECTOR_UNSUPPORTED`, `CROSS_TARGET_RUNTIME_E2E_PENDING`, `WAIT_NOTIFY_FALLBACK` and signing success `SIGNATURE_RESIGNED`; standalone/native-image and native object model/GC/thread scheduler are explicit non-goals. Release suite workspaces also write `reports/release-suite-summary.json` with profile (`smoke`/`standard`/`beta`/`rc`), required/missing categories and determinism evidence; strict readiness mode requires it and uses suite expected statuses plus report-location evidence, aggregate/determinism evidence and weird-bytecode seed coverage to prove Tier 0-5 coverage across minimal LLVM lowering, helper-backed paths, nativeEmbeddedClassBlob fallback, safe finally cleanup, signed fail/strip/resign packaging, service loader/multi-release/module preservation, reflection/MethodHandle/lambda fallback, raw Unsafe boundary, dynamic VarHandle boundary, wait/notify boundary, injected required-target failure hygiene, artifact audit expected failure, narrow JDK fallback behavior and realistic CLI/reflection/packaging samples. Real six-target structural artifacts are covered separately by `ZigCrossTargetBuildTest`. Beta profile additionally requires dist CLI artifact smoke, docs example validation, report-index evidence and beta blocker evidence; uncovered beta blockers fail beta readiness, while future and non-goal rows remain visible and non-blocking. RC profile requires `missingCategories=[]` and beta/rc blockers require release-suite evidence. `release-readiness.json` records `missingEvidence` plus readiness fields `suiteCoverageByBlocker`, `blockerEvidenceComplete`, `targetEvidenceComplete`, `finalArtifactWritten`, `determinismEvidenceComplete`, `metadataConsistencyPassed`, `blockingSensitiveFactsPassed`, `targetPackagePlanComplete`, `betaProfilePassed`, `betaMissingEvidence`, `cliArtifactSmokePassed`, `docsExamplesValidated` and `strictModePassed`; primary reports write both `schemaVersion` and `reportVersion`, and protection/config reports write only seed hashes. Non-host runtime child-JVM E2E remains separate evidence and is not implied by successful cross-linking. `ZIG_TARGET_UNBUILDABLE` is a per-run toolchain diagnostic for an actual target failure, not a standing non-host blocker.
+Default build在 final implementation plan确定后、创建 Zig workspace或调用 Zig前：
+
+1. stderr按稳定顺序逐条打印 skipped method identity、reason code和 reason。
+2. warning明确说明这些方法不会 native lowered，原 Java bytecode会保留在输出 JAR。
+3. 提示 `continue? (Y/N)`；只有显式 `Y`继续，`N`或 EOF终止。
+
+Piped `Y`是正式自动化入口，非 TTY/CI不能绕过。`--validate`与`--dry-run`不读取 stdin，也不形成 final skipped set；dry-run 记录 `skippedMethodAnalysisPerformed=false`、`skippedMethodConfirmation=deferredUntilDefaultBuild` 与 `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`。
+
+当前仍需保持稳定、用于定位待实现 native coverage 的 reason code包括：
+
+- exception/interface：`UNSUPPORTED_DEFAULT_INTERFACE_SUPER`、`UNSUPPORTED_MULTI_EXIT_FINALLY`、`UNSUPPORTED_EXCEPTION_STATE_MERGE`、`UNSUPPORTED_MONITOR_FINALLY_INTERACTION`；
+- reflection/Unsafe：`REFLECTION_DYNAMIC_UNSUPPORTED`、`UNSAFE_RAW_MEMORY_UNSUPPORTED`、`VAR_HANDLE_DYNAMIC_UNSUPPORTED`；
+- MethodHandle/lambda：`METHOD_HANDLE_PERMUTE_UNSUPPORTED`、`METHOD_HANDLE_FILTER_UNSUPPORTED`、`METHOD_HANDLE_FOLD_UNSUPPORTED`、`METHOD_HANDLE_COLLECTOR_UNSUPPORTED`、`ALT_METAFACTORY_UNSUPPORTED`；
+- JVM/JDK boundaries：`JVM_HELPER_UNSUPPORTED`、`THREAD_HELPER_UNSUPPORTED`、`WAIT_NOTIFY_UNSUPPORTED`；
+- toolchain：`ZIG_TARGET_UNBUILDABLE`。
+
+这些 reason code只描述尚未实现的 native coverage；对应 selected caller的最终状态一律是 `skipped`，不表示存在第二种执行实现。
 
 ## 使用方式
 
-- 任何新功能先标注所属 tier。
-- 一个 tier 的功能只有在其核心测试稳定后，才可以在 README 或 release note 中宣称支持。
-- 如果某个特性跨 tier，按最高风险部分归类。例如 lambda 的常见 lowering 属于 Tier 2，但复杂 MethodHandle chain 属于 Tier 5。
-- 遇到不确定语义时优先 conservative fallback，不静默生成可能错误的 native code。
+- 新功能先标注所属 tier，并同时定义 direct/helper/native plan、skipped reason和测试落点。
+- 一个 tier 的功能只有核心测试稳定后，才可在 README/release note宣称支持。
+- 跨 tier功能按最高风险部分归类。
+- 遇到不确定语义时把整个 selected method标记为 `skipped`，保留原 Java body并给稳定 reason。
+- 后续工作的主线是按 reason code逐项扩大 native/helper coverage，持续减少 skipped methods。

@@ -29,6 +29,10 @@ public final class DiagnosticHints {
                     "Open reports/artifact-audit.json and remove the reported plaintext or metadata mismatch before finalization.";
             case "RELEASE_READINESS_FAILED" ->
                     "Open reports/release-readiness.json and satisfy the listed missingEvidence entries.";
+            case "SKIPPED_METHODS_NOT_APPROVED" ->
+                    "Review reports/skipped-method-report.json, expand native support or rerun and explicitly answer Y if retaining those Java methods is acceptable.";
+            case "SKIPPED_METHOD_CONFIRMATION_INPUT_FAILED" ->
+                    "Check stdin or the invoking API's SkippedMethodApproval callback, then rerun the build.";
             default -> "";
         };
     }

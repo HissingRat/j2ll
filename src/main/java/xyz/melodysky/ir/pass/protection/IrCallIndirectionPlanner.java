@@ -119,8 +119,9 @@ public final class IrCallIndirectionPlanner {
                 && fact.resolutionKind() != IrDirectCallResolutionKind.BYTECODE_DIRECT) {
             return CandidateDecision.skip(IrCallIndirectionReasons.FACT_KIND_MISMATCH);
         }
-        if (fact.fallbackRequired()) {
-            return CandidateDecision.skip(IrCallIndirectionReasons.FALLBACK_REQUIRED);
+        if (fact.nativeTargetUnavailable()) {
+            return CandidateDecision.skip(
+                    IrCallIndirectionReasons.NATIVE_TARGET_UNAVAILABLE);
         }
 
         String targetMethodKey = fact.directTargetMethodKey().orElseThrow();

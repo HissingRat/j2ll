@@ -26,6 +26,10 @@ public interface BuildProgressListener {
     default void nativeTargetCompleted(String target) {
     }
 
+    /** Clears or suspends an active terminal region before reading user input. */
+    default void beforeUserInput() {
+    }
+
     void finished(boolean successful);
 
     static BuildProgressListener none() {

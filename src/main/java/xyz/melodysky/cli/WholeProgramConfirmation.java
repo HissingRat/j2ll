@@ -23,14 +23,25 @@ final class WholeProgramConfirmation {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(err, "err");
+        return confirm(
+                config,
+                new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8)),
+                err);
+    }
+
+    Result confirm(
+            ResolvedConfig config,
+            BufferedReader reader,
+            PrintStream err) throws IOException {
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(reader, "reader");
+        Objects.requireNonNull(err, "err");
         List<WholeProgramAnalysisRequirement> requirements =
                 new WholeProgramAnalysisRequirements().forConfig(config);
         if (requirements.isEmpty()) {
             return Result.accepted(WholeProgramAnalysisPolicy.strict());
         }
 
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(input, StandardCharsets.UTF_8));
         EnumSet<WholeProgramAnalysisFeature> approvals =
                 EnumSet.noneOf(WholeProgramAnalysisFeature.class);
         for (WholeProgramAnalysisRequirement requirement : requirements) {

@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.Optional;
 import xyz.melodysky.analysis.hierarchy.DefaultInterfaceAnalysis;
 import xyz.melodysky.analysis.hierarchy.DefaultInterfaceAnalyzer;
-import xyz.melodysky.analysis.runtime.FallbackBoundaryAnalyzer;
 import xyz.melodysky.analysis.runtime.RuntimeHelperSiteAnalyzer;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
@@ -20,11 +19,10 @@ import xyz.melodysky.toolchain.IntermediateArtifactLayout;
 import xyz.melodysky.toolchain.MethodArtifact;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 
-/** Assembles lowering facts without making lowering or fallback policy decisions. */
+/** Assembles final method outcome facts without making lowering policy decisions. */
 public final class LoweringReportAssembler {
     private final DefaultInterfaceAnalyzer defaultInterfaceAnalyzer = new DefaultInterfaceAnalyzer();
     private final RuntimeHelperSiteAnalyzer helperSiteAnalyzer = new RuntimeHelperSiteAnalyzer();
-    private final FallbackBoundaryAnalyzer fallbackBoundaryAnalyzer = new FallbackBoundaryAnalyzer();
 
     public List<LoweringReportMethod> assemble(
             ParsedProgram program,
@@ -57,13 +55,6 @@ public final class LoweringReportAssembler {
                     implementation.map(item -> item.path().wireName()).orElse(null),
                     helperSiteAnalyzer.analyze(result, registration, implementation, defaultInterfaces).stream()
                             .map(site -> new HelperBackedSiteReport(site.helper(), site.reasonCode()))
-                            .toList(),
-                    fallbackBoundaryAnalyzer.analyze(result).stream()
-                            .map(site -> new FallbackSiteReport(
-                                    site.instructionOffset(),
-                                    site.target(),
-                                    site.reasonCode(),
-                                    site.fallbackMode()))
                             .toList(),
                     result.reasonCode(),
                     result.reason()));

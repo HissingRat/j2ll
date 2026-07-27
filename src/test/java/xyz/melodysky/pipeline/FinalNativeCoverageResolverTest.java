@@ -1,13 +1,11 @@
 package xyz.melodysky.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.MethodNode;
@@ -25,7 +23,6 @@ import xyz.melodysky.jvm.AccessFlags;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
-import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeImplementationPlanner;
 
@@ -35,201 +32,107 @@ class FinalNativeCoverageResolverTest implements Opcodes {
     private final NativeImplementationPlanner implementationPlanner =
             new NativeImplementationPlanner();
     private final FinalNativeCoverageResolver resolver =
-            new FinalNativeCoverageResolver(implementationPlanner);
+            new FinalNativeCoverageResolver();
 
     @Test
-    void replansMissingOrdinaryMethodAsEmbeddedFallback() {
-        ParsedMethod workingMethod = method("working", "()V");
-        ParsedMethod fallbackMethod = method("backendGap", "()V");
-        MethodRewriteDecision workingDecision = decision(workingMethod);
-        MethodRewriteDecision fallbackDecision = decision(fallbackMethod);
-        IrMethod workingIr = supportedVoidIr(workingMethod);
-        IrMethod fallbackIr = unsupportedEmptyIr(fallbackMethod);
-        List<MethodRewriteDecision> decisions =
-                List.of(workingDecision, fallbackDecision);
-        Map<String, IrMethod> finalIr = Map.of(
-                workingMethod.methodKey(),
-                workingIr,
-                fallbackMethod.methodKey(),
-                fallbackIr);
-        NativeImplementationPlan currentPlan = plan(
-                decisions,
-                finalIr,
-                Set.of());
-
-        FinalNativeCoverageResult result = resolver.resolve(
-                decisions,
-                currentPlan,
-                List.of(
-                        SsaMethodResult.lowered(workingMethod, workingIr),
-                        SsaMethodResult.lowered(fallbackMethod, fallbackIr)),
-                finalIr,
-                methodKeys(decisions),
-                Set.of());
-
-        assertEquals(2, result.implementedRewriteDecisions().size());
-        assertEquals(2, result.finalImplementationPlan().implementations().size());
-        var fallbackImplementation = result.finalImplementationPlan()
-                .implementationFor(fallbackMethod.methodKey())
-                .orElseThrow();
-        assertEquals(
-                NativeImplementationPath.TEMPLATE_JNI_PATH,
-                fallbackImplementation.path());
-        assertEquals(
-                "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK",
-                fallbackImplementation.reasonCode());
-        SsaMethodResult finalFallback = result.finalSsaResults().get(1);
-        assertEquals(LoweringStatus.HALF_LOWERED, finalFallback.status());
-        assertEquals(
-                "NATIVE_BACKEND_FALLBACK",
-                finalFallback.reasonCode());
-        assertTrue(finalFallback.irMethod().isPresent());
-        assertEquals(1, result.diagnostics().size());
-        assertEquals(
-                DiagnosticStage.LLVM_MODEL,
-                result.diagnostics().get(0).stage());
-        assertEquals(
-                "NATIVE_BACKEND_FALLBACK",
-                result.diagnostics().get(0).code().value());
-        assertEquals(
-                LoweringStatus.HALF_LOWERED.wireName(),
-                result.diagnostics().get(0).decision());
-        assertTrue(result.diagnostics().get(0)
-                .conservativeFallbackAvailable());
-        assertFalse(currentPlan
-                .implementationFor(fallbackMethod.methodKey())
-                .isPresent());
-    }
-
-    @Test
-    void usesCallerProvidedFallbackReasonClassifier() {
-        ParsedMethod method = method("classifiedGap", "()V");
+    void keepsMethodsThatHaveFinalNativeImplementations() {
+        ParsedMethod method = method("working", "()V");
         MethodRewriteDecision decision = decision(method);
-        IrMethod irMethod = unsupportedEmptyIr(method);
-        List<MethodRewriteDecision> decisions = List.of(decision);
-        Map<String, IrMethod> finalIr = Map.of(method.methodKey(), irMethod);
+        IrMethod irMethod = supportedVoidIr(method);
+        NativeImplementationPlan plan = plan(List.of(decision), Map.of(method.methodKey(), irMethod));
 
         FinalNativeCoverageResult result = resolver.resolve(
-                decisions,
-                plan(decisions, finalIr, Set.of()),
-                List.of(SsaMethodResult.lowered(method, irMethod)),
-                finalIr,
-                methodKeys(decisions),
-                Set.of(),
-                ignored -> "CLASSIFIED_NATIVE_BACKEND_FALLBACK");
+                List.of(decision),
+                plan,
+                List.of(SsaMethodResult.nativeLowered(method, irMethod)));
 
-        assertEquals(
-                "CLASSIFIED_NATIVE_BACKEND_FALLBACK",
-                result.finalSsaResults().get(0).reasonCode());
-        assertEquals(
-                "CLASSIFIED_NATIVE_BACKEND_FALLBACK",
-                result.diagnostics().get(0).code().value());
+        assertEquals(List.of(decision), result.implementedRewriteDecisions());
+        assertEquals(plan, result.finalImplementationPlan());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.finalSsaResults().get(0).status());
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     @Test
-    void protectedJvmExceptionFlowUsesSpecificDefaultFallbackReason() {
+    void convertsMissingBackendCoverageToSkippedAndFiltersRewriteDecision() {
+        ParsedMethod workingMethod = method("working", "()V");
+        ParsedMethod missingMethod = method("backendGap", "()V");
+        MethodRewriteDecision workingDecision = decision(workingMethod);
+        MethodRewriteDecision missingDecision = decision(missingMethod);
+        IrMethod workingIr = supportedVoidIr(workingMethod);
+        IrMethod unsupportedIr = unsupportedEmptyIr(missingMethod);
+        List<MethodRewriteDecision> decisions = List.of(workingDecision, missingDecision);
+        NativeImplementationPlan plan = plan(
+                decisions,
+                Map.of(
+                        workingMethod.methodKey(), workingIr,
+                        missingMethod.methodKey(), unsupportedIr));
+
+        FinalNativeCoverageResult result = resolver.resolve(
+                decisions,
+                plan,
+                List.of(
+                        SsaMethodResult.nativeLowered(workingMethod, workingIr),
+                        SsaMethodResult.nativeLowered(missingMethod, unsupportedIr)));
+
+        assertEquals(List.of(workingDecision), result.implementedRewriteDecisions());
+        assertEquals(1, result.finalImplementationPlan().implementations().size());
+        SsaMethodResult skipped = result.finalSsaResults().get(1);
+        assertEquals(LoweringStatus.SKIPPED, skipped.status());
+        assertEquals("NATIVE_IMPLEMENTATION_UNAVAILABLE", skipped.reasonCode());
+        assertTrue(skipped.irMethod().isEmpty());
+        assertEquals(1, result.diagnostics().size());
+        assertEquals(DiagnosticStage.LLVM_MODEL, result.diagnostics().get(0).stage());
+        assertEquals("skipped", result.diagnostics().get(0).decision());
+    }
+
+    @Test
+    void usesSpecificReasonForProtectedJvmExceptionFlow() {
         ParsedMethod method = method("protectedGap", "()V");
         MethodRewriteDecision decision = decision(method);
         IrMethod irMethod = unsupportedProtectedJvmFlowIr(method);
-        List<MethodRewriteDecision> decisions = List.of(decision);
-        Map<String, IrMethod> finalIr = Map.of(method.methodKey(), irMethod);
+        NativeImplementationPlan plan = plan(List.of(decision), Map.of(method.methodKey(), irMethod));
 
         FinalNativeCoverageResult result = resolver.resolve(
-                decisions,
-                plan(decisions, finalIr, Set.of()),
-                List.of(SsaMethodResult.lowered(method, irMethod)),
-                finalIr,
-                methodKeys(decisions),
-                Set.of());
+                List.of(decision),
+                plan,
+                List.of(SsaMethodResult.nativeLowered(method, irMethod)));
 
-        assertEquals(
-                LoweringStatus.HALF_LOWERED,
-                result.finalSsaResults().get(0).status());
-        assertEquals(
-                "UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW",
-                result.finalSsaResults().get(0).reasonCode());
+        SsaMethodResult skipped = result.finalSsaResults().get(0);
+        assertEquals(LoweringStatus.SKIPPED, skipped.status());
+        assertEquals("UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW", skipped.reasonCode());
         assertEquals(
                 "UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW",
                 result.diagnostics().get(0).code().value());
     }
 
     @Test
-    void skipsStillUnimplementedMethodAndFiltersRewriteDecisions() {
-        ParsedMethod workingMethod = method("working", "()V");
-        ParsedMethod unavailableMethod = method(
-                "unavailable",
-                "([[B)V");
-        MethodRewriteDecision workingDecision = decision(workingMethod);
-        MethodRewriteDecision unavailableDecision = decision(unavailableMethod);
-        IrMethod workingIr = supportedVoidIr(workingMethod);
-        List<MethodRewriteDecision> decisions =
-                List.of(workingDecision, unavailableDecision);
-        Map<String, IrMethod> finalIr =
-                Map.of(workingMethod.methodKey(), workingIr);
-        NativeImplementationPlan currentPlan = plan(
-                decisions,
-                finalIr,
-                Set.of());
+    void preservesAlreadySkippedFrontendResultWithoutDuplicateDiagnostic() {
+        ParsedMethod method = method("unsupported", "()V");
+        SsaMethodResult skipped = SsaMethodResult.skipped(
+                method,
+                "UNSUPPORTED_TEST_SHAPE",
+                "unsupported test shape");
 
         FinalNativeCoverageResult result = resolver.resolve(
-                decisions,
-                currentPlan,
-                List.of(
-                        SsaMethodResult.lowered(workingMethod, workingIr),
-                        SsaMethodResult.fallbackOnly(
-                                unavailableMethod,
-                                "ORIGINAL_FALLBACK_REASON",
-                                "original fallback boundary")),
-                finalIr,
-                methodKeys(decisions),
-                Set.of());
+                List.of(decision(method)),
+                new NativeImplementationPlan(List.of()),
+                List.of(skipped));
 
-        assertEquals(
-                List.of(workingMethod.methodKey()),
-                result.implementedRewriteDecisions().stream()
-                        .map(decision -> decision.method().methodKey())
-                        .toList());
-        assertEquals(
-                List.of(workingMethod.methodKey()),
-                result.finalImplementationPlan().implementations().stream()
-                        .map(implementation -> implementation.methodKey())
-                        .toList());
-        SsaMethodResult unavailable = result.finalSsaResults().get(1);
-        assertEquals(LoweringStatus.FRONTEND_SKIPPED, unavailable.status());
-        assertEquals(
-                "NATIVE_IMPLEMENTATION_UNAVAILABLE",
-                unavailable.reasonCode());
-        assertTrue(unavailable.irMethod().isEmpty());
-        assertEquals(1, result.diagnostics().size());
-        assertEquals(
-                DiagnosticStage.LLVM_MODEL,
-                result.diagnostics().get(0).stage());
-        assertEquals(
-                "NATIVE_IMPLEMENTATION_UNAVAILABLE",
-                result.diagnostics().get(0).code().value());
-        assertEquals(
-                LoweringStatus.FRONTEND_SKIPPED.wireName(),
-                result.diagnostics().get(0).decision());
+        assertEquals(List.of(), result.implementedRewriteDecisions());
+        assertEquals(List.of(skipped), result.finalSsaResults());
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     private NativeImplementationPlan plan(
             List<MethodRewriteDecision> decisions,
-            Map<String, IrMethod> irMethods,
-            Set<String> fallbackMethodKeys) {
+            Map<String, IrMethod> irMethods) {
         return implementationPlanner.plan(
                 new NativeRegistrationPlanner().plan(decisions),
                 decisions,
                 irMethods,
-                fallbackMethodKeys,
-                methodKeys(decisions),
-                Set.of());
-    }
-
-    private Set<String> methodKeys(
-            List<MethodRewriteDecision> decisions) {
-        return decisions.stream()
-                .map(decision -> decision.method().methodKey())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                decisions.stream()
+                        .map(decision -> decision.method().methodKey())
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet()));
     }
 
     private MethodRewriteDecision decision(ParsedMethod method) {
@@ -254,13 +157,7 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                 true,
                 0,
                 0,
-                new MethodNode(
-                        ASM9,
-                        access,
-                        name,
-                        descriptor,
-                        null,
-                        null));
+                new MethodNode(ASM9, access, name, descriptor, null, null));
     }
 
     private IrMethod supportedVoidIr(ParsedMethod method) {

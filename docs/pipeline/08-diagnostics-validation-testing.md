@@ -16,8 +16,9 @@
 - raw reason
 - artifact id
 - instruction offset when available
-- decision, for example `lowered`, `halfLowered`, `frontendSkipped`, `notApplicable`, `failed`, `excluded`, `warning`
-- conservative fallback available
+- method decision, only `nativeLowered` or `skipped` for selected methods with Code
+- selector scope evidence such as `excluded`
+- no-Code eligibility evidence, kept separately from method decision
 
 stage 枚举建议：
 
@@ -41,9 +42,26 @@ SYMBOL_AUDIT
 PACKAGING
 ```
 
-如果某个 operation/call site 可以走 JVM helper fallback，就把 method 标记为 `halfLowered` 并发 warning，不要直接 fail。只有无法保持语义正确或缺少必需输入时，才把 method 标记为 `frontendSkipped` 或 `failed`。
+如果某个 operation/call site 能通过已实现的 JVM/JNI runtime helper 保持完整语义，并且最终 native implementation 与 ABI 校验均通过，整个 method 记录为 `nativeLowered`。helper-backed 不等于 Java bytecode compatibility path。
 
-如果 selector 命中 abstract method、already-native method、没有 Code 的 interface method 或 annotation element，记录为 `notApplicable`。它不是 warning，也不是 build failure；但必须出现在 lowering report 中，方便确认白名单没有被静默忽略。
+只要 selected 且有 Code 的 method 无法形成完整 native implementation，就把整个 method 记录为 `skipped`，保留原 Code，不生成 native stub、helper body 或 `RegisterNatives` binding。不得保留局部 lowering 后再通过原字节码补齐语义。
+
+如果 selector 命中 abstract method、already-native method、没有 Code 的 interface method或 annotation element，记录为独立 eligibility evidence。它不是 method lowering status、warning 或 build failure，也不触发 skipped-method confirmation；但必须出现在 report 中，方便确认 selector 没有被静默忽略。build/validation/toolchain failure 是 invocation-level failure，不伪装成 method status。
+
+no-Code 是这条 eligibility 例外的边界。selected 且有 Code 的 base method 即使因为 multi-release counterpart 等 packaging safety policy 不能改写，也必须记录为 `skipped`（例如 `MULTI_RELEASE_VERSIONED_CLASS`）并参与确认。
+
+## Skipped Method Confirmation
+
+默认 build 在 final implementation plan 已稳定后、创建任何 Zig workspace 或启动任何 Zig invocation 之前，必须对所有 `skipped` method 做一次确定性确认：
+
+1. stderr 逐项输出 `owner#name!descriptor`、`reasonCode` 和 user-facing reason。
+2. 明确警告这些方法不会 native lowered，输出 JAR 将保留它们原来的 Code。
+3. 输出 `continue? (Y/N)`；只有大小写不敏感的显式 `Y` 继续，`N` 或 EOF 都终止本次 build。
+4. 拒绝时不得创建 Zig workspace、不得调用 Zig、不得写 final JAR，并写出 lowering-stage failure/summary evidence。
+
+无 `skipped` method 时不输出列表也不询问。`--validate` 和 `--dry-run` 不读取 stdin；它们只记录 `confirmationRequired`/deferred warning，说明最终列表要等默认 build 的 final plan 才能确定。显式管道输入 `Y` 必须可用；如果同一 invocation 还有其他确认，CLI 必须共享同一个 reader，不能因 reader buffering 丢失后续输入。
+
+该确认是全局方法覆盖契约，不引入 `requiredNative` selector/config。
 
 Report JSON 的最低字段和示例以 `docs/io-config-output-contract.md` 为准；本文件只维护 stage enum、validator 和测试落点。
 
@@ -65,7 +83,7 @@ Diagnostic 需要稳定排序，方便测试和回归定位。同一输入不应
 - Backend preflight：unsupported IR shape 必须明确报错。
 - Native link validator：selected target artifact existence。
 - Symbol audit validator：actual exports must match allowlist。
-- Packaging validator：manifest/resource preservation、loader presence、native registration completeness、fallback blob policy、embedded library layout。
+- Packaging validator：manifest/resource preservation、loader presence、native registration completeness、skipped-method no-rewrite/no-registration、embedded library layout。
 
 validator 失败应该指向 stage 和 artifact id，避免只给出泛泛的 `IllegalStateException`。
 

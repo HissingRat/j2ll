@@ -1,14 +1,13 @@
 # 10 Packaging And Native Registration
 
-本阶段把 compiler output 重新打包成可运行 JAR，并把 selected target 动态库嵌入到配置指定路径。它只消费前面阶段生成的 IR/backend/toolchain metadata，不重新做 bytecode lowering。
+本阶段把 compiler output 重新打包成可运行 JAR，并把 selected target 动态库嵌入到配置指定路径。它只消费 final implementation plan、backend/toolchain artifact 和原 JAR entries，不重新做 bytecode lowering。
 
 ## 输入
 
 - original input JAR entries
-- rewritten method plan
+- final method outcome / rewrite plan
 - native registration plan
 - selected target dynamic libraries
-- fallback blob plan
 - manifest/resource/signature policy
 - symbol audit result
 
@@ -16,8 +15,10 @@
 
 - final output JAR
 - rewritten owner classes
-- exactly one generated `<embeddedLibraryDirectory>/Loader.class` plus method/helper rewrites
+- exactly one generated `<embeddedLibraryDirectory>/Loader.class`
 - embedded dynamic libraries
+- `reports/lowering-report.json`
+- `reports/skipped-method-report.json`
 - `reports/packaging-report.json`
 - `reports/support-matrix.json`
 - `reports/opcode-support-matrix.json`
@@ -42,150 +43,174 @@ xyz.melodysky.packaging
 - `ConstructorStubRewriter`
 - `ClassInitializerStubRewriter`
 - `InterfaceMethodStubRewriter`
-- `FallbackBlobPlanner`
-- `NativeEmbeddedFallbackBlob`
-- `FallbackClassDefiner`
 - `RuntimeLoaderPlan`
 - `NativeLoaderClassGenerator`
 - `RuntimeLoaderCollisionValidator`
 - `NativeRegistrationPlanner`
 - `RegisterNativesTableBuilder`
+- `SkippedMethodCollector`
+- `SkippedMethodGate`
+- `SkippedMethodApproval`
 - `OutputJarLayout`
+
+skipped method 的 terminal 展示和确认应由小型、独立的 CLI/pipeline component 完成，不继续把交互、report 和 Zig orchestration 堆进 packaging 或 lowering 大类。
+
+## Final Method Outcome Contract
+
+selector 命中且有 Code 的 method 在 final plan 中只能是：
+
+- `nativeLowered`：拥有经过验证的完整 native implementation，可以改写并注册。
+- `skipped`：当前不能完整保持语义；保留输入 JAR 中原 Code，不改写为 native，不生成 body helper，不加入 `RegisterNatives`。
+
+不得存在“部分 native、其余从复制字节码执行”的第三种 method 状态，也不得把原 class/method Code 编码后放进动态库。native sources、object graph、最终动态库和 output JAR 都不包含为执行 skipped method 而生成的 class bytes、carrier、decoder 或 hidden-class definition entry。
+
+abstract、already-native、annotation element 和其他 no-Code declaration 使用单独 eligibility evidence。它们没有 executable-method status，不触发 skipped-method confirmation。
+
+build/signing/toolchain/audit failure 是 invocation-level failure，不是 method outcome。schema 不提供 `requiredNative`；所有 skipped method 统一走下面的显式确认。
+
+## Native Implementation Paths
+
+`nativeLowered` 可以由以下完整实现路径承载：
+
+- `LLVM_NATIVE_PATH`：validated SSA/LLVM body 与其 compiler-internal helper closure。
+- `TEMPLATE_JNI_PATH`：从真实 method plan 生成、语义完整且经过测试的 C/JNI body，例如受限 constructor/class-initializer body helper。
+- JVM/JNI runtime helper-backed LLVM/C body：field、array、allocation、String、reflection、dispatch、monitor、exception 等 Java-visible 语义仍由 JVM/JNI 执行，但 Java method 本身已由 native body 承载，因此仍是 `nativeLowered`。
+
+固定方法名猜测、占位模板、unsupported call-site 或仅有 partial IR 都不能成为 native implementation。final plan 缺少任何所需语义时必须把完整 method 改为 `skipped`。
+
+## Pre-Zig Confirmation
+
+默认 build 必须在 final method outcome 与 native implementation plan 已稳定后、创建任何 Zig workspace 或启动任何 Zig invocation 之前执行一次确认。
+
+行为固定如下：
+
+1. 对全部 `skipped` method 按稳定 method key 排序。
+2. 在 stderr/terminal 逐项打印 `owner#name!descriptor`、`reasonCode` 和 reason。
+3. 明确警告以上方法不会 native lowered，output JAR 会保留原 Code。
+4. 打印 `continue? (Y/N)`。
+5. 只有大小写不敏感的显式 `Y` 继续；`N` 或 EOF 终止。
+
+拒绝后不得创建 Zig workspace、不得调用 Zig、不得写 final JAR；reports 必须记录 lowering-stage cancellation、`finalArtifactWritten=false` 和 primary diagnostic/hint。无 skipped method 时不打印列表也不询问。
+
+程序化 pipeline 的无 callback 重载默认拒绝 skipped methods，不能静默等价于 `Y`。Embedding caller 若确实接受保留 Java body，必须显式传入 `SkippedMethodApproval`；`skipped-method-report.json` 用 `confirmationDecision` 区分 `notAnalyzed`、`notRequired`、`approved`、`rejected`、`inputError` 和 `notEvaluatedPriorFailure`。确认输入读取失败使用 lowering diagnostic `SKIPPED_METHOD_CONFIRMATION_INPUT_FAILED`，不得误报为 Zig/toolchain failure。
+
+`--validate` 和 `--dry-run` 不读取 stdin，也不形成 final skipped set。Dry-run 记录 `skippedMethodAnalysisPerformed=false`、`skippedMethodConfirmation=deferredUntilDefaultBuild` 与 `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`。显式管道输入 `Y` 必须可用；同一次 invocation 的多次确认必须共享 reader。
+
+TUI 在打印列表和读取输入前必须结束/暂停 active progress region，确认后以新的 region 继续，避免 ANSI 原地刷新覆盖 method list 或 prompt。
 
 ## Method Rewrite Strategy
 
-Packaging must record one rewrite strategy per matched method:
+Packaging 只为 `nativeLowered` method 生成 rewrite strategy：
 
-- `nativeOriginal`: ordinary class method with Code. Remove Code, set `ACC_NATIVE`, register the original name/descriptor with `RegisterNatives`.
-- `constructorStub`: keep `<init>` legal Java bytecode, preserve constructor delegation, then call a generated private native body helper after object initialization.
-- `classInitializerStub`: keep or generate `<clinit>` as loader/bootstrap stub, then call generated native body helper.
-- `interfaceMethodStub`: keep interface method legal Java bytecode and call a generated helper class that owns the native method.
-- `notApplicable`: abstract, already-native, no-Code interface method, annotation element, or another no-body declaration.
+- `nativeOriginal`：ordinary class method with Code。移除 Code、设置 `ACC_NATIVE`，以原 name/descriptor 注册。
+- `constructorStub`：保持 `<init>` 合法 Java bytecode和 delegation，再调用 same-owner private static native body helper。
+- `classInitializerStub`：保持或生成 `<clinit>` loader/bootstrap stub，再调用 native body helper。
+- `interfaceMethodStub`：保持 interface method 合法字节码，并调用拥有 native method 的 generated helper。
 
-`<init>`, `<clinit>` and interface methods must not be forced into `nativeOriginal`.
-
-## Fallback Blobs
-
-Schema version 1 always uses the internal `nativeEmbeddedClassBlob` storage strategy; it is not a Config option.
-
-Rules:
-
-- Do not emit plain generated fallback `.class` entries in the output JAR.
-- Store fallback class bytes in selected target native libraries as encoded blobs.
-- Record blob metadata in the native fallback manifest and packaging report, including original and encoded SHA-256 values.
-- Define fallback helpers lazily per classloader and reuse them for later calls.
-- If no implemented helper definition mechanism works for the target JDK, fail preflight with a clear diagnostic.
-
-No alternative schema version 1 fallback storage strategy is defined.
+`<init>`、`<clinit>` 和 interface method 不能强制使用 `nativeOriginal`。`skipped` method 不生成任何 strategy；no-Code declaration 只保留 eligibility evidence。
 
 ## Loader And Registration
 
-Every build emits exactly one generated Java 17 class with internal name `<embeddedLibraryDirectory>/Loader` and JAR entry `<embeddedLibraryDirectory>/Loader.class`. Native loading is unconditional; `defineHiddenFallback(Class, byte[])` is retained only when the final implementation plan actually contains a `nativeEmbeddedClassBlob`. When internalized reference/array fields exist, that same Loader is conditionally made a `ClassValue` and owns the private `Class -> Object[]` sidecar access path; this does not add a companion or nested class. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are never emitted.
+每次 build 恰好生成一个 Java 17 class：
 
-The Loader responsibilities are:
+- internal name：`<embeddedLibraryDirectory>/Loader`
+- JAR entry：`<embeddedLibraryDirectory>/Loader.class`
 
-- choose the embedded library for current OS/arch.
-- extract it to a per-classloader content-addressed temp/cache path.
-- verify SHA-256 before `System.load`.
-- call exported bootstrap/JNI wrapper to register owner-class native methods.
-- define fallback helper classes when a `halfLowered` method needs JVM helper fallback and the conditional `defineHiddenFallback` method is present.
-- when required by the final field plan, cache one reference-field `Object[]` sidecar per defining `Class` through JVM `ClassValue`.
+Loader 只承担：
 
-Namespace and collision rules:
+- 为当前 OS/arch 选择 embedded native library。
+- 解压到 per-classloader content-addressed temp/cache path。
+- 在 `System.load` 前校验 SHA-256。
+- 触发 exported bootstrap/JNI registration。
+- final field plan 有 internalized reference/array slot 时，通过 `ClassValue<Object[]>` 缓存 per-defining-Class sidecar。
 
-- `embeddedLibraryDirectory` is both the native-resource prefix and Loader JVM package prefix. It must match `[A-Za-z_$][A-Za-z0-9_$]*(/[A-Za-z_$][A-Za-z0-9_$]*)*`; `java[/...]` and `META-INF[/...]` are reserved.
-- An input base entry equal to `<embeddedLibraryDirectory>/Loader.class` fails with `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION`.
-- Any `META-INF/versions/**/<embeddedLibraryDirectory>/Loader.class` shadow fails with `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`.
-- Both collision checks run before managed Zig/native build.
-- Different output artifacts using the same directory in one defining `ClassLoader` have the same Loader binary name. This is an explicit known boundary; applications that may load them together should choose application-unique directories. Separate `ClassLoader` instances keep separate Loader state.
+Loader 不定义或执行复制的 class/method bytecode，也不包含 hidden-class definition API。没有 reference/array sidecar 时，不生成相关工具方法。
 
-Registration rules:
+Namespace and collision rules：
 
-- normal class methods register against their owner class.
-- constructor and class initializer body helpers register as same-owner generated private static native helper methods.
-- interface method helpers register against generated helper classes, not the interface method declaration.
-- registration tables are grouped by owner/registration class and deterministic.
-- registration class lookup must not trigger selected owner `<clinit>` before its generated native helper has been registered; current JNI registration uses a no-initialize `Class.forName(name, false, contextClassLoader)` lookup for owner classes.
+- `embeddedLibraryDirectory` 同时是 native-resource prefix 和 Loader JVM package prefix，必须匹配 `[A-Za-z_$][A-Za-z0-9_$]*(/[A-Za-z_$][A-Za-z0-9_$]*)*`；`java[/...]` 和 `META-INF[/...]` 保留。
+- input base entry 与 generated Loader 同名时，以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` 在 Zig 前失败。
+- 任意 `META-INF/versions/**/<embeddedLibraryDirectory>/Loader.class` shadow 以 `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 在 Zig 前失败。
+- 同一 defining `ClassLoader` 中加载多个使用相同 directory 的不同产物存在同名 Loader 边界；应用应选择唯一目录。独立 ClassLoader 的 Loader state 相互隔离。
 
-Concurrency rules:
+Registration rules：
 
-- loader state is per classloader.
-- extraction/load/register is idempotent and thread-safe.
-- failures throw `UnsatisfiedLinkError` with enough context to locate the target and class.
+- ordinary class methods register against their owner class。
+- constructor/class-initializer body helpers register as same-owner private static native helpers。
+- interface helpers register against generated helper classes。
+- tables 按 registration owner 分组并 deterministic。
+- `skipped` 和 no-Code declarations 都没有 binding。
+- owner lookup 不得在 helper 注册前触发 selected owner `<clinit>`；当前 JNI registration 使用 no-initialize class lookup。
 
-Current implemented slice:
+loader state 是 per classloader；extract/load/register 必须幂等且线程安全。失败抛出包含 target/class context 的 `UnsatisfiedLinkError`。
 
-- Covered ordinary class methods can use `nativeOriginal` for executable implementations on every selected build target. Each registered method records `nativeImplementationPath` as `LLVM_NATIVE_PATH` or `TEMPLATE_JNI_PATH` in lowering reports.
-- `LLVM_NATIVE_PATH` currently covers ordinary static and instance methods whose SSA IR contains supported constants, arithmetic, return, compare/branch/phi, table/lookup switch terminators, JVM numeric helper opcodes, supported field helper calls, monitor/synchronized helper calls, explicit throw bridge calls, static reflection helper calls including constant-parameter method/constructor descriptors, supported Unsafe token/int field helpers, volatile fence markers, div/rem ArithmeticException helper calls, broad primitive/reference array helper calls, selected primitive/reference/object allocation helpers, selected type helpers, selected String helpers, Math int/long scalar helpers, selected same-class static/private-special direct calls, and tokenized virtual/interface JVM dispatch helpers for no-arg int, int-arg int, reference return and single-reference-argument/reference-return shapes. JNI wrapper C only bridges `JNIEnv*` / `jclass` / `jobject` / `jarray` / primitive ABI and calls the LLVM-generated hidden function; `JNIEnv*` is only passed to hidden LLVM functions whose lowered body actually needs JNI/runtime state.
-- Field helper-backed LLVM methods use deterministic field tokens plus JNI `GetFieldID` / `Get<Type>Field` / `Set<Type>Field` / static equivalents. They include `int`/`long`/reference field pass-through, own null receiver exception behavior, and do not read or write Java object memory directly.
-- Approved internalized static primitive fields use per-defining-`jclass` weak-keyed atomic raw-bit storage with descriptor-correct semantics. Approved reference/array fields use the Loader's JVM-managed `ClassValue<Object[]>`; JNI accesses the array with GC barriers, and each native function activation lazily caches one local sidecar ref in native stack temporary storage and releases it on exit. No native strong global ref caches a defining class, sidecar or stored value.
-- Unsafe helper-backed LLVM methods use deterministic reflection metadata tokens plus JNI field APIs for `getInt` / `putInt`; `compareAndSwapInt` is a conservative monitor-backed smoke path and `allocateInstance` uses JNI `AllocObject`. These helpers are packaged in the native library as JVM-hosted runtime support, not as native object layout access.
-- `TEMPLATE_JNI_PATH` remains the covered path for String content operations beyond the current String helper subset, primitive `int[]` copy templates not emitted through LLVM helpers, exception bridge templates, nativeEmbeddedClassBlob fallback invocation/body bridge, generic straight-line/simple-branch constructor/class-initializer body helpers outside ordinary `nativeOriginal`, and object/reference-heavy semantics outside the current LLVM helper subset.
-- The owner class receives a generated or prepended `<clinit>` trigger that calls `<embeddedLibraryDirectory>/Loader.ensureLoaded()` before the first native method call. Existing `<clinit>` bytecode remains after the loader trigger.
-- The Java 17 Loader embeds selected target resource paths and SHA-256 values, chooses the current runtime OS/arch, rejects unsupported runtime OS/arch with `UnsatisfiedLinkError`, extracts to a per-classloader content-addressed cache path, and calls `System.load`.
-- The target-portable C skeleton registers methods through `JNI_OnLoad` / `RegisterNatives`; Java method JNI wrapper symbols are `static`/internal, LLVM implementation symbols are hidden and not exported, while bootstrap exports are audited. Monitor, throw, reflection and fallback helpers all operate through JNI APIs and pending-exception conventions, not native object memory.
-- Protection v1 is part of this packaging path: LLVM implementation names may be deterministic `j2ll_f_<sha256>` hidden linkable symbols shared by the LLVM module and JNI wrapper; same-class selected static/private direct LLVM calls default to hidden `j2ll_cit_<sha256>` signature-group function-pointer tables in the per-class `.ll` consumed by Zig, with hidden `j2ll_cid_<sha256>` dispatcher switches retained as fallback; StringConcat/ordinary string constant carriers may be emitted as encrypted native constant tables and decoded through JNI `NewStringUTF`; fallback helper bytes remain encoded native blobs rather than plain JAR classes.
-- Selected-target native build routes through managed `ZigToolchain`: Zig `0.15.2` is resolved from `<j2ll-home>/zig/zig(.exe)` or installed from an existing/downloaded official archive beside `j2ll.jar`; local/downloaded archives must match built-in official SHA-256 metadata before extraction and normalization into `<j2ll-home>/zig`. Signature verification is currently a reported boundary (`signatureStatus=notVerifiedBoundary`). `.ll`, Zig-managed `.o`, JNI wrapper C, runtime helper C and fallback blob carrier sources are compiled/linked by one generated `build.zig` and one matrix-wide `zig build` invocation before packaging embeds the selected target libraries. The fixed structural cross-build matrix is Windows GNU x86_64/AArch64, Linux GNU glibc 2.17 x86_64/AArch64 and macOS 10.15 x86_64/11.0 AArch64. Java-side native build commands must remain managed `zig build`, with no direct host `cc` / `clang` / `zig cc` fallback. `NativeBuildPlan` records selected target preflight separately from buildable units, selected targets are required by default, and packaging report records `selectedTargets`, `requiredTargets`, `buildableTargets`, `skippedTargets`, `failedTargets`, Zig path/version, bootstrap events with archiveName/archiveSha256/checksumStatus/signatureStatus/source, OS/arch classifier, library extension, Zig target query, required/buildable state, expected artifact path/name/resource path, loader extraction path policy, symbol visibility policy, failure kind, exact reason, required capability, platform SDK requirement, build log tail and Windows PDB exclusion policy. Non-host selection alone is buildable and is not a failure reason. An actual required-target capability, preflight, compile or link failure reports `ZIG_TARGET_UNBUILDABLE`, blocks final output JAR writing, and fails the pipeline rather than being treated as a successful skip.
-- Runtime E2E currently covers `LLVM_NATIVE_PATH` static primitive scalar add/long/double/boolean compare/void no-op/if-else/nested-if/phi merge/table-switch/lookup-switch/JVM numeric helper opcodes, protected float/double constant raw-bit encryption through integer XOR + LLVM bitcast, protected CFF dispatcher switch for simple branch methods, static/instance/volatile field read/write/add through JNI field helpers, synchronized block/method monitor helpers, explicit throw bridge, static reflection method/constructor/field/setAccessible helper path with no-arg、reference、primitive 和 array constant-parameter method/constructor invoke, typed `Field.get/set` for int/boolean/long/double plus reference get/set, private method/constructor accessible smoke, dynamic reflection bridge path, Unsafe statically resolved `objectFieldOffset` token / `getInt` / `putInt` / monitor-backed `compareAndSwapInt` / `allocateInstance`, typed-int VarHandle helpers, null receiver NPE ownership, String/reference field pass-through/null return, div/rem ArithmeticException helper semantics, broad primitive/reference array helpers, `System.arraycopy` byte/int/long/double/object/overlap/null/oob/ArrayStoreException helper, selected primitive/reference array allocation helpers, ordinary-method object construction helper subset, `checkcast` / `instanceof`, String `length` / `equals` / `isEmpty` / `charAt` / `startsWith` / `endsWith` / `substring(int,int)` helpers, explicit StringBuilder append chain, StringConcatFactory `makeConcat` / common `makeConcatWithConstants`, LambdaMetafactory common `metafactory` helper, LDC MethodHandle + `invokeExact` direct call, MethodHandle adapter chain bridge path, Math int/long/float/double helpers, Integer/Long/Boolean/Double boxing-unboxing, Objects.requireNonNull/equals, selected static/private-special caller -> selected callee direct LLVM call through hidden table indirection, and tokenized virtual/interface/default-interface JVM dispatch helpers for no-arg int, int-arg int, reference return and single-reference-argument/reference-return shapes including conflict boundary reporting; default-interface super `I.super.m()` is covered as a `frontendSkipped` no-rewrite boundary. Template/helper E2E covers multiple owner classes and methods in one shared embedded library, String content `jstring` read/return via JNI APIs, `int[]` copy/new-array paths, `ThrowNew` exception bridge smoke path, generic straight-line/simple-branch constructor/class-initializer body helpers, repeated loader/register calls, and nativeEmbeddedClassBlob fallback for unsupported JDK call, ArrayList/HashMap/Arrays/Collections/Optional/String.format narrow policy, Throwable message/cause common path, Thread start/join common path, wait/notify boundary, unsupported altMetafactory capture shape, instance receiver/reference return, exception propagation and two-classloader isolation.
-- Beta acceptance uses the distribution package rather than the test classpath: Gradle `betaAcceptance` depends on `distJ2ll`, executes `build/dist/j2ll/j2ll.jar` for `--help`, `--version`, config validation, dry-run, sample build, child JVM output comparison and report/readiness checks.
-- The user CLI is flag-based: `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`. Build is the default mode and config defaults to `Config.json`. Dry-run/build allocate `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/` automatically; the final JAR is `<workspace>/<input-jar-file-name>`. Validate creates no workspace. Debug forces every intermediate-output switch on but does not change native symbol/debug-info policy.
-- `nativeEmbeddedClassBlob` has a real ordinary-method fallback body path: for `halfLowered` ordinary methods whose descriptor can be bridged through JNI, the original method bytecode is copied into a same-package helper class as static synthetic `invoke`. Static fallback wrappers call `invoke` with original parameters; instance fallback wrappers pass `self` as the first helper parameter. Primitive/reference parameters and returns are bridged through the matching `CallStatic<Type>Method`, and pending exceptions from the helper are left pending for the Java caller. Helper class bytes are encoded with v1 `j2ll-rle-byte-pairs-v1` plus `xor-sha256-key-stream-v1`, compiled into the native artifact, verified with native-side SHA-256 checks through JVM `MessageDigest`, decoded and defined lazily by the conditional `<embeddedLibraryDirectory>/Loader.defineHiddenFallback` method using owner-private `MethodHandles.Lookup#defineHiddenClass`; if that mechanism is unavailable it falls back to JNI `DefineClass` for the owner classloader. The helper is reused through a process-lifetime linked cache keyed by fallback id + classloader identity and is never emitted as a plain JAR `.class` entry. The packaging report records `fallbackInvokeDescriptor`, `fallbackReasonCode`, `definitionMechanism`, hidden-class capability fields (`definitionMechanismReasonCode`, `hiddenClassApiAvailable`, `ownerLookupSupported`, `definitionMechanismReason`), cache reason (`FALLBACK_CACHE_REUSE`) and cache lifecycle fields (`cacheScope`, `cacheKey`, `cacheLifetime`, `globalReferencePolicy`, `unloadAware=false`, `futurePath`). Runtime registration for isolated child classloaders relies on the thread context classloader during loader-triggered `JNI_OnLoad` / `RegisterNatives`.
-- This slice is intentionally narrow. Constructor/class-initializer body helpers currently support straight-line simple assignment/arithmetic/String/int-array/static-field shapes plus simple no-block-arg branch/goto; interface method declaration stubs, default-interface super CallNonvirtual helper semantics, broader constructor/object LLVM semantics, complex finally/exception state merge/monitor-finally interaction/nested finally, reflection descriptor matrices beyond the current typed field/helper subset, broader virtual/interface dispatch, unload-aware fallback cache and non-host runtime child-JVM E2E remain separate runtime work. Structural non-host link/strip and PE/ELF/Mach-O export audit are already part of the cross-target build path. Safe single-exit catch-all cleanup is covered by release suite; multi-exit/state-merge/monitor/jsr finally shapes remain no-rewrite seed boundaries.
+## Field Internalization
+
+Packaging 只删除 final field plan 批准且结构仍匹配的 field。每一个实际 accessor 必须同时满足：
+
+- final method outcome 是 `nativeLowered`。
+- final implementation path 使用 field plan 认可的 native storage ABI。
+- generated LLVM/C 中没有 raw JVM field access marker。
+
+任何 accessor 为 `skipped`、缺少 implementation、仍走普通 JVM field ABI 或未通过 final validation 时，该 field 都保留在 classfile。
+
+approved primitive slot 使用 per-defining-`jclass` weak-keyed raw-bit storage；approved reference/array slot 始终留在 JVM heap，通过 Loader 的 `ClassValue<Object[]>` 和 JNI ObjectArray API 访问。不得通过 skipped method 或复制字节码访问 sidecar。
+
+## Managed Zig Build
+
+selected-target native build 只走 managed Zig `0.15.2`：
+
+- source graph 包含 final per-class `.ll`、Zig-managed `.o`、JNI wrapper C 和 runtime helper C。
+- source graph 不包含原 method/class Code 的可执行副本。
+- 一个 generated `build.zig` 和一次 matrix-wide `zig build` 负责全部 selected targets。
+- Java 侧不增加 host `cc` / `clang` / `zig cc` 直连路径。
+- required target 的 capability、preflight、compile 或 link 失败报告 `ZIG_TARGET_UNBUILDABLE`，阻止 final JAR。
+
+固定结构性矩阵是 Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64 和 macOS 10.15 x86_64/11.0 AArch64。cross-link success 不等于 non-host OS/JVM runtime E2E。
+
+最终 workspace 动态库扁平写入 `native/<library-file-name>`；JAR resource 独立写入 `<embeddedLibraryDirectory>/<library-file-name>`。
 
 ## JAR Preservation
 
-The output JAR must remain runnable:
+output JAR 必须保持可运行：
 
-- preserve manifest main attributes unless j2ll explicitly owns a generated `J2LL-*` attribute.
-- preserve `Main-Class`, agent attributes, `Automatic-Module-Name` and `Multi-Release`.
-- preserve non-class resources byte-for-byte unless a documented policy owns them.
-- preserve `META-INF/services/*` provider lines.
-- preserve `module-info.class` unless module-aware rewrite is explicitly implemented.
-- preserve `META-INF/versions/**`; versioned class lowering is a separate policy.
-- when a base class has a `META-INF/versions/<n>/...` counterpart, selected base methods are recorded as `notApplicable` with `MULTI_RELEASE_VERSIONED_CLASS`; they are not rewritten and are not registered as native methods because the JVM may select the versioned class at runtime.
+- preserve manifest main attributes，除非 j2ll 明确拥有某个 `J2LL-*` attribute。
+- preserve `Main-Class`、agent attributes、`Automatic-Module-Name` 和 `Multi-Release`。
+- preserve non-class resources 和 `META-INF/services/*`。
+- preserve `module-info.class`。
+- preserve `META-INF/versions/**`；versioned class lowering 是单独 policy。
+- selected base Code-bearing method 的 owner 有 versioned counterpart 时，该 method 记录为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS`，保留原 Code、不注册，并进入默认 build 的 skipped-method confirmation。只有 abstract/already-native/其他 no-Code declaration 使用独立 eligibility evidence。
 
-Signed input handling follows `signaturePolicy` from `docs/io-config-output-contract.md`.
-
-Current implementation records `preservationSummary` in `reports/packaging-report.json` with manifest, service entry, module-info, multi-release and versioned-entry facts. Versioned classes are preserved as entries. If a class also appears under `META-INF/versions/**`, the base class remains bytecode-backed for matching methods and lowering reports `MULTI_RELEASE_VERSIONED_CLASS` rather than emitting a native registration that could target the runtime-selected versioned class. A child JVM multi-release/service fixture verifies that ServiceLoader, module-info and versioned class selection keep their original runtime behavior.
-
-Signature handling records `signatureAction` in `reports/packaging-report.json`: `fail` rejects signed input before rewrite and does not emit a successful final JAR, `strip` removes `META-INF/*.SF/*.RSA/*.DSA/*.EC` and emits a warning, and `resign` runs signing config/keystore/password/alias preflight before rewrite then signs the generated output JAR with the current JDK `jarsigner`. Failed resign preflight or signer execution records `action: resignFailed`, `SIGNATURE_RESIGN_FAILED` and a precise reason such as `SIGNATURE_RESIGN_INVALID_KEYSTORE` or `SIGNATURE_RESIGN_TOOL_UNAVAILABLE`, and it does not keep a final JAR. Successful resign records `SIGNATURE_RESIGNED`; test coverage uses a deterministic temporary PKCS12 keystore and `jarsigner -verify`.
+signed input handling 服从 `docs/io-config-output-contract.md` 中的 `signaturePolicy`。config、signing、toolchain、artifact audit 或 readiness failure 都必须让 `finalArtifactWritten=false`。
 
 ## Validator
 
-Packaging validator checks:
+Packaging validator 至少检查：
 
-- every `lowered` and `halfLowered` method has bytecode rewrite, native artifact and registration entry.
-- every selected target library exists in workspace and output JAR.
-- exactly one `<embeddedLibraryDirectory>/Loader.class` exists, its `this_class` is `<embeddedLibraryDirectory>/Loader`, and its classfile version is Java 17.
-- Loader native-loading methods are always present; `defineHiddenFallback` is present if and only if the implementation plan uses `nativeEmbeddedClassBlob`.
-- Loader directly extends `ClassValue` and contains the private sidecar accessor if and only if the final plan has internalized reference/array slots; even then no `Loader$*.class` entry is emitted.
-- no retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or `j2ll/generated/**/NativeLoader.class` entry exists.
-- input base and multi-release Loader collisions are rejected before Zig with the stable collision diagnostics.
-- no plain fallback class entries are emitted for `nativeEmbeddedClassBlob`.
-- Generated wrapper, LLVM function and per-owner bootstrap identifiers are deterministic hash-only tokens. JNI-required owner/member/descriptor/error strings are emitted as encoded writable byte arrays and decoded once at the beginning of `j2ll_register`; this removes easy static cstring disclosure from stripped PE/ELF/Mach-O files without pretending runtime memory is encrypted.
-- `reports/artifact-audit.json` records artifact audit v2.2 checks for no plaintext fallback classes, no legacy output paths, configured native resource path, embedded native SHA-256 consistency, j2ll metadata/targetArtifacts consistency, reports-manifest hash/entries, hidden/internal symbol export policy, Windows PDB exclusion and sensitive-plaintext facts. Connected `LLVM_NATIVE_PATH`, stable TEMPLATE constructor/body helper, StringConcat carrier and `NATIVE_METADATA_STRING` generated-C/native facts are blocking; reflection/lambda/MethodHandle metadata facts are hash-only observed-only. Fallback blob plaintext literal facts remain conservative, but binary metadata/carrier checks are blocking for encoded/original SHA, size/encoding policy and accidental original method/class plaintext in carrier C. Artifact audit is a finalization gate: failure removes or withholds the final JAR, emits `ARTIFACT_AUDIT_FAILED` in `reports/failure-report.json`, and makes readiness report `finalArtifactWritten=false`.
-- manifest/resource/signature policy was applied and reported.
-- release target artifact policy was reported: selected/required/buildable/failed targets, OS/arch classifier, library extension, expected artifact path/name/resource path, loader extraction policy, symbol visibility policy, every built target's actual SHA-256/exported symbols and Windows PDB exclusion policy.
-- release-readiness reports were emitted: artifact audit, support matrix, opcode matrix, known blockers, readiness gate result and summary report with required report/field checks; release suite workspaces additionally include `reports/release-suite-summary.json` for strict suite readiness. Gate v6 requires release-blocking known blocker reasons (`beta-blocker` / `rc-blocker`) to be covered by suite expected statuses/diagnostics or weird-bytecode seed coverage; uncovered beta blockers make `betaProfilePassed=false`, while `future-blocker` and explicit `non-goal` rows are still reported but do not fail beta/RC strict readiness. It verifies expected config/toolchain/artifact failure cases do not produce output runs or final JARs and have failure report/stage/reason evidence, verifies successful cases have output runs and passed artifact audit, verifies target artifact evidence and requires `determinismEvidenceComplete`. RC profile additionally requires `missingCategories=[]` across the required release categories. It writes machine-readable `missingEvidence`, `suiteCoverageByBlocker`, `blockerEvidenceComplete`, `targetEvidenceComplete`, `finalArtifactWritten`, `determinismEvidenceComplete`, `metadataConsistencyPassed`, `blockingSensitiveFactsPassed`, `targetPackagePlanComplete` and `strictModePassed`.
-- final artifact retention policy is part of packaging validation: config failure, Zig/toolchain target failure, signing failure, artifact audit failure, readiness failure and dry-run must report `finalArtifactWritten=false`; successful builds retain output JAR + reports + configured intermediates, while failed finalization keeps reports/failure sidecars and withholds or deletes the final JAR.
-- output JAR entry ordering is deterministic.
+- 每个 `nativeLowered` method 都有且只有一个 validated implementation、rewrite 和 registration binding。
+- 每个 `skipped` method 保留原 Code，且没有 rewrite/helper/binding。
+- no-Code eligibility evidence 不进入 executable method counts 或 confirmation。
+- selected target libraries 全部存在且非空。
+- output JAR 恰好有一个正确名称、Java 17 version 的 Loader。
+- Loader 始终包含 native loading；reference sidecar 只在 final plan 需要时存在。
+- input base/MR Loader collision 在 Zig 前拒绝。
+- native source/artifact 中没有为执行 skipped method 而保存的 class bytes 或 decode/define machinery。
+- internalized field 的全部 accessor 都是 final `nativeLowered` 且 storage ABI 合格。
+- generated wrapper、LLVM function、bootstrap identifier 是 deterministic hash-only token，dynamic exports 精确匹配 allowlist。
+- manifest/resource/signature policy、target artifact SHA-256、report manifest 和 artifact audit 一致。
+- output JAR entry ordering deterministic。
 
 ## 测试
 
-- ordinary method `nativeOriginal` rewrite.
-- `<init>` constructor stub rewrite.
-- `<clinit>` loader/body-helper rewrite.
-- interface default/static/private method stub rewrite.
-- abstract/already-native/no-Code method `notApplicable` report.
-- fallback blob manifest and no plain fallback class entry.
-- Loader identity/version, exactly-one-entry, conditional fallback method, idempotency and failure diagnostics.
-- base/MR Loader collision tests and same-directory/same-ClassLoader known-boundary coverage.
-- manifest/resource/service preservation.
-- signed input `fail`, `strip` and `resign` policy tests.
-- output JAR layout and embedded library naming tests.
-- release-readiness gate/report golden tests, including strict suite mode.
-- deterministic corpus/release suite runner tests for original/output child JVM exit code/stdout/stderr parity, stable suite manifest ordering, blocker coverage and useful failure diagnostics.
-- release suite cases for config validation failure, unknown-field warning success, signed fail/strip/resign, service loader + multi-release + module-info preservation, reflection/MethodHandle/lambda fallback, raw Unsafe boundary, wait/notify boundary, injected required-target failure hygiene, JDK collection/Optional/Throwable/Thread fallback, and realistic CLI/reflection/packaging samples. Real six-target artifacts are covered separately by `ZigCrossTargetBuildTest`.
-- pipeline finalization-gate tests proving artifact audit failure removes the final JAR and aligns failure/readiness reports.
-- beta acceptance test proving the dist package can validate, dry-run, build and run a sample output JAR while report index, summary, readiness and metadata stay privacy-safe.
-- child JVM differential tests for covered current-host runtime paths.
+- ordinary `nativeOriginal`、constructor、class initializer 和 interface helper rewrite。
+- unsupported method -> `skipped`，原 Code byte-for-byte/semantic preservation，且无 native binding。
+- no-Code selector match -> eligibility evidence，且不触发 confirmation。
+- skipped 列表稳定排序、reason 输出、Y continue、N/EOF abort、invalid input 重试。
+- piped Y 与共享 reader 的多确认测试。
+- rejection 发生在任何 Zig workspace/invocation 前，且无 final JAR。
+- validate/dry-run 不读 stdin，也不形成 final skipped set；dry-run 写入 deferred/conditional confirmation 字段。
+- Loader identity/version/exactly-one-entry、minimal method set、optional ClassValue sidecar。
+- fieldInternalization final accessor gate。
+- manifest/resource/service/MR/module-info preservation。
+- signed input `fail`、`strip`、`resign`。
+- six-target artifact/export/privacy audit 与 host child-JVM differential。

@@ -36,7 +36,7 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithAddMethod("pkg/Mathy"),
                 "add");
 
-        assertEquals(LoweringStatus.LOWERED, result.status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
         var method = result.irMethod().orElseThrow();
         assertEquals(2, method.parameters().size());
         assertEquals(1, method.blocks().size());
@@ -64,7 +64,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
         assertEquals(3, method.blocks().size());
         assertTrue(llvm(method).contains("icmp eq i32 %p0"));
@@ -80,7 +80,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
         assertTrue(method.blocks().stream().anyMatch(block -> !block.parameters().isEmpty()));
         assertTrue(llvm(method).contains(" phi i32 "));
@@ -122,7 +122,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void mergeMismatchProducesSpecificFrontendSkippedDiagnostics() {
+    void mergeMismatchProducesSpecificSkipDiagnostics() {
         assertMergeSkipped(
                 AsmFixtureBuilder.classWithBadStackHeightMerge("pkg/BadStackHeight"),
                 "badStack",
@@ -233,9 +233,9 @@ class BytecodeToSsaLowererTest {
                 .irMethod().orElseThrow().blocks().get(0).instructions().get(0).opcode());
         assertEquals(3, lower(classBytes, "dup2Int")
                 .irMethod().orElseThrow().blocks().get(0).instructions().size());
-        assertEquals(LoweringStatus.LOWERED, lower(classBytes, "dupX2Long").status());
-        assertEquals(LoweringStatus.LOWERED, lower(classBytes, "dup2X1Int").status());
-        assertEquals(LoweringStatus.LOWERED, lower(classBytes, "dup2X2Int").status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, lower(classBytes, "dupX2Long").status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, lower(classBytes, "dup2X1Int").status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, lower(classBytes, "dup2X2Int").status());
     }
 
     @Test
@@ -317,19 +317,19 @@ class BytecodeToSsaLowererTest {
 
     @Test
     void safeOpcodeCoverageMatrixHasNoSilentUnsupportedGaps() {
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithStackPermutationMethods("pkg/StackOps"), "dup2X2Int").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithBitwiseShiftMethod("pkg/BitMath"), "bitShift").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithLongBitwiseShiftMethod("pkg/LongBitMath"), "longBitShift").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithPrimitiveConversionMethods("pkg/ConvertMore"), "narrow").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithJvmComparisonMethods("pkg/CompareMore"), "longCmp").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithTableSwitchMethod("pkg/TableSwitch"), "select").status());
-        assertEquals(LoweringStatus.LOWERED,
+        assertEquals(LoweringStatus.NATIVE_LOWERED,
                 lower(AsmFixtureBuilder.classWithLookupSwitchMethod("pkg/LookupSwitch"), "lookup").status());
     }
 
@@ -385,12 +385,12 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void safeFinallyCleanupShapeLowersWithoutFallbackOrFrontendSkip() {
+    void safeFinallyCleanupShapeLowersNatively() {
         SsaMethodResult result = lower(
                 AsmFixtureBuilder.classWithFinallyCleanupShape("pkg/SafeFinally"),
                 "withCleanup");
 
-        assertEquals(LoweringStatus.LOWERED, result.status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
         assertTrue(result.irMethod().isPresent());
         assertNull(result.reasonCode());
         assertNull(result.reason());
@@ -454,7 +454,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY, result.diagnostics().get(0).code());
     }
@@ -468,7 +468,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION, result.diagnostics().get(0).code());
     }
@@ -482,7 +482,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY, result.diagnostics().get(0).code());
     }
@@ -567,7 +567,7 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithSynchronizedExceptionalUnlockShape("pkg/SyncExceptional"),
                 "lockedExceptional");
 
-        assertEquals(LoweringStatus.LOWERED, result.status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
         var method = result.irMethod().orElseThrow();
         assertTrue(hasOpcode(method, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
         assertTrue(method.blocks().stream().anyMatch(block -> block.isExceptionHandler()
@@ -615,20 +615,18 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void marksThreadStartJoinHappensBefore() {
-        var method = lower(
+    void threadStartJoinIsSkippedWithoutPartialIr() {
+        var result = lower(
                 AsmFixtureBuilder.classWithThreadStartJoinMethod("pkg/Threads"),
-                "runThread").irMethod().orElseThrow();
+                "runThread");
 
-        assertTrue(hasOpcode(method, IrOpcode.THREAD_START_HAPPENS_BEFORE));
-        assertTrue(hasOpcode(method, IrOpcode.THREAD_JOIN_HAPPENS_BEFORE));
-        String llvm = llvm(method);
-        assertTrue(llvm.contains("call void @j2ll_rt_thread_start_happens_before(ptr %p0)"));
-        assertTrue(llvm.contains("call void @j2ll_rt_thread_join_happens_before(ptr %p0)"));
+        assertEquals(LoweringStatus.SKIPPED, result.status());
+        assertTrue(result.irMethod().isEmpty());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED.value(), result.reasonCode());
     }
 
     @Test
-    void waitNotifyUsesJvmHelperFallbackBoundary() {
+    void waitNotifyIsSkippedAtJvmHelperBoundary() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithWaitNotifyMethod("pkg/WaitNotify"),
                 "waitNotify");
@@ -636,9 +634,10 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).message().contains("WAIT_NOTIFY_FALLBACK"));
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertTrue(result.diagnostics().get(0).message().contains("WAIT_NOTIFY_UNSUPPORTED"));
     }
 
     @Test
@@ -697,20 +696,18 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void unsupportedJdkCallBecomesHalfLoweredFallback() {
+    void unsupportedJdkCallIsSkippedWithoutPartialIr() {
         ParsedMethod parsedMethod = parseMethod(
-                AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"),
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkUnsupported"),
                 "substring");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
         assertTrue(result.diagnostics().get(0).message().contains("java/lang/String#substring"));
-        var method = result.artifact().orElseThrow().irMethod().orElseThrow();
-        assertTrue(hasOpcode(method, IrOpcode.CALL_VIRTUAL));
-        assertTrue(llvm(method).contains("@j2ll_rt_call_virtual_ref_a(ptr %j2ll_env"));
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
     }
 
     @Test
@@ -753,7 +750,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void unsupportedStringConcatRecipeBecomesHalfLoweredFallback() {
+    void unsupportedStringConcatRecipeIsSkippedWithoutPartialIr() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithUnsupportedStringConcatRecipe("pkg/StringConcatUnsupported"),
                 "concatUnsupported");
@@ -761,10 +758,10 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
         assertTrue(result.diagnostics().get(0).message().contains("unsupported recipe constant"));
-        assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_DYNAMIC));
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
     }
 
     @Test
@@ -790,7 +787,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void unsupportedLambdaMetafactoryShapeBecomesHalfLoweredFallback() {
+    void unsupportedLambdaMetafactoryShapeIsSkippedWithoutPartialIr() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithLambdaMetafactoryMethods("pkg/LambdaUnsupported"),
                 "alt");
@@ -798,10 +795,10 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_FALLBACK, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
         assertTrue(result.diagnostics().get(0).message().contains("altMetafactory"));
-        assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_DYNAMIC));
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
     }
 
     @Test
@@ -897,16 +894,14 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void classInitializerFailurePathMarksFailedState() {
-        var method = lower(
+    void unsupportedClassInitializerFailurePathIsSkippedWithoutPartialIr() {
+        var result = lower(
                 AsmFixtureBuilder.classWithThrowingClassInitializer("pkg/ClassInitFail"),
-                "<clinit>").irMethod().orElseThrow();
+                "<clinit>");
 
-        assertTrue(method.blocks().stream().anyMatch(block -> block.isExceptionHandler()
-                && hasOpcode(block, IrOpcode.CLASS_INIT_FAILED)
-                && block.terminator().kind() == IrTerminatorKind.THROW));
-        assertTrue(hasOpcode(method, IrOpcode.CLASS_INIT_FAILED));
-        assertTrue(llvm(method).contains("call void @j2ll_rt_class_init_failed(ptr %j2ll_env, ptr "));
+        assertEquals(LoweringStatus.SKIPPED, result.status());
+        assertTrue(result.irMethod().isEmpty());
+        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED.value(), result.reasonCode());
     }
 
     @Test
@@ -1144,7 +1139,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
         assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_STATIC));
     }
@@ -1158,7 +1153,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
         assertTrue(hasOpcode(result.artifact().orElseThrow().irMethod().orElseThrow(), IrOpcode.CALL_VIRTUAL));
     }
@@ -1169,7 +1164,7 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithAltMetafactoryLambda("pkg/AltLambda"),
                 "altCommon");
 
-        assertEquals(LoweringStatus.LOWERED, result.status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
         assertTrue(hasHelper(result.irMethod().orElseThrow(), "j2ll_rt_lambda_new"));
     }
 
@@ -1186,7 +1181,7 @@ class BytecodeToSsaLowererTest {
         ParsedMethod parsedMethod = parseMethod(classBytes, "dynamic");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
         var result = new BytecodeToSsaLowerer().lower(cfg);
-        assertEquals(LoweringStatus.LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
         var dynamic = result.artifact().orElseThrow().irMethod().orElseThrow();
         assertTrue(hasOpcode(dynamic, IrOpcode.NEW_ARRAY));
@@ -1196,7 +1191,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersSupportedConstantDynamicAndFallbacksUnsupportedBootstrap() {
+    void lowersSupportedConstantDynamicAndSkipsUnsupportedBootstrap() {
         byte[] classBytes = AsmFixtureBuilder.classWithConstantDynamicMethods("pkg/Condy");
 
         var supported = lower(classBytes, "supported").irMethod().orElseThrow();
@@ -1205,8 +1200,9 @@ class BytecodeToSsaLowererTest {
         ParsedMethod parsedMethod = parseMethod(classBytes, "unsupported");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
         var result = new BytecodeToSsaLowerer().lower(cfg);
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().get(0).message().contains("unsupported ConstantDynamic bootstrap"));
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
     }
 
     @Test
@@ -1232,7 +1228,7 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void unsupportedUnsafeApiUsesJvmHelperFallbackReport() {
+    void unsupportedUnsafeApiIsSkippedWithJvmHelperDiagnostic() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithUnsafeMethods("pkg/UnsafeOps"),
                 "unsupported");
@@ -1240,9 +1236,10 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.HALF_LOWERED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.UNSAFE_RAW_MEMORY_FALLBACK, result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).message().contains("UNSAFE_RAW_MEMORY_FALLBACK"));
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(DiagnosticCode.UNSAFE_RAW_MEMORY_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertTrue(result.diagnostics().get(0).message().contains("UNSAFE_RAW_MEMORY_UNSUPPORTED"));
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
     }
 
     @Test
@@ -1401,7 +1398,7 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.FRONTEND_SKIPPED, result.artifact().orElseThrow().status());
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
         assertEquals(expectedCode, result.diagnostics().get(0).code());
     }

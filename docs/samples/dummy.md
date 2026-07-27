@@ -44,7 +44,7 @@ bash ./gradlew dummyTest
 ```
 
 - `dTestBasic` builds `Dummy.jar`, runs original `basic`, runs j2ll with protection enabled, runs output `basic`, and compares exit/stdout/stderr.
-- `dTestAdvanced` does the same for `advanced` and asserts expected fallback/frontend-skip reason codes.
+- `dTestAdvanced` does the same for `advanced` and asserts expected skipped-method reason codes.
 - `dummyTest` runs the combined `all` mode.
 
 When a dummy test fails, the Gradle console prints a compact failure list with runtime failures, differential mismatches, missing report reason codes, artifact audit/readiness failures and the workspace path.

@@ -83,10 +83,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (hasComplexExceptionShape(cfg)
                 && !isSupportedSynchronizedExceptionCleanupShape(cfg)
                 && !isSupportedCatchAllRethrowShape(cfg)) {
-            return fallbackOnly(
+            return skipped(
                     method,
                     unsupportedCatchAllReasonCode(cfg),
-                    "complex catch-all/finally remains JVM-executed through encoded native fallback");
+                    "complex catch-all/finally is outside the current native-lowering boundary");
         }
         ValueFactory values = new ValueFactory();
         List<IrValue> parameters = createParameters(method, values);
@@ -141,10 +141,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             }
         } catch (MergeFailure failure) {
             if (isExceptionStateMergeBoundary(cfg, failure)) {
-                return fallbackOnly(
+                return skipped(
                         method,
                         "UNSUPPORTED_EXCEPTION_STATE_MERGE",
-                        "exception handler requires throw-site local state; preserving it through encoded JVM fallback");
+                        "exception handler requires throw-site local state that is not yet modeled in native IR");
             }
             return skipped(method, failure.reasonCode, failure.getMessage());
         } catch (IllegalStateException exception) {
@@ -155,7 +155,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     .at(location(method));
             return StageResult.complete(
                     DiagnosticStage.LOWERING,
-                    SsaMethodResult.frontendSkipped(method, "STACK_UNDERFLOW", exception.getMessage()),
+                    SsaMethodResult.skipped(method, "STACK_UNDERFLOW", exception.getMessage()),
                     List.of(diagnostic));
         } catch (UnsupportedOperationException exception) {
             if (isLegacySubroutineUnsupportedOpcode(exception)) {
@@ -196,34 +196,35 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (hasUnsupportedDefaultInterfaceSuper(diagnostics)) {
             return StageResult.complete(
                     DiagnosticStage.LOWERING,
-                    SsaMethodResult.frontendSkipped(
+                    SsaMethodResult.skipped(
                             method,
                             "UNSUPPORTED_DEFAULT_INTERFACE_SUPER",
-                            "default interface super call cannot be copied into a fallback helper class"),
+                            "default interface super call is outside the current native-lowering boundary"),
                     diagnostics);
         }
-        SsaMethodResult artifact = diagnostics.isEmpty()
-                ? SsaMethodResult.lowered(method, irMethod)
-                : SsaMethodResult.halfLowered(
+        Diagnostic skipDiagnostic = primarySkipDiagnostic(diagnostics);
+        SsaMethodResult artifact = skipDiagnostic == null
+                ? SsaMethodResult.nativeLowered(method, irMethod)
+                : SsaMethodResult.skipped(
                         method,
-                        irMethod,
-                        primaryFallbackReasonCode(diagnostics),
-                        "one or more call sites require JVM helper fallback");
+                        skipDiagnostic.code().value(),
+                        skipDiagnostic.message());
         return StageResult.complete(DiagnosticStage.LOWERING, artifact, diagnostics);
     }
 
-    private String primaryFallbackReasonCode(List<Diagnostic> diagnostics) {
+    private Diagnostic primarySkipDiagnostic(List<Diagnostic> diagnostics) {
         return diagnostics.stream()
-                .filter(Diagnostic::conservativeFallbackAvailable)
-                .map(Diagnostic::code)
-                .filter(code -> !code.equals(DiagnosticCode.JVM_HELPER_FALLBACK))
+                .filter(this::isSkipDiagnostic)
+                .filter(diagnostic -> !diagnostic.code().equals(DiagnosticCode.JVM_HELPER_UNSUPPORTED))
                 .findFirst()
                 .or(() -> diagnostics.stream()
-                        .filter(Diagnostic::conservativeFallbackAvailable)
-                        .map(Diagnostic::code)
+                        .filter(this::isSkipDiagnostic)
                         .findFirst())
-                .map(DiagnosticCode::value)
-                .orElse(DiagnosticCode.JVM_HELPER_FALLBACK.value());
+                .orElse(null);
+    }
+
+    private boolean isSkipDiagnostic(Diagnostic diagnostic) {
+        return LoweringStatus.SKIPPED.wireName().equals(diagnostic.decision());
     }
 
     private BlockLowering lowerBlock(
@@ -707,7 +708,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 return;
             }
         } else if (isJdkOwner(methodInsn.owner)) {
-            addJvmHelperFallbackDiagnostic(
+            addJvmHelperUnsupportedDiagnostic(
                     currentMethod,
                     methodKey,
                     "JDK method has no native policy yet",
@@ -787,8 +788,8 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             }
             return true;
         }
-        if (intrinsic.policy() == JdkMethodPolicy.JVM_HELPER_FALLBACK) {
-            addJvmHelperFallbackDiagnostic(
+        if (intrinsic.policy() == JdkMethodPolicy.JVM_HELPER_UNSUPPORTED) {
+            addJvmHelperUnsupportedDiagnostic(
                     currentMethod,
                     intrinsic.method().methodKey(),
                     intrinsic.reason(),
@@ -817,7 +818,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return false;
         }
         if (operands.isEmpty()) {
-            addJvmHelperFallbackDiagnostic(
+            addJvmHelperUnsupportedDiagnostic(
                     currentMethod,
                     methodKey,
                     "MethodHandle call has no receiver",
@@ -963,11 +964,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return false;
         }
         if (!plan.supported()) {
-            addFallbackDiagnostic(
+            DiagnosticCode diagnosticCode = methodInsn.owner.equals("java/lang/invoke/VarHandle")
+                    ? DiagnosticCode.VAR_HANDLE_DYNAMIC_UNSUPPORTED
+                    : DiagnosticCode.UNSAFE_RAW_MEMORY_UNSUPPORTED;
+            addUnsupportedDiagnostic(
                     currentMethod,
                     methodKey,
                     plan.reason(),
-                    DiagnosticCode.UNSAFE_RAW_MEMORY_FALLBACK,
+                    diagnosticCode,
                     diagnostics);
             appendOrdinaryCall(
                     SsaOpcodeSemantics.callOpcode(opcode),
@@ -1545,15 +1549,15 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return owner.startsWith("java/") || owner.startsWith("jdk/");
     }
 
-    private void addJvmHelperFallbackDiagnostic(
+    private void addJvmHelperUnsupportedDiagnostic(
             ParsedMethod currentMethod,
             String methodKey,
             String reason,
             List<Diagnostic> diagnostics) {
-        addFallbackDiagnostic(currentMethod, methodKey, reason, DiagnosticCode.JVM_HELPER_FALLBACK, diagnostics);
+        addUnsupportedDiagnostic(currentMethod, methodKey, reason, DiagnosticCode.JVM_HELPER_UNSUPPORTED, diagnostics);
     }
 
-    private void addFallbackDiagnostic(
+    private void addUnsupportedDiagnostic(
             ParsedMethod currentMethod,
             String methodKey,
             String reason,
@@ -1562,10 +1566,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         diagnostics.add(Diagnostic.warning(
                         DiagnosticStage.LOWERING,
                         code,
-                        methodKey + " uses JVM helper fallback: " + reason)
+                        methodKey + " is unsupported by native lowering: " + reason)
                 .at(location(currentMethod))
-                .withDecision(LoweringStatus.HALF_LOWERED.wireName())
-                .withConservativeFallbackAvailable(true));
+                .withDecision(LoweringStatus.SKIPPED.wireName()));
     }
 
     private void addDefaultInterfaceSuperDiagnostic(
@@ -1576,9 +1579,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         DiagnosticStage.LOWERING,
                         LoweringDiagnostics.UNSUPPORTED_DEFAULT_INTERFACE_SUPER,
                         methodKey
-                                + " uses default interface super; helper-class fallback cannot preserve invokespecial direct-superinterface verification")
+                                + " uses default interface super; the current native backend cannot preserve invokespecial direct-superinterface verification")
                 .at(location(currentMethod))
-                .withDecision(LoweringStatus.FRONTEND_SKIPPED.wireName()));
+                .withDecision(LoweringStatus.SKIPPED.wireName()));
     }
 
     private boolean hasUnsupportedDefaultInterfaceSuper(List<Diagnostic> diagnostics) {
@@ -1615,7 +1618,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         instructions);
                 return;
             }
-            addJvmHelperFallbackDiagnostic(
+            addJvmHelperUnsupportedDiagnostic(
                     currentMethod,
                     "indy:" + invokeDynamicInsn.name + "!" + invokeDynamicInsn.desc,
                     concatPlan.reason(),
@@ -1632,7 +1635,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             String reason = lambdaPlan.supported()
                     ? "unsupported lambda capture shape"
                     : lambdaPlan.reason();
-            addJvmHelperFallbackDiagnostic(
+            addJvmHelperUnsupportedDiagnostic(
                     currentMethod,
                     "indy:" + invokeDynamicInsn.name + "!" + invokeDynamicInsn.desc,
                     reason,
@@ -2325,10 +2328,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             stack.push(result);
             return;
         }
-        addJvmHelperFallbackDiagnostic(
+        addJvmHelperUnsupportedDiagnostic(
                 currentMethod,
                 key,
-                "unsupported ConstantDynamic bootstrap requires JVM helper fallback",
+                "unsupported ConstantDynamic bootstrap is outside the current native-lowering boundary",
                 diagnostics);
         IrValue result = values.next(JvmToIrTypes.fieldType(constantDynamic.getDescriptor()));
         instructions.add(IrInstruction.call(
@@ -2566,28 +2569,14 @@ public final class BytecodeToSsaLowerer implements Opcodes {
 
     private StageResult<SsaMethodResult> skipped(ParsedMethod method, String reasonCode, String reason) {
         Diagnostic diagnostic = Diagnostic.warning(
-                        DiagnosticStage.LOWERING,
-                        diagnosticCode(reasonCode),
-                        reason)
+                DiagnosticStage.LOWERING,
+                diagnosticCode(reasonCode),
+                reason)
                 .at(location(method))
-                .withDecision("frontendSkipped");
+                .withDecision(LoweringStatus.SKIPPED.wireName());
         return StageResult.complete(
                 DiagnosticStage.LOWERING,
-                SsaMethodResult.frontendSkipped(method, reasonCode, reason),
-                List.of(diagnostic));
-    }
-
-    private StageResult<SsaMethodResult> fallbackOnly(ParsedMethod method, String reasonCode, String reason) {
-        Diagnostic diagnostic = Diagnostic.warning(
-                        DiagnosticStage.LOWERING,
-                        diagnosticCode(reasonCode),
-                        reason)
-                .at(location(method))
-                .withDecision(LoweringStatus.HALF_LOWERED.wireName())
-                .withConservativeFallbackAvailable(true);
-        return StageResult.complete(
-                DiagnosticStage.LOWERING,
-                SsaMethodResult.fallbackOnly(method, reasonCode, reason),
+                SsaMethodResult.skipped(method, reasonCode, reason),
                 List.of(diagnostic));
     }
 

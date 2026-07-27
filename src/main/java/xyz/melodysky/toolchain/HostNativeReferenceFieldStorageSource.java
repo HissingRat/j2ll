@@ -6,7 +6,7 @@ import xyz.melodysky.packaging.LoaderClassValueSidecarInjector;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
 
 /**
- * JNI bridge from LLVM or encoded-fallback reference slots to the generated
+ * JNI bridge from LLVM reference slots to the generated
  * Loader's {@code ClassValue<Object[]>}. Values never leave the JVM heap.
  */
 final class HostNativeReferenceFieldStorageSource {

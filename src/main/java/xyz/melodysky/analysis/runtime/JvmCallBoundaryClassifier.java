@@ -1,6 +1,6 @@
 package xyz.melodysky.analysis.runtime;
 
-/** Names JVM-owned call families that must retain helper or fallback semantics. */
+/** Names JVM-owned call families that require helper execution or make the caller unsupported. */
 final class JvmCallBoundaryClassifier {
     boolean isJdkCollectionCall(String target) {
         return target.contains("java/util/ArrayList#")

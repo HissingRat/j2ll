@@ -1,7 +1,6 @@
 package xyz.melodysky.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -21,11 +20,9 @@ import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.jvm.AccessFlags;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
 import xyz.melodysky.analysis.field.NativeFieldStorageKind;
-import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
-import xyz.melodysky.report.FieldInternalizationReportWriter;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
@@ -57,37 +54,19 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
     }
 
     @Test
-    void acceptsReferenceEmbeddedFallbackAfterSidecarPlanReconciliation() {
+    void acceptsReferenceFieldOnlyOnLlvmPathWithMatchingSlotMarker() {
         NativeFieldInternalizationPlan fieldPlan =
                 fieldPlan(REFERENCE_FIELD, REFERENCE_SLOT);
-        NativeImplementationPlan initial = new NativeImplementationPlan(List.of(
+        String referenceSlotMarker = "native-slot:" + new NativeFieldSlotRef(
+                NativeFieldStorageKind.REFERENCE,
+                REFERENCE_SLOT,
+                0).encoded();
+        NativeImplementationPlan implementations = new NativeImplementationPlan(List.of(
                 implementation(
-                        NativeImplementationPath.TEMPLATE_JNI_PATH,
-                        "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK",
-                        List.of())));
+                        NativeImplementationPath.LLVM_NATIVE_PATH,
+                        List.of(referenceSlotMarker))));
 
-        NativeImplementationPlan reconciled =
-                new FallbackSidecarNativePlanReconciler().reconcile(
-                        initial,
-                        fieldPlan);
-        NativeMethodImplementation implementation =
-                reconciled.implementationFor(METHOD_KEY).orElseThrow();
-        FallbackSidecarFieldAccess expected =
-                FallbackSidecarFieldAccess.forMethod(fieldPlan, METHOD_KEY)
-                        .get(0);
-
-        assertTrue(implementation.fieldKeys().contains(
-                expected.nativeSlotMarker()));
-        assertTrue(implementation.fieldKeys().contains(expected.marker()));
-        assertTrue(validator.validate(fieldPlan, reconciled).isEmpty());
-        String report = new FieldInternalizationReportWriter().json(
-                fieldPlan,
-                true,
-                true,
-                reconciled);
-        assertFalse(report.contains(expected.marker()));
-        assertFalse(report.contains("fallback-sidecar:v1:"));
-        assertFalse(report.contains(REFERENCE_FIELD.fieldKey()));
+        assertTrue(validator.validate(fieldPlan, implementations).isEmpty());
     }
 
     @Test
@@ -97,12 +76,10 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
                 new NativeImplementationPlan(List.of()));
         NativeFieldInternalizationPlan referencePlan =
                 fieldPlan(REFERENCE_FIELD, REFERENCE_SLOT);
-        String referenceSlotMarker =
-                FallbackSidecarFieldAccess.forMethod(
-                                referencePlan,
-                                METHOD_KEY)
-                        .get(0)
-                        .nativeSlotMarker();
+        String referenceSlotMarker = "native-slot:" + new NativeFieldSlotRef(
+                NativeFieldStorageKind.REFERENCE,
+                REFERENCE_SLOT,
+                0).encoded();
         var ordinaryTemplate = validator.validate(
                 referencePlan,
                 new NativeImplementationPlan(List.of(implementation(
@@ -114,7 +91,7 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
         assertTrue(missing.get(0).message().contains(
                 "final native implementation is missing"));
         assertTrue(ordinaryTemplate.get(0).message().contains(
-                "neither LLVM_NATIVE_PATH nor a reference-sidecar-aware fallback"));
+                "is not LLVM_NATIVE_PATH"));
         assertEquals("FIELD_INTERNALIZATION_FINAL_PLAN_MISMATCH", missing.get(0).code().value());
     }
 

@@ -52,14 +52,14 @@ public final class OpcodeSupportMatrixWriter {
                 entry("invokedynamic", "invoke", "HELPER_BACKED", "LAMBDA_METAFACTORY_HELPER", "JvmHostedNativeRuntimeE2eTest.lambdaMetafactoryCommonShapesRunInChildJvmThroughJvmHelper"),
                 entry("aload/astore/iload/istore/lload/lstore", "locals", "LLVM_NATIVE_PATH", "LLVM_NATIVE_PATH", "BytecodeToSsaLowererTest.lowersWideLocalIinc"),
                 entry("monitorenter/monitorexit", "monitor", "HELPER_BACKED", "MONITOR_HELPER", "JvmHostedNativeRuntimeE2eTest.synchronizedBlockMonitorHelpersRunInChildJvmThroughLlvmNativePath"),
-                entry("catch-all/finally-state-merge", "exception", "FRONTEND_SKIPPED", "UNSUPPORTED_EXCEPTION_STATE_MERGE", "WeirdBytecodeSeedCorpusTest.unsupportedWeirdBytecodeSeedsProducePreciseFrontendDiagnostics"),
+                entry("catch-all/finally-state-merge", "exception", "SKIPPED", "UNSUPPORTED_EXCEPTION_STATE_MERGE", "WeirdBytecodeSeedCorpusTest.unsupportedWeirdBytecodeSeedsProducePreciseFrontendDiagnostics"),
                 entry("new/newarray/anewarray", "object-array", "HELPER_BACKED", "ALLOCATION_HELPER", "JvmHostedNativeRuntimeE2eTest.allocationAndStringHelpersRunInChildJvmThroughLlvmNativePath"),
-                entry("multianewarray", "object-array", "FALLBACK", "JVM_HELPER_FALLBACK", "BytecodeToSsaLowererTest.javaVisibleAllocationUsesJvmHelperBackedBackendOnly"),
+                entry("multianewarray", "object-array", "SKIPPED", "MULTIANEWARRAY_UNSUPPORTED", "BytecodeToSsaLowererTest.javaVisibleAllocationUsesJvmHelperBackedBackendOnly"),
                 entry("checkcast/instanceof", "type", "HELPER_BACKED", "TYPE_HELPER", "JvmHostedNativeRuntimeE2eTest.objectConstructionAndTypeHelpersRunInChildJvmThroughLlvmNativePath"),
                 entry("dup/dup_x1/dup2/swap", "stack", "LLVM_NATIVE_PATH", "LLVM_NATIVE_PATH", "BytecodeToSsaLowererTest.lowersStackPermutationOpcodes"),
                 entry("tableswitch/lookupswitch", "switch", "LLVM_NATIVE_PATH", "LLVM_NATIVE_PATH", "JvmHostedNativeRuntimeE2eTest.switchAndJvmNumericHelpersRunInChildJvmThroughLlvmNativePath"),
                 entry("athrow", "exception", "HELPER_BACKED", "EXCEPTION_HELPER", "JvmHostedNativeRuntimeE2eTest.explicitAthrowRunsInChildJvmThroughExceptionBridge"),
-                entry("jsr/ret", "legacy-subroutine", "FRONTEND_SKIPPED", "UNSUPPORTED_FINALLY_SUBROUTINE", "BytecodeToSsaLowererTest.unsupportedMultiExitFinallyShapeProducesPreciseDiagnostic"));
+                entry("jsr/ret", "legacy-subroutine", "SKIPPED", "UNSUPPORTED_FINALLY_SUBROUTINE", "BytecodeToSsaLowererTest.unsupportedMultiExitFinallyShapeProducesPreciseDiagnostic"));
     }
 
     private OpcodeSupportEntry entry(String opcode, String category, String status, String reasonCode, String testCoverage) {

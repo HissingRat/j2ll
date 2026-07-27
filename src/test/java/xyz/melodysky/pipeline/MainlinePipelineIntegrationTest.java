@@ -28,6 +28,7 @@ import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.JarClassFileSource;
 import xyz.melodysky.packaging.PackagingDiagnostics;
+import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.report.ArtifactAudit;
 import xyz.melodysky.report.ArtifactAuditCheck;
 import xyz.melodysky.report.ArtifactAuditResult;
@@ -101,7 +102,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(result.successful());
         assertTrue(Files.exists(result.outputJar()));
         assertRewrittenAddIsNative(result.outputJar());
-        assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("\"status\": \"lowered\""));
+        assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("\"status\": \"nativeLowered\""));
         assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("\"rewriteStrategy\": \"nativeOriginal\""));
         assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("JNI_ABI_REGISTER_NATIVES"));
         assertTrue(Files.readString(workspace.resolve("reports/packaging-report.json")).contains("\"rewrittenClasses\""));
@@ -109,7 +110,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(Files.readString(workspace.resolve("reports/symbol-audit.json")).contains("\"status\": \"passed\""));
         assertTrue(Files.exists(workspace.resolve("native/zig-workspace/build.zig")));
         assertTrue(Files.exists(workspace.resolve("config.resolved.json")));
-        assertTrue(Files.exists(workspace.resolve("reports/frontend-skip-report.json")));
+        assertTrue(Files.exists(workspace.resolve("reports/skipped-method-report.json")));
         assertTrue(Files.exists(workspace.resolve("reports/protection-report.json")));
         assertTrue(Files.exists(workspace.resolve("reports/support-matrix.json")));
         assertTrue(Files.readString(workspace.resolve("intermediates/runtime/runtime-metadata.json"))
@@ -197,8 +198,119 @@ class MainlinePipelineIntegrationTest implements Opcodes {
     }
 
     @Test
-    void reportsHalfLoweredFallbackAndNativeEmbeddedBlobWithoutSilentSkip() throws Exception {
-        Path inputJar = temp.resolve("fallback-input.jar");
+    void rejectedSkippedMethodGateStopsBeforeZigAndLeavesNoFinalJar() throws Exception {
+        Path inputJar = temp.resolve("skipped-gate-input.jar");
+        writeJar(
+                inputJar,
+                "pkg/FinallyShape.class",
+                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
+                        "pkg/FinallyShape"));
+        ResolvedConfig config = config(
+                inputJar,
+                "pkg/FinallyShape#badFinally!()V");
+        Path workspace = temp.resolve("out/skipped-gate-rejected");
+        java.util.ArrayList<SkippedMethod> offered = new java.util.ArrayList<>();
+
+        MainlinePipelineResult result = new MainlinePipeline().run(
+                config,
+                workspace,
+                BuildProgressListener.none(),
+                xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                skippedMethods -> {
+                    offered.addAll(skippedMethods);
+                    return false;
+                });
+
+        assertFalse(result.successful());
+        assertEquals(
+                List.of("pkg/FinallyShape#badFinally!()V"),
+                offered.stream().map(SkippedMethod::methodKey).toList());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(
+                        xyz.melodysky.diagnostic.DiagnosticCode
+                                .SKIPPED_METHODS_NOT_APPROVED)));
+        assertFalse(Files.exists(workspace.resolve("native/zig-workspace")));
+        assertFalse(Files.exists(result.outputJar()));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"rejected\""));
+    }
+
+    @Test
+    void defaultProgrammaticEntryRejectsSkippedMethodsBeforeZig() throws Exception {
+        Path inputJar = temp.resolve("default-skipped-gate-input.jar");
+        writeJar(
+                inputJar,
+                "pkg/DefaultGate.class",
+                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
+                        "pkg/DefaultGate"));
+        ResolvedConfig config = config(
+                inputJar,
+                "pkg/DefaultGate#badFinally!()V");
+        Path workspace = temp.resolve("out/default-skipped-gate");
+
+        MainlinePipelineResult result =
+                new MainlinePipeline().run(config, workspace);
+
+        assertFalse(result.successful());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(
+                        xyz.melodysky.diagnostic.DiagnosticCode
+                                .SKIPPED_METHODS_NOT_APPROVED)));
+        assertFalse(Files.exists(workspace.resolve("native/zig-workspace")));
+        assertFalse(Files.exists(result.outputJar()));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"rejected\""));
+    }
+
+    @Test
+    void skippedMethodApprovalInputFailureIsNotReportedAsZigFailure()
+            throws Exception {
+        Path inputJar = temp.resolve("skipped-gate-input-error.jar");
+        writeJar(
+                inputJar,
+                "pkg/InputError.class",
+                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
+                        "pkg/InputError"));
+        ResolvedConfig config = config(
+                inputJar,
+                "pkg/InputError#badFinally!()V");
+        Path workspace = temp.resolve("out/skipped-gate-input-error");
+
+        MainlinePipelineResult result = new MainlinePipeline().run(
+                config,
+                workspace,
+                BuildProgressListener.none(),
+                xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                skippedMethods -> {
+                    throw new IOException("stdin closed unexpectedly");
+                });
+
+        assertFalse(result.successful());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(
+                        xyz.melodysky.diagnostic.DiagnosticCode
+                                .SKIPPED_METHOD_CONFIRMATION_INPUT_FAILED)
+                        && diagnostic.stage()
+                                == xyz.melodysky.diagnostic.DiagnosticStage
+                                        .LOWERING));
+        assertFalse(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(
+                        xyz.melodysky.toolchain.ToolchainDiagnostics
+                                .ZIG_TARGET_UNBUILDABLE)));
+        assertFalse(Files.exists(workspace.resolve("native/zig-workspace")));
+        assertTrue(Files.readString(
+                        workspace.resolve("reports/skipped-method-report.json"))
+                .contains("\"confirmationDecision\": \"inputError\""));
+    }
+
+    @Test
+    void reportsUnsupportedJdkMethodAsSkippedWithoutEmbeddingBytecodeCopy() throws Exception {
+        Path inputJar = temp.resolve("unsupported-jdk-input.jar");
         writeJar(inputJar, "pkg/JdkFallback.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"));
         ResolvedConfig config = config(inputJar, "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;");
         Path workspace = temp.resolve("out/build_2026-06-25_00-00-01");
@@ -208,18 +320,32 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(result.successful());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(loweringReport.contains("JVM_HELPER_FALLBACK"));
-        assertTrue(loweringReport.contains("JNI_ABI_REGISTER_NATIVES"));
-        assertTrue(packagingReport.contains("\"fallbackBlobs\""));
-        assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"classloaderReusePolicy\": \"lazyPerClassLoaderReuse\""));
-        assertFalse(packagingReport.contains(".class"));
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        assertTrue(loweringReport.contains("JVM_HELPER_UNSUPPORTED"), loweringReport);
+        assertTrue(loweringReport.contains("\"nativeImplementationPath\": null"), loweringReport);
+        assertTrue(skippedReport.contains(
+                "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"), skippedReport);
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertFalse(packagingReport.contains("nativeEmbeddedClassBlob"), packagingReport);
+        assertTrue(packagingReport.contains("\"registeredNativeMethods\": []"), packagingReport);
+        var outputMethod = new AsmClassParser()
+                .parseAll(new JarClassFileSource(result.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass("pkg/JdkFallback")
+                .orElseThrow()
+                .methods().stream()
+                .filter(method -> method.name().equals("substring"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(outputMethod.accessFlags().isNative());
+        assertTrue(outputMethod.hasCode());
     }
 
     @Test
-    void finalCoverageTurnsProtectedNestedArrayBackendGapIntoNativeFallback() throws Exception {
+    void finalCoverageTurnsProtectedNestedArrayBackendGapIntoSkippedMethod() throws Exception {
         String owner = "pkg/ProtectedByteMatrices";
         String methodKey = owner + "#array!(I)I";
         Path inputJar = temp.resolve("protected-nested-array.jar");
@@ -245,29 +371,29 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                         && method.descriptor().equals("(I)I"))
                 .findFirst()
                 .orElseThrow();
-        assertTrue(array.accessFlags().isNative());
-        assertFalse(array.hasCode());
-        assertTrue(result.nativeRegistrationPlan().entries().stream()
+        assertFalse(array.accessFlags().isNative());
+        assertTrue(array.hasCode());
+        assertFalse(result.nativeRegistrationPlan().entries().stream()
                 .anyMatch(entry -> entry.registrationOwner().equals(owner)
                         && entry.methodName().equals("array")
                         && entry.descriptor().equals("(I)I")));
 
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        String frontendSkipReport = Files.readString(workspace.resolve("reports/frontend-skip-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""), loweringReport);
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
         assertTrue(loweringReport.contains(
                 "\"reasonCode\": \"UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW\""), loweringReport);
         assertTrue(loweringReport.contains(
-                "\"nativeImplementationPath\": \"TEMPLATE_JNI_PATH\""), loweringReport);
-        assertTrue(packagingReport.contains(methodKey), packagingReport);
-        assertTrue(packagingReport.contains(
-                "\"fallbackReasonCode\": \"UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW\""), packagingReport);
-        assertFalse(frontendSkipReport.contains(methodKey), frontendSkipReport);
+                "\"nativeImplementationPath\": null"), loweringReport);
+        assertTrue(skippedReport.contains(methodKey), skippedReport);
+        assertTrue(skippedReport.contains(
+                "\"confirmationDecision\": \"approved\""), skippedReport);
+        assertFalse(packagingReport.contains(methodKey), packagingReport);
     }
 
     @Test
-    void reportsUnsupportedUnsafeRawMemoryWithStableFallbackReason() throws Exception {
+    void reportsUnsupportedUnsafeRawMemoryAsSkipped() throws Exception {
         Path inputJar = temp.resolve("unsafe-raw-memory-input.jar");
         writeJar(inputJar, "pkg/UnsafeOps.class", AsmFixtureBuilder.classWithUnsafeMethods("pkg/UnsafeOps"));
         ResolvedConfig config = config(inputJar, "pkg/UnsafeOps#unsupported!(Lsun/misc/Unsafe;J)B");
@@ -278,14 +404,15 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(result.successful(), result.diagnostics().toString());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"UNSAFE_RAW_MEMORY_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"UNSAFE_RAW_MEMORY_FALLBACK\""));
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        assertTrue(loweringReport.contains("\"reasonCode\": \"UNSAFE_RAW_MEMORY_UNSUPPORTED\""), loweringReport);
+        assertTrue(skippedReport.contains("UNSAFE_RAW_MEMORY_UNSUPPORTED"), skippedReport);
+        assertFalse(packagingReport.contains("UNSAFE_RAW_MEMORY"), packagingReport);
     }
 
     @Test
-    void reportsComplexFinallyAsEncodedJvmFallback() throws Exception {
+    void reportsComplexFinallyAsSkippedAndPreservesOriginalBody() throws Exception {
         Path inputJar = temp.resolve("complex-finally-input.jar");
         writeJar(inputJar, "pkg/FinallyShape.class",
                 AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/FinallyShape"));
@@ -296,15 +423,14 @@ class MainlinePipelineIntegrationTest implements Opcodes {
 
         assertTrue(result.successful(), result.diagnostics().toString());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        String frontendSkipReport = Files.readString(workspace.resolve("reports/frontend-skip-report.json"));
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
         assertTrue(loweringReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
-        assertFalse(frontendSkipReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"UNSUPPORTED_MULTI_EXIT_FINALLY\""));
-        assertFalse(packagingReport.contains("\"fallbackBlobs\": []"));
-        assertFalse(packagingReport.contains("\"registeredNativeMethods\": []"));
+        assertTrue(skippedReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"), skippedReport);
+        assertFalse(packagingReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"), packagingReport);
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertTrue(packagingReport.contains("\"registeredNativeMethods\": []"), packagingReport);
         var outputClass = new AsmClassParser()
                 .parseAll(new JarClassFileSource(result.outputJar()))
                 .artifact()
@@ -316,13 +442,13 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 .filter(method -> method.name().equals("badFinally"))
                 .findFirst()
                 .orElseThrow();
-        assertTrue(badFinally.accessFlags().isNative());
-        assertFalse(badFinally.hasCode());
+        assertFalse(badFinally.accessFlags().isNative());
+        assertTrue(badFinally.hasCode());
     }
 
     @Test
-    void notApplicableMethodsAreNeverRewrittenOrRegistered() throws Exception {
-        Path inputJar = temp.resolve("not-applicable-input.jar");
+    void ineligibleMethodsAreNeverRewrittenOrRegistered() throws Exception {
+        Path inputJar = temp.resolve("ineligible-input.jar");
         writeJar(inputJar, Map.of(
                 "pkg/AbstractApi.class", AsmFixtureBuilder.classWithVoidMethod(
                         "pkg/AbstractApi",
@@ -351,7 +477,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(Files.exists(result.outputJar()));
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertEquals(3, countOccurrences(loweringReport, "\"status\": \"notApplicable\""));
+        assertEquals(3, countOccurrences(loweringReport, "\"status\": \"ineligible\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"ABSTRACT_METHOD\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"ALREADY_NATIVE\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"NO_CODE\""));
@@ -441,6 +567,27 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         assertTrue(packagingReport.contains("\"versionedEntriesPreserved\": 1"));
         assertTrue(packagingReport.contains("\"versionedClassPolicy\": \"baseClassesOnlyPreserveVersionedEntries\""));
+        String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        assertTrue(loweringReport.contains("MULTI_RELEASE_VERSIONED_CLASS"), loweringReport);
+        assertTrue(skippedReport.contains("pkg/MrValue#value!()Ljava/lang/String;"), skippedReport);
+        assertFalse(result.nativeRegistrationPlan().entries().stream()
+                .anyMatch(entry -> entry.registrationOwner().equals("pkg/MrValue")
+                        && entry.methodName().equals("value")));
+        var baseValue = new AsmClassParser()
+                .parseAll(new JarClassFileSource(result.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass("pkg/MrValue")
+                .orElseThrow()
+                .methods().stream()
+                .filter(method -> method.name().equals("value"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(baseValue.accessFlags().isNative());
+        assertTrue(baseValue.hasCode());
     }
 
     @Test
@@ -622,13 +769,13 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 "UNSUPPORTED_MULTI_EXIT_FINALLY",
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
-                "REFLECTION_DYNAMIC_FALLBACK",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
-                "METHOD_HANDLE_PERMUTE_FALLBACK",
-                "METHOD_HANDLE_FILTER_FALLBACK",
-                "METHOD_HANDLE_FOLD_FALLBACK",
+                "REFLECTION_DYNAMIC_UNSUPPORTED",
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED",
+                "METHOD_HANDLE_PERMUTE_UNSUPPORTED",
+                "METHOD_HANDLE_FILTER_UNSUPPORTED",
+                "METHOD_HANDLE_FOLD_UNSUPPORTED",
                 "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
-                "ALT_METAFACTORY_FALLBACK",
+                "ALT_METAFACTORY_UNSUPPORTED",
                 "ZIG_TARGET_UNBUILDABLE")) {
             assertTrue(docs.contains(reasonCode), reasonCode + " must be documented");
         }
@@ -885,7 +1032,12 @@ class MainlinePipelineIntegrationTest implements Opcodes {
 
     private MainlinePipelineResult runPipeline(ResolvedConfig config, Path workspace) throws Exception {
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home"))) {
-            return new MainlinePipeline().run(config, workspace);
+            return new MainlinePipeline().run(
+                    config,
+                    workspace,
+                    BuildProgressListener.none(),
+                    xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                    SkippedMethodApproval.allowAll());
         }
     }
 

@@ -16,7 +16,7 @@
 - `ReachabilityResult`
 - `RuntimeTypeResult`
 - `DevirtualizationPlan`
-- conservative fallback metadata
+- conservative dispatch and unsupported-boundary metadata
 
 ## 推荐包
 
@@ -51,7 +51,7 @@ CHA 是第一版主线能力。
 - final class / final method 可以产生单目标。
 - hierarchy incomplete 时必须保留 unknown external target。
 - interface default method、bridge method、synthetic method、covariant return 需要有明确 lookup policy。
-- interface methods with Code participate in call graph normally. Abstract/no-Code interface declarations are selector/report concerns and are recorded as `notApplicable` when matched; they do not become call graph targets with synthetic bodies.
+- interface methods with Code participate in call graph normally. Abstract/no-Code interface declarations are selector/eligibility-report concerns; they do not receive an executable-method status and do not become call graph targets with synthetic bodies.
 
 ## RTA
 
@@ -86,20 +86,21 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 - original call kind
 - resolved target set
 - selected direct target when safe
-- fallback requirement
+- runtime dispatch requirement
 - reason when not devirtualized
-- whether fallback requires JVM helper fallback and therefore makes the caller `halfLowered`
+- whether the call remains safely expressible through a JVM/JNI runtime helper
+- whether the unsupported call shape makes the complete caller method `skipped`
 
-如果未来引入 guarded devirtualization，plan 还需要描述 guard condition 和 fallback target。第一版可以只做 unguarded safe devirtualization。
+如果未来引入 guarded devirtualization，plan 还需要描述 guard condition 和 slow-path target。第一版可以只做 unguarded safe devirtualization。
 
-当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。当前 child JVM E2E 已覆盖 class inherited default-interface method、class override default method，以及 unrelated default providers 的 conflict boundary；report 额外标记 `DEFAULT_INTERFACE_DISPATCH_HELPER`，conflict/diamond boundary 追加 `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT` / `DEFAULT_INTERFACE_DISPATCH_FALLBACK`。更复杂 descriptor、incomplete hierarchy sensitive shape 仍必须报告明确 fallback reason。
+当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。只要完整方法最终拥有可执行 native implementation，这种 JVM/JNI helper-backed 路径仍记录为 `nativeLowered`。当前 child JVM E2E 已覆盖 class inherited default-interface method 和 class override default method。conflict/diamond 或更复杂 descriptor、incomplete-hierarchy-sensitive shape 无法由当前 helper 保持语义时，完整 caller 记录为 `skipped`，保留原 Code，不生成 native registration，并报告明确 reason。
 
 ## 测试
 
 - CHA final receiver 单目标。
 - CHA 多 subtype 多目标。
 - interface 多实现。
-- missing external type 保守回退。
+- missing external type 的保守 dispatch/unsupported 决策。
 - RTA 排除未实例化 subtype。
-- RTA 遇到 unknown allocation 后回退。
+- RTA 遇到 unknown allocation 后恢复保守 target set。
 - devirtualization plan 输出 reason。

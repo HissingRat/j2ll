@@ -19,10 +19,10 @@ class ReportJsonWriterTest {
     void writesDiagnosticsMinimumSchemaGolden() {
         Diagnostic diagnostic = Diagnostic.warning(
                         DiagnosticStage.LOWERING,
-                        DiagnosticCode.JVM_HELPER_FALLBACK,
-                        "virtual call requires JVM helper fallback")
+                        DiagnosticCode.of("UNSUPPORTED_EXCEPTION_STATE_MERGE"),
+                        "exception-state merge cannot be native lowered")
                 .at(DiagnosticLocation.methodLocation("pkg/Foo", "run", "()V").withInstructionOffset(12))
-                .withDecision("halfLowered");
+                .withDecision("skipped");
 
         assertEquals("""
                 {
@@ -31,16 +31,16 @@ class ReportJsonWriterTest {
                   "diagnostics": [
                     {
                       "severity": "warning",
-                      "code": "JVM_HELPER_FALLBACK",
+                      "code": "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                       "stage": "LOWERING",
                       "class": "pkg/Foo",
                       "method": "run",
                       "descriptor": "()V",
                       "instructionOffset": 12,
                       "artifactId": "pkg/Foo#run!()V",
-                      "message": "virtual call requires JVM helper fallback",
+                      "message": "exception-state merge cannot be native lowered",
                       "hint": "",
-                      "decision": "halfLowered"
+                      "decision": "skipped"
                     }
                   ]
                 }
@@ -54,14 +54,13 @@ class ReportJsonWriterTest {
                 "run",
                 "()V",
                 "run__8f3a21c0d4e5f607",
-                LoweringStatus.LOWERED,
+                LoweringStatus.NATIVE_LOWERED,
                 MethodRewriteStrategy.NATIVE_ORIGINAL,
                 List.of("public"),
                 List.of("synthetic"),
                 "j2ll_pkg_Foo_run_8f3a21c0d4e5f607",
                 "pkg/Foo",
                 "LLVM_NATIVE_PATH",
-                List.of(),
                 List.of(),
                 null,
                 null);
@@ -76,7 +75,7 @@ class ReportJsonWriterTest {
                       "method": "run",
                       "descriptor": "()V",
                       "methodId": "run__8f3a21c0d4e5f607",
-                      "status": "lowered",
+                      "status": "nativeLowered",
                       "rewriteStrategy": "nativeOriginal",
                       "accessFlags": [
                         "public"
@@ -88,18 +87,17 @@ class ReportJsonWriterTest {
                       "registrationOwner": "pkg/Foo",
                       "nativeImplementationPath": "LLVM_NATIVE_PATH",
                       "helperBackedSites": [],
-                      "fallbackSites": [],
                       "reasonCode": null,
                       "reason": null
                     }
                   ],
-                  "notApplicable": [
+                  "ineligible": [
                     {
                       "selector": "pkg/Api#call!()V",
                       "class": "pkg/Api",
                       "method": "call",
                       "descriptor": "()V",
-                      "status": "notApplicable",
+                      "status": "ineligible",
                       "reasonCode": "ABSTRACT_METHOD",
                       "reason": "abstract method has no lowerable body"
                     }
@@ -118,7 +116,7 @@ class ReportJsonWriterTest {
                 }
                 """, writer.loweringJson(
                 List.of(lowered),
-                List.of(MethodEligibility.notApplicable(
+                List.of(MethodEligibility.ineligible(
                         "pkg/Api",
                         "call",
                         "()V",
@@ -135,13 +133,13 @@ class ReportJsonWriterTest {
     }
 
     @Test
-    void writesHelperBackedAndFallbackSites() {
-        LoweringReportMethod halfLowered = new LoweringReportMethod(
+    void writesHelperBackedNativeLoweredSitesWithoutFallbackSurface() {
+        LoweringReportMethod nativeLowered = new LoweringReportMethod(
                 "pkg/Foo",
                 "concat",
                 "()Ljava/lang/String;",
                 "concat__8f3a21c0d4e5f607",
-                LoweringStatus.HALF_LOWERED,
+                LoweringStatus.NATIVE_LOWERED,
                 MethodRewriteStrategy.NATIVE_ORIGINAL,
                 List.of("public", "static"),
                 List.of(),
@@ -149,9 +147,8 @@ class ReportJsonWriterTest {
                 "pkg/Foo",
                 "TEMPLATE_JNI_PATH",
                 List.of(new HelperBackedSiteReport("j2ll_rt_string_builder_append_ref", "HELPER_BACKED_LOWERING")),
-                List.of(new FallbackSiteReport(-1, "pkg/Foo#concat!()Ljava/lang/String;", "JVM_HELPER_FALLBACK", "nativeEmbeddedClassBlob")),
-                "JVM_HELPER_FALLBACK",
-                "one or more call sites require JVM helper fallback");
+                null,
+                null);
 
         assertEquals("""
                 {
@@ -163,7 +160,7 @@ class ReportJsonWriterTest {
                       "method": "concat",
                       "descriptor": "()Ljava/lang/String;",
                       "methodId": "concat__8f3a21c0d4e5f607",
-                      "status": "halfLowered",
+                      "status": "nativeLowered",
                       "rewriteStrategy": "nativeOriginal",
                       "accessFlags": [
                         "public",
@@ -179,21 +176,13 @@ class ReportJsonWriterTest {
                           "reasonCode": "HELPER_BACKED_LOWERING"
                         }
                       ],
-                      "fallbackSites": [
-                        {
-                          "instructionOffset": -1,
-                          "target": "pkg/Foo#concat!()Ljava/lang/String;",
-                          "reasonCode": "JVM_HELPER_FALLBACK",
-                          "fallbackMode": "nativeEmbeddedClassBlob"
-                        }
-                      ],
-                      "reasonCode": "JVM_HELPER_FALLBACK",
-                      "reason": "one or more call sites require JVM helper fallback"
+                      "reasonCode": null,
+                      "reason": null
                     }
                   ],
-                  "notApplicable": [],
+                  "ineligible": [],
                   "excluded": []
                 }
-                """, writer.loweringJson(List.of(halfLowered), List.of(), List.of()));
+                """, writer.loweringJson(List.of(nativeLowered), List.of(), List.of()));
     }
 }

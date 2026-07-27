@@ -16,7 +16,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
-import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
@@ -59,7 +58,7 @@ public class ArtifactAudit {
             Set<String> entries = new HashSet<>();
             jar.stream().filter(entry -> !entry.isDirectory()).forEach(entry -> entries.add(entry.getName()));
             checkAuditSurfaces(checks, workspaceRoot, entries, embeddedLibraries, exportedSymbols);
-            checkNoPlainFallbackClasses(checks, entries);
+            checkNoEmbeddedBytecodeEntries(checks, entries);
             checkNoLegacyEntries(checks, entries);
             checkNoPdbEntries(checks, entries);
             checkNativeResourcePaths(checks, entries, embeddedLibraryDirectory, embeddedLibraries);
@@ -71,9 +70,9 @@ public class ArtifactAudit {
                     !embeddedLibraries.isEmpty());
             checkEmbeddedLibraryHashes(checks, jar, embeddedLibraries);
             checkJ2llMetadata(checks, workspaceRoot, jar, entries, embeddedLibraries);
-            checkFallbackBlobReport(checks, workspaceRoot);
             checkPlaintextsInJar(workspaceRoot, jar, checks, checkedSensitiveFacts);
         }
+        checkNoLegacyFallbackWorkspaceSurfaces(checks, workspaceRoot);
         checkExportedSymbols(checks, exportedSymbols, !embeddedLibraries.isEmpty());
         checkNoWorkspacePdb(checks, workspaceRoot, embeddedLibraries);
         checkPlaintexts(workspaceRoot, checks, checkedSensitiveFacts);
@@ -141,20 +140,30 @@ public class ArtifactAudit {
                 message)));
     }
 
-    private void checkNoPlainFallbackClasses(List<ArtifactAuditCheck> checks, Set<String> entries) {
+    private void checkNoEmbeddedBytecodeEntries(List<ArtifactAuditCheck> checks, Set<String> entries) {
         List<String> forbidden = entries.stream()
-                .filter(entry -> entry.startsWith("j2ll/generated/fallback/") && entry.endsWith(".class"))
+                .filter(this::isEmbeddedBytecodeEntry)
                 .sorted()
                 .toList();
         checks.add(forbidden.isEmpty()
                 ? ArtifactAuditCheck.passed(
-                        "jar.noPlainFallbackClasses",
-                        "NO_PLAIN_FALLBACK_CLASSES",
-                        "output JAR has no plaintext generated fallback class entries")
+                        "jar.noEmbeddedBytecodeCopies",
+                        "NO_EMBEDDED_METHOD_BYTECODE",
+                        "output JAR has no generated fallback class or embedded-bytecode manifest entries")
                 : ArtifactAuditCheck.failed(
-                        "jar.noPlainFallbackClasses",
-                        "PLAIN_FALLBACK_CLASS_ENTRY",
-                        "plaintext fallback class entries: " + forbidden));
+                        "jar.noEmbeddedBytecodeCopies",
+                        "EMBEDDED_METHOD_BYTECODE_ENTRY",
+                        "forbidden embedded-bytecode entries: " + forbidden));
+    }
+
+    private boolean isEmbeddedBytecodeEntry(String entry) {
+        String lower = entry.toLowerCase(java.util.Locale.ROOT);
+        return (lower.startsWith("j2ll/generated/fallback/") && lower.endsWith(".class"))
+                || (lower.endsWith(".class")
+                        && lower.substring(lower.lastIndexOf('/') + 1).startsWith("j2llfallback$"))
+                || lower.contains("/fallback-blobs/")
+                || lower.endsWith("/fallback-blob-manifest.json")
+                || lower.endsWith("/fallback_blob_manifest.json");
     }
 
     private void checkNoLegacyEntries(List<ArtifactAuditCheck> checks, Set<String> entries) {
@@ -271,19 +280,29 @@ public class ArtifactAudit {
             return;
         }
         try (InputStream input = jar.getInputStream(jar.getJarEntry(entryName))) {
-            ClassReader reader = new ClassReader(input);
-            boolean identityMatches = reader.getClassName().equals(internalName);
-            boolean versionMatches = reader.readUnsignedShort(6) == Opcodes.V17;
-            checks.add(identityMatches && versionMatches
+            RuntimeLoaderBytecodeAudit.Result loaderAudit =
+                    new RuntimeLoaderBytecodeAudit().inspect(
+                            input.readAllBytes());
+            boolean identityMatches =
+                    loaderAudit.internalName().equals(internalName);
+            boolean versionMatches =
+                    loaderAudit.majorVersion() == Opcodes.V17;
+            checks.add(identityMatches
+                            && versionMatches
+                            && loaderAudit.forbiddenSurfaces().isEmpty()
                     ? ArtifactAuditCheck.passed(
                             "jar.runtimeLoader",
                             "RUNTIME_LOADER_PRESENT",
-                            "single Java 17 runtime Loader is present at " + entryName)
+                            "single minimal Java 17 runtime Loader is present at " + entryName)
                     : ArtifactAuditCheck.failed(
                             "jar.runtimeLoader",
                             "RUNTIME_LOADER_CLASS_INVALID",
-                            "Loader identity/version mismatch: internalName=" + reader.getClassName()
-                                    + ", major=" + reader.readUnsignedShort(6)));
+                            "Loader identity/version mismatch or forbidden bytecode surface: internalName="
+                                    + loaderAudit.internalName()
+                                    + ", major="
+                                    + loaderAudit.majorVersion()
+                                    + ", forbiddenSurfaces="
+                                    + loaderAudit.forbiddenSurfaces()));
         }
     }
 
@@ -459,13 +478,16 @@ public class ArtifactAudit {
                 "diagnostics.json",
                 "artifact-audit.json",
                 "field-internalization-report.json",
-                "frontend-skip-report.json",
                 "known-blockers.json",
                 "lowering-report.json",
                 "opcode-support-matrix.json",
                 "packaging-report.json",
                 "protection-report.json",
                 "release-readiness.json",
+                "skipped-method-report.json",
+                "index.json",
+                "summary.json",
+                "summary.md",
                 "support-matrix.json",
                 "symbol-audit.json");
         boolean complete = reports.containsAll(required);
@@ -542,118 +564,60 @@ public class ArtifactAudit {
         }
     }
 
-    private void checkFallbackBlobReport(List<ArtifactAuditCheck> checks, Path workspaceRoot) throws IOException {
-        Path packagingReport = workspaceRoot.resolve("reports/packaging-report.json");
-        if (!Files.isRegularFile(packagingReport)) {
-            checks.add(ArtifactAuditCheck.skipped(
-                    "fallbackBlob.binaryAudit",
-                    "surfaceNotGenerated",
-                    "packaging report was not available for fallback blob audit"));
-            return;
-        }
-        JsonObject root = JsonParser.parseString(Files.readString(packagingReport)).getAsJsonObject();
-        if (!root.has("fallbackBlobs") || !root.get("fallbackBlobs").isJsonArray()) {
-            checks.add(ArtifactAuditCheck.skipped(
-                    "fallbackBlob.binaryAudit",
-                    "surfaceNotGenerated",
-                    "packaging report has no fallbackBlobs array"));
-            return;
-        }
-        com.google.gson.JsonArray blobs = root.getAsJsonArray("fallbackBlobs");
-        if (blobs.isEmpty()) {
-            checks.add(ArtifactAuditCheck.passed(
-                    "fallbackBlob.binaryAudit",
-                    "NO_FALLBACK_BLOBS",
-                    "no nativeEmbeddedClassBlob fallback blobs were emitted"));
-            return;
-        }
-        ArrayList<String> metadataFailures = new ArrayList<>();
-        ArrayList<String> carrierPlaintextHits = new ArrayList<>();
-        List<String> carrierTexts = fallbackCarrierTexts(workspaceRoot);
-        for (com.google.gson.JsonElement element : blobs) {
-            JsonObject blob = element.getAsJsonObject();
-            String id = textOrEmpty(blob, "originalMethodId");
-            String methodKey = textOrEmpty(blob, "originalMethodKey");
-            String sha256 = textOrEmpty(blob, "sha256");
-            String encodedSha256 = textOrEmpty(blob, "encodedSha256");
-            String originalSha256 = textOrEmpty(blob, "originalSha256");
-            int originalSize = intOrMinusOne(blob, "originalSize");
-            int encodedSize = intOrMinusOne(blob, "encodedSize");
-            if (!isSha256(sha256) || !isSha256(encodedSha256) || !isSha256(originalSha256)) {
-                metadataFailures.add(id + ":sha256");
-            }
-            if (!sha256.equals(encodedSha256)) {
-                metadataFailures.add(id + ":encodedSha256Alias");
-            }
-            if (originalSize <= 0 || encodedSize <= 0) {
-                metadataFailures.add(id + ":size");
-            }
-            if (!"fallbackBlobEncodingV1".equals(textOrEmpty(blob, "encodingVersion"))
-                    || !"j2ll-rle-byte-pairs-v1".equals(textOrEmpty(blob, "compressionAlgorithm"))
-                    || !"xor-sha256-key-stream-v1".equals(textOrEmpty(blob, "encryptionAlgorithm"))
-                    || !"nativeEmbeddedClassBlob".equals(textOrEmpty(blob, "storageTarget"))) {
-                metadataFailures.add(id + ":encodingPolicy");
-            }
-            List<String> forbidden = List.of(methodKey);
-            for (String text : carrierTexts) {
-                for (String value : forbidden) {
-                    if (!value.isBlank() && text.contains(value)) {
-                        carrierPlaintextHits.add(id + ":sha256="
-                                + sha256(value.getBytes(StandardCharsets.UTF_8)));
-                    }
-                }
-            }
-        }
-        checks.add(metadataFailures.isEmpty()
-                ? ArtifactAuditCheck.passed(
-                        "fallbackBlob.binaryMetadata",
-                        "FALLBACK_BLOB_BINARY_METADATA_CONSISTENT",
-                        "fallback blob SHA, size, encoding and storage metadata are consistent")
-                : ArtifactAuditCheck.failed(
-                        "fallbackBlob.binaryMetadata",
-                        "FALLBACK_BLOB_BINARY_METADATA_MISMATCH",
-                        "fallback blob metadata failures: " + metadataFailures));
-        checks.add(carrierPlaintextHits.isEmpty()
-                ? ArtifactAuditCheck.passed(
-                        "fallbackBlob.carrierPlaintext",
-                        "FALLBACK_BLOB_CARRIER_PLAINTEXT_ABSENT",
-                        "fallback carrier C does not expose original method identity plaintext")
-                : ArtifactAuditCheck.failed(
-                        "fallbackBlob.carrierPlaintext",
-                        "FALLBACK_BLOB_CARRIER_PLAINTEXT_FOUND",
-                        "fallback carrier plaintext hits: " + carrierPlaintextHits.stream().sorted().distinct().toList()));
-    }
-
-    private List<String> fallbackCarrierTexts(Path workspaceRoot) throws IOException {
-        ArrayList<String> texts = new ArrayList<>();
-        List<Path> roots = List.of(
-                workspaceRoot.resolve("native/zig-workspace/jni"),
-                workspaceRoot.resolve("native/zig-workspace/fallback"),
-                workspaceRoot.resolve("intermediates/classes"));
-        for (Path root : roots) {
+    private void checkNoLegacyFallbackWorkspaceSurfaces(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot) throws IOException {
+        ArrayList<String> forbidden = new ArrayList<>();
+        for (Path root : List.of(
+                workspaceRoot.resolve("native/zig-workspace"),
+                workspaceRoot.resolve("intermediates/runtime"))) {
             if (!Files.isDirectory(root)) {
                 continue;
             }
             try (Stream<Path> paths = Files.walk(root)) {
-                for (Path path : paths.filter(Files::isRegularFile)
-                        .filter(item -> item.toString().endsWith(".c"))
-                        .sorted()
-                        .toList()) {
-                    texts.add(Files.readString(path, StandardCharsets.ISO_8859_1));
-                }
+                paths.filter(path -> !path.equals(root))
+                        .filter(path -> isLegacyFallbackWorkspacePath(root.relativize(path)))
+                        .map(path -> displayPath(workspaceRoot, path))
+                        .forEach(forbidden::add);
             }
         }
-        return texts;
+        Path packagingReport = workspaceRoot.resolve("reports/packaging-report.json");
+        if (Files.isRegularFile(packagingReport)) {
+            String report = Files.readString(packagingReport);
+            if (report.contains("\"fallbackBlobs\"")
+                    || report.contains("nativeEmbeddedClassBlob")
+                    || report.contains("fallbackBlobEncodingV1")) {
+                forbidden.add("reports/packaging-report.json:legacyFallbackMetadata");
+            }
+        }
+        forbidden.sort(String::compareTo);
+        checks.add(forbidden.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "workspace.noEmbeddedBytecodeSurfaces",
+                        "NO_EMBEDDED_BYTECODE_WORKSPACE_SURFACES",
+                        "workspace has no fallback blob carrier, manifest, directory or packaging metadata")
+                : ArtifactAuditCheck.failed(
+                        "workspace.noEmbeddedBytecodeSurfaces",
+                        "EMBEDDED_BYTECODE_WORKSPACE_SURFACE",
+                        "forbidden embedded-bytecode workspace surfaces: " + forbidden));
+    }
+
+    private boolean isLegacyFallbackWorkspacePath(Path relativePath) {
+        String relative = relativePath.toString()
+                .replace('\\', '/')
+                .toLowerCase(java.util.Locale.ROOT);
+        String fileName = relative.substring(relative.lastIndexOf('/') + 1);
+        return relative.equals("fallback")
+                || relative.startsWith("fallback/")
+                || relative.contains("/fallback/")
+                || fileName.contains("fallback")
+                || relative.contains("fallback-blob")
+                || relative.contains("fallback_blob")
+                || relative.contains("nativeembeddedfallbackblob");
     }
 
     private boolean isSha256(String value) {
         return value.matches("[0-9a-f]{64}");
-    }
-
-    private int intOrMinusOne(JsonObject object, String field) {
-        return object.has(field) && object.get(field).isJsonPrimitive()
-                ? object.get(field).getAsInt()
-                : -1;
     }
 
     private String textOrEmpty(JsonObject object, String field) {

@@ -22,6 +22,12 @@ import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.pass.protection.MethodSplittingPass;
+import xyz.melodysky.ir.pass.protection.MethodSplittingStatus;
+import xyz.melodysky.ir.pass.protection.ProtectionConfig;
+import xyz.melodysky.ir.pass.protection.ProtectionPipeline;
+import xyz.melodysky.ir.pass.OptimizationPipeline;
+import xyz.melodysky.ir.pass.PassContext;
 import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
@@ -48,7 +54,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void keepsReferenceShapeOnTemplateJniPath() {
+    void doesNotInventTemplateImplementationWhenNoNativeIrExists() {
         ParsedClass parsedClass = parse("pkg/StringOps.class", stringEchoClass());
         MethodRewriteDecision decision = decision(parsedClass, "echo");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
@@ -58,9 +64,56 @@ class NativeImplementationPlannerTest implements Opcodes {
                 List.of(decision),
                 Map.of());
 
-        assertEquals(1, plan.implementations().size());
-        assertEquals(NativeImplementationPath.TEMPLATE_JNI_PATH, plan.implementations().get(0).path());
-        assertEquals("TEMPLATE_JNI_SEMANTICS", plan.implementations().get(0).reasonCode());
+        assertTrue(plan.implementations().isEmpty());
+    }
+
+    @Test
+    void keepsOutlinedCompilerHelperInFinalLlvmImplementationClosure() {
+        ParsedClass parsedClass = parse(
+                "pkg/OutlinedAdder.class",
+                AsmFixtureBuilder.classWithAddMethod("pkg/OutlinedAdder"));
+        MethodRewriteDecision decision = decision(parsedClass, "add");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+        long seed = Integer.toUnsignedLong("cli-seed".hashCode());
+        IrMethod optimizedMethod = OptimizationPipeline.defaultPipeline()
+                .run(irMethod(parsedClass, "add"), PassContext.empty())
+                .artifact()
+                .orElseThrow();
+        IrMethod protectedMethod = ProtectionPipeline.defaultPipeline().run(
+                optimizedMethod,
+                ProtectionConfig.enabled(seed));
+        NativeImplementationPlan preliminaryPlan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(decision),
+                        Map.of(decision.method().methodKey(), protectedMethod),
+                        java.util.Set.of(decision.method().methodKey()));
+        assertEquals(
+                1,
+                preliminaryPlan.implementations().size(),
+                protectedMethod.toString());
+        var split = new MethodSplittingPass().run(
+                protectedMethod,
+                seed,
+                true);
+        assertEquals(MethodSplittingStatus.RAN, split.status());
+        String helperKey = split.helpers().get(0).methodKey();
+        Map<String, IrMethod> finalIr = Map.of(
+                decision.method().methodKey(), split.caller(),
+                helperKey, split.helpers().get(0).body());
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                finalIr,
+                finalIr.keySet(),
+                java.util.Set.of(helperKey));
+
+        NativeMethodImplementation implementation =
+                plan.implementationFor(decision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals(List.of(helperKey), implementation.directCallTargets());
     }
 
     @Test

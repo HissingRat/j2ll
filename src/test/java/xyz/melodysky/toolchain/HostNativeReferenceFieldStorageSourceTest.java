@@ -8,10 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
-import xyz.melodysky.analysis.field.FieldId;
 import xyz.melodysky.analysis.field.NativeFieldStorageKind;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
-import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
 
 class HostNativeReferenceFieldStorageSourceTest {
@@ -24,7 +22,7 @@ class HostNativeReferenceFieldStorageSourceTest {
         HostNativeReferenceFieldStorageSource.append(
                 source,
                 bindings,
-                RuntimeLoaderPlan.create("app/native", false, 1));
+                RuntimeLoaderPlan.create("app/native", 1));
         String generated = source.toString();
 
         assertEquals(1, HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings));
@@ -52,46 +50,7 @@ class HostNativeReferenceFieldStorageSourceTest {
                 () -> HostNativeReferenceFieldStorageSource.append(
                         new StringBuilder(),
                         bindings,
-                        RuntimeLoaderPlan.create("native0", false, 0)));
-    }
-
-    @Test
-    void fallbackOnlyReferenceSlotEmitsSidecarBridgeWithoutPlanningMarkerLeak() {
-        String rawFieldIdentity =
-                "pkg/FallbackState#distinctiveFallbackReference!Ljava/lang/Object;";
-        FallbackSidecarFieldAccess access = new FallbackSidecarFieldAccess(
-                new FieldId(
-                        "pkg/FallbackState",
-                        "distinctiveFallbackReference",
-                        "Ljava/lang/Object;"),
-                new NativeFieldSlotRef(
-                        NativeFieldStorageKind.REFERENCE,
-                        "j2ll_nfs_fallback_only",
-                        0),
-                1,
-                1);
-        var bindings = List.of(binding(
-                NativeImplementationPath.TEMPLATE_JNI_PATH,
-                List.of(access.nativeSlotMarker(), access.marker())));
-        StringBuilder source = new StringBuilder();
-
-        HostNativeReferenceFieldStorageSource.append(
-                source,
-                bindings,
-                RuntimeLoaderPlan.create("app/native", true, 1));
-        String generated = source.toString();
-
-        assertEquals(
-                1,
-                HostNativeReferenceFieldStorageSource.requiredSidecarSize(
-                        bindings));
-        assertTrue(generated.contains("j2ll_nfs_reference_sidecar"));
-        assertTrue(generated.contains("GetObjectArrayElement"));
-        assertTrue(generated.contains("SetObjectArrayElement"));
-        assertFalse(generated.contains(access.marker()));
-        assertFalse(generated.contains("fallback-sidecar:v1:"));
-        assertFalse(generated.contains(rawFieldIdentity));
-        assertFalse(generated.contains("distinctiveFallbackReference"));
+                        RuntimeLoaderPlan.create("native0", 0)));
     }
 
     @Test

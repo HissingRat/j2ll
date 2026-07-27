@@ -1,6 +1,6 @@
 # j2ll Agent Guide
 
-本项目正在进行 clean-room rewrite：旧实现先备份为 legacy reference，新主线从清晰的 compiler pipeline 重新实现。新代码和新测试直接另起根目录 source tree，不继续写进旧 `obfuscator/src`。开始任何重写工作前，先阅读：
+本项目正在进行 clean-room rewrite：旧实现只作为 legacy reference，新主线从清晰的 compiler pipeline 重新实现。开始重写工作前完整阅读：
 
 - `docs/rewrite-roadmap.md`
 - `docs/pipeline/README.md`
@@ -9,16 +9,13 @@
 - `docs/protection-obfuscation.md`
 - `docs/io-config-output-contract.md`
 
-## 当前 Rewrite 方向
+## 产品与 JVM 边界
 
-项目定位：
-
-- j2ll 是 JVM-hosted JAR 混淆 / native lowering 工具；输出产物始终在 JVM 上运行。
-- 输出产物仍是 JAR，并且必须在有 JVM 的环境中运行。
-- Java object、array、Class、String、Throwable、Thread、monitor 和 GC 语义属于 JVM；native-lowered method 只能通过 JNI / runtime helper 操作这些 JVM 对象。
-- `new` / `newarray` / `anewarray` / `multianewarray` / `Unsafe.allocateInstance` 等 Java-visible allocation 必须走 JVM/JNI helper，不允许用 `malloc` / `alloca` / native heap 伪造 Java object。
-- `alloca` / native stack allocation 只能用于 native 临时数据，例如 JNI argument scratch buffer，不能保存或返回 Java-visible object。
-- 文档和实现不得引入脱离 JVM 运行的 runtime 路线；所有 Java-visible allocation、object identity 和 object lifetime 都由 JVM/JNI 语义约束。
+- j2ll 是 JVM-hosted JAR 混淆/native-lowering 工具；输出始终是需要 Java 17+ JVM 的 JAR。
+- Java object、array、Class、String、Throwable、Thread、monitor、object identity与 GC lifetime均属于 JVM。
+- Native-lowered code只通过 JNI/runtime helper操作 Java-visible value。`new`、array allocation、reflection/lambda construction和 `Unsafe.allocateInstance` 必须走 JVM/JNI API。
+- `alloca`/native heap只能保存 native临时数据，不能伪造、长期保存或返回 Java object。
+- 不引入 standalone/native-image、自有 object model/GC/thread scheduler路线。
 
 目标管线：
 
@@ -27,110 +24,150 @@
   -> ASM parse
   -> method CFG
   -> class hierarchy
-  -> call graph / runtime analysis
-  -> stack bytecode to three-address SSA IR
-  -> optimization passes
-  -> SSA IR protection passes
-  -> LLVM module model
-  -> LLVM protection passes
+  -> call graph/runtime analysis
+  -> three-address SSA IR
+  -> optimization/protection
+  -> LLVM module model/protection
   -> LLVM IR
-  -> native link / symbol visibility / strip
-  -> output JAR repackaging / native registration
+  -> final native implementation plan
+  -> skipped-method confirmation
+  -> Zig build/link/symbol audit
+  -> JAR rewrite/packaging/registration
 ```
 
-旧代码只作为行为参考和测试迁移来源。不要继续在旧的大型 lowering 类上堆新职责。
+## Source Tree 与 Legacy
 
-## Source Tree 边界
+- 新生产代码只放 `src/main/java`，新测试只放 `src/test/java`。
+- `obfuscator/src/main/java`、`obfuscator/src/test/java` 和 `obfuscator/bench` 只读参考，不进入主线 classpath。
+- 删除/移动 legacy前先有可恢复 branch/tag。
+- 不把 legacy package或大型 lowering class复制进新 tree；允许复用的纯函数先归属明确 stage并补 focused test。
+- 避免 giant class。参数解析、notice/confirmation、report serialization、runtime source generation和 stage policy都拆成职责单一组件。
 
-- 新生产代码放在根目录 `src/main/java`。
-- 新测试代码放在根目录 `src/test/java`。
-- 旧生产代码 `obfuscator/src/main/java` 只作为 legacy reference。
-- 旧测试代码 `obfuscator/src/test/java` 只作为测试意图和行为样本参考。
-- 不在 `obfuscator/src/main/java` 或 `obfuscator/src/test/java` 中添加新架构代码。
-- 后续改 Gradle 时，主线 source set 应指向新的 `src/main/java` 和 `src/test/java`；旧 source tree 不进入主线编译，除非显式创建 legacy-only 对照任务。
+## Method Outcome 与 Unsupported Boundary
 
-## Legacy 边界
+- selector命中的 Code-bearing method最终只有 `nativeLowered` 或 `skipped`。
+- `nativeLowered`：原业务语义由经过验证的 LLVM、生成式 template/stub或 JNI/runtime helper-backed native implementation完成。原 Code已按合法策略替换，native body和 registration都有证据。
+- `skipped`：原 method/classfile形态保留，不生成 native body/wrapper，不进入 `RegisterNatives`，native/JAR中不保存第二份 method bytecode。
+- `excluded`只描述 selector/blacklist外方法。abstract、already-native、无 Code interface declaration/annotation element等 selector命中只记录 method-eligibility evidence，不产生 method status，也不进入 skipped confirmation gate。
+- parse/validation/toolchain/packaging/audit failure是 build-level status，不是额外 method outcome。
+- 不允许 silent skip。`lowering-report.json`和 `skipped-method-report.json`必须覆盖每个 selected result。
+- Schema v1不增加 `requiredNative`；接受 skipped methods由每次 default build的确认 gate决定。
+- Runtime/JNI helper-backed调用仍属于真实 `nativeLowered`。只有无法由 direct LLVM、生成式 native body或 approved helper/dispatch完整表达语义时，才跳过整个 caller。
 
-- 开始删除或移动旧源码前，先创建 legacy backup 分支或 tag。
-- 不把 legacy package 放进生产 classpath。
-- 不把旧源码复制到新源码树中作为“临时实现”。
-- 可以参考旧测试意图，但新测试应落在新的 stage 边界。
-- 从旧实现复制小型纯函数前，先确认它属于哪个目标 stage，并补对应测试。
+## Skipped-Method Confirmation
+
+- Final implementation plan形成后、创建 Zig workspace或调用 Zig前，default build检查 skipped methods。
+- 若存在 skipped method，stderr按稳定顺序逐条打印 `<owner>#<name>!<descriptor>`、reason code和 human-readable reason。
+- warning必须明确说明这些方法不会 native lowered，原 Java bytecode会留在 output JAR。
+- 提示 `continue? (Y/N)`；只有显式、大小写不敏感的 `Y`继续。`N`、EOF或无可读输入终止，不创建 Zig workspace、不调用 Zig、不写 final JAR。
+- Piped stdin是正式自动化入口；非 TTY/CI不得绕过确认。
+- `--validate`/`--dry-run`不读取 stdin，也不形成 final skipped set；dry-run 记录 `skippedMethodAnalysisPerformed=false`、`skippedMethodConfirmation=deferredUntilDefaultBuild` 与 `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`。
+- programmatic pipeline 无 `SkippedMethodApproval` callback 的重载必须默认拒绝 skipped methods；确认结果写入 `skipped-method-report.json`，stdin/callback 读取异常用 lowering diagnostic，不能映射成 Zig failure。
+- 将列表收集、approval policy、格式化与 stdin policy放在独立 `SkippedMethodCollector`/`SkippedMethodGate`/`SkippedMethodConfirmation`/input adapter中；不要塞进 `J2llCli`、lowerer、pipeline giant class或 Zig builder。
 
 ## 推荐扩展路径
 
-- 解析 `.class`：放在 `xyz.melodysky.frontend.classfile`。
-- 构建 method CFG：放在 `xyz.melodysky.frontend.cfg`。
-- Class hierarchy：放在 `xyz.melodysky.analysis.hierarchy`。
-- Call graph / CHA / RTA / devirtualization：放在 `xyz.melodysky.analysis.callgraph` 或 `xyz.melodysky.analysis.runtime`。
-- 栈式 bytecode 到 SSA：放在 `xyz.melodysky.ir.ssa`。
-- IR model、validator、printer：放在 `xyz.melodysky.ir.*`。
-- Optimization pass：放在 `xyz.melodysky.ir.pass`，区分 method pass 和 program pass。
-- SSA IR 保护/混淆：放在 `xyz.melodysky.ir.pass.protection`，每个 IR/LLVM pass 必须使用直接 boolean 配置开关（不再套只含 `enabled` 的对象），并使用全局固定 seed 保证 deterministic 输出；schema v1 不提供 strength/intensity knob。`fakeBranches` 与 `basicBlockSplitting` 是两个独立 pass，`blockNameObfuscation` 是必填 IR boolean。LLVM `visibilityHardening` 已从 Config/schema 删除；hidden LLVM linkage 和最终 export audit 是不可关闭的 JVM-hosted native 基线，不属于 protection pass 开关。`docs/protection-implementation-checklist.md` 跟踪的 8 项（IR `methodInlining` / `methodSplitting` / `callIndirection` / `methodTableHiding` / `fieldInternalization`，LLVM `opaquePredicates` / `blockLayoutPerturbation` / `globalLayout`）均已接入主线；`fieldInternalization` 已进入 Config/schema、默认关闭。Windows real-Zig host E2E 已覆盖全部 8 项；`ProtectionCrossTargetEvidenceTest` 已在一次 matrix-wide Zig invocation 中覆盖六目标 shared source/build-graph/content/privacy/export 证据，但 optimized machine-code retention 与 non-host OS/JVM runtime 仍是明确边界。Final `LLVM_NATIVE_PATH` 与可达 compiler-internal helper 必须只由 `NativeLlvmCompiler` 编译一次，reports、intermediates 和 Zig source writer 共用同一 module/pass result，template/fallback 不得制造虚假 `RAN`。`fieldInternalization` 当前只能处理 declared `CLOSED_WORLD`，或 build-time Y 明确授权的 current-input-JAR-only scope 下，所有真实访问都来自 same-owner static method 的 `private static` `boolean/byte/short/char/int/long/float/double` 与 JVM reference/array 字段。primitive accessor 必须全部为最终 `LLVM_NATIVE_PATH`；reference/array accessor 还允许 final `nativeEmbeddedClassBlob` fallback，但 fallback helper 必须把批准的 `GETSTATIC` / `PUTSTATIC` 精确改写为由 JNI wrapper 传入的同一 `ClassValue<Object[]>` sidecar 访问，按计划核对读写次数，并在编码前验证 field instruction/handle/bootstrap reference 已消失。current-JAR-only 授权必须 feature-scoped、仅本次 invocation 有效，不得改写 configured `worldModel`，不得解析 configured `classPath`；N/EOF 必须在 workspace/pipeline/Zig 前退出，validate/dry-run 只记录 `confirmationRequired` warning。primitive 使用 per-defining-`jclass` weak-keyed relaxed atomic raw-bit state，写入按 JVM descriptor 做 boolean low-bit、窄整数截断/扩展并以 bitcast 保留 float/double raw bits；reference 值始终留在 JVM heap，由唯一生成的 `Loader.class` 按需注入 `ClassValue<Object[]>` sidecar 强持有，`ClassValue` 跨调用缓存 per-defining-Class 结果。LLVM function activation 在首次实际访问时惰性获取并复用 local sidecar ref；fallback wrapper 每次 activation 获取一次 sidecar、传给 hidden helper 并在返回/异常后释放，不建立 native strong global ref。instance field、non-static accessor、volatile/final、ConstantValue、字段本身被 `<clinit>` 访问、field-observing reflection/serialization/JNI/Unsafe/VarHandle/MethodHandles Lookup、multi-release 和普通 template 边界均保留 JVM field；无关 owner `<clinit>`、普通 MethodHandle invocation 或单纯 dynamic class loading 不得污染候选。
-- LLVM 输出：放在 `xyz.melodysky.backend.llvm`。
-- LLVM IR 混淆：必须基于 `xyz.melodysky.backend.llvm.model` / `backend.llvm.protection`，不要做 `.ll` 文本后处理。
-- Runtime helper 生成：放在 `xyz.melodysky.runtime`。
-- Packaging / repack / native registration：放在 `xyz.melodysky.packaging`。
-- Zig/native build orchestration：放在 `xyz.melodysky.toolchain`；Zig `0.15.2` 是 schema v1 的固定统一 native build driver，安装目录固定为可执行 `j2ll.jar` 同级的 `zig/zig(.exe)`。缺失时先使用同目录已有 Zig archive，仍缺失再从 `https://ziglang.org/download/0.15.2/` 下载；本地或下载 archive 必须先按内置 Zig `0.15.2` 官方 SHA-256 metadata 校验，通过后才解压，SHA mismatch 是 native/toolchain failure 且不写 final JAR。签名验证当前明确记录为 `signatureStatus=notVerifiedBoundary`，不能静默宣称已验签。解压后将官方目录内容规范化到 `zig/`。Zig 通过 j2ll 生成的 `build.zig` workspace 负责一次性按 selected target matrix 接管 per-class `.ll`、Zig-managed `.o`、JNI wrapper C、runtime helper C 和 fallback blob carrier C 的编译/链接；用于可观测进度的有界 static compile groups 必须由最终动态库显式保活平台实际拼写的 `JNI_OnLoad` / `j2ll_register` 根（Mach-O 使用 C ABI 下划线名），所有必须保留的 native/LLVM/blob member 必须位于这些根的引用闭包并由六目标 export/content 测试覆盖，不能把普通 archive link 误当成 whole-archive。最终 workspace 动态库统一扁平写入 `native/<library-file-name>`，不再创建 `native/<target>/` 子目录，Zig 工作区仍位于 `native/zig-workspace/`；JAR 资源路径独立保持为 `<embeddedLibraryDirectory>/<library-file-name>`。schema v1 中 selected targets 默认都是 required，当前 preflight 无法构建的 required target 必须报告 `ZIG_TARGET_UNBUILDABLE` 并使 pipeline failed，不再当作成功态 skipped；managed Zig bootstrap 必须把 `FOUND_MANAGED_ZIG` / `WRONG_VERSION_REINSTALL` / `LOCAL_ARCHIVE_USED` / `DOWNLOAD_ATTEMPTED` / `INSTALLED_MANAGED_ZIG` / `ARCHIVE_CHECKSUM_VERIFIED` 等 user-flow event 写入 packaging report，并包含 archiveName/archiveSha256/checksumStatus/signatureStatus/source；不要新增 host `cc` / `clang` 直连路径。
-- Cross-target build 当前已由 managed Zig `0.15.2` 结构性接实六个固定目标：`x86_64-windows-gnu`、`aarch64-windows-gnu`、`x86_64-linux.3.2-gnu.2.17`、`aarch64-linux.3.7-gnu.2.17`、`x86_64-macos.10.15`、`aarch64-macos.11.0`。所有 selected targets 必须在同一次 matrix-wide `zig build` invocation 中生成真实 DLL/SO/dylib，并做对应 PE/ELF/Mach-O export/symbol audit；不能再把非当前 host 本身当作 `ZIG_TARGET_UNBUILDABLE`。Support matrix 用 `ZIG_CROSS_TARGET_SUPPORTED` 记录结构性 build，用 `CROSS_TARGET_RUNTIME_E2E_PENDING` 单独记录非 host runtime child-JVM E2E 缺口；不得把“能交叉产出动态库”扩大宣称为“已在目标 OS/JVM 上运行验证”。实际 capability/preflight/compile/link 失败仍使用 `ZIG_TARGET_UNBUILDABLE`，阻止 final JAR。
-- Binary export/strip/symbol audit：放在 `xyz.melodysky.toolchain.symbols`；只导出 JNI / C ABI wrapper，Java method internal symbol 默认隐藏。
-- 报告 JSON / resolved config / artifact sidecar writer：放在 `xyz.melodysky.report`，字段顺序和 wire name 必须稳定并由 golden tests 覆盖。
-- CLI/config validation 必须在进入主 pipeline / Zig build 前完成。`docs/config.schema.json` 是 schema v1 的用户可见 JSON Schema，`docs/examples/*.json` 覆盖 minimal、all-on protection、strip/resign、target matrix 和 debug dump 配置。`schemaVersion`、`jarFile`、`outputDirectory`、`whiteList`/`blackList` selector grammar 和 signature policy 的 config error 必须写入 `reports/diagnostics.json`，并带稳定 user-facing `hint`；CLI config 失败还必须写 `reports/failure-report.json` 且 `finalArtifactWritten=false`、`primaryDiagnosticId` 和 hint，并补齐 skipped artifact audit、packaging、support/opcode/known-blockers/readiness/summary/index 等 RC 证据报告，不得创建 native partial artifact 或 final JAR。未知 config field 是 warning，不阻止构建，但必须进入 diagnostics/report 证据链。CLI 语法固定为 `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`，另保留 `j2ll --help` 和 `j2ll --version`；未传 `--config` 时读取当前目录 `Config.json`，未传 mode flag 时默认 build。`--validate` 只校验 config 且不创建 workspace；`--dry-run` 只做 config/selector/target preflight 和报告，不调用 Zig/native build、不写 final JAR；`--dry-run` 和默认 build 自动在 resolved `outputDirectory` 下创建 `build_yyyy-MM-dd_HH-mm-ss[-n]` workspace，成功 final JAR 直接写在 workspace 根目录。`--debug` 必须为本次运行开启 intermediates 总开关、debug dumps、per-class IR、LLVM 和 C，但不把 native build 宣称为带调试符号。Gradle `cliJar` 产出稳定 `build/cli/j2ll.jar`，Gradle `distJ2ll` 产出 `build/dist/j2ll/` beta distribution，并用 `java -jar` smoke。退出码固定为 success=0、config=2、frontend/lowering=3、toolchain/native=4、packaging/signing=5、artifact-audit=6、release-readiness=7、unexpected=1；stdout 只输出 output JAR/dry-run report/reports dir/summary report/report index，stderr 输出 primary failure、hint、reports dir、summary report 和 report index；release-readiness failure 还必须输出 `releaseReadinessReport=` 和最多三条 `missingEvidence` 摘要，不刷长 JSON。
-- CLI progress 只写 stderr，不能污染 stdout 的稳定 `key=value` 输出。完整 build 在交互终端使用优化后的 legacy 分阶段区域：compiler 阶段固定显示 `Read bytecode` / `Lower to IR` / `Emit LLVM IR` 三行；native 准备阶段可显示 `Build native` / `Stage`，实际 target 构建期间只显示一个真实 `completed targets / total targets` 的 `Build native` 总进度条和每个 selected target 各自一行；packaging/audit/report 阶段显示 `Finalize JAR` 一行。每个 target 的进度条和百分比严格等于该 target 已完成的 Zig 构建图工作单元数除以总工作单元数；大输入必须把编译输入确定性均衡分组为每 target 最多 64 个可观测编译单元，避免进度 marker 和轮询 I/O 随 class 数无限放大。`BUILDING`、`LINKING`、`COMPLETED`（终端渲染为 `building`、`linking`、`completed`）必须来自真实构建图边界，不能从 Zig 控制台文本或耗时猜测。进入 `LINKING` 后，进度条允许停在最后一个编译工作单元对应的百分比，直到链接并安装最终动态库；只有非空 DLL/SO/dylib 已安装到计划输出路径后才显示 `100%` / `COMPLETED`。所有 target 完成后必须立即折叠 target 行，只留下简短的 native 总完成摘要，避免把它们永久留在终端历史。阶段切换时完成并落下前一区域，active region 原地刷新。正常宽度使用 28 字符进度条，窄终端允许缩短进度条并优先保留标签和真实计数。重定向/CI 中每个高层阶段只输出一行无 ANSI/回车的 `[current/total]` 纯文本，不为 target completion 刷多行日志。失败诊断前必须只清除并终止整个 active progress region，不先输出重复的 Gradle-style failed/actionable summary；成功只输出短 `BUILD SUCCESSFUL in <n>s`。method lowering 和 LLVM emission 只显示真实 current/total；零工作量不能伪造成 `0/1`。Zig 仍由一次 matrix-wide invocation 并发调度独立 target；target 百分比只表达 j2ll 可观测的 Zig 构建图工作单元完成率，不得宣称为 Zig/Clang/LLVM 编译器内部百分比，也不得伪造执行顺序。供 TUI 轮询的 `logs/zig-progress/` 只是 invocation 生命周期内的临时状态；matrix build 无论成功、失败还是中断，结束时都必须删除整个目录，不能把 marker 当作持久日志或报告证据。
-- 输入/配置/输出契约：按 `docs/io-config-output-contract.md` 实现；selector 命中的每个方法必须记录为 `lowered`、`halfLowered`、`frontendSkipped`、`notApplicable` 或 `failed`，不能静默 skip。
-- Packaging 必须保留 manifest/resources/services/module-info/multi-release entries；`META-INF/versions/*` 中的 versioned class 永不隐式重写。若 base class 有 versioned counterpart，则命中的 base method 记录 `notApplicable` + `MULTI_RELEASE_VERSIONED_CLASS`，不 native rewrite、不 RegisterNatives，避免 JVM 运行时选择 versioned class 时注册到非 native method。`signaturePolicy=fail` 在 rewrite 前拒绝 signed input，`strip` 移除 `META-INF/*.SF/*.RSA/*.DSA/*.EC` 并报告 warning，`resign` 先做 signing config/keystore/password/alias preflight，再通过当前 JDK `jarsigner` 对输出 JAR 签名；preflight 或 signer 失败记录 `SIGNATURE_RESIGN_FAILED` + precise reason 且不保留 final JAR，成功记录 `SIGNATURE_RESIGNED`。
-- Runtime Loader 契约固定为唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class`。它始终包含 native loading，只有 implementation plan 实际使用 `nativeEmbeddedClassBlob` 时才保留 `defineHiddenFallback`；旧 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 和 `j2ll/generated/**/NativeLoader.class` 不再输出。`embeddedLibraryDirectory` 同时是 native resource prefix 和 Loader JVM package prefix，必须匹配规范 Java internal package path；输入 base/MR 同名 Loader 必须在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。同一 defining `ClassLoader` 下多个不同产物复用相同目录是明确已知边界，建议目录保持应用唯一；独立 ClassLoader 的 Loader state 仍隔离。
-- JVM helper fallback：schema version 1 使用 `nativeEmbeddedClassBlob`，不要退回到明文 generated fallback class。
-- 方法改写：普通 class method 可走 `nativeOriginal`；`<init>`、`<clinit>` 和有 Code 的 interface method 必须走 stub/helper 策略；abstract、already-native 和无 Code 的 interface method 记录 `notApplicable`。
-- SSA merge 使用 block parameters 表达 stack/local merge；branch/goto/switch terminator 携带 target arguments。local merge 只投影 successor 真正 live-in 的 slot，允许 dead slot 在不同分支缺失或复用为不同类型；真正 live-in 的普通 CFG mismatch 仍必须显式 `frontendSkipped`，reason code 使用 `SSA_MERGE_STACK_HEIGHT_MISMATCH`、`SSA_MERGE_TYPE_MISMATCH` 或 `SSA_MERGE_LOCAL_SLOT_MISMATCH`。若合法 handler flow 需要当前尚未建模的 throw-site local frame，则普通 class method 改走 encoded `nativeEmbeddedClassBlob`，记录 `halfLowered` + `UNSUPPORTED_EXCEPTION_STATE_MERGE`，不能伪造 native exception-state merge。
-- Exception 语义当前支持 typed catch handler block exception parameter、IR exceptional edge metadata、显式 `athrow` -> `THROW` terminator，以及 null/array/cast/div-zero implicit exception site metadata。LLVM/JNI backend 尚未把 JNI call、allocation、field/class-init 等产生的 pending exception 分派到同一 native method 内的 Java catch handler；受 user exception edge 保护的这类指令必须 fail closed，ordinary method 通过 encoded `nativeEmbeddedClassBlob` 记录 `halfLowered` + `UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW`，不能生成会继续执行 pending-exception JNI 调用的 LLVM body。catch-all/finally 已支持简单 rethrow 和 normal/exceptional cleanup shape；multi-exit、exception state merge、monitor/finally interaction 等复杂形状仍保守 `frontendSkipped`，reason code 使用 `UNSUPPORTED_MULTI_EXIT_FINALLY`、`UNSUPPORTED_EXCEPTION_STATE_MERGE`、`UNSUPPORTED_MONITOR_FINALLY_INTERACTION` 或 `UNSUPPORTED_COMPLEX_EXCEPTION_SHAPE`。
-- Monitor/JMM 当前是 helper/fence-backed base：`monitorenter` / `monitorexit`、`ACC_SYNCHRONIZED` method、识别出的 synchronized exceptional unlock handler 都 lower 到 runtime helper，并带 monitor happens-before marker；volatile read/write、final field publication、Thread.start/join happens-before lower 到 conservative marker。`Thread.<init>(Runnable)` / `start` / `join`、`Object.wait/notify` 当前不伪造 native scheduler 或 monitor queue semantics，按 JVM helper fallback boundary 记录，reason code 使用 `THREAD_HELPER` / `THREAD_HELPER_FALLBACK` 和 `WAIT_NOTIFY_FALLBACK`。复杂 catch-all/finally 仍不猜测。
-- Class initialization 当前有 helper-backed skeleton：跨 owner `getstatic` / `putstatic` / `invokestatic` 和 `new` 插入 class object + class init guard；同 owner static field / static invoke 不递归 guard，因为当前 owner 已处于初始化语义内。`<clinit>` body 插入 begin/end/failed helper，并避免同 owner `<clinit>` 递归 guard。
-- JDK bootstrap 当前通过 `JdkIntrinsicRegistry` 明确 policy：Object/String/StringBuilder/System.arraycopy/Math/boxing/Objects 常见路径走 runtime helper 或 direct lowering；当前 host E2E 已覆盖 String `length` / `equals` / `isEmpty` / `charAt` / `startsWith` / `endsWith` / `substring(int,int)`、显式 StringBuilder append chain、System.arraycopy byte/int/long/double/object/overlap/null/oob/ArrayStoreException、Integer/Long/Boolean/Double boxing-unboxing、Objects.requireNonNull/equals 和 Math int/long/float/double abs/min/max。真实应用中已登记的 Timer/URI/ByteBuffer/MessageDigest/JCE、collection interface、boxing accessor、Throwable constructor 等 exact signature 使用 `JVM_HELPER_BRIDGE`，调用仍由 JVM/JNI dispatch 执行，不在 native 侧重实现其内部语义。其余明确列出的 ArrayList/HashMap/Arrays/Collections/Optional/String.format/Throwable/Thread 边界仍可通过 bytecode-preserving `nativeEmbeddedClassBlob` fallback 保持 JVM 语义；native code 不读取 JDK collection internals、不伪造 Java array、不维护 native Throwable stack trace 或 thread scheduler。真正未知的 JDK call 记录 `halfLowered` + `JVM_HELPER_FALLBACK`。
-- invokedynamic 当前支持 StringConcatFactory `makeConcat` 到真实 StringBuilder helper path；`makeConcatWithConstants` 常见 recipe 已通过 tokenized `j2ll_rt_string_constant` native carrier + StringBuilder helper 接入 child JVM E2E。LambdaMetafactory `metafactory` 的非捕获、单引用捕获、static method reference、JDK public instance method reference 和 constructor reference 已通过 JVM `LambdaMetafactory` / `MethodHandle.invokeWithArguments` helper 接入 child JVM E2E；`altMetafactory` serializable/marker/bridge metadata 仍只声明 skeleton/fallback 边界，复杂 capture 走 `halfLowered` fallback。
-- Runtime metadata 当前有 `xyz.melodysky.runtime.metadata` index/dump：保留 class/member flags、Signature、runtime annotations、record、nest/inner、bridge/synthetic/record generated flags，以及 class object/init state handle。Static reflection 当前有 `xyz.melodysky.analysis.reflection` resolver：`Foo.class`、常量 `Class.forName`、常量 `getDeclaredMethod/Field/Constructor`、`Method.invoke`/`Constructor.newInstance` 可进入 reachability；no-arg 和常量参数 descriptor 的 method/constructor metadata 通过 JVM `MethodType` 生成参数 `Class[]` 并进入 helper path。动态 `Class.forName`、动态 member name/parameter array 和 scan-style reflection 普通调用在 descriptor 可通过 JNI bridge 表达时走 JVM dispatch bridge，并以 `DEFERRED_DISPATCH_HELPER` / `JVM_CALL_HELPER` 保留 JVM 反射语义；超出 bridge descriptor 或无法安全保留 owner bytecode context 的形态才进入 fallback/skip，并必须报告稳定 reason。
-- JNI 第一层当前有 `xyz.melodysky.runtime.jni` ABI model 和 packaging planner：descriptor -> JNI C type、RegisterNatives table、JNI_OnLoad/bootstrap wrapper、reference lifetime/local frame/pending exception policy、symbol allowlist。Runtime helper catalog 的 reference ABI token 使用 `jobject` / `jclass` / `jarray` / `jthrowable` 等 JNI handle；LLVM declaration 仍映射为 opaque `ptr`，helper header/C skeleton 显式包含 `JNIEnv* env`、pending exception 和 local-frame policy TODO。LLVM body 只要调用 env-backed helper 或 lower 普通 `CONST_STRING` / `ldc String` 到 `j2ll_rt_string_constant`，JNI wrapper 就必须传入真实 `JNIEnv*`，不能把 env 当业务参数省略。当前 JVM-hosted vertical slice 已通过 managed Zig `build.zig` path 扩展到 static/instance `nativeOriginal`、`jclass`/`jobject` implicit receiver、primitive `void`/`boolean`/`int`/`long`/`float`/`double` 参数和返回、multi-class/multi-method `RegisterNatives`、String `jstring` 读写、primitive/reference array JNI helper subset、`ThrowNew` exception bridge、generic constructor/`<clinit>` body helpers，以及 v1 encoded native-embedded fallback helper class bytes 的 owner-private Lookup hidden-class define / JNI `DefineClass` fallback / reuse path。`LLVM_NATIVE_PATH` 现在覆盖 ordinary static/instance primitive scalar method、直线算术、compare branch、if/else、nested if、block-parameter/phi merge、JNI field helper-backed `int`/`long`/reference field access ABI（真实 E2E 覆盖 static/instance `int` read/write/add、volatile read/write fence、null receiver NPE ownership、String/reference field pass-through/read/write/null return）、`idiv`/`irem`/`ldiv`/`lrem` 的 ArithmeticException helper-backed semantics、`monitorenter` / `monitorexit` block 和 `ACC_SYNCHRONIZED` method 的 JNI `MonitorEnter` / `MonitorExit` helper path、显式 `athrow` -> JNI `Throw` bridge、常量 `Class.forName` / no-arg、primitive/reference/array 常量参数 descriptor 的 `getDeclaredMethod` / `getDeclaredConstructor`、`getDeclaredField` / `Method.invoke` / `Constructor.newInstance` / `Field.get` / `Field.set` / typed `Field.getInt` / `Field.setInt` / `Field.getBoolean` / `Field.setBoolean` / `Field.getLong` / `Field.setLong` / `Field.getDouble` / `Field.setDouble` / bounded `setAccessible(true)` reflection helper path（report 拆分 `REFLECTION_METHOD_HELPER` / `REFLECTION_CONSTRUCTOR_HELPER` / `REFLECTION_ACCESSIBLE_HELPER` / `REFLECTION_FIELD_HELPER` / `REFLECTION_HELPER`）、Unsafe statically resolved `Field` token 的 `objectFieldOffset` / `getInt` / `putInt` / monitor-backed `compareAndSwapInt` / `allocateInstance` JNI `AllocObject` path、typed-int VarHandle `get` / `set` / volatile get-set / `compareAndSet` helper path、`byte[]`/`short[]`/`char[]`/`int[]`/`long[]`/`float[]`/`double[]`/reference array load/store/length helper subset、selected primitive/reference array allocation helpers、ordinary-method `new T(int,int)` constructor helper subset、`checkcast` / `instanceof` helper subset、String `length` / `equals` helpers、StringConcatFactory `makeConcat` / common `makeConcatWithConstants` helper path、LambdaMetafactory common `metafactory` helper path、Math `abs/min/max` int/long helper subset、LDC MethodHandle + `invokeExact` direct target、同 class selected static 和 private/special callee direct LLVM internal call，以及 tokenized virtual/interface/default-interface JVM dispatch helper 的 `()I`、`(I)I`、reference return 和 single-reference-argument/reference-return subset。dispatch helper 通过 `GetObjectClass` / `GetMethodID` / `Call<Type>Method` 保留 JVM override/interface/default-interface dispatch，report 同时标记 `DISPATCH_HELPER`、`DEFAULT_INTERFACE_DISPATCH_HELPER`、`DEFERRED_DISPATCH_HELPER`，对 default-interface conflict/diamond boundary 追加 `UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT` / `DEFAULT_INTERFACE_DISPATCH_FALLBACK`；`I.super.m()` 的 `invokespecial` 不能安全复制进 fallback helper class，因为 JVM verifier 要求 direct superinterface，当前保守 `frontendSkipped` 并报告 `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`，不注册 native。JNI wrapper 只桥接 `JNIEnv*` / `jclass` / `jobject` / `jarray` 和 primitive ABI；field/array/allocation/type/String/div-rem/monitor/reflection/Unsafe/VarHandle/lambda/call Java-visible 语义通过 helper token、JNI API 和 pending-exception convention，不能 dereference Java object memory。更广泛 constructor shapes、复杂 finally/exception state merge、raw memory Unsafe/VarHandle、复杂 MethodHandle chain、完整 `altMetafactory` runtime semantics 和更复杂 virtual/interface dispatch 仍通过 template/helper/fallback 或后续 managed Zig toolchain/preflight 接实。
-- Protection/obfuscation v1 当前已真实接入主线并默认启用已实现 pass：IR 层支持 StringConcat constant carrier、ordinary `CONST_STRING` / `ldc String` 和安全 TEMPLATE constructor body string literal 的 encrypted `j2ll_rt_string_constant` helper path，支持 primitive `int`/`long` constant XOR split、`float`/`double` raw-bit XOR + LLVM bitcast constant encryption、safe multi-block control-flow flattening dispatcher、独立的 safe basic-block splitting、独立的 fake-branches pass 和 block-name obfuscation；block-name mapping 必须同时更新 terminator、block exception edge 与 instruction exception-site handler，并在 candidate validation 失败时回退原方法。fake-branches pass 在 IR 层会真实改写 CFG；但 managed Zig 使用 `ReleaseSafe`，当方法没有可用动态参数而退回纯常量 predicate 时，LLVM optimizer 可能折叠并消除该 native 分支，不能把这种形态宣称为最终 binary 中稳定保留的 opaque branch。LLVM 层支持 same-class selected static/private direct LLVM call 的 deterministic hidden function-pointer table `j2ll_cit_<sha256>` call indirection，并保留 deterministic hidden signature-group dispatcher switch `j2ll_cid_<sha256>` fallback。两种形态都在真实 Zig workspace/native artifact 中接实，table/dispatcher/internal implementation symbol 不作为 dynamic export。reflection / lambda / MethodHandle bootstrap metadata 相关字符串、monitor/JMM/exception/call/field/helper-sensitive shape、block-parameter/exception-edge CFF shape 以及 `<init>` / `<clinit>` body-helper shape 按 pass 记录 skip reason，不改变 method lowering status。LLVM function、JNI wrapper、per-owner bootstrap 与 generated C identifier 均使用 deterministic hash-only token；JNI 所需 owner/member/descriptor/error 字符串在 generated C 中以 writable encoded byte array 保存，并在 `j2ll_register` 开始时一次性解码，因此 raw Java identity 不作为静态 PE/ELF/Mach-O cstring 暴露（运行时内存/JNI 参数不是保密边界）。`reports/protection-report.json` 记录 `passName`、`layer`、`status`、`reasonCode`、affected methods/symbols、`seedHash` 和 hash-only `sensitivePlaintextFacts`；每个 fact 记录 `gateMode` 和 `promotionReason`，报告不得泄漏 raw seed 或 original plaintext。artifact audit 自动消费当前已接实 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE`、StringConcat constant carrier stable generated-C surface 和 `NATIVE_METADATA_STRING` facts，阻断相应 generated C/native 静态明文；过短或通用 literal 只以 observed-only hash 记录。reflection/lambda/MethodHandle bootstrap metadata 相关 fact 仍以 `metadataSensitiveObservedOnly` hash-only 记录，复杂 fallback blob fact 以 `fallbackComplexObservedOnly` 或 binary metadata gate 记录，不误阻断 JVM metadata。未实现 pass warning + ignore，不 silent skip。
-- MethodHandle/invokedynamic 当前支持 `metafactory` common lambda helper E2E、`altMetafactory` 常见 `FLAG_SERIALIZABLE` / `FLAG_MARKERS` / `FLAG_BRIDGES` metadata skeleton、LDC MethodHandle + `invokeExact` direct target E2E、ConstantDynamic `ConstantBootstraps.nullConstant` skeleton；MethodHandle `bindTo` / `asType` / `dropArguments` / `permuteArguments` / `filterArguments` / `foldArguments` / collector-style common adapter chain 通过 JVM `MethodHandle.invokeWithArguments` bridge 保持 runnable semantics，避免把 signature-polymorphic `invokeExact` 字节码复制进 fallback helper class；这不是 generic native MethodHandle interpreter。unsupported `altMetafactory` two-capture serializable lambda 和复杂 MethodHandle/lambda shape 不做 native interpreter；unsupported ConstantDynamic 仍 `halfLowered` fallback。
-- Unsafe/VarHandle 当前支持有边界 helper-backed subset：field/array offset、primitive/object get/put、volatile get/put、CAS、`allocateInstance`、typed-int VarHandle get/set/volatile/CAS common shape；真实 E2E 已接实 statically resolved `Field` token 的 Unsafe int get/put/CAS、`AllocObject`-backed `allocateInstance` 和 typed-int VarHandle field access。Unsafe offset 是 metadata token，不是 native memory offset；VarHandle helper 通过 JVM `VarHandle.toMethodHandle` / `MethodHandle.invokeWithArguments`，不是 native field offset；unsupported raw memory API 必须 warning + `halfLowered` fallback，reason code 使用 `UNSAFE_RAW_MEMORY_FALLBACK`，volatile/CAS 保留 JMM marker。
-- Exception/finally 当前支持简单 catch-all rethrow 和 normal/exceptional cleanup shape；multi-exit finally、exception state merge、monitor/finally interaction、nested finally 尚不宣称 native SSA 支持。对 descriptor 可由 JNI bridge 表达的普通 class method，它们记录 `halfLowered` 并通过 encoded `nativeEmbeddedClassBlob` 保留 JVM 字节码语义，reason code 使用 `UNSUPPORTED_MULTI_EXIT_FINALLY`、`UNSUPPORTED_EXCEPTION_STATE_MERGE`、`UNSUPPORTED_MONITOR_FINALLY_INTERACTION`、`UNSUPPORTED_NESTED_FINALLY`；构造器、类初始化器、interface body 或 verifier-sensitive owner 形状仍可保守 `frontendSkipped`。
-- helper-shaped lowering 可先把 String/Class/MethodType/MethodHandle 常量、对象/数组/type op、JDK intrinsic、StringConcat/Lambda 和 virtual/interface/indy fallback 表达为 runtime skeleton；这不代表已经实现完整 JVM dynamic dispatch、native exception bridge 或完整 JDK helper semantics。所有 reference value 仍是 JVM object / JNI handle。
-- `nativeEmbeddedClassBlob` 当前有 planner/report 和真实 fallback path：ordinary `halfLowered` 方法在 descriptor 可通过 JNI 桥接且非 `<init>` / `<clinit>` / interface body、且 bytecode verifier 语义可在 helper class 中保持时，会把原 method bytecode 复制到同 owner package 下的隐藏 helper `invoke` 方法；static receiver 使用 owner `jclass`，instance receiver 作为第一个 helper 参数传入，primitive/reference 参数和返回按 JNI descriptor 调用，fallback body 抛出的 pending exception 直接传播给 Java caller。`I.super.m()` 这类依赖原 owner direct-superinterface verifier 关系的 bytecode 不复制进 helper，当前 `frontendSkipped` 保留原方法。helper class bytes 先按 v1 `j2ll-rle-byte-pairs-v1` 压缩，再用 `xor-sha256-key-stream-v1` deterministic key stream 编码，作为 native artifact 中的 encoded blob，由 JNI 解码后按 fallback id + defining classloader identity lazy define/reuse。codec 会在分配 decode buffer 前校验 encoded SHA-256 和 RLE header capacity，wrong fallback id/key、corrupted payload、hash mismatch 都必须清晰失败，不能 OOM。当前 runtime 通过唯一 Loader 中按需保留的 `defineHiddenFallback` 获取 owner-private `MethodHandles.Lookup` 并优先 `defineHiddenClass`；JDK 或 owner-private Lookup 不满足时清晰回退到 JNI `DefineClass`。process-lifetime global-ref linked cache 记录 `FALLBACK_CACHE_REUSE`，并在 report 中记录 `fallbackInvokeDescriptor`、`fallbackReasonCode`、`cacheScope`、`cacheKey`、`cacheLifetime`、`globalReferencePolicy`、`unloadAware=false` 和后续 unload-aware lifecycle `futurePath`；schema v1 仍禁止输出明文 generated fallback `.class`，当前不承诺 classloader unload 触发 native cache 释放。
-- 最小 JVM-hosted differential harness 当前覆盖 original input JAR 与 output JAR 的 child JVM 对比。当前 host runtime E2E 已通过 generated `build.zig`/managed Zig invocation 产出嵌入库，覆盖 `LLVM_NATIVE_PATH` 的 static primitive scalar add/long/double/boolean compare/void no-op、if/else、nested if、phi merge、table/lookup switch、JVM numeric helper opcode `i2b/f2i/lcmp/fcmpl`、protected float/double constant raw-bit encryption、protected CFF dispatcher switch for simple branch methods、static/instance/volatile field helper path、monitor/synchronized helper path、explicit throw bridge、static reflection method/constructor/field/setAccessible helper path（含常量参数 method/constructor invoke、typed Field int/boolean/long/double/reference accessor、private method/constructor accessible smoke）、dynamic reflection bridge path、Unsafe statically resolved int field token helper path、typed-int VarHandle helper path、LDC MethodHandle direct `invokeExact`、MethodHandle adapter chain bridge path、direct static/private-special callee call、direct call hidden table indirection、div/rem ArithmeticException helper、String/reference field pass-through、broad primitive/reference array helper subset、System.arraycopy byte/int/long/double/object/overlap/null/oob/ArrayStoreException helper、selected primitive/reference array allocation helpers、ordinary-method object construction helper subset、`checkcast` / `instanceof`、String `length` / `equals` helpers、StringConcatFactory `makeConcat` / `makeConcatWithConstants`、ordinary `CONST_STRING` encrypted helper path、LambdaMetafactory common helper、Math int/long helper subset，以及 tokenized virtual/interface/default-interface JVM dispatch helper 的 no-arg int、int-arg int 和 reference-return subset；template/helper path 覆盖 multi-class registration、String 内容 JNI path、primitive int array copy/new-array path、exception bridge smoke、generic straight-line and simple-branch constructor/class-initializer body helper first layer、TEMPLATE constructor body string literal encrypted helper path，以及 encoded nativeEmbeddedClassBlob fallback 的 static unsupported JDK call、ArrayList/HashMap/Arrays/Collections/Optional/String.format narrow policy、Throwable message/cause、Thread start/join、wait/notify boundary、unsupported altMetafactory two-capture lambda（`ALT_METAFACTORY_FALLBACK`）、instance receiver/reference return、exception propagation 和 two-classloader isolation。六目标 DLL/SO/dylib 的结构性真实交叉构建和 binary format/export audit 已接实；非 host target 的 child JVM runtime E2E 仍待在对应 OS/JVM 上补证据。实际不可构建的 required target 报告 `ZIG_TARGET_UNBUILDABLE` 并失败。复杂 CFF shape、复杂 finally/exception state merge/nested finally、raw memory Unsafe/VarHandle、wait/notify native helper、MethodHandle interpreter、完整 altMetafactory runtime class semantics 和更复杂/default virtual/interface dispatch 仍走 template/helper/fallback 或待扩展。
-- Release readiness reports 当前额外生成 `reports/artifact-audit.json`、`reports/support-matrix.json`、`reports/opcode-support-matrix.json`、`reports/known-blockers.json`、`reports/release-readiness.json`、`reports/index.json`、`reports/summary.md` 和用户摘要 `reports/summary.json`：artifact audit v2.2 检查 output JAR 中无明文 generated fallback `.class`、无 legacy output path、native resource 位于配置路径、embedded native SHA-256 与 packaging report 一致、final JAR metadata 与 packaging targetArtifacts 一致、hidden/protection/internal symbols 不导出、Windows PDB 不打包和 sensitive plaintext facts。`reports/index.json` v2 扫描 workspace reports、`config.resolved.json` 和 `intermediates/intermediates-manifest.json`，为每项记录 `path`、`reportVersion`、`sha256`、`requiredForReadiness`、`requiredForBeta`、`requiredForRc`、`producedOnFailure` 和 `status`；readiness gate 会校验 required report 存在、hash 一致，以及 final JAR `reports-manifest.json` 与 workspace index 合同一致。`LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和足够具体的 StringConcat constant carrier stable generated-C surface fact 是 blocking deny-list；短/通用 literal 只做 hash-only observed evidence；reflection/lambda/MethodHandle metadata facts 仍进入 `observedOnlySensitiveFacts`。fallback blob 现在有 blocking binary audit：校验 encoded/original SHA 和 size/encoding metadata、RLE capacity/hash mismatch 边界，以及 carrier C 不出现完整 original method key 明文；class/owner/helper metadata 仍按 JVM/JNI 需要通过 hash-only report 和 encoded blob gate 审计，复杂 fallback plaintext literal gate 仍不启用。artifact audit 同时记录 generated C、per-class `.ll`、build.zig、native resource、output JAR entry、symbol audit、packaging path 和 metadata surfaces 的 checked/skipped evidence，skipped surface 必须有 reason。artifact audit 是 finalization gate，失败必须删除/不保留 final JAR、写 `ARTIFACT_AUDIT_FAILED` failure report 且 readiness `finalArtifactWritten=false`。final JAR 必须包含 `META-INF/j2ll/build-info.json`、`META-INF/j2ll/native-libraries.json` 和 `META-INF/j2ll/reports-manifest.json`，只写 config/protection seed/report/native SHA 类 hash，不泄漏 raw seed 或 sensitive plaintext；`config.resolved.json` / `protection-report.json` 同样只写 seed hash，runtime Loader 名称固定由规范 embeddedLibraryDirectory 决定，library default name 仍使用 hash token。reports manifest entries/hash 与主要 report set 保持稳定，并包含 `index.json` / `summary.md` 预期条目。feature/opcode matrix 按 status/reason/testCoverage/coverageLevel/evidenceCount 稳定列出主要 `LLVM_NATIVE_PATH`、helper、fallback、frontendSkipped 和 notApplicable 边界；known blockers 用稳定 id/reason/severity/targetMilestone/reportLocation/futurePath 追踪剩余 release blocker，`beta-blocker`/`rc-blocker` 需要对应 evidence，未覆盖 beta blocker 使 `betaProfilePassed=false`，`future-blocker` 不阻塞 beta/RC，`non-goal`/`explicit-nongoal` 用来固定 standalone/native-image、自有 object model/GC/thread scheduler 等非目标边界。strict suite mode 还要求 `reports/release-suite-summary.json`，其中按稳定顺序记录 `profile`（`smoke`/`standard`/`beta`/`rc`）、`requiredCategories`、`missingCategories`、suite/case metadata、aggregate、determinismEvidenceComplete、expected support evidence、original/output child JVM result 或 expected-failure null run、produced report set、diagnostics、signature/protection、`expectedFailure`、stage/reason 和 `finalArtifactWritten`。beta profile 要求 CLI artifact smoke、docs examples validation、report index、minimal LLVM native 和 mixed helper/fallback evidence，并在 `release-readiness.json` 写 `betaProfilePassed`、`betaMissingEvidence`、`cliArtifactSmokePassed`、`docsExamplesValidated`；RC profile 下 `missingCategories` 必须为空，覆盖 minimal LLVM native、mixed helper/fallback/protection、strip/resign、ServiceLoader/multi-release/module-info、invalid config、artifact audit expected failure、注入式 required-target build failure、determinism、known blocker evidence 和 realistic CLI/reflection/packaging corpus evidence；六目标真实结构性交叉构建由独立 `ZigCrossTargetBuildTest` 提供工具链证据。gate v6 要求 release-blocking known blocker reason 出现在 support/opcode matrix，并由 release suite case 的 expected status/diagnostic 或 weird-bytecode seed 覆盖；future/non-goal blocker 写入 coverage 但不误作 RC 缺口。successful case 必须有 output run、required report names 和 passed artifact audit；failure report 写 machine-readable `missingEvidence`，区分 missing report、missing blocker evidence、missing suite category、artifact audit not passed、metadata consistency、blocking plaintext leak、determinism missing 和 target evidence incomplete。`release-readiness.json` 额外写出 `metadataConsistencyPassed`、`blockingSensitiveFactsPassed` 和 `targetPackagePlanComplete`。`reports/packaging-report.json` 的 `zigToolchain.bootstrapEvents` 记录 archiveName、archiveSha256、checksumStatus、signatureStatus 和 source；`zigToolchain.targetArtifacts` 按 target 记录 required/buildable、OS/arch classifier、library extension、Zig target、expected artifact path/name/resource path、loader extraction path policy、symbol visibility policy、每个实际 built target 的 SHA-256/exported symbols、failed target reason、required capability、platform SDK requirement、failure kind、build log tail 和 Windows PDB exclusion policy；schema v1 缺省 `target` 使用当前 host target，显式 selected target 均为 required，任何实际 required-target failure 都必须阻止 final JAR，不能伪造 cross-build success。所有主要 reports 写 `schemaVersion` 和 `reportVersion`；reports append-compatible，existing field wire name 不随意更改。Gradle `distJ2ll` 产出 `build/dist/j2ll/`，包含 `j2ll.jar`、`docs/examples`、`docs/samples`、`docs/getting-started.md` 和 schema/contract docs，不内置 Zig archive；首次运行按 managed Zig bootstrap policy 获取或复用 Zig。Gradle `betaAcceptance` 使用 dist 包执行 help/version、validate、dry-run、build、child JVM differential 和 report/readiness/privacy smoke。`intermediates/intermediates-manifest.json` 记录 intermediates 开关、class/method artifact ids 和实际 intermediate 文件 SHA-256；`includeDebugDumps`、`includePerClassIr`、`includePerClassLlvm`、`includePerClassC` 必须控制对应 dump 文件是否写出。`src/test/java/xyz/melodysky/testsupport/corpus` 提供 deterministic corpus/release suite runner，对 original JAR 与 output JAR 的 child JVM exit code/stdout/stderr 做差分，并有 comparator 对同 input/seed 双跑的 normalized report set、JAR entry SHA、native resource path、embedded native SHA evidence 和 fallback/string/symbol/loader tokens 做 determinism smoke。`WeirdBytecodeSeedCorpusTest` 固化 stack permutation、category-2 dup、wide/iinc、switch、unreachable block、exception-state merge、multi-exit finally、monitor-finally、nested finally 和 legacy jsr/ret seed。
+- class parse：`xyz.melodysky.frontend.classfile`
+- CFG：`xyz.melodysky.frontend.cfg`
+- hierarchy：`xyz.melodysky.analysis.hierarchy`
+- call graph/runtime/reflection/field：`xyz.melodysky.analysis.*`
+- SSA/model/validator/pass：`xyz.melodysky.ir.*`
+- LLVM model/emission/protection：`xyz.melodysky.backend.llvm.*`
+- runtime/JNI helper：`xyz.melodysky.runtime.*`
+- packaging/rewrite/registration：`xyz.melodysky.packaging`
+- Zig/native build：`xyz.melodysky.toolchain`
+- binary inspectors/export audit：`xyz.melodysky.toolchain.symbols`
+- reports/config：`xyz.melodysky.report` / `xyz.melodysky.config`
 
-如果新增边界或更好的推荐路径，先更新本文件，再更新 `docs/pipeline/` 下对应 stage guide 的详细说明。
+每个 stage只消费稳定 artifact，不回读上层 mutable builder state。ASM只留在 frontend；backend不修复非法 SSA、不重新推断 Java语义；LLVM protection只操作 module model，不做 `.ll` regex。
+
+## Field Internalization
+
+- `fieldInternalization`已进入 schema，默认 `false`；只在 declared `CLOSED_WORLD`或本次 build明确 Y授权 current-input-JAR-only scope时分析。
+- Current-JAR-only授权不改写 configured `worldModel`、不解析 configured `classPath`，必须进入 diagnostics/report。N/EOF在 workspace/pipeline/Zig前退出；validate/dry-run只记录 `confirmationRequired`。
+- 候选仅限 input-base `private static` primitive/reference/array field；instance、non-static accessor、volatile/final、ConstantValue、field-owning `<clinit>` access、multi-release与 reflection/serialization/JNI/Unsafe/VarHandle/MethodHandles Lookup/agent observation边界保留 JVM field。
+- 每个真实 accessor最终必须为 `nativeLowered`且 implementation path支持对应 storage ABI。任一 unselected或 `skipped` accessor都保留 JVM field；不存在 bytecode-accessor rewrite path。
+- Primitive使用 per-defining-`jclass` weak-keyed relaxed atomic raw bits，按 descriptor执行 boolean low-bit、窄整数截断/扩展和 float/double bitcast。
+- Reference/array始终留在 JVM heap，由唯一 Loader按需加入 `ClassValue<Object[]>` sidecar强持有。`ClassValue`是跨调用 cache；native activation首次实际访问时惰性获取 local ref、复用并在退出时释放，不建立 native strong global ref。
+- Final plan、IR slot rewrite、FieldNode removal和 residual declaration/instruction/Handle/bootstrap audit共用同一 approved plan并 fail closed。
+
+## Runtime Loader 与 Packaging
+
+- 唯一 runtime class是 Java 17 `<embeddedLibraryDirectory>/Loader.class`。
+- Loader只包含 target选择、SHA-256校验、extract/load/register，以及 field plan需要时的 `ClassValue<Object[]>` sidecar；不得包含 hidden/generated class definition或 embedded-bytecode decode API。
+- 不输出旧 runtime support class、companion/nested Loader或 artifact-specific NativeLoader。
+- `embeddedLibraryDirectory`同时是 resource与 Loader package prefix，必须为规范 Java internal package path；input base/MR同名 Loader在 Zig前分别以稳定 collision reason失败。
+- 普通 Code method可用 `nativeOriginal`；`<init>`、`<clinit>`和有 Code interface method使用合法 stub + generated native body helper。无法把全部用户语义移入 native implementation时整个 method为 `skipped`。
+- Packaging只重写 `nativeLowered` methods，精确保留 `skipped` methods，并验证后者没有 registration/native bytecode copy。
+- 保留 manifest/resources/services/module-info/multi-release entries。Base class有 versioned counterpart时，命中 method为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS`，不 rewrite/register。
+- Signed JAR：`fail`在 rewrite前拒绝；`strip`移除 signature entries并 warning；`resign`先 preflight keystore/password/alias，再用当前 JDK `jarsigner`。失败不保留 final JAR。
+
+## JVM 语义边界
+
+- SSA merge使用 block parameters，terminator携带 target arguments；live-in mismatch或未建模 throw-site local frame把整个 method标记 `skipped`。
+- Typed catch、exception edge、显式 `athrow`和 implicit exception sites必须显式建模。Protected JNI pending-exception flow、复杂 finally/state merge/monitor interaction未支持时跳过整个 method，不能继续执行 pending exception。
+- Monitor/synchronized/volatile/final/thread happens-before使用 JVM/JNI helper/marker；不伪造 scheduler或 monitor queue。未支持 Thread/wait-notify caller为 `skipped`。
+- Class init active-use guard与 `<clinit>` begin/end/failed helper必须保持 JVM ordering。
+- JDK/reflection/MethodHandle/lambda/Unsafe/VarHandle只有 validated direct/helper/dispatch matrix算 `nativeLowered`；超出 matrix的 selected caller为 `skipped`。
+- Unsafe offset是 metadata token，不是 native object memory offset；不绕开 JVM读取 object layout。
+
+## Protection
+
+- IR/LLVM pass字段是直接 boolean，使用全局 deterministic seed；schema v1不提供 strength/intensity。
+- `fakeBranches`、`basicBlockSplitting`、`blockNameObfuscation`是独立 pass。LLVM visibility/configurable hardening与 mandatory hidden linkage/export audit分开。
+- Final `LLVM_NATIVE_PATH`与 compiler-internal helper只由 `NativeLlvmCompiler`编译一次；reports、intermediates和 Zig writer共用同一 validated module/pass result。
+- Protection pass对单 method不适用只记录 pass `SKIPPED` reason，不自动改变 method outcome；compiler/runtime implementation无法保持语义才产生 method `skipped`。
+- Generated identifiers使用 hash-only token；JNI必要 owner/member/descriptor/error metadata在 generated C中 encoded at rest。Report不写 raw seed或 plaintext。
+- Hidden/internal linkage和 final dynamic export allowlist audit不可关闭。只导出 `JNI_OnLoad`/registration所需 C ABI roots。
+
+## Zig 与 Cross-Target Build
+
+- Schema v1固定 managed Zig `0.15.2`，位置为可执行 `j2ll.jar`同级 `zig/zig(.exe)`。
+- 缺失/版本不对时先复用同目录 official archive，否则从 Zig 0.15.2 official URL下载；local/downloaded archive必须先按内置官方 SHA-256验证再解压。Signature状态明确为 `notVerifiedBoundary`。
+- 一个 generated `build.zig`和一次 matrix-wide invocation编排 per-class `.ll`、Zig-managed `.o`、JNI wrapper C和 runtime helper C。Source set不得含 selected method bytecode carrier。
+- 固定六目标：Windows GNU x64/arm64、Linux GNU x64/arm64、macOS x64/arm64。Selected targets默认 required；真实 capability/preflight/compile/link failure用 `ZIG_TARGET_UNBUILDABLE`阻止 final JAR。Cross-link evidence不等于 non-host OS/JVM runtime E2E。
+- Final workspace libraries扁平写入 `native/<library-file-name>`，Zig workspace为 `native/zig-workspace/`；JAR path为 `<embeddedLibraryDirectory>/<library-file-name>`。
+- 不新增 host `cc`/`clang`/`llc`/platform linker旁路。
+- Export/content retention roots必须真实引用所需 LLVM/helper members；不能把普通 archive link误作 whole-archive。
+
+## CLI、Progress 与 Output
+
+- CLI固定为 `j2ll [--config <Config.json>] [--validate|--dry-run] [--debug]`，另有 `--help`/`--version`。无 mode默认 build。
+- Validate只校验 config且不建 workspace；dry-run不调用 Zig、不写 final JAR。Dry-run/build在 resolved `outputDirectory`下创建 `build_yyyy-MM-dd_HH-mm-ss[-n]`，final JAR在 workspace根。
+- `--debug`只开启 intermediates/debug dumps，不宣称 native debug symbols。
+- stdout只写稳定 `key=value`结果；progress、skipped notice/prompt和 diagnostics写 stderr。
+- TUI compiler stages为 `Read bytecode`、`Lower to IR`、`Emit LLVM IR`；native期间一个 aggregate row加每 target一行；完成后折叠 target rows；finalization用 `Finalize JAR`。
+- Target百分比只等于真实 Zig build-graph completed work units/total，最多64 observable compile units/target。`BUILDING`/`LINKING`/`COMPLETED`来自 graph boundary，不解析 Zig文本或按耗时猜测。
+- `logs/zig-progress/`仅 invocation期间存在，成功/失败/中断都删除；持久 `zig-build.log`只用于诊断。
+- CLI/config error、exit code、summary/index/failure report合同按 `docs/io-config-output-contract.md`。
+
+## Reports 与 Audit
+
+- Primary reports稳定排序并写 `schemaVersion`/`reportVersion`；config/protection只写 seed hash。
+- 必需 evidence包括 diagnostics、lowering、skipped-method、field-internalization、packaging、protection、symbol-audit、artifact-audit、support/opcode matrix、known blockers、summary/index/readiness。
+- Artifact audit验证：
+  - 每个 `nativeLowered` method有 native implementation、wrapper/registration与 selected-target artifact闭包；
+  - 每个 `skipped` method原 body保留、无 registration/native bytecode copy；
+  - 唯一 Loader API/version/name正确；
+  - native resource SHA、JAR metadata、report manifest、export allowlist、PDB与 sensitive plaintext policy一致。
+- Audit/readiness/signing/required-target failure不得保留成功态 final JAR；failure report写 `finalArtifactWritten=false`。
+- Release suite覆盖 minimal LLVM、mixed helper/protection、精确 skipped boundary、confirmation Y/N/EOF、config/signing/target/audit expected failure、packaging preservation、determinism与 realistic samples。
+- 长期路线按 stable skipped reason逐项补 frontend/SSA/backend/helper/runtime E2E，持续减少 skipped methods。
 
 ## 测试要求
 
-- 添加功能、opcode lowering、runtime helper、LLVM emission、analysis 或 optimization pass 后，必须添加对应测试。
-- 添加 opcode lowering：至少补 frontend/SSA 层测试。
-- 添加 IR instruction 或 terminator：补 validator 测试和 LLVM backend 测试。
-- 添加 runtime helper：补 backend declaration 测试和 runtime stub generator 测试。
-- 添加 analysis：补 focused analysis unit test；涉及 invoke/devirtualization 时补 pipeline 测试。
-- 添加 optimization pass：补 pass unit test，并确认 pass 后 validator 可通过。
-- 改 pipeline 编排：补 pipeline test。
-- 改 packaging/native build：补 packaging/toolchain test，必要时再跑 end-to-end benchmark。
+- 新 opcode：frontend/SSA + validator/backend；涉及 runtime语义再补 child-JVM parity。
+- 新 helper：catalog/declaration/C source ABI + pending-exception/reference lifetime + E2E。
+- 新 analysis/pass：focused unit、deterministic seed/no-op、validator与 pipeline integration。
+- 改 method outcome/confirmation：Y/N/EOF、piped stdin、non-TTY、no-skipped no-read、dry-run/validate no-read、Zig-not-invoked-on-decline。
+- 改 packaging/Zig：preservation、registration、artifact audit、target/export/content tests；必要时 real-Zig host与六目标 structural evidence。
+- 测试强度匹配风险；文档-only change可不跑完整 suite，但交付前至少做 targeted grep/consistency review。
 
-测试要跟风险匹配，不要求每个小文档或局部改动都跑完整套件。
+## Git、健壮性与文档
 
-## Git 和检查习惯
-
-- 不需要每次写完代码都检查 `git diff` 或 `git status`。
-- 在阶段性完成、准备交付、准备提交、或怀疑工作区有并发改动时，再检查 git 状态。
-- 不要还原用户未要求还原的改动。
-- 不要使用破坏性 git 命令，除非用户明确要求。
-
-## 健壮性原则
-
-- 正确性优先于激进优化；不确定时使用 conservative fallback。
-- 每个 stage 应有清楚的 diagnostics、validator 或 focused tests。
-- 不让 LLVM backend 修补前端或 IR 的非法状态。
-- 不静默忽略 JVM 可见语义，例如 exception、null check、class initialization、monitor、array store check、dynamic dispatch。
-- 同一输入应尽量产生稳定排序的 diagnostics、IR、LLVM symbol 和 dump，方便回归测试。
-
-## 文档维护
-
-- 内部架构和 rewrite 计划写在 `docs/`，README 保持用户视角。
-- 当实现和文档不一致时，先判断代码是否代表新的真实边界；如果是，更新文档。
-- 每次引入新的 stage、fallback 策略、validator、测试落点或不支持边界，都要同步维护本文件和相关 docs。
+- 在阶段完成、交付、提交或怀疑并发改动时检查 `git status`/`git diff`；不还原用户或其他 agent改动。
+- 不使用破坏性 git命令，除非用户明确要求。
+- 正确性优先；不确定时跳过整个 selected method并给稳定 reason，不生成可能错误的 native code。
+- 每个 stage有 validator/diagnostic/focused tests；不让 backend修前端非法状态。
+- 同一输入尽量保持 diagnostics、IR、symbols、reports稳定排序。
+- 新 stage、helper policy、skipped boundary、validator、测试落点或目录边界必须同步更新本文件与对应 docs；README保持用户视角。

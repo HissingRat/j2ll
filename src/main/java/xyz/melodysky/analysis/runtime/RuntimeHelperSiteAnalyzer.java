@@ -107,8 +107,8 @@ public final class RuntimeHelperSiteAnalyzer {
         return Stream.of(
                 new RuntimeHelperSite("defaultInterfaceSuper:" + target, "UNSUPPORTED_DEFAULT_INTERFACE_SUPER"),
                 new RuntimeHelperSite(
-                        "defaultInterfaceSuperFallback:" + target,
-                        "DEFAULT_INTERFACE_SUPER_FALLBACK"));
+                        "defaultInterfaceSuperUnsupported:" + target,
+                        "DEFAULT_INTERFACE_SUPER_UNSUPPORTED"));
     }
 
     private Stream<RuntimeHelperSite> defaultInterfaceConflictSites(String target) {
@@ -117,8 +117,8 @@ public final class RuntimeHelperSiteAnalyzer {
                         "defaultInterfaceConflict:" + target,
                         "UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT"),
                 new RuntimeHelperSite(
-                        "defaultInterfaceDispatchFallback:" + target,
-                        "DEFAULT_INTERFACE_DISPATCH_FALLBACK"));
+                        "defaultInterfaceDispatchUnsupported:" + target,
+                        "DEFAULT_INTERFACE_DISPATCH_UNSUPPORTED"));
     }
 
     private List<RuntimeHelperSite> jniAbiSite(

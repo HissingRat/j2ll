@@ -49,7 +49,7 @@ final class CliConfigResolver {
                         : baseDirectory.resolve(configured).normalize();
             }
         } catch (IOException | RuntimeException ignored) {
-            // A config diagnostic already explains the parse/read failure. Use a stable report fallback.
+            // A config diagnostic already explains the parse/read failure. Use a stable report location.
         }
         return baseDirectory.resolve("out").normalize();
     }

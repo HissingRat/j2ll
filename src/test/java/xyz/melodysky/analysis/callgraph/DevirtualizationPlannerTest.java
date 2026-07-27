@@ -25,13 +25,13 @@ class DevirtualizationPlannerTest {
                 .decisionFor("single")
                 .orElseThrow();
 
-        assertFalse(decision.fallbackRequired());
+        assertFalse(decision.directNativeTargetUnavailable());
         assertEquals("SINGLE_TARGET", decision.reason());
         assertEquals("pkg/Only#run!()V", decision.directTarget().orElseThrow().displayName());
     }
 
     @Test
-    void multipleTargetsRecordFallbackReason() {
+    void multipleTargetsRequireJvmDispatch() {
         CallSite site = site("multi");
         CallGraph graph = new CallGraph(List.of(new CallResolution(
                 site,
@@ -43,13 +43,13 @@ class DevirtualizationPlannerTest {
                 .decisionFor("multi")
                 .orElseThrow();
 
-        assertTrue(decision.fallbackRequired());
+        assertTrue(decision.directNativeTargetUnavailable());
         assertEquals("MULTIPLE_TARGETS", decision.reason());
-        assertTrue(decision.jvmHelperFallbackRequired());
+        assertTrue(decision.jvmDispatchRequired());
     }
 
     @Test
-    void unknownTargetRecordsJvmHelperFallback() {
+    void unknownTargetRequiresJvmDispatch() {
         CallSite site = site("unknown");
         CallGraph graph = new CallGraph(List.of(new CallResolution(
                 site,
@@ -61,9 +61,9 @@ class DevirtualizationPlannerTest {
                 .decisionFor("unknown")
                 .orElseThrow();
 
-        assertTrue(decision.fallbackRequired());
+        assertTrue(decision.directNativeTargetUnavailable());
         assertEquals("UNKNOWN_EXTERNAL_TARGET", decision.reason());
-        assertTrue(decision.jvmHelperFallbackRequired());
+        assertTrue(decision.jvmDispatchRequired());
     }
 
     private CallSite site(String id) {

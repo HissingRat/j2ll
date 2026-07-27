@@ -1503,10 +1503,10 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(7, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
-        assertTrue(report.contains("\"status\": \"frontendSkipped\""));
+        assertTrue(report.contains("\"status\": \"skipped\""));
         assertTrue(report.contains("\"reasonCode\": \"DISPATCH_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"DEFAULT_INTERFACE_DISPATCH_HELPER\""));
-        assertTrue(report.contains("\"reasonCode\": \"DEFAULT_INTERFACE_DISPATCH_FALLBACK\""));
+        assertTrue(report.contains("\"reasonCode\": \"DEFAULT_INTERFACE_DISPATCH_UNSUPPORTED\""));
         assertTrue(report.contains("\"reasonCode\": \"UNSUPPORTED_DEFAULT_INTERFACE_CONFLICT\""));
         assertTrue(report.contains("\"reasonCode\": \"UNSUPPORTED_DEFAULT_INTERFACE_SUPER\""));
         assertTrue(report.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\""));
@@ -1806,14 +1806,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     }
 
     @Test
-    void throwableFallbackKeepsMessageAndCauseInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("throwable-fallback.jar");
+    void skippedThrowableBoundaryKeepsOriginalMessageAndCauseSemantics() throws Exception {
+        Path inputJar = temp.resolve("throwable-skipped.jar");
         writeJar(inputJar, Map.of(
                 "pkg/ThrowableOps.class", throwableOpsClass(),
                 "pkg/ThrowableMain.class", throwableMainClass()));
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/throwable-fallback");
+        Path workspace = temp.resolve("out/throwable-skipped");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -1826,17 +1826,17 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("outer:cause\n", differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        assertTrue(Files.readString(workspace.resolve("reports/skipped-method-report.json"))
+                .contains("pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
-        assertTrue(packagingReport.contains("pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("pkg/ThrowableOps#messageAndCause!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""));
     }
 
     @Test
-    void threadAndWaitNotifyFallbacksRunInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("thread-fallback.jar");
+    void skippedThreadAndWaitNotifyBoundariesRunFromOriginalJavaBodies() throws Exception {
+        Path inputJar = temp.resolve("thread-skipped.jar");
         writeJar(inputJar, Map.of(
                 "pkg/ThreadOps.class", threadOpsClass(),
                 "pkg/ThreadOps$Worker.class", threadWorkerClass(),
@@ -1844,7 +1844,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/ThreadOps#runThread!()I",
                 "pkg/ThreadOps#waitNotify!()Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/thread-fallback");
+        Path workspace = temp.resolve("out/thread-skipped");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -1860,12 +1860,13 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 wait-boundary
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        assertEquals(2, countOccurrences(loweringReport, "\"status\": \"skipped\""));
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(skippedReport.contains("pkg/ThreadOps#runThread!()I"), skippedReport);
+        assertTrue(skippedReport.contains("pkg/ThreadOps#waitNotify!()Ljava/lang/String;"), skippedReport);
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THREAD_HELPER_FALLBACK\""));
-        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        assertFalse(packagingReport.contains("pkg/ThreadOps#runThread!()I"), packagingReport);
+        assertFalse(packagingReport.contains("pkg/ThreadOps#waitNotify!()Ljava/lang/String;"), packagingReport);
         String source = generatedJniSource(workspace);
         assertFalse(source.contains("pthread_cond"));
         assertFalse(source.contains("pthread_create"));
@@ -1873,14 +1874,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     }
 
     @Test
-    void nativeEmbeddedClassBlobFallbackDefinesHelperLazilyAndRunsInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("fallback.jar");
+    void skippedJdkBoundaryKeepsOneOriginalBodyAndEmitsNoBytecodeCopy() throws Exception {
+        Path inputJar = temp.resolve("skipped-jdk.jar");
         writeJar(inputJar, Map.of(
                 "pkg/JdkFallback.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"),
                 "pkg/FallbackMain.class", fallbackMainClass()));
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/fallback");
+        Path workspace = temp.resolve("out/skipped-jdk");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -1904,26 +1905,29 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
             assertNull(jarFile.getJarEntry("xyz/melodysky/runtime/loader/J2llNativeLoaderSupport.class"));
         }
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"storageTarget\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"definitionMechanism\": \"HiddenClass\""));
-        assertTrue(packagingReport.contains("\"definitionMechanismReasonCode\": \"FALLBACK_HIDDEN_CLASS\""));
-        assertTrue(packagingReport.contains("\"ownerLookupSupported\": true"));
-        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
-        assertTrue(packagingReport.contains("\"classloaderReusePolicy\": \"lazyPerClassLoaderReuse\""));
-        assertTrue(packagingReport.contains("\"cacheScope\": \"process\""));
-        assertTrue(packagingReport.contains("\"cacheKey\": \"fallbackId+definingClassLoaderIdentity\""));
-        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
-        assertTrue(packagingReport.contains("\"globalReferencePolicy\": \"globalRefPerFallbackClassAndClassLoader\""));
-        assertTrue(packagingReport.contains("\"encodingVersion\": \"fallbackBlobEncodingV1\""));
-        assertTrue(packagingReport.contains("\"originalSha256\""));
-        assertTrue(packagingReport.contains("\"encodedSha256\""));
-        assertTrue(packagingReport.contains("\"compressionAlgorithm\": \"j2ll-rle-byte-pairs-v1\""));
-        assertTrue(packagingReport.contains("\"encryptionAlgorithm\": \"xor-sha256-key-stream-v1\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertFalse(packagingReport.contains("nativeEmbeddedClassBlob"), packagingReport);
+        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(skippedReport.contains(
+                "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"), skippedReport);
+        var skippedMethod = new AsmClassParser()
+                .parseAll(new JarClassFileSource(pipeline.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass("pkg/JdkFallback")
+                .orElseThrow()
+                .methods().stream()
+                .filter(method -> method.name().equals("substring"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(skippedMethod.accessFlags().isNative());
+        assertTrue(skippedMethod.hasCode());
     }
 
     @Test
-    void jdkCollectionPolicyFallsBackToEncodedHelperAndRunsInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("collection-fallback.jar");
+    void unsupportedJdkCollectionMethodsRemainJavaAndRunInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("collection-skipped.jar");
         writeJar(inputJar, Map.of(
                 "pkg/CollectionOps.class", collectionOpsClass(),
                 "pkg/CollectionMain.class", collectionMainClass()));
@@ -1932,7 +1936,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 "pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;",
                 "pkg/CollectionOps#arraysSummary!()Ljava/lang/String;",
                 "pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/collection-fallback");
+        Path workspace = temp.resolve("out/collection-skipped");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -1950,16 +1954,13 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 true:x:fallback:0:one:2:fmt-7
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(4, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_COLLECTION_HELPER\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertEquals(4, countOccurrences(loweringReport, "\"status\": \"skipped\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("pkg/CollectionOps#arrayListSummary!()Ljava/lang/String;"));
-        assertTrue(packagingReport.contains("pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;"));
-        assertTrue(packagingReport.contains("pkg/CollectionOps#arraysSummary!()Ljava/lang/String;"));
-        assertTrue(packagingReport.contains("pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;"));
-        assertEquals(4, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"JDK_HELPER_FALLBACK\""));
+        assertFalse(packagingReport.contains("pkg/CollectionOps#arrayListSummary!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("pkg/CollectionOps#hashMapSummary!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("pkg/CollectionOps#arraysSummary!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("pkg/CollectionOps#optionalCollectionsFormatSummary!()Ljava/lang/String;"));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
         try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
             assertFalse(jarFile.stream()
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
@@ -2091,23 +2092,20 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertEquals(39, countOccurrences(loweringReport, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
-        assertEquals(7, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
+        assertEquals(7, countOccurrences(loweringReport, "\"status\": \"skipped\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"REFLECTION_FIELD_HELPER\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"ARRAYCOPY_HELPER\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"LAMBDA_METAFACTORY_HELPER\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_COLLECTION_HELPER\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"JDK_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"THREAD_HELPER_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        assertEquals(
+                7,
+                countOccurrences(
+                        Files.readString(workspace.resolve("reports/skipped-method-report.json")),
+                        "\"status\": \"skipped\""));
         String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
         assertTrue(protectionReport.contains("\"passName\": \"STRING_ENCRYPTION\""));
         assertTrue(protectionReport.contains("\"status\": \"RAN\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertEquals(4, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"JDK_HELPER_FALLBACK\""));
-        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THROWABLE_HELPER_FALLBACK\""));
-        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"THREAD_HELPER_FALLBACK\""));
-        assertEquals(1, countOccurrences(packagingReport, "\"fallbackReasonCode\": \"WAIT_NOTIFY_FALLBACK\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
         assertTrue(symbolAudit.contains("\"status\": \"passed\""));
         try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
@@ -2147,16 +2145,12 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 reflection-ok
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(0, countOccurrences(loweringReport, "\"status\": \"halfLowered\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"REFLECTION_DYNAMIC_FALLBACK\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(loweringReport.contains("\"status\": \"lowered\""));
+        assertEquals(0, countOccurrences(loweringReport, "\"status\": \"skipped\""));
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\"")
                 || loweringReport.contains("\"reasonCode\": \"JVM_CALL_HELPER\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)V\""));
-        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;)Ljava/lang/String;\""));
-        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\": \"([Ljava/lang/Class;)Ljava/lang/String;\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
         try (JarFile jarFile = new JarFile(pipeline.outputJar().toFile())) {
             assertFalse(jarFile.stream()
                     .anyMatch(entry -> entry.getName().contains("/J2llFallback$")
@@ -2168,14 +2162,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
     }
 
     @Test
-    void instanceFallbackPassesReceiverReturnsReferenceAndPropagatesException() throws Exception {
-        Path inputJar = temp.resolve("instance-fallback.jar");
+    void skippedInstanceMethodKeepsReceiverReturnAndExceptionSemantics() throws Exception {
+        Path inputJar = temp.resolve("instance-skipped.jar");
         writeJar(inputJar, Map.of(
                 "pkg/InstanceFallback.class", instanceFallbackClass(),
                 "pkg/InstanceFallbackMain.class", instanceFallbackMainClass()));
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/InstanceFallback#tail!(Ljava/lang/String;)Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/instance-fallback");
+        Path workspace = temp.resolve("out/instance-skipped");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -2188,10 +2182,10 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("ello\ncaught-npe\n", differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\""));
+        assertFalse(packagingReport.contains("pkg/InstanceFallback#tail!"), packagingReport);
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
     }
 
     @Test
@@ -2231,33 +2225,24 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 bang
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
         assertEquals(0, countOccurrences(loweringReport, "\"reasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
-        assertEquals(0, countOccurrences(loweringReport, "\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_CHAIN_FALLBACK\""));
-        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_PERMUTE_FALLBACK\""));
-        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FILTER_FALLBACK\""));
-        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_FOLD_FALLBACK\""));
-        assertFalse(packagingReport.contains("\"fallbackReasonCode\": \"METHOD_HANDLE_COLLECTOR_UNSUPPORTED\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
         assertNoPlainFallbackClassEntry(pipeline.outputJar());
-        assertTrue(loweringReport.contains("\"status\": \"lowered\""));
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""));
         assertTrue(loweringReport.contains("\"reasonCode\": \"DEFERRED_DISPATCH_HELPER\"")
                 || loweringReport.contains("\"reasonCode\": \"JVM_CALL_HELPER\""));
     }
 
     @Test
-    void altMetafactoryUnsupportedCaptureFallbackRunsFromEncodedHelperInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("alt-lambda-fallback.jar");
+    void unsupportedAltMetafactoryCaptureRemainsJavaAndRunsInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("alt-lambda-skipped.jar");
         writeJar(inputJar, Map.of(
                 "pkg/AltLambdaFallback.class", altLambdaFallbackClass(),
                 "pkg/AltLambdaFallbackMain.class", altLambdaFallbackMainClass()));
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/AltLambdaFallback#serializableTwoCapture!(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;"));
-        Path workspace = temp.resolve("out/alt-lambda-fallback");
+        Path workspace = temp.resolve("out/alt-lambda-skipped");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -2273,23 +2258,22 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 true
                 """, differential.outputRun().stdout());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(loweringReport.contains("\"reasonCode\": \"ALT_METAFACTORY_FALLBACK\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"fallbackReasonCode\": \"ALT_METAFACTORY_FALLBACK\""));
-        assertTrue(packagingReport.contains("\"fallbackInvokeDescriptor\": \"(Ljava/lang/String;Ljava/lang/String;)Ljava/util/function/Supplier;\""));
+        assertFalse(packagingReport.contains("pkg/AltLambdaFallback#serializableTwoCapture!"), packagingReport);
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
         assertNoPlainFallbackClassEntry(pipeline.outputJar());
     }
 
     @Test
-    void nativeEmbeddedFallbackIsIsolatedAcrossTwoClassloadersInChildJvm() throws Exception {
-        Path inputJar = temp.resolve("fallback-classloader-isolation.jar");
+    void skippedOriginalMethodRemainsIsolatedAcrossTwoClassloaders() throws Exception {
+        Path inputJar = temp.resolve("skipped-classloader-isolation.jar");
         writeJar(inputJar, Map.of(
                 "pkg/JdkFallback.class", AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"),
                 "pkg/FallbackClassLoaderMain.class", fallbackClassLoaderMainClass()));
         ResolvedConfig config = config(inputJar, List.of(
                 "pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
-        Path workspace = temp.resolve("out/fallback-classloader-isolation");
+        Path workspace = temp.resolve("out/skipped-classloader-isolation");
 
         MainlinePipelineResult pipeline = runPipeline(config, workspace);
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
@@ -2307,11 +2291,9 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 false
                 """, differential.outputRun().stdout());
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(packagingReport.contains("\"cacheScope\": \"process\""));
-        assertTrue(packagingReport.contains("\"cacheKey\": \"fallbackId+definingClassLoaderIdentity\""));
-        assertTrue(packagingReport.contains("\"cacheLifetime\": \"processLifetime\""));
-        assertTrue(packagingReport.contains("\"globalReferencePolicy\": \"globalRefPerFallbackClassAndClassLoader\""));
-        assertTrue(packagingReport.contains("\"cacheReasonCode\": \"FALLBACK_CACHE_REUSE\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertTrue(Files.readString(workspace.resolve("reports/skipped-method-report.json"))
+                .contains("pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
     }
 
     private int countEntries(Path jar, String suffix) throws IOException {
@@ -2342,7 +2324,12 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
 
     private MainlinePipelineResult runPipeline(ResolvedConfig config, Path workspace) throws Exception {
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home"))) {
-            return new MainlinePipeline().run(config, workspace);
+            return new MainlinePipeline().run(
+                    config,
+                    workspace,
+                    xyz.melodysky.progress.BuildProgressListener.none(),
+                    xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                    SkippedMethodApproval.allowAll());
         }
     }
 

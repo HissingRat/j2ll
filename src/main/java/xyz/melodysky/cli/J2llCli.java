@@ -1,7 +1,9 @@
 package xyz.melodysky.cli;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -59,6 +61,7 @@ public final class J2llCli {
             InputStream input,
             PrintStream out,
             PrintStream err) throws IOException {
+        java.util.Objects.requireNonNull(input, "input");
         CliParseResult parsed = new CliArgumentsParser().parse(args);
         if (parsed.hasErrors() || parsed.options().isEmpty()) {
             parsed.errors().forEach(error -> err.println("error=" + error));
@@ -83,13 +86,21 @@ public final class J2llCli {
 
         ResolvedConfig config = null;
         WholeProgramAnalysisPolicy wholeProgramPolicy = WholeProgramAnalysisPolicy.strict();
+        BufferedReader confirmationReader = options.mode() == CliMode.BUILD
+                ? new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))
+                : null;
         if (!loaded.hasErrors() && loaded.config().isPresent()) {
             config = new CliConfigOverrides().applyDebug(
                     loaded.config().orElseThrow(),
                     options.debug() && options.mode() == CliMode.BUILD);
             if (options.mode() == CliMode.BUILD) {
                 WholeProgramConfirmation.Result confirmation =
-                        new WholeProgramConfirmation().confirm(config, input, err);
+                        new WholeProgramConfirmation().confirm(
+                                config,
+                                java.util.Objects.requireNonNull(
+                                        confirmationReader,
+                                        "confirmationReader"),
+                                err);
                 if (!confirmation.accepted()) {
                     return 2;
                 }
@@ -116,24 +127,36 @@ public final class J2llCli {
         ResolvedConfig resolvedConfig = java.util.Objects.requireNonNull(config, "config");
         return options.mode() == CliMode.DRY_RUN
                 ? dryRun(options.configPath(), workspace, resolvedConfig, loaded, out, err)
-                : build(resolvedConfig, workspace, wholeProgramPolicy, out, err);
+                : build(
+                        resolvedConfig,
+                        workspace,
+                        wholeProgramPolicy,
+                        java.util.Objects.requireNonNull(
+                                confirmationReader,
+                                "confirmationReader"),
+                        out,
+                        err);
     }
 
     private static int build(
             ResolvedConfig config,
             Path workspace,
             WholeProgramAnalysisPolicy wholeProgramPolicy,
+            BufferedReader confirmationReader,
             PrintStream out,
             PrintStream err)
             throws IOException {
         LegacyProgressRenderer progress = LegacyProgressRenderer.forCli(err);
         MainlinePipelineResult result;
+        SkippedMethodConfirmation skippedMethodConfirmation =
+                new SkippedMethodConfirmation(confirmationReader, err);
         try {
             result = new MainlinePipeline().run(
                     config,
                     workspace,
                     progress,
-                    wholeProgramPolicy);
+                    wholeProgramPolicy,
+                    skippedMethodConfirmation);
         } catch (IOException exception) {
             progress.finished(false);
             Diagnostic diagnostic = Diagnostic.error(
@@ -145,7 +168,8 @@ public final class J2llCli {
                     config,
                     java.util.List.of(diagnostic),
                     exception instanceof ZigBuildException zigFailure ? zigFailure : null,
-                    wholeProgramPolicy);
+                    wholeProgramPolicy,
+                    skippedMethodConfirmation.evidence());
             err.println(CLI_DIAGNOSTICS.primaryFailure(java.util.List.of(diagnostic)));
             CLI_DIAGNOSTICS.primaryHint(java.util.List.of(diagnostic)).ifPresent(hint -> err.println("hint=" + hint));
             err.println("reportsDir=" + workspace.resolve("reports"));
@@ -228,7 +252,7 @@ public final class J2llCli {
         boolean inputParsed = false;
         int parsedClassCount = 0;
         int requestedMethodCount = 0;
-        int notApplicableMethodCount = 0;
+        int ineligibleMethodCount = 0;
         int excludedMethodCount = 0;
         if (Files.isRegularFile(config.jarFile())) {
             var parse = new AsmClassParser().parseAll(new JarClassFileSource(config.jarFile()));
@@ -243,7 +267,7 @@ public final class J2llCli {
                         config.blackList());
                 match.diagnostics().forEach(diagnostics::add);
                 requestedMethodCount = match.requestedMethods().size();
-                notApplicableMethodCount = match.notApplicable().size();
+                ineligibleMethodCount = match.ineligible().size();
                 excludedMethodCount = match.excluded().size();
             }
         }
@@ -257,7 +281,7 @@ public final class J2llCli {
                 inputParsed,
                 parsedClassCount,
                 requestedMethodCount,
-                notApplicableMethodCount,
+                ineligibleMethodCount,
                 excludedMethodCount);
         int exitCode = exitCodeForDiagnostics(diagnostics.diagnostics());
         if (exitCode == 1) {

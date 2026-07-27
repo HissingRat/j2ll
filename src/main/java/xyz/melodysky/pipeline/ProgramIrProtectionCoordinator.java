@@ -291,10 +291,9 @@ public final class ProgramIrProtectionCoordinator {
                                 instruction.opcode(),
                                 access,
                                 true,
-                                callerNative,
-                                calleeNative,
-                                reflectionSensitive.contains(targetKey),
-                                !calleeNative));
+                                 callerNative,
+                                 calleeNative,
+                                 reflectionSensitive.contains(targetKey)));
                     }));
         }
         return new MethodInliningPlan(candidates);

@@ -250,6 +250,37 @@ class LegacyProgressRendererTest {
     }
 
     @Test
+    void userInputBoundaryClearsInteractiveRegionBeforePromptText() {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        PrintStream output = new PrintStream(bytes, true, StandardCharsets.UTF_8);
+        LegacyProgressRenderer renderer = new LegacyProgressRenderer(
+                output,
+                true,
+                120,
+                () -> 0L);
+
+        renderer.stageStarted(BuildStage.METHOD_LOWERING, "2 methods");
+        renderer.stageProgress(
+                BuildStage.METHOD_LOWERING,
+                1,
+                2,
+                "pkg/Foo#first!()V");
+        renderer.beforeUserInput();
+        output.println("skippedMethod=pkg/Foo#second!()V reasonCode=TEST reason=test");
+        output.println("continue? (Y/N)");
+        output.print("> ");
+
+        List<String> screen = TerminalScreen.render(bytes);
+        assertEquals(
+                List.of(
+                        "skippedMethod=pkg/Foo#second!()V reasonCode=TEST reason=test",
+                        "continue? (Y/N)",
+                        ">"),
+                screen,
+                screen.toString());
+    }
+
+    @Test
     void interactiveOutputAdaptsBarsBeforeTruncatingUsefulNarrowTerminalText() {
         assertInteractiveRegionFits(
                 32,

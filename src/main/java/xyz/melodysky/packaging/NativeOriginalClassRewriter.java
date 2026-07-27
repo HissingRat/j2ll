@@ -55,7 +55,7 @@ public final class NativeOriginalClassRewriter implements Opcodes {
                                     PackagingDiagnostics.STUB_REWRITE_NOT_IMPLEMENTED,
                                     decision.strategy().wireName() + " rewrite is planned but not implemented yet")
                             .at(location(decision))
-                            .withDecision("frontendSkipped"));
+                            .withDecision("skipped"));
                     continue;
                 }
                 MethodNode method = findMethod(copy, decision);

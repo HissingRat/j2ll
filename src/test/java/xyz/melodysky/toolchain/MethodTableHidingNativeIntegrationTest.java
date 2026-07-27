@@ -253,7 +253,7 @@ final class MethodTableHidingNativeIntegrationTest {
                 implementationPlan,
                 implementationPlan.registrationPlan(),
                 Map.copyOf(irMethods),
-                RuntimeLoaderPlan.create("native0", false));
+                RuntimeLoaderPlan.create("native0"));
     }
 
     private MethodTableHidingPlan hidingPlan(Fixture fixture, long seed) {

@@ -5,7 +5,6 @@ import java.util.Objects;
 public record RuntimeLoaderPlan(
         String embeddedLibraryDirectory,
         String internalName,
-        boolean includeFallbackDefinition,
         int referenceSidecarSize) {
     public RuntimeLoaderPlan {
         Objects.requireNonNull(embeddedLibraryDirectory, "embeddedLibraryDirectory");
@@ -15,28 +14,23 @@ public record RuntimeLoaderPlan(
         }
     }
 
-    public static RuntimeLoaderPlan create(
-            String embeddedLibraryDirectory,
-            boolean includeFallbackDefinition) {
+    public static RuntimeLoaderPlan create(String embeddedLibraryDirectory) {
         EmbeddedLibraryLayout layout = new EmbeddedLibraryLayout();
         String directory = layout.normalizedDirectory(embeddedLibraryDirectory);
         return new RuntimeLoaderPlan(
                 directory,
                 layout.loaderInternalName(directory),
-                includeFallbackDefinition,
                 0);
     }
 
     public static RuntimeLoaderPlan create(
             String embeddedLibraryDirectory,
-            boolean includeFallbackDefinition,
             int referenceSidecarSize) {
         EmbeddedLibraryLayout layout = new EmbeddedLibraryLayout();
         String directory = layout.normalizedDirectory(embeddedLibraryDirectory);
         return new RuntimeLoaderPlan(
                 directory,
                 layout.loaderInternalName(directory),
-                includeFallbackDefinition,
                 referenceSidecarSize);
     }
 

@@ -30,7 +30,7 @@ public final class MethodCfgBuilder implements Opcodes {
                             CfgDiagnostics.METHOD_HAS_NO_CODE,
                             "method has no Code attribute and does not produce a CFG")
                     .at(DiagnosticLocation.methodLocation(method.owner(), method.name(), method.descriptor()))
-                    .withDecision("notApplicable");
+                    .withDecision("ineligible");
             return StageResult.complete(
                     DiagnosticStage.CFG,
                     MethodCfgResult.noCode(method, "NO_CODE", "method has no Code attribute"),

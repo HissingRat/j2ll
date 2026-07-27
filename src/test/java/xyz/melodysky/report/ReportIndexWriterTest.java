@@ -85,6 +85,28 @@ class ReportIndexWriterTest {
         assertTrue(entry.get("producedOnFailure").getAsBoolean());
     }
 
+    @Test
+    void skippedMethodReportIsRequiredForReadinessBetaRcAndFailureEvidence() throws Exception {
+        Path reports = temp.resolve("reports");
+        Files.createDirectories(reports);
+        Files.writeString(reports.resolve("skipped-method-report.json"), """
+                {
+                  "schemaVersion": 1,
+                  "reportVersion": 1,
+                  "skippedMethods": []
+                }
+                """);
+
+        var root = JsonParser.parseString(new ReportIndexWriter().json(temp)).getAsJsonObject();
+        var entry = root.getAsJsonArray("reports").get(0).getAsJsonObject();
+
+        assertEquals("reports/skipped-method-report.json", entry.get("path").getAsString());
+        assertTrue(entry.get("requiredForReadiness").getAsBoolean());
+        assertTrue(entry.get("requiredForBeta").getAsBoolean());
+        assertTrue(entry.get("requiredForRc").getAsBoolean());
+        assertTrue(entry.get("producedOnFailure").getAsBoolean());
+    }
+
     private String sha256(Path path) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(Files.readAllBytes(path)));

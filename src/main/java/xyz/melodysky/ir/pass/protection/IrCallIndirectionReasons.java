@@ -14,7 +14,8 @@ public final class IrCallIndirectionReasons {
     public static final String MULTIPLE_TARGETS = "IR_CALL_INDIRECTION_MULTIPLE_TARGETS";
     public static final String FACT_KIND_MISMATCH = "IR_CALL_INDIRECTION_FACT_KIND_MISMATCH";
     public static final String FACT_TARGET_MISMATCH = "IR_CALL_INDIRECTION_FACT_TARGET_MISMATCH";
-    public static final String FALLBACK_REQUIRED = "IR_CALL_INDIRECTION_FALLBACK_REQUIRED";
+    public static final String NATIVE_TARGET_UNAVAILABLE =
+            "IR_CALL_INDIRECTION_NATIVE_TARGET_UNAVAILABLE";
     public static final String CALLER_NOT_NATIVE_LOWERED =
             "IR_CALL_INDIRECTION_CALLER_NOT_NATIVE_LOWERED";
     public static final String TARGET_NOT_NATIVE_LOWERED =

@@ -98,8 +98,8 @@ final class MethodInliningSafety {
         if (hasMonitorOrJmmShape(callee)) {
             return Optional.of(MethodInliningReason.MONITOR_JMM_SENSITIVE);
         }
-        if (hasFallbackOrCallShape(callee)) {
-            return Optional.of(MethodInliningReason.FALLBACK_SENSITIVE);
+        if (hasCallOrFieldShape(callee)) {
+            return Optional.of(MethodInliningReason.CALL_OR_FIELD_SENSITIVE);
         }
         boolean unsupported = callee.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
@@ -138,7 +138,7 @@ final class MethodInliningSafety {
                         || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE);
     }
 
-    private boolean hasFallbackOrCallShape(IrMethod method) {
+    private boolean hasCallOrFieldShape(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .map(instruction -> instruction.opcode())

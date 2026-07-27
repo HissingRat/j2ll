@@ -18,7 +18,7 @@ final class CliConfirmationInput {
         Objects.requireNonNull(input, "input");
         return interactiveTerminal || hasBufferedInput(input)
                 ? input
-                : InputStream.nullInputStream();
+                : new DeferredNonInteractiveInputStream(input);
     }
 
     private static boolean isInteractiveTerminal() {

@@ -8,12 +8,12 @@ import xyz.melodysky.pipeline.MethodEligibility;
 
 public record SelectorMatchResult(
         List<ParsedMethod> requestedMethods,
-        List<MethodEligibility> notApplicable,
+        List<MethodEligibility> ineligible,
         List<MethodEligibility> excluded,
         List<Diagnostic> diagnostics) {
     public SelectorMatchResult {
         requestedMethods = List.copyOf(Objects.requireNonNull(requestedMethods, "requestedMethods"));
-        notApplicable = List.copyOf(Objects.requireNonNull(notApplicable, "notApplicable"));
+        ineligible = List.copyOf(Objects.requireNonNull(ineligible, "ineligible"));
         excluded = List.copyOf(Objects.requireNonNull(excluded, "excluded"));
         diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
     }

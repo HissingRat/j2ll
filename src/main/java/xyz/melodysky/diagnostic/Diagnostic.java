@@ -9,8 +9,7 @@ public record Diagnostic(
         DiagnosticStage stage,
         DiagnosticLocation location,
         String message,
-        String decision,
-        boolean conservativeFallbackAvailable) implements Comparable<Diagnostic> {
+        String decision) implements Comparable<Diagnostic> {
     public Diagnostic {
         Objects.requireNonNull(severity, "severity");
         Objects.requireNonNull(code, "code");
@@ -28,27 +27,23 @@ public record Diagnostic(
     }
 
     public static Diagnostic info(DiagnosticStage stage, DiagnosticCode code, String message) {
-        return new Diagnostic(DiagnosticSeverity.INFO, code, stage, DiagnosticLocation.none(), message, null, false);
+        return new Diagnostic(DiagnosticSeverity.INFO, code, stage, DiagnosticLocation.none(), message, null);
     }
 
     public static Diagnostic warning(DiagnosticStage stage, DiagnosticCode code, String message) {
-        return new Diagnostic(DiagnosticSeverity.WARNING, code, stage, DiagnosticLocation.none(), message, "warning", false);
+        return new Diagnostic(DiagnosticSeverity.WARNING, code, stage, DiagnosticLocation.none(), message, "warning");
     }
 
     public static Diagnostic error(DiagnosticStage stage, DiagnosticCode code, String message) {
-        return new Diagnostic(DiagnosticSeverity.ERROR, code, stage, DiagnosticLocation.none(), message, "failed", false);
+        return new Diagnostic(DiagnosticSeverity.ERROR, code, stage, DiagnosticLocation.none(), message, "failed");
     }
 
     public Diagnostic at(DiagnosticLocation newLocation) {
-        return new Diagnostic(severity, code, stage, newLocation, message, decision, conservativeFallbackAvailable);
+        return new Diagnostic(severity, code, stage, newLocation, message, decision);
     }
 
     public Diagnostic withDecision(String newDecision) {
-        return new Diagnostic(severity, code, stage, location, message, newDecision, conservativeFallbackAvailable);
-    }
-
-    public Diagnostic withConservativeFallbackAvailable(boolean available) {
-        return new Diagnostic(severity, code, stage, location, message, decision, available);
+        return new Diagnostic(severity, code, stage, location, message, newDecision);
     }
 
     @Override

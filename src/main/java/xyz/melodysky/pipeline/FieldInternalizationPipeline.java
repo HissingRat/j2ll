@@ -98,20 +98,6 @@ public final class FieldInternalizationPipeline {
                                 implementation -> implementation.path(),
                                 (left, right) -> left,
                                 LinkedHashMap::new));
-        Set<String> sidecarAwareFallbackMethods =
-                preliminaryImplementationPlan.implementations().stream()
-                        .filter(implementation ->
-                                implementation.path()
-                                        == NativeImplementationPath.TEMPLATE_JNI_PATH)
-                        .filter(implementation -> implementation.reasonCode()
-                                .equals("NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK"))
-                        .filter(implementation ->
-                                implementation.decision()
-                                        .method()
-                                        .accessFlags()
-                                        .isStatic())
-                        .map(implementation -> implementation.methodKey())
-                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
         NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlanner().plan(
                 useIndex,
                 analysisScope,
@@ -128,10 +114,7 @@ public final class FieldInternalizationPipeline {
                     }
                     return paths.get(methodKey) == NativeImplementationPath.LLVM_NATIVE_PATH
                             ? FieldAccessImplementationPath.LLVM_NATIVE_PATH
-                            : sidecarAwareFallbackMethods.contains(methodKey)
-                                    ? FieldAccessImplementationPath
-                                            .JVM_SIDECAR_FALLBACK_PATH
-                                    : FieldAccessImplementationPath.NON_LLVM_PATH;
+                            : FieldAccessImplementationPath.NON_LLVM_PATH;
                 });
         Set<String> llvmMethodKeys = paths.entrySet().stream()
                 .filter(entry -> entry.getValue()

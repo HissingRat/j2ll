@@ -36,10 +36,10 @@ public record JdkIntrinsic(
                 "direct native lowering");
     }
 
-    public static JdkIntrinsic fallback(String owner, String name, String descriptor, String reason) {
+    public static JdkIntrinsic unsupported(String owner, String name, String descriptor, String reason) {
         return new JdkIntrinsic(
                 new JdkMethodId(owner, name, descriptor),
-                JdkMethodPolicy.JVM_HELPER_FALLBACK,
+                JdkMethodPolicy.JVM_HELPER_UNSUPPORTED,
                 Optional.empty(),
                 reason);
     }

@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +24,19 @@ class CliConfirmationInputTest {
                 "Y\n".getBytes(StandardCharsets.UTF_8));
 
         assertSame(input, CliConfirmationInput.select(input, false));
+    }
+
+    @Test
+    void pipeAnswerWrittenAfterSelectionIsStillAccepted() throws Exception {
+        try (PipedInputStream input = new PipedInputStream();
+                PipedOutputStream output = new PipedOutputStream(input)) {
+            InputStream selected = CliConfirmationInput.select(input, false);
+
+            output.write("Y\n".getBytes(StandardCharsets.UTF_8));
+            output.flush();
+
+            assertEquals('Y', selected.read());
+        }
     }
 
     @Test

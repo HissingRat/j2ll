@@ -41,7 +41,7 @@ class CorpusRunnerTest implements Opcodes {
     }
 
     @Test
-    void runsMixedFeatureCorpusWithHelpersFallbackAndProtectionReports() throws Exception {
+    void runsMixedFeatureCorpusWithHelpersSkippedMethodAndProtectionReports() throws Exception {
         LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
         entries.put("pkg/CorpusMath.class", AsmFixtureBuilder.classWithAddMethod("pkg/CorpusMath"));
         entries.put("pkg/StringBuilderOps.class", AsmFixtureBuilder.classWithJdkStringBuilderMethods("pkg/StringBuilderOps"));
@@ -70,9 +70,12 @@ class CorpusRunnerTest implements Opcodes {
         String packagingReport = Files.readString(result.reportPaths().reports().get("packaging-report.json"));
         String protectionReport = Files.readString(result.reportPaths().reports().get("protection-report.json"));
         assertTrue(loweringReport.contains("\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
-        assertTrue(loweringReport.contains("\"status\": \"halfLowered\""));
-        assertTrue(loweringReport.contains("\"fallbackMode\": \"nativeEmbeddedClassBlob\""));
-        assertTrue(packagingReport.contains("\"fallbackBlobs\""));
+        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        assertTrue(loweringReport.contains("\"nativeImplementationPath\": null"), loweringReport);
+        assertTrue(!packagingReport.contains("\"fallbackBlobs\""), packagingReport);
+        assertTrue(Files.readString(
+                        result.reportPaths().reports().get("skipped-method-report.json"))
+                .contains("pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
         assertTrue(protectionReport.contains("\"seedHash\": \"d662e0c08628d9dae7f60ff4996e640f5ccafab7a0b69bdadf02a7a55040d3d9\""));
         assertTrue(!protectionReport.contains("corpus-seed"), protectionReport);
     }
@@ -81,13 +84,16 @@ class CorpusRunnerTest implements Opcodes {
         assertEquals(List.of(
                 "artifact-audit.json",
                 "diagnostics.json",
-                "frontend-skip-report.json",
+                "index.json",
                 "known-blockers.json",
                 "lowering-report.json",
                 "opcode-support-matrix.json",
                 "packaging-report.json",
                 "protection-report.json",
                 "release-readiness.json",
+                "skipped-method-report.json",
+                "summary.json",
+                "summary.md",
                 "support-matrix.json",
                 "symbol-audit.json"), result.reportPaths().reports().keySet().stream().toList());
         result.reportPaths().reports().forEach((name, path) -> assertTrue(Files.isRegularFile(path), name));

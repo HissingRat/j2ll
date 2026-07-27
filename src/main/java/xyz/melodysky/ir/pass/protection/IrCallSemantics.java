@@ -12,7 +12,7 @@ public record IrCallSemantics(
         boolean receiverNullCheckRequired,
         boolean classInitializationGuardRequired,
         boolean exceptionPropagationPreserved,
-        boolean fallbackRequired) {
+        boolean nativeTargetUnavailable) {
     public IrCallSemantics {
         Objects.requireNonNull(originalInvokeKind, "originalInvokeKind");
         if (receiverNullCheckRequired != originalInvokeKind.hasReceiver()) {

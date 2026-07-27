@@ -77,7 +77,7 @@ class JvmHostedE2eSkeletonTest implements Opcodes {
         assertEquals("CHILD_JVM", differential.mode());
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertTrue(loweringReport.contains("\"class\": \"pkg/Adder\""));
-        assertTrue(loweringReport.contains("\"status\": \"lowered\""));
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""));
         assertTrue(loweringReport.contains("\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         Path hostNative = workspace.resolve("native")
                 .resolve(HostPlatform.detect().orElseThrow().target().libraryFileName());

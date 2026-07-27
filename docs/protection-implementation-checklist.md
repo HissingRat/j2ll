@@ -9,6 +9,19 @@
 - **六目标 structural evidence**：同一次 matrix-wide Zig invocation 产出六目标动态库，并做 feature-specific build-graph/content/privacy/export audit。
 - **non-host runtime evidence**：在目标 OS/JVM 上实际运行 output JAR；它不能由 cross-link 成功替代。
 
+## 方法覆盖基线
+
+本清单中的 protection pass 只作用于最终可执行的 native implementation，不改变统一方法覆盖契约：
+
+- selector 命中且有 Code 的 method 最终只能是 `nativeLowered` 或 `skipped`。
+- JVM/JNI runtime helper 是 native implementation 的组成部分；完整 helper-backed path 仍是 `nativeLowered`。
+- 任一 stage 无法完整保持方法语义时，整 method `skipped`，原 Code 保留在 owner class 中，不生成 native rewrite、helper body 或 `RegisterNatives` binding。
+- no-Code selector match 是单独 eligibility evidence，不触发 skipped-method confirmation。
+- 不复制、编码或嵌入可执行的原 class/method Code，也不生成其 carrier、decoder 或 hidden-class definition path。
+- schema 不增加 `requiredNative`。默认 build 在 final plan 后、任何 Zig workspace/invocation 前稳定列出全部 skipped method 与 reason，并询问 `continue? (Y/N)`；仅显式 `Y` 继续，`N`/EOF 终止。`--validate`/`--dry-run` 不读 stdin，也不形成 final skipped set；dry-run 记录 `skippedMethodAnalysisPerformed=false`、`skippedMethodConfirmation=deferredUntilDefaultBuild` 与 `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`。
+
+下文 protection report 的 pass status `RAN` / `SKIPPED` / `FAILED` 是 pass-level applicability evidence，不是 method lowering status。
+
 截至当前代码快照：
 
 | Layer | Work item | Implementation | Current evidence gap |
@@ -49,7 +62,7 @@
 
 - `ProgramIrProtectionCoordinator` 从 parsed access facts、reflection plan 和 preliminary native implementation plan 生成候选。
 - 当前只接受 `CALL_STATIC`，以及 same-owner private `CALL_SPECIAL` 且 receiver 可证明为 `self` 的调用。
-- caller/callee 都必须是 preliminary `LLVM_NATIVE_PATH`，callee 必须是单目标、非 recursive、非 reflection/fallback-sensitive。
+- caller/callee 都必须是 preliminary `LLVM_NATIVE_PATH`，callee 必须是单目标、非 recursive、非 reflection/unsupported-boundary-sensitive。
 - callee 仅允许无 exception/monitor/JMM/call/field/helper side effect 的 pure scalar IR；默认上限为 24 条指令、每 caller 8 个 site。
 - 支持 block/value remap 和多个 return 汇入 typed continuation；失败时整次 site rewrite 回滚。
 - 原 Java method、reflection-visible method 集和仍需的 native registration 不会因 inline 被删除。
@@ -59,7 +72,7 @@
 已完成：
 
 - [x] straight-line static、private-self special、multiple return、block parameter/value remap focused tests。
-- [x] recursion、reflection、fallback、exception、monitor/JMM、oversized/invalid shape 的拒绝测试。
+- [x] recursion、reflection、skipped boundary、exception、monitor/JMM、oversized/invalid shape 的拒绝测试。
 - [x] disabled no-op 与 seed-deterministic generated names。
 - [x] mainline program coordinator 接线，pass 不再 warning + ignore。
 - [x] `ProgramProtectionNativeRuntimeE2eTest` 已在 Windows real-Zig host 断言 `METHOD_INLINING=RAN`、original/output parity、raw method identity 不在 native binary，且动态导出只有两个 loader roots。
@@ -95,7 +108,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 - IR planner 当前只接受 caller/target 都有最终 native 候选证据、且 target 与 caller 位于同一 owner LLVM module 的 bytecode-direct static/private-special call。
 - virtual/interface（即使 call graph 已证明 single target）和 cross-owner static/special 当前都以 `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE` fail closed；它们仍走原 JNI dispatch/static bridge，不伪造最终已间接化。
-- unresolved/multi-target、dynamic/helper、fallback、constructor/class-initializer、signature mismatch 和非 native path 都稳定跳过。
+- unresolved/multi-target、dynamic/helper、skipped callee、constructor/class-initializer、signature mismatch 和非 native path 都稳定跳过该 protection candidate；若底层调用本身没有完整 native implementation，则由方法覆盖契约将 caller 记为 `skipped`。
 - approved site 在 `IrInstruction` 上携带 typed `IrCallIndirectionRef`，由 IR validator 检查 plan/group/entry/signature/invoke kind。
 - `LlvmIrCallIndirectionPass` 只消费该 metadata，生成 internal `j2ll_ircit_<sha256>` pointer table；它不重新做 Java call resolution。
 - 后续独立的 LLVM `indirectCalls` pass 不会重复改写已经变成 indirect LLVM call 的 site。
@@ -108,7 +121,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 已完成：
 
 - [x] same-owner static/private-special、typed signature grouping，以及 virtual/interface/cross-owner backend-unsupported fail-closed focused tests。
-- [x] unknown/multi-target/fallback/non-native/class-init-guard-missing 的稳定 skip tests。
+- [x] unknown/multi-target/skipped/non-native/class-init-guard-missing 的稳定 pass-skip tests。
 - [x] IR plan/method validator 与 forged/missing metadata failure tests。
 - [x] backend hidden table model test，以及与 LLVM `indirectCalls` 不重复改写的实现边界。
 - [x] Windows real-Zig host E2E 已覆盖 static `int`/`long` 间接调用、`IR_CALL_INDIRECTION` / `IR_CALL_INDIRECTION_BACKEND=RAN`、`j2ll_ircit_*` table retention、output parity 和除零 `ArithmeticException` 传播。
@@ -151,24 +164,24 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 - 只处理 input base class 中的 `private static boolean/byte/short/char/int/long/float/double` 与 JVM reference/array。
 - 字段必须非 final/volatile/synthetic/enum-generated，无 ConstantValue、Signature、annotation/type-annotation；字段自身不能被 `<clinit>` 访问，owner 不能带 serialization 语义或 multi-release counterpart；无关 `<clinit>` 不做 owner-wide 阻断。
-- 访问 method 当前还必须是 same-owner static method。primitive access 只接受 final `LLVM_NATIVE_PATH`；reference/array access 还接受经过精确 sidecar 改写的 `nativeEmbeddedClassBlob` fallback。
+- 访问 method 当前还必须是 same-owner static method。primitive、reference 和 array access 都只接受 final `nativeLowered` method，且 final implementation 必须使用 field plan 认可的 native storage ABI；`skipped` 或普通 JVM field ABI accessor 一律拒绝 internalization。
 - classpath access、cross-owner/nestmate access和 instance field 均拒绝。
 - `FieldUseAnalyzer` 扫描 `FieldInsn`、LDC field Handle、invokedynamic/ConstantDynamic bootstrap arguments，并按 JVM field resolution 找实际 declaration。同 symbolic owner 的 unresolved field reference 使候选保守失效；current-JAR-only scope 仍忽略 owner 不属于 input JAR 的 unresolved external reference。
 - owner-local reflection、Unsafe、VarHandle、MethodHandles Lookup field API、JNI/native loading、serialization 和 agent/instrumentation field-observer surface 使候选保留在 JVM。普通 MethodHandle invocation或单纯 dynamic class loading 不构成字段观察。
-- LLVM approved access 改写为 opaque native slot operation；reference fallback access 改写为由 wrapper 传入的同一 `Object[]` sidecar 上的 `AALOAD` / `AASTORE`，按 plan 核对读写次数并扫描 residual field metadata。final implementation plan 必须再次证明每个 access 属于上述两条允许路径且 raw JVM field marker 已消失。
+- LLVM approved primitive access 改写为 opaque native slot operation；approved reference/array access 通过 JNI wrapper 使用同一 `ClassValue<Object[]>` sidecar。final implementation plan 必须再次证明每个 accessor 是 `nativeLowered`、使用批准 storage ABI、读写次数匹配且 raw JVM field marker 已消失。
 - primitive storage 以 defining `jclass` 的 `jweak` + `IsSameObject` 隔离 ClassLoader，失效 weak ref 在后续 lookup 中 lazy cleanup；slot 使用 `_Atomic uint64_t` relaxed raw-bit load/store，按 descriptor 实现 boolean low-bit、byte/short sign extension、char zero extension与 float/double bitcast。
-- reference/array storage 始终位于 JVM heap：唯一 `Loader.class` 仅在需要时由 ASM injector 直接继承 `ClassValue`，per-defining-Class 缓存 `Object[]`。LLVM activation 惰性获取并缓存 local sidecar ref；fallback wrapper 每个 activation 获取一次、传入 hidden helper并在返回/异常后释放。值访问走 JVM/JNI ObjectArray 语义，无 native strong global ref。
+- reference/array storage 始终位于 JVM heap：唯一 `Loader.class` 仅在需要时由 ASM injector 直接继承 `ClassValue`，per-defining-Class 缓存 `Object[]`。native activation 惰性获取并缓存 local sidecar ref，在返回/异常后释放。值访问走 JVM/JNI ObjectArray 语义，无 native strong global ref。
 - packaging 只删除 final plan 批准且结构仍匹配的 field；artifact audit 再扫描 declaration、FieldInsn、Handle 和 bootstrap field reference。
 
 独立 `reports/field-internalization-report.json` 记录 hash-only `fieldIdHash`、`INTERNALIZED`/`KEPT`、native slot、access methods、final implementation paths、storage/atomic/lifecycle policy、`removedFromOutputClass`、reason codes 和不伪装 closed world 的 `worldAnalysis` scope/authorization evidence。
 
 已完成：
 
-- [x] analyzer/planner 对 eligible 与 world/access/metadata/dynamic/MR/fallback 边界的 focused tests。
+- [x] analyzer/planner 对 eligible 与 world/access/metadata/dynamic/MR/skipped-accessor 边界的 focused tests。
 - [x] IR rewrite、LLVM native-slot lowering、C storage、final-plan validation tests。
 - [x] packaging deletion、class verification、residual field-reference artifact audit tests。
 - [x] report/index/readiness/failure evidence 接线。
-- [x] gated real-Zig host child-JVM E2E 覆盖所有支持类型、窄整数边界、float/double NaN payload/negative zero raw bits、Object identity/null/GC strong hold、并发更新、field removal、两个独立 ClassLoader 的状态隔离，以及 LLVM write→fallback read / fallback write→LLVM read 的同一 reference sidecar 状态。
+- [x] gated real-Zig host child-JVM E2E 覆盖所有支持类型、窄整数边界、float/double NaN payload/negative zero raw bits、Object identity/null/GC strong hold、并发更新、field removal、两个独立 ClassLoader 的状态隔离，以及多个 native accessor 共享同一 reference sidecar 状态。
 - [x] 六目标专项测试已验证每类 slot 的真实 call 位于共享 LLVM、primitive weak-keyed atomic storage 与 ClassValue/ObjectArray bridge 位于共享 generated C、两类 source 均进入每个 target graph，六库通过 privacy/export audit。
 
 待补：
@@ -227,7 +240,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - 只在原 candidate slots 间按 seed-derived order 重排完整 `LlvmGlobal` 对象。
 - global name、definition、initializer、alignment、section、mutability 和所有 references 保持不变。
 - non-local globals 与 `llvm.used` 等 retention roots 保持原 slot。
-- 当前不重排或编码 generated C 中的 JNI registration table、fallback blob carrier、string carrier 或 native field storage；这些不是 `LlvmModule` globals。
+- 当前不重排或编码 generated C 中的 JNI registration table、string carrier 或 native field storage；这些不是 `LlvmModule` globals。
 
 已完成：
 

@@ -21,7 +21,7 @@ public final class DryRunReportWriter {
             boolean inputJarParsed,
             int parsedClassCount,
             int requestedMethodCount,
-            int notApplicableMethodCount,
+            int ineligibleMethodCount,
             int excludedMethodCount,
             NativeBuildPlan nativeBuildPlan,
             List<String> diagnostics) {
@@ -35,8 +35,15 @@ public final class DryRunReportWriter {
         root.addProperty("inputJarParsed", inputJarParsed);
         root.addProperty("parsedClassCount", parsedClassCount);
         root.addProperty("requestedMethodCount", requestedMethodCount);
-        root.addProperty("notApplicableMethodCount", notApplicableMethodCount);
+        root.addProperty("ineligibleMethodCount", ineligibleMethodCount);
         root.addProperty("excludedMethodCount", excludedMethodCount);
+        root.addProperty("skippedMethodAnalysisPerformed", false);
+        root.addProperty(
+                "skippedMethodConfirmation",
+                "deferredUntilDefaultBuild");
+        root.addProperty(
+                "skippedMethodConfirmationDecision",
+                "confirmationRequiredIfSkippedMethodsAreFound");
         root.addProperty("nativeBuildInvoked", false);
         root.addProperty("finalArtifactWritten", false);
         root.add("targetPlan", targetPlan(nativeBuildPlan));

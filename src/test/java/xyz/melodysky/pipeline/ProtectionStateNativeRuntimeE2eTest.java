@@ -54,7 +54,12 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
 
         MainlinePipelineResult pipeline;
         try (AutoCloseable ignored = useJ2llHome(j2llHome)) {
-            pipeline = new MainlinePipeline().run(config, workspace);
+            pipeline = new MainlinePipeline().run(
+                    config,
+                    workspace,
+                    xyz.melodysky.progress.BuildProgressListener.none(),
+                    xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                    SkippedMethodApproval.allowAll());
         }
         assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
 
@@ -71,27 +76,53 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 float-bits=7fa12345/80000000
                 double-bits=7ff123456789abcd/8000000000000000
                 object=true/true/true
-                fallback-shared=lvm-value/allback-value/fallback-value
+                skipped-shared=lvm-value/kipped-value/skipped-value
                 second-types=0/0/0/0/0/0/null
                 """, rewritten.stdout());
 
-        assertFieldsRemoved(pipeline.outputJar());
-        String fieldReport = Files.readString(
+        assertFieldDispositionAndMinimalLoader(pipeline.outputJar());
+        String fieldReportText = Files.readString(
                 workspace.resolve("reports/field-internalization-report.json"));
-        assertTrue(fieldReport.contains("\"status\": \"INTERNALIZED\""));
-        assertTrue(fieldReport.contains("\"removedFromOutputClass\": true"));
-        assertTrue(fieldReport.contains("\"finalImplementationPaths\": ["));
-        assertTrue(fieldReport.contains("\"LLVM_NATIVE_PATH\""));
-        assertTrue(fieldReport.contains("\"TEMPLATE_JNI_PATH\""));
+        assertTrue(fieldReportText.contains("\"status\": \"INTERNALIZED\""));
+        assertTrue(fieldReportText.contains("\"status\": \"KEPT\""));
+        assertTrue(fieldReportText.contains("\"removedFromOutputClass\": true"));
+        assertTrue(fieldReportText.contains("\"removedFromOutputClass\": false"));
+        assertTrue(fieldReportText.contains("\"finalImplementationPaths\": ["));
+        assertTrue(fieldReportText.contains("\"LLVM_NATIVE_PATH\""));
+        assertTrue(fieldReportText.contains("\"UNKNOWN\""));
+        assertFalse(fieldReportText.contains("\"NON_LLVM_PATH\""));
         for (String kind : List.of(
                 "BOOLEAN", "BYTE", "SHORT", "CHAR", "INT", "LONG",
                 "FLOAT", "DOUBLE", "REFERENCE")) {
-            assertTrue(fieldReport.contains("\"storageKind\": \"" + kind + "\""), kind);
+            assertTrue(fieldReportText.contains("\"storageKind\": \"" + kind + "\""), kind);
         }
-        assertTrue(fieldReport.contains("\"referenceStoragePolicy\": \"jvmClassValueObjectArray\""));
-        assertTrue(fieldReport.contains(
+        assertTrue(fieldReportText.contains("\"referenceStoragePolicy\": \"jvmClassValueObjectArray\""));
+        assertTrue(fieldReportText.contains(
                 "\"cachePolicy\": "
                         + "\"jvmClassValuePerDefiningClass+lazyPerNativeFunctionActivationLocalRef\""));
+        JsonObject fieldReport = JsonParser.parseString(fieldReportText).getAsJsonObject();
+        int internalizedFields = 0;
+        int keptFields = 0;
+        JsonObject keptField = null;
+        for (var decisionElement : fieldReport.getAsJsonArray("decisions")) {
+            JsonObject decision = decisionElement.getAsJsonObject();
+            if ("INTERNALIZED".equals(decision.get("status").getAsString())) {
+                internalizedFields++;
+            } else if ("KEPT".equals(decision.get("status").getAsString())) {
+                keptFields++;
+                keptField = decision;
+            }
+        }
+        assertEquals(8, internalizedFields);
+        assertEquals(1, keptFields);
+        assertEquals("REFERENCE", keptField.get("storageKind").getAsString());
+        assertFalse(keptField.get("removedFromOutputClass").getAsBoolean());
+        assertTrue(keptField.getAsJsonArray("finalImplementationPaths").asList().stream()
+                .anyMatch(path -> "LLVM_NATIVE_PATH".equals(path.getAsString())));
+        assertTrue(keptField.getAsJsonArray("finalImplementationPaths").asList().stream()
+                .anyMatch(path -> "UNKNOWN".equals(path.getAsString())));
+        assertTrue(keptField.getAsJsonArray("reasonCodes").asList().stream()
+                .anyMatch(reason -> "ACCESS_PATH_NOT_LLVM_NATIVE".equals(reason.getAsString())));
 
         String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
         assertTrue(protectionReport.contains("\"passName\": \"FIELD_INTERNALIZATION\""));
@@ -105,13 +136,25 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertTrue(methodTableEvidence.get("enabled").getAsBoolean());
         assertEquals("RAN", methodTableEvidence.get("status").getAsString());
         assertEquals(1, methodTableEvidence.get("ownerCount").getAsInt());
-        assertEquals(14, methodTableEvidence.get("bindingCount").getAsInt());
-        assertTrue(packagingReport.contains(
-                "\"fallbackInvokeDescriptor\": "
-                        + "\"([Ljava/lang/Object;)Ljava/lang/String;\""));
-        assertTrue(packagingReport.contains(
-                "\"fallbackInvokeDescriptor\": "
-                        + "\"(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;\""));
+        assertEquals(12, methodTableEvidence.get("bindingCount").getAsInt());
+        assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\""));
+        assertFalse(packagingReport.contains("\"fallbackBlobs\""));
+        assertFalse(packagingReport.contains("\"nativeEmbeddedClassBlob\""));
+
+        String skippedMethodReport = Files.readString(
+                workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(skippedMethodReport.contains(
+                "\"selector\": \"pkg/NativeState#skippedRead!()Ljava/lang/String;\""));
+        assertTrue(skippedMethodReport.contains(
+                "\"selector\": "
+                        + "\"pkg/NativeState#skippedWrite!(Ljava/lang/String;)Ljava/lang/String;\""));
+        assertEquals(2, JsonParser.parseString(skippedMethodReport)
+                .getAsJsonObject()
+                .getAsJsonArray("entries")
+                .size());
+        assertTrue(skippedMethodReport.contains(
+                "\"confirmationDecision\": \"approved\""));
+        assertFalse(skippedMethodReport.contains("\"halfLowered\""));
 
         Path nativeLibrary = workspace.resolve("native")
                 .resolve(HostPlatform.detect().orElseThrow().target().libraryFileName());
@@ -140,8 +183,8 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 "getCounter",
                 "getTotal",
                 "addLong",
-                "fallbackRead",
-                "fallbackWrite")) {
+                "skippedRead",
+                "skippedWrite")) {
             assertFalse(NativeBinaryPrivacyInspector.contains(
                     nativeBytes, sensitive.getBytes(StandardCharsets.UTF_8)), sensitive);
             assertFalse(NativeBinaryPrivacyInspector.contains(
@@ -154,25 +197,24 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertFalse(generatedC.contains("\"getCounter\""));
         assertTrue(generatedC.contains("j2ll_nfs_get_b"));
         assertTrue(generatedC.contains("j2ll_nfs_get_f32_bits"));
-        assertTrue(generatedC.contains("j2ll_nfs_reference_sidecar"));
-        assertTrue(generatedC.contains("j2ll_fallback_sidecar"));
-        assertTrue(generatedC.contains("GetObjectArrayElement"));
-        assertTrue(generatedC.contains("SetObjectArrayElement"));
-        assertFalse(generatedC.contains(
-                "NewGlobalRef(env, j2ll_fallback_sidecar)"));
+        assertFalse(generatedC.contains("j2ll_nfs_reference_sidecar"));
+        assertFalse(generatedC.contains("j2ll_fallback_sidecar"));
+        assertFalse(generatedC.contains("nativeEmbeddedClassBlob"));
         assertFalse(generatedC.contains(
                 "NewGlobalRef(env, value)"));
     }
 
-    private void assertFieldsRemoved(Path outputJar) throws Exception {
+    private void assertFieldDispositionAndMinimalLoader(Path outputJar) throws Exception {
         try (JarFile jar = new JarFile(outputJar.toFile())) {
             JarEntry entry = jar.getJarEntry("pkg/NativeState.class");
             ClassNode node = new ClassNode();
             new ClassReader(jar.getInputStream(entry).readAllBytes()).accept(node, 0);
-            assertTrue(node.fields.isEmpty(), node.fields.toString());
+            assertEquals(
+                    List.of("distinctiveObjectState"),
+                    node.fields.stream().map(field -> field.name).toList());
             JarEntry loaderEntry = jar.getJarEntry("native_state_test/Loader.class");
             ClassReader loader = new ClassReader(jar.getInputStream(loaderEntry).readAllBytes());
-            assertEquals("java/lang/ClassValue", loader.getSuperName());
+            assertEquals("java/lang/Object", loader.getSuperName());
             assertTrue(jar.stream().noneMatch(candidate ->
                     candidate.getName().startsWith("native_state_test/Loader$")));
         }
@@ -228,8 +270,8 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                     "pkg/NativeState#setDouble!(D)D",
                     "pkg/NativeState#setObject!(Ljava/lang/Object;)Ljava/lang/Object;",
                     "pkg/NativeState#getObject!()Ljava/lang/Object;",
-                    "pkg/NativeState#fallbackRead!()Ljava/lang/String;",
-                    "pkg/NativeState#fallbackWrite!(Ljava/lang/String;)Ljava/lang/String;"
+                    "pkg/NativeState#skippedRead!()Ljava/lang/String;",
+                    "pkg/NativeState#skippedWrite!(Ljava/lang/String;)Ljava/lang/String;"
                   ],
                   "blackList": [],
                   "target": %s,
@@ -386,7 +428,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         emitFloatFieldRoundTrip(writer);
         emitDoubleFieldRoundTrip(writer);
         emitObjectAccessors(writer);
-        emitObjectFallbackAccessors(writer);
+        emitObjectSkippedAccessors(writer);
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -483,10 +525,10 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         get.visitEnd();
     }
 
-    private void emitObjectFallbackAccessors(ClassWriter writer) {
+    private void emitObjectSkippedAccessors(ClassWriter writer) {
         MethodVisitor read = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
-                "fallbackRead",
+                "skippedRead",
                 "()Ljava/lang/String;",
                 null,
                 null);
@@ -513,14 +555,14 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         read.visitInsn(ARETURN);
         read.visitLabel(readHandler);
         read.visitVarInsn(ASTORE, 0);
-        read.visitLdcInsn("fallback-error");
+        read.visitLdcInsn("skipped-error");
         read.visitInsn(ARETURN);
         read.visitMaxs(0, 0);
         read.visitEnd();
 
         MethodVisitor write = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
-                "fallbackWrite",
+                "skippedWrite",
                 "(Ljava/lang/String;)Ljava/lang/String;",
                 null,
                 null);

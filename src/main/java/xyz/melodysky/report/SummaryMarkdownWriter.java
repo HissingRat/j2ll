@@ -35,11 +35,10 @@ public final class SummaryMarkdownWriter {
 
         JsonObject methods = object(root, "methods");
         builder.append("## Methods\n\n");
-        builder.append("- Lowered: ").append(numberText(methods, "lowered")).append('\n');
-        builder.append("- Half lowered: ").append(numberText(methods, "halfLowered")).append('\n');
-        builder.append("- Frontend skipped: ").append(numberText(methods, "frontendSkipped")).append('\n');
-        builder.append("- Not applicable: ").append(numberText(methods, "notApplicable")).append('\n');
-        builder.append("- Failed: ").append(numberText(methods, "failed")).append("\n\n");
+        builder.append("- Native lowered: ").append(numberText(methods, "nativeLowered")).append('\n');
+        builder.append("- Skipped: ").append(numberText(methods, "skipped")).append('\n');
+        builder.append("- Ineligible: ").append(numberText(methods, "ineligible")).append('\n');
+        builder.append("- Excluded: ").append(numberText(methods, "excluded")).append("\n\n");
 
         JsonObject audit = object(root, "artifactAudit");
         JsonObject readiness = object(root, "readiness");
@@ -125,12 +124,12 @@ public final class SummaryMarkdownWriter {
         return root.getAsJsonObject(field);
     }
 
-    private String text(JsonObject object, String field, String fallback) {
+    private String text(JsonObject object, String field, String defaultValue) {
         if (object == null || !object.has(field) || object.get(field).isJsonNull()) {
-            return fallback;
+            return defaultValue;
         }
         JsonElement value = object.get(field);
-        return value.isJsonPrimitive() ? value.getAsString() : fallback;
+        return value.isJsonPrimitive() ? value.getAsString() : defaultValue;
     }
 
     private String boolText(JsonObject object, String field) {

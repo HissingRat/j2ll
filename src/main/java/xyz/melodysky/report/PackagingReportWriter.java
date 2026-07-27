@@ -19,7 +19,6 @@ import xyz.melodysky.packaging.JarPreservationReport;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
-import xyz.melodysky.packaging.NativeEmbeddedFallbackBlob;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.SignatureActionReport;
 import xyz.melodysky.toolchain.NativeBuildPlan;
@@ -42,8 +41,7 @@ public final class PackagingReportWriter {
             List<EmbeddedLibraryReport> embeddedLibraries,
             List<NativeRegistrationEntry> registeredNativeMethods,
             List<String> exportedSymbols,
-            ZigNativeBuildResult zigBuildResult,
-            List<NativeEmbeddedFallbackBlob> fallbackBlobs) {
+            ZigNativeBuildResult zigBuildResult) {
         return packagingJson(
                 outputJar,
                 signaturePolicy,
@@ -54,7 +52,6 @@ public final class PackagingReportWriter {
                 exportedSymbols,
                 zigBuildResult,
                 new NativeBuildPlan(List.of()),
-                fallbackBlobs,
                 JarPreservationReport.empty(),
                 SignatureActionReport.none(false));
     }
@@ -68,8 +65,7 @@ public final class PackagingReportWriter {
             List<NativeRegistrationEntry> registeredNativeMethods,
             List<String> exportedSymbols,
             ZigNativeBuildResult zigBuildResult,
-            NativeBuildPlan nativeBuildPlan,
-            List<NativeEmbeddedFallbackBlob> fallbackBlobs) {
+            NativeBuildPlan nativeBuildPlan) {
         return packagingJson(
                 outputJar,
                 signaturePolicy,
@@ -80,7 +76,6 @@ public final class PackagingReportWriter {
                 exportedSymbols,
                 zigBuildResult,
                 nativeBuildPlan,
-                fallbackBlobs,
                 JarPreservationReport.empty(),
                 SignatureActionReport.none(false));
     }
@@ -95,7 +90,6 @@ public final class PackagingReportWriter {
             List<String> exportedSymbols,
             ZigNativeBuildResult zigBuildResult,
             NativeBuildPlan nativeBuildPlan,
-            List<NativeEmbeddedFallbackBlob> fallbackBlobs,
             JarPreservationReport preservationReport,
             SignatureActionReport signatureActionReport) {
         return packagingJson(
@@ -109,7 +103,6 @@ public final class PackagingReportWriter {
                 exportedSymbols,
                 zigBuildResult,
                 nativeBuildPlan,
-                fallbackBlobs,
                 preservationReport,
                 signatureActionReport);
     }
@@ -125,7 +118,6 @@ public final class PackagingReportWriter {
             List<String> exportedSymbols,
             ZigNativeBuildResult zigBuildResult,
             NativeBuildPlan nativeBuildPlan,
-            List<NativeEmbeddedFallbackBlob> fallbackBlobs,
             JarPreservationReport preservationReport,
             SignatureActionReport signatureActionReport) {
         JsonObject root = new JsonObject();
@@ -144,7 +136,6 @@ public final class PackagingReportWriter {
         root.add("registrationGroups", registrationGroups(registeredNativeMethods));
         root.add("methodTableHiding", methodTableHiding(methodTableHidingPlan));
         root.add("exportedSymbols", stringArray(exportedSymbols));
-        root.add("fallbackBlobs", fallbackBlobs(fallbackBlobs));
         return GSON.toJson(root) + "\n";
     }
 
@@ -441,48 +432,6 @@ public final class PackagingReportWriter {
                 });
         object.add("owners", owners);
         return object;
-    }
-
-    private JsonArray fallbackBlobs(List<NativeEmbeddedFallbackBlob> fallbackBlobs) {
-        JsonArray array = new JsonArray();
-        fallbackBlobs.stream()
-                .sorted(Comparator
-                        .comparing(NativeEmbeddedFallbackBlob::originalMethodId)
-                        .thenComparing(NativeEmbeddedFallbackBlob::helperClassName))
-                .forEach(blob -> {
-                    JsonObject object = new JsonObject();
-                    object.addProperty("originalMethodId", blob.originalMethodId());
-                    object.addProperty("originalMethodKey", blob.originalMethodKey());
-                    object.addProperty("helperClassName", blob.helperClassName());
-                    object.addProperty("fallbackInvokeDescriptor", blob.fallbackInvokeDescriptor());
-                    object.addProperty("fallbackReasonCode", blob.fallbackReasonCode());
-                    object.addProperty("sha256", blob.sha256());
-                    object.addProperty("originalSha256", blob.originalSha256());
-                    object.addProperty("encodedSha256", blob.encodedSha256());
-                    object.addProperty("encodingVersion", blob.encodingVersion());
-                    object.addProperty("originalSize", blob.originalSize());
-                    object.addProperty("encodedSize", blob.encodedSize());
-                    object.addProperty("compressionAlgorithm", blob.compressionAlgorithm());
-                    object.addProperty("encryptionAlgorithm", blob.encryptionAlgorithm());
-                    object.addProperty("requiredJavaVersion", blob.requiredJavaVersion());
-                    object.addProperty("storageTarget", blob.storageTarget());
-                    object.addProperty("definitionMechanism", blob.definitionMechanism());
-                    object.addProperty("definitionMechanismReasonCode", blob.definitionMechanismReasonCode());
-                    object.addProperty("hiddenClassApiAvailable", blob.hiddenClassApiAvailable());
-                    object.addProperty("ownerLookupSupported", blob.ownerLookupSupported());
-                    object.addProperty("definitionMechanismReason", blob.definitionMechanismReason());
-                    object.addProperty("cacheReasonCode", blob.cacheReasonCode());
-                    object.addProperty("classloaderReusePolicy", blob.classloaderReusePolicy());
-                    object.addProperty("cacheScope", blob.cacheScope());
-                    object.addProperty("cacheKey", blob.cacheKey());
-                    object.addProperty("cacheLifetime", blob.cacheLifetime());
-                    object.addProperty("globalReferencePolicy", blob.globalReferencePolicy());
-                    object.addProperty("unloadAware", false);
-                    object.addProperty("futurePath",
-                            "replace process-lifetime global-ref cache with unload-aware weak/global-reference lifecycle discipline");
-                    array.add(object);
-                });
-        return array;
     }
 
     private JsonArray stringArray(List<String> values) {

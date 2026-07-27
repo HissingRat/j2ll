@@ -22,7 +22,7 @@ class SummaryReportWriterTest {
                   "schemaVersion": 1,
                   "reportVersion": 1,
                   "diagnostics": [
-                    {"severity": "warning", "code": "JVM_HELPER_FALLBACK", "stage": "LOWERING", "message": "fallback used"}
+                    {"severity": "warning", "code": "UNSUPPORTED_EXCEPTION_STATE_MERGE", "stage": "LOWERING", "message": "method skipped"}
                   ]
                 }
                 """);
@@ -31,10 +31,10 @@ class SummaryReportWriterTest {
                   "schemaVersion": 1,
                   "reportVersion": 1,
                   "requestedMethods": [
-                    {"status": "lowered"},
-                    {"status": "halfLowered"}
+                    {"status": "nativeLowered"},
+                    {"status": "skipped"}
                   ],
-                  "notApplicable": [{"status": "notApplicable"}],
+                  "ineligible": [{"status": "ineligible"}],
                   "excluded": [{"status": "excluded"}]
                 }
                 """);
@@ -93,7 +93,7 @@ class SummaryReportWriterTest {
                   "schemaVersion": 1,
                   "reportVersion": 1,
                   "blockers": [
-                    {"id": "complex-finally", "reasonCode": "UNSUPPORTED_EXCEPTION_STATE_MERGE", "reportLocation": "reports/frontend-skip-report.json"}
+                    {"id": "complex-finally", "reasonCode": "UNSUPPORTED_EXCEPTION_STATE_MERGE", "reportLocation": "reports/skipped-method-report.json"}
                   ]
                 }
                 """);
@@ -106,8 +106,10 @@ class SummaryReportWriterTest {
         assertEquals("passed", summary.get("status").getAsString());
         assertEquals("app.jar", summary.get("outputJar").getAsString());
         assertEquals(1, summary.getAsJsonObject("diagnostics").get("warnings").getAsInt());
-        assertEquals(1, summary.getAsJsonObject("methods").get("lowered").getAsInt());
-        assertEquals(1, summary.getAsJsonObject("methods").get("halfLowered").getAsInt());
+        assertEquals(1, summary.getAsJsonObject("methods").get("nativeLowered").getAsInt());
+        assertEquals(1, summary.getAsJsonObject("methods").get("skipped").getAsInt());
+        assertEquals(1, summary.getAsJsonObject("methods").get("ineligible").getAsInt());
+        assertEquals(1, summary.getAsJsonObject("methods").get("excluded").getAsInt());
         assertEquals(1, summary.getAsJsonObject("protection").get("blockingSensitiveFacts").getAsInt());
         assertEquals("built", summary.getAsJsonArray("nativeTargets")
                 .get(0).getAsJsonObject().get("status").getAsString());

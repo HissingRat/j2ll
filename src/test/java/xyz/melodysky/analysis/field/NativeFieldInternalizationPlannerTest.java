@@ -132,7 +132,7 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
     }
 
     @Test
-    void internalizesReferenceFieldWhenEveryNonLlvmAccessUsesSidecarAwareFallback() {
+    void keepsReferenceFieldWhenAnAccessorIsNotLlvmLowered() {
         String descriptor = "Ljavax/crypto/SecretKey;";
         FieldId fieldId = new FieldId(OWNER, "key", descriptor);
         ParsedField field = field(
@@ -160,21 +160,18 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
                         AnalysisWorld.CLOSED_WORLD,
                         true,
                         1L,
-                        ignored -> FieldAccessImplementationPath
-                                .JVM_SIDECAR_FALLBACK_PATH)
+                        ignored -> FieldAccessImplementationPath.NON_LLVM_PATH)
                 .decisionFor(fieldId)
                 .orElseThrow();
 
-        assertTrue(decision.internalized(), decision.reasons().toString());
-        assertEquals(
-                NativeFieldStorageKind.REFERENCE,
-                NativeFieldStorageKind.fromDescriptor(
-                                decision.field().descriptor())
-                        .orElseThrow());
+        assertFalse(decision.internalized());
+        assertReason(
+                decision,
+                FieldInternalizationReason.ACCESS_PATH_NOT_LLVM_NATIVE);
     }
 
     @Test
-    void keepsPrimitiveFieldWhenAccessorUsesSidecarAwareFallback() {
+    void keepsPrimitiveFieldWhenAccessorIsNotLlvmLowered() {
         FieldUseIndex index = analyzer.analyze(candidateProgram());
 
         NativeFieldInternalizationDecision decision = decision(plan(
@@ -182,8 +179,7 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
                 AnalysisWorld.CLOSED_WORLD,
                 true,
                 1L,
-                ignored -> FieldAccessImplementationPath
-                        .JVM_SIDECAR_FALLBACK_PATH));
+                ignored -> FieldAccessImplementationPath.NON_LLVM_PATH));
 
         assertFalse(decision.internalized());
         assertReason(

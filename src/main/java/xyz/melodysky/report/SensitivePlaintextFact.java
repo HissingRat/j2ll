@@ -102,8 +102,8 @@ public record SensitivePlaintextFact(
         }
     }
 
-    private static String defaultText(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
+    private static String defaultText(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
     }
 
     private static String defaultPromotionReason(String pathKind, String gateMode) {
@@ -112,9 +112,6 @@ public record SensitivePlaintextFact(
         }
         if ("TEMPLATE_JNI_PATH_STABLE_SURFACE".equals(pathKind) && "blocking".equals(gateMode)) {
             return "templateStableSurface";
-        }
-        if ("FALLBACK_BLOB_COMPLEX".equals(pathKind)) {
-            return "fallbackComplexObservedOnly";
         }
         if ("blocking".equals(gateMode)) {
             return "stableGeneratedCSurface";
@@ -133,7 +130,6 @@ public record SensitivePlaintextFact(
             case "llvm-ir" -> "LL";
             case "generated-c" -> "GENERATED_C";
             case "native-library" -> "SYMBOL";
-            case "fallback-blob" -> "FALLBACK_BLOB";
             case "jar-entry" -> "JAR_ENTRY";
             default -> surface.toUpperCase(java.util.Locale.ROOT).replace('-', '_');
         };

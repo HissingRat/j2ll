@@ -5,29 +5,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
-import xyz.melodysky.analysis.field.FieldAccessImplementationPath;
-import xyz.melodysky.analysis.field.FieldUseAnalyzer;
-import xyz.melodysky.analysis.field.NativeFieldInternalizationPlanner;
-import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
-import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
-import xyz.melodysky.packaging.RuntimeLoaderPlan;
-import xyz.melodysky.pipeline.FallbackSidecarNativePlanReconciler;
 import xyz.melodysky.runtime.ClassIdentityToken;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
@@ -71,93 +60,14 @@ class HostJniCSourceGeneratorTest {
     }
 
     @Test
-    void emitsFallbackOnlySupportAgainstThePlannedLoaderName() {
-        ParsedClass parsedClass = parse(
-                "pkg/JdkFallback.class",
-                AsmFixtureBuilder.classWithUnsupportedJdkStringCall("pkg/JdkFallback"));
-        MethodRewriteDecision decision = decision(parsedClass, "substring");
-        NativeRegistrationPlan registrationPlan =
-                new NativeRegistrationPlanner().plan(List.of(decision));
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner().plan(
-                registrationPlan,
-                List.of(decision),
-                Map.of(),
-                Set.of(decision.method().methodKey()));
-        RuntimeLoaderPlan loaderPlan =
-                RuntimeLoaderPlan.create("xyz/Melody/natives", true);
+    void registrationRuntimeDoesNotContainABytecodeDefinitionPath() {
+        String source = HostJniRegistrationRuntimeSource.helperSource();
 
-        String source = new HostJniCSourceGenerator().generate(
-                implementationPlan,
-                loaderPlan);
-        String fallbackSupport =
-                HostJniFallbackRuntimeSource.fallbackHelperSource(loaderPlan.internalName());
-
-        assertTrue(implementationPlan.hasNativeEmbeddedFallback());
-        assertTrue(source.contains("j2ll_try_define_hidden_fallback"));
-        assertTrue(source.contains("j2ll_verify_sha256_hex"));
-        assertFalse(source.contains("J2llFallbackSupport"));
-        assertTrue(fallbackSupport.contains(
-                "FindClass(env, \"xyz/Melody/natives/Loader\")"));
-        assertTrue(fallbackSupport.contains("\"defineHiddenFallback\""));
-    }
-
-    @Test
-    void embeddedFallbackReceivesTheSharedReferenceSidecarAndReleasesItsLocalRef() {
-        String owner = "pkg/FallbackSidecar";
-        ParsedClass parsedClass = parse(
-                owner + ".class",
-                classWithFallbackReferenceField(owner));
-        MethodRewriteDecision decision = decision(parsedClass, "swap");
-        NativeRegistrationPlan registrationPlan =
-                new NativeRegistrationPlanner().plan(List.of(decision));
-        NativeImplementationPlan fallbackPlan =
-                new NativeImplementationPlanner().plan(
-                        registrationPlan,
-                        List.of(decision),
-                        Map.of(),
-                        Set.of(decision.method().methodKey()));
-        var fieldPlan = new NativeFieldInternalizationPlanner().plan(
-                new FieldUseAnalyzer().analyze(
-                        new ParsedProgram(List.of(parsedClass))),
-                AnalysisWorld.CLOSED_WORLD,
-                true,
-                17L,
-                ignored -> FieldAccessImplementationPath
-                        .JVM_SIDECAR_FALLBACK_PATH);
-        NativeImplementationPlan reconciled =
-                new FallbackSidecarNativePlanReconciler().reconcile(
-                        fallbackPlan,
-                        fieldPlan);
-        RuntimeLoaderPlan loaderPlan = RuntimeLoaderPlan.create(
-                "xyz/Melody/natives",
-                true,
-                fieldPlan.referenceSidecarSize());
-
-        String source = new HostJniCSourceGenerator().generate(
-                reconciled,
-                loaderPlan);
-        String planningMarker = reconciled
-                .implementationFor(decision.method().methodKey())
-                .orElseThrow()
-                .fieldKeys()
-                .stream()
-                .filter(value -> value.startsWith("fallback-sidecar:v1:"))
-                .findFirst()
-                .orElseThrow();
-
-        assertTrue(fieldPlan.internalizedFields().size() == 1);
-        assertTrue(source.contains(
-                "static jobject j2ll_nfs_reference_sidecar("));
-        assertTrue(source.contains(
-                "jobjectArray j2ll_fallback_sidecar = (jobjectArray)j2ll_nfs_reference_sidecar(env, owner);"));
-        assertTrue(source.contains(
-                "arg0, j2ll_fallback_sidecar)"));
-        assertTrue(source.contains(
-                "DeleteLocalRef(env, j2ll_fallback_sidecar)"));
-        assertFalse(source.contains(planningMarker));
-        assertFalse(source.contains("fallback-sidecar:v1:"));
-        assertFalse(source.contains(
-                owner + "#state!Ljava/lang/Object;"));
+        assertTrue(source.contains("j2ll_class_for_registration"));
+        assertFalse(source.contains("DefineClass"));
+        assertFalse(source.contains("defineHiddenFallback"));
+        assertFalse(source.contains("MethodHandles"));
+        assertFalse(source.contains("fallback"));
     }
 
     @Test
@@ -270,50 +180,6 @@ class HostJniCSourceGeneratorTest {
                 .parse(new ClassFileEntry(entry, bytes, "fixture"))
                 .artifact()
                 .orElseThrow();
-    }
-
-    private byte[] classWithFallbackReferenceField(String owner) {
-        ClassWriter writer = new ClassWriter(
-                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-        writer.visit(
-                Opcodes.V17,
-                Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER,
-                owner,
-                null,
-                "java/lang/Object",
-                null);
-        writer.visitField(
-                        Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
-                        "state",
-                        "Ljava/lang/Object;",
-                        null,
-                        null)
-                .visitEnd();
-        MethodVisitor method = writer.visitMethod(
-                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-                "swap",
-                "(Ljava/lang/Object;)Ljava/lang/Object;",
-                null,
-                null);
-        method.visitCode();
-        method.visitFieldInsn(
-                Opcodes.GETSTATIC,
-                owner,
-                "state",
-                "Ljava/lang/Object;");
-        method.visitVarInsn(Opcodes.ASTORE, 1);
-        method.visitVarInsn(Opcodes.ALOAD, 0);
-        method.visitFieldInsn(
-                Opcodes.PUTSTATIC,
-                owner,
-                "state",
-                "Ljava/lang/Object;");
-        method.visitVarInsn(Opcodes.ALOAD, 1);
-        method.visitInsn(Opcodes.ARETURN);
-        method.visitMaxs(0, 0);
-        method.visitEnd();
-        writer.visitEnd();
-        return writer.toByteArray();
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {

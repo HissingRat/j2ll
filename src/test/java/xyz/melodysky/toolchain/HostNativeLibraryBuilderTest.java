@@ -75,6 +75,9 @@ class HostNativeLibraryBuilderTest {
                 .resolve("pkg_Adder.ll"));
         assertTrue(Files.exists(temp.resolve("native/zig-workspace/build.zig")));
         assertTrue(Files.exists(temp.resolve("native/zig-workspace/j2ll-build-manifest.json")));
+        assertFalse(Files.exists(temp.resolve("native/zig-workspace/fallback")));
+        assertFalse(Files.exists(temp.resolve(
+                "native/zig-workspace/fallback/j2ll_fallback_blobs.c")));
         assertTrue(Files.exists(artifact.libraryPath()));
         assertTrue(Files.size(artifact.libraryPath()) > 0);
         assertEquals(64, artifact.sha256().length());
@@ -82,6 +85,9 @@ class HostNativeLibraryBuilderTest {
         assertTrue(source.contains("JNIEnv* env"));
         assertTrue(source.contains("RegisterNatives"));
         assertTrue(source.contains("JNI_OnLoad"));
+        assertFalse(source.contains("DefineClass"));
+        assertFalse(source.contains("defineHiddenFallback"));
+        assertFalse(source.contains("fallback blob"));
         assertTrue(source.contains("extern jint " + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
         assertTrue(source.contains("jint result = (jint)" + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
         assertTrue(source.contains("return result;"));

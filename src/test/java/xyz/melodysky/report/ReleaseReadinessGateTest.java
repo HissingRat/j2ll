@@ -79,8 +79,8 @@ class ReleaseReadinessGateTest {
     void strictSuiteModePassesWithSuiteSummaryAndBlockerCoverage() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/release-suite-summary.json"), strictSuiteSummary("""
-                "UNSAFE_RAW_MEMORY_FALLBACK": "expected"
-                """, "true", "true", outputRun(), "\"UNSAFE_RAW_MEMORY_FALLBACK\""));
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED": "expected"
+                """, "true", "true", outputRun(), "\"UNSAFE_RAW_MEMORY_UNSUPPORTED\""));
 
         ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp, true);
         String json = new ReleaseReadinessWriter().json(result);
@@ -100,7 +100,7 @@ class ReleaseReadinessGateTest {
     void missingBlockerReasonFailsReadiness() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/known-blockers.json"), """
-                {"blockers":[{"id":"broken","reasonCode":"","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"fallback","reportLocation":"reports/x.json","suggestedFuturePath":"fix"}]}
+                {"blockers":[{"id":"broken","reasonCode":"","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"skipped","reportLocation":"reports/x.json","suggestedFuturePath":"fix"}]}
                 """);
 
         ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
@@ -122,7 +122,7 @@ class ReleaseReadinessGateTest {
 
         assertFalse(result.passed(), json);
         assertTrue(json.contains("\"reasonCode\": \"KNOWN_BLOCKERS_SUITE_COVERAGE_MISSING\""));
-        assertTrue(json.contains("UNSAFE_RAW_MEMORY_FALLBACK"));
+        assertTrue(json.contains("UNSAFE_RAW_MEMORY_UNSUPPORTED"));
     }
 
     @Test
@@ -136,8 +136,8 @@ class ReleaseReadinessGateTest {
                       "reasonCode": "FUTURE_REASON",
                       "severity": "future-blocker",
                       "targetMilestone": "post-rc",
-                      "currentBehavior": "fallback",
-                      "reportLocation": "reports/lowering-report.json",
+                      "currentBehavior": "skipped",
+                      "reportLocation": "reports/skipped-method-report.json",
                       "suggestedFuturePath": "future helper"
                     },
                     {
@@ -153,7 +153,7 @@ class ReleaseReadinessGateTest {
                 }
                 """);
         Files.writeString(temp.resolve("reports/support-matrix.json"), """
-                {"features":[{"feature":"future","status":"FALLBACK","reasonCode":"FUTURE_REASON","testCoverage":"test"}]}
+                {"features":[{"feature":"future","status":"SKIPPED","reasonCode":"FUTURE_REASON","testCoverage":"test"}]}
                 """);
         Files.writeString(temp.resolve("reports/release-suite-summary.json"),
                 strictSuiteSummary("", "true", "true", outputRun(), ""));
@@ -186,7 +186,7 @@ class ReleaseReadinessGateTest {
     void expectedFailureWithoutMatchingDiagnosticFailsStrictReadiness() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/release-suite-summary.json"), strictSuiteSummary("""
-                "UNSAFE_RAW_MEMORY_FALLBACK": "expected"
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED": "expected"
                 """, "false", "false", "null", ""));
 
         ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp, true);
@@ -202,8 +202,8 @@ class ReleaseReadinessGateTest {
         Files.delete(temp.resolve("input.jar"));
         Files.writeString(temp.resolve("reports/packaging-report.json"), failedTargetPackagingReport());
         Files.writeString(temp.resolve("reports/release-suite-summary.json"), strictSuiteSummary("""
-                "UNSAFE_RAW_MEMORY_FALLBACK": "expected"
-                """, "false", "false", "null", "\"UNSAFE_RAW_MEMORY_FALLBACK\""));
+                "UNSAFE_RAW_MEMORY_UNSUPPORTED": "expected"
+                """, "false", "false", "null", "\"UNSAFE_RAW_MEMORY_UNSUPPORTED\""));
 
         ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp, true);
         String json = new ReleaseReadinessWriter().json(result);
@@ -307,10 +307,10 @@ class ReleaseReadinessGateTest {
     void betaBlockerWithoutSuiteEvidenceFailsBetaProfile() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/known-blockers.json"), """
-                {"blockers":[{"id":"beta-gap","reasonCode":"BETA_GAP_WITHOUT_EVIDENCE","severity":"beta-blocker","targetMilestone":"beta","currentBehavior":"fallback","reportLocation":"reports/lowering-report.json","suggestedFuturePath":"add beta fixture"}]}
+                {"blockers":[{"id":"beta-gap","reasonCode":"BETA_GAP_WITHOUT_EVIDENCE","severity":"beta-blocker","targetMilestone":"beta","currentBehavior":"skipped","reportLocation":"reports/skipped-method-report.json","suggestedFuturePath":"add beta fixture"}]}
                 """);
         Files.writeString(temp.resolve("reports/support-matrix.json"), """
-                {"features":[{"feature":"beta.gap","status":"FALLBACK","reasonCode":"BETA_GAP_WITHOUT_EVIDENCE","testCoverage":"pending"}]}
+                {"features":[{"feature":"beta.gap","status":"SKIPPED","reasonCode":"BETA_GAP_WITHOUT_EVIDENCE","testCoverage":"pending"}]}
                 """);
         Files.writeString(temp.resolve("reports/release-suite-summary.json"), betaSuiteSummary(""));
         refreshIndex(temp);
@@ -335,7 +335,7 @@ class ReleaseReadinessGateTest {
                   "passed": true,
                   "checkedSensitiveFacts": [],
                   "checks": [
-                    {"name":"jar.noPlainFallbackClasses","status":"passed","reasonCode":"NO_PLAIN_FALLBACK_CLASSES","message":"ok"},
+                    {"name":"jar.noEmbeddedBytecodeCopies","status":"passed","reasonCode":"NO_EMBEDDED_METHOD_BYTECODE","message":"ok"},
                     {"name":"metadata.nativeLibrariesTargetArtifacts","status":"passed","reasonCode":"J2LL_NATIVE_METADATA_TARGET_ARTIFACTS_MATCH","message":"ok"},
                     {"name":"metadata.reportsManifest","status":"passed","reasonCode":"J2LL_REPORTS_MANIFEST_MATCH","message":"ok"}
                   ]
@@ -349,16 +349,16 @@ class ReleaseReadinessGateTest {
                   "decisions": []
                 }
                 """);
-        Files.writeString(reports.resolve("frontend-skip-report.json"), "{\"skipped\":[]}\n");
+        Files.writeString(reports.resolve("skipped-method-report.json"), "{\"skippedMethods\":[]}\n");
         Files.writeString(reports.resolve("known-blockers.json"), """
-                {"blockers":[{"id":"raw","reasonCode":"UNSAFE_RAW_MEMORY_FALLBACK","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"fallback","reportLocation":"reports/lowering-report.json","suggestedFuturePath":"helper"}]}
+                {"blockers":[{"id":"raw","reasonCode":"UNSAFE_RAW_MEMORY_UNSUPPORTED","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"skipped","reportLocation":"reports/skipped-method-report.json","suggestedFuturePath":"helper"}]}
                 """);
         Files.writeString(reports.resolve("lowering-report.json"), "{\"methods\":[]}\n");
         Files.writeString(reports.resolve("opcode-support-matrix.json"), "{\"opcodes\":[]}\n");
         Files.writeString(reports.resolve("packaging-report.json"), successfulPackagingReport());
         Files.writeString(reports.resolve("protection-report.json"), "{\"passes\":[]}\n");
         Files.writeString(reports.resolve("support-matrix.json"), """
-                {"features":[{"feature":"unsafe.raw","status":"FALLBACK","reasonCode":"UNSAFE_RAW_MEMORY_FALLBACK","testCoverage":"test"}]}
+                {"features":[{"feature":"unsafe.raw","status":"SKIPPED","reasonCode":"UNSAFE_RAW_MEMORY_UNSUPPORTED","testCoverage":"test"}]}
                 """);
         Files.writeString(reports.resolve("symbol-audit.json"), "{\"libraries\":[]}\n");
         refreshIndex(workspace);
@@ -407,13 +407,16 @@ class ReleaseReadinessGateTest {
                         "diagnostics.json",
                         "artifact-audit.json",
                         "field-internalization-report.json",
-                        "frontend-skip-report.json",
+                        "skipped-method-report.json",
                         "known-blockers.json",
                         "lowering-report.json",
                         "opcode-support-matrix.json",
                         "packaging-report.json",
                         "protection-report.json",
+                        "index.json",
                         "support-matrix.json",
+                        "summary.json",
+                        "summary.md",
                         "symbol-audit.json"
                       ],
                       "diagnostics": [%s]
@@ -452,7 +455,7 @@ class ReleaseReadinessGateTest {
                       "name": "beta-cli-docs",
                       "category": "cli-artifact-smoke",
                       "features": ["docs-examples-validated", "report-index"],
-                      "expectedSupportStatuses": {"UNSAFE_RAW_MEMORY_FALLBACK": "expected"},
+                      "expectedSupportStatuses": {"UNSAFE_RAW_MEMORY_UNSUPPORTED": "expected"},
                       "protectionEnabled": false,
                       "signaturePolicy": "fail",
                       "expectedPipelineSuccess": true,
@@ -464,7 +467,7 @@ class ReleaseReadinessGateTest {
                         "diagnostics.json",
                         "artifact-audit.json",
                         "field-internalization-report.json",
-                        "frontend-skip-report.json",
+                        "skipped-method-report.json",
                         "known-blockers.json",
                         "lowering-report.json",
                         "opcode-support-matrix.json",
@@ -472,7 +475,9 @@ class ReleaseReadinessGateTest {
                         "protection-report.json",
                         "support-matrix.json",
                         "symbol-audit.json",
-                        "index.json"
+                        "index.json",
+                        "summary.json",
+                        "summary.md"
                       ],
                       "diagnostics": []
                     }
@@ -509,7 +514,7 @@ class ReleaseReadinessGateTest {
                       "name": "case",
                       "category": "llvm-native",
                       "features": ["llvm-native"],
-                      "expectedSupportStatuses": {"UNSAFE_RAW_MEMORY_FALLBACK": "expected"},
+                      "expectedSupportStatuses": {"UNSAFE_RAW_MEMORY_UNSUPPORTED": "expected"},
                       "protectionEnabled": false,
                       "signaturePolicy": "fail",
                       "expectedPipelineSuccess": true,
@@ -521,16 +526,19 @@ class ReleaseReadinessGateTest {
                         "diagnostics.json",
                         "artifact-audit.json",
                         "field-internalization-report.json",
-                        "frontend-skip-report.json",
+                        "skipped-method-report.json",
                         "known-blockers.json",
                         "lowering-report.json",
                         "opcode-support-matrix.json",
                         "packaging-report.json",
                         "protection-report.json",
+                        "index.json",
                         "support-matrix.json",
+                        "summary.json",
+                        "summary.md",
                         "symbol-audit.json"
                       ],
-                      "diagnostics": ["UNSAFE_RAW_MEMORY_FALLBACK"]
+                      "diagnostics": ["UNSAFE_RAW_MEMORY_UNSUPPORTED"]
                     }
                   ]
                 }
@@ -542,7 +550,6 @@ class ReleaseReadinessGateTest {
                 {
                   "outputJar": "input.jar",
                   "signatureAction": {},
-                  "fallbackBlobs": [],
                   "zigToolchain": {
                     "targetArtifacts": [
                       {
@@ -584,7 +591,6 @@ class ReleaseReadinessGateTest {
                 {
                   "outputJar": "input.jar",
                   "signatureAction": {},
-                  "fallbackBlobs": [],
                   "zigToolchain": {
                     "targetArtifacts": [
                       {

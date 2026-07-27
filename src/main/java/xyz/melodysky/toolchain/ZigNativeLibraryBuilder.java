@@ -315,12 +315,10 @@ public final class ZigNativeLibraryBuilder {
                 methodTablePlan);
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(runtime, "/* runtime helper C inputs are helper-backed skeletons in this slice */\n", StandardCharsets.UTF_8);
-        Path fallback = workspace.fallbackDirectory().resolve("j2ll_fallback_blobs.c");
-        Files.writeString(fallback, "/* fallback blob carrier C inputs are embedded by JNI source in this slice */\n", StandardCharsets.UTF_8);
         List<Path> llvmSources = writeLlvmSources(workspace, llvmCompilation);
         ZigSourceSet sources = new ZigSourceSet(
                 llvmSources,
-                List.of(wrapper, runtime, fallback),
+                List.of(wrapper, runtime),
                 List.of(),
                 new ZigJniHeaderSet().prepare(workspace));
         buildWriter.write(
@@ -381,7 +379,6 @@ public final class ZigNativeLibraryBuilder {
         Files.createDirectories(workspace.llvmDirectory());
         Files.createDirectories(workspace.jniDirectory());
         Files.createDirectories(workspace.runtimeDirectory());
-        Files.createDirectories(workspace.fallbackDirectory());
         Files.createDirectories(workspace.logsDirectory());
     }
 

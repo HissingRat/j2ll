@@ -22,7 +22,7 @@ class RuntimeLoaderCollisionValidatorTest {
 
         var diagnostics = new RuntimeLoaderCollisionValidator().validate(
                 input,
-                RuntimeLoaderPlan.create("native0", false));
+                RuntimeLoaderPlan.create("native0"));
 
         assertEquals(1, diagnostics.size());
         assertEquals(
@@ -39,7 +39,7 @@ class RuntimeLoaderCollisionValidatorTest {
 
         var diagnostics = new RuntimeLoaderCollisionValidator().validate(
                 input,
-                RuntimeLoaderPlan.create("native0", false));
+                RuntimeLoaderPlan.create("native0"));
 
         assertEquals(1, diagnostics.size());
         assertEquals(
@@ -57,7 +57,7 @@ class RuntimeLoaderCollisionValidatorTest {
                 "META-INF/versions/17/other/native0/Loader.class", new byte[] {3}));
 
         assertTrue(new RuntimeLoaderCollisionValidator()
-                .validate(input, RuntimeLoaderPlan.create("native0", false))
+                .validate(input, RuntimeLoaderPlan.create("native0"))
                 .isEmpty());
     }
 

@@ -11,8 +11,8 @@ public final class UnsafePolicy {
             return UnsafePlan.notUnsafe();
         }
         if (isRawMemoryUnsafeCall(name, descriptor)) {
-            return UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_FALLBACK: raw/off-heap Unsafe API "
-                    + owner + "#" + name + "!" + descriptor + " remains JVM fallback only");
+            return UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_UNSUPPORTED: raw/off-heap Unsafe API "
+                    + owner + "#" + name + "!" + descriptor + " is unsupported by native lowering");
         }
         return switch (name) {
             case "objectFieldOffset" -> UnsafePlan.supported(
@@ -94,7 +94,7 @@ public final class UnsafePolicy {
                     false,
                     false,
                     "unsafe allocateInstance guarded helper");
-            default -> UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_FALLBACK: unsupported Unsafe API "
+            default -> UnsafePlan.unsupported("UNSAFE_RAW_MEMORY_UNSUPPORTED: unsupported Unsafe API "
                     + owner + "#" + name + "!" + descriptor);
         };
     }
@@ -131,7 +131,7 @@ public final class UnsafePolicy {
                     true,
                     true,
                     "VarHandle compareAndSet helper-backed");
-            default -> UnsafePlan.unsupported("VAR_HANDLE_DYNAMIC_FALLBACK: unsupported VarHandle API java/lang/invoke/VarHandle#" + name);
+            default -> UnsafePlan.unsupported("VAR_HANDLE_DYNAMIC_UNSUPPORTED: unsupported VarHandle API java/lang/invoke/VarHandle#" + name);
         };
     }
 

@@ -2,14 +2,12 @@ package xyz.melodysky.runtime.loader;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.invoke.MethodHandles;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Locale;
-import java.util.Objects;
 
 /**
  * Java 17 template relocated into the output JAR by the packaging stage.
@@ -25,15 +23,6 @@ public final class LoaderTemplate {
 
     public static synchronized void ensureLoaded() {
         throw new AssertionError("Loader template metadata was not injected");
-    }
-
-    public static Class<?> defineHiddenFallback(Class<?> owner, byte[] classBytes) throws IllegalAccessException {
-        Objects.requireNonNull(owner, "owner");
-        Objects.requireNonNull(classBytes, "classBytes");
-        MethodHandles.Lookup ownerLookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
-        return ownerLookup
-                .defineHiddenClass(classBytes, true, MethodHandles.Lookup.ClassOption.NESTMATE)
-                .lookupClass();
     }
 
     private static void loadForCurrentTarget(

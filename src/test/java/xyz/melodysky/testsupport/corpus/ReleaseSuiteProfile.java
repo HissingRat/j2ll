@@ -7,16 +7,16 @@ public enum ReleaseSuiteProfile {
             "llvm-native")),
     STANDARD("standard", List.of(
             "llvm-native",
-            "mixed-helper-fallback")),
+            "mixed-helper-skipped")),
     BETA("beta", List.of(
             "cli-artifact-smoke",
             "docs-examples-validated",
             "report-index",
             "llvm-native",
-            "mixed-helper-fallback")),
+            "mixed-helper-skipped")),
     RC("rc", List.of(
             "llvm-native",
-            "mixed-helper-fallback",
+            "mixed-helper-skipped",
             "strip-policy",
             "resign-policy",
             "packaging-preservation",

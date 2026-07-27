@@ -7,7 +7,6 @@ import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticCode;
 import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
-import xyz.melodysky.packaging.FallbackSidecarFieldAccess;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 
@@ -16,8 +15,8 @@ import xyz.melodysky.toolchain.NativeImplementationPlan;
  *
  * <p>The initial plan is necessarily built before native-slot opcodes exist.
  * This boundary prevents a later planner decision from leaving a field
- * removed while one of its accessors no longer has either an LLVM slot
- * implementation or a verified reference-sidecar fallback.</p>
+ * removed while one of its accessors no longer has an LLVM slot
+ * implementation.</p>
  */
 public final class FieldInternalizationFinalPlanValidator {
     private static final DiagnosticCode FINAL_PLAN_MISMATCH =
@@ -49,15 +48,9 @@ public final class FieldInternalizationFinalPlanValidator {
                 var resolved = implementation.orElseThrow();
                 boolean llvmPath = resolved.path()
                         == NativeImplementationPath.LLVM_NATIVE_PATH;
-                boolean sidecarFallback = resolved.path()
-                                == NativeImplementationPath.TEMPLATE_JNI_PATH
-                        && resolved.reasonCode().equals(
-                                "NATIVE_EMBEDDED_CLASS_BLOB_FALLBACK")
-                        && fieldPlan.storageKind(decision).reference();
-                if (!llvmPath && !sidecarFallback) {
+                if (!llvmPath) {
                     diagnostics.add(error(
-                            "final native implementation is neither LLVM_NATIVE_PATH "
-                                    + "nor a reference-sidecar-aware fallback for "
+                            "final native implementation is not LLVM_NATIVE_PATH for "
                                     + methodKey + " (slot " + slot + ")"));
                     continue;
                 }
@@ -65,25 +58,6 @@ public final class FieldInternalizationFinalPlanValidator {
                     diagnostics.add(error(
                             "final native implementation does not consume "
                                     + slotMarker + " in " + methodKey));
-                }
-                if (sidecarFallback) {
-                    FallbackSidecarFieldAccess expected =
-                            FallbackSidecarFieldAccess.forMethod(
-                                            fieldPlan,
-                                            methodKey)
-                                    .stream()
-                                    .filter(access -> access.field()
-                                            .equals(decision.field()))
-                                    .findFirst()
-                                    .orElse(null);
-                    if (expected == null
-                            || !resolved.fieldKeys().contains(
-                                    expected.marker())) {
-                        diagnostics.add(error(
-                                "final fallback implementation does not carry "
-                                        + "the verified sidecar field mapping for "
-                                        + methodKey + " (slot " + slot + ")"));
-                    }
                 }
                 if (resolved.fieldKeys().contains(decision.field().fieldKey())) {
                     diagnostics.add(error(

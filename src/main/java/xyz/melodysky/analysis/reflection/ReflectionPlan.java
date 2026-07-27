@@ -7,12 +7,12 @@ public record ReflectionPlan(
         List<ReflectionClassTarget> resolvedClasses,
         List<ReflectionMethodTarget> resolvedMethods,
         List<ReflectionFieldTarget> resolvedFields,
-        List<ReflectionFallbackSite> fallbackSites) {
+        List<ReflectionUnsupportedSite> unsupportedSites) {
     public ReflectionPlan {
         resolvedClasses = resolvedClasses.stream().filter(Objects::nonNull).sorted().distinct().toList();
         resolvedMethods = resolvedMethods.stream().filter(Objects::nonNull).sorted().distinct().toList();
         resolvedFields = resolvedFields.stream().filter(Objects::nonNull).sorted().distinct().toList();
-        fallbackSites = fallbackSites.stream().filter(Objects::nonNull).sorted().distinct().toList();
+        unsupportedSites = unsupportedSites.stream().filter(Objects::nonNull).sorted().distinct().toList();
     }
 
     public List<ReflectionMethodTarget> reachableMethods() {
@@ -22,7 +22,7 @@ public record ReflectionPlan(
                 .toList();
     }
 
-    public boolean hasFallbacks() {
-        return !fallbackSites.isEmpty();
+    public boolean hasUnsupportedSites() {
+        return !unsupportedSites.isEmpty();
     }
 }

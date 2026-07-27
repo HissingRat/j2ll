@@ -13,9 +13,9 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.pipeline.LoweringStatus;
 
-class ExceptionStateFallbackTest implements Opcodes {
+class ExceptionStateSkipTest implements Opcodes {
     @Test
-    void preservesHandlerLiveLocalStateThroughEncodedJvmFallback() {
+    void handlerLiveLocalStateIsSkippedWithoutPartialIr() {
         String owner = "pkg/HandlerLocalState";
         var parsedClass = new AsmClassParser()
                 .parse(new ClassFileEntry(owner + ".class", fixture(owner), "fixture"))
@@ -30,13 +30,12 @@ class ExceptionStateFallbackTest implements Opcodes {
         var result = new BytecodeToSsaLowerer().lower(cfg);
         var artifact = result.artifact().orElseThrow();
 
-        assertEquals(LoweringStatus.HALF_LOWERED, artifact.status());
+        assertEquals(LoweringStatus.SKIPPED, artifact.status());
         assertEquals("UNSUPPORTED_EXCEPTION_STATE_MERGE", artifact.reasonCode());
         assertTrue(artifact.irMethod().isEmpty());
         assertEquals(
                 LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE,
                 result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).conservativeFallbackAvailable());
     }
 
     private byte[] fixture(String owner) {

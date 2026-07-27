@@ -139,6 +139,10 @@ final class MainlineProgress {
                 targets.isEmpty() ? "no buildable targets" : targetCount(targets.size()));
     }
 
+    void beforeUserInput() {
+        listener.beforeUserInput();
+    }
+
     NativeBuildProgressListener nativeBuildProgress() {
         return new NativeBuildProgressListener() {
             @Override

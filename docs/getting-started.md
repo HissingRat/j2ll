@@ -1,6 +1,6 @@
 # Getting Started
 
-This beta package is a JVM-hosted JAR obfuscator/native-lowering tool. The output is still a runnable JAR for Java 17 or newer and loads embedded native libraries through the JVM, JNI, one generated `<embeddedLibraryDirectory>/Loader.class`, RegisterNatives, runtime helpers, and fallback blobs.
+This beta package is a JVM-hosted JAR obfuscator/native-lowering tool. The output is still a runnable JAR for Java 17 or newer and loads embedded native libraries through the JVM, JNI, one generated `<embeddedLibraryDirectory>/Loader.class`, RegisterNatives, and runtime helpers. It never embeds a fallback copy of selected Java method bytecode.
 
 ## Build The Beta Package
 
@@ -49,6 +49,14 @@ Build is the default mode. Add `--debug` to enable every intermediate output swi
 
 If `fieldInternalization` is enabled outside `CLOSED_WORLD`, a build asks `fieldInternalization requires CLOSED_WORLD, continue? (Y/N)`. Y keeps the configured world unchanged and authorizes only this run to analyze field references in the input JAR; configured classpath entries and external observers remain out of scope and are recorded in `field-internalization-report.json`. N or EOF exits with code `2` before a workspace is created. Ordinary terminals and PTYs are detected, a pre-supplied piped answer is accepted, and unattended runs with no input fail immediately instead of hanging. Validate and dry-run do not consume stdin; they report that the real build still needs confirmation.
 
+Selected Code-bearing methods finish in one of two states: `nativeLowered` or `skipped`. A skipped method keeps its original Java bytecode and is not registered with `RegisterNatives`. There is no `requiredNative` option and no fallback class blob. Before creating a Zig workspace or invoking Zig, a default build prints every skipped method to stderr as `<owner>#<name>!<descriptor>` with its reason code and reason, warns that those methods will not be native lowered, and asks `continue? (Y/N)`. Only an explicit `Y` continues; `N` or EOF stops before Zig and no final JAR is written. Piped confirmation is supported, for example:
+
+```sh
+printf 'Y\n' | java -jar build/dist/j2ll/j2ll.jar --config docs/examples/minimal-config.json
+```
+
+If no method is skipped, this prompt is omitted. Validate and dry-run never read stdin and do not form the final skipped set. Dry-run records `skippedMethodAnalysisPerformed=false`, `skippedMethodConfirmation=deferredUntilDefaultBuild`, and `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`.
+
 During a full build, stderr shows progress across input inspection, parsing, selection, analysis, lowering/protection, LLVM emission, intermediates, target preflight, native build, packaging, audit, and reports. An interactive terminal follows the legacy lifecycle: a three-line compiler region (`Read bytecode`, `Lower to IR`, and `Emit LLVM IR`), a native region with one aggregate `Build native` bar and one row per selected target, then a one-line `Finalize JAR` region. Each target percentage is `completed Zig build-graph work units / total work units` for that target. Large source sets are deterministically balanced into no more than 64 observable compile units per target, bounding marker and polling overhead. The `building` to `linking` transition reflects a real graph boundary rather than elapsed-time inference; while linking, the bar may stay at the final compilation percentage until the link completes. The row reaches `100%` and `completed` only after the non-empty final DLL/SO/dylib has been installed. As soon as every target is complete, all target rows collapse to a short aggregate summary. Normal-width terminals use 28-character bars; narrow terminals shorten the bar before truncating useful detail. Redirected output uses one control-sequence-free `[current/total]` line per high-level stage without per-target log spam, so stdout stays machine-parseable. Managed Zig still runs the selected target matrix in one matrix-wide invocation and schedules independent build nodes internally; these percentages describe observable graph-unit completion, not Zig/Clang/LLVM compiler-internal progress. On failure the active region is cleared without an extra Gradle-style failure summary, allowing the primary diagnostic to be printed immediately.
 
 ## Managed Zig
@@ -72,7 +80,8 @@ Successful build:
 
 - `<workspace>/<input-name>.jar`
 - `<workspace>/native/<library-file-name>` for each selected target
-- exactly one Java 17 `<embeddedLibraryDirectory>/Loader.class` inside the output JAR; native loading is always present, while `defineHiddenFallback` is included only when `nativeEmbeddedClassBlob` was actually used
+- exactly one Java 17 `<embeddedLibraryDirectory>/Loader.class` inside the output JAR; it contains native loading/registration and only adds the JVM-managed `ClassValue<Object[]>` sidecar when approved field internalization needs it
+- no `defineHiddenFallback`, embedded class blob, fallback decoder, or fallback manifest
 - no retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, or `j2ll/generated/**/NativeLoader.class` entry
 - `reports/index.json`
 - `reports/summary.md`
@@ -102,7 +111,7 @@ Dry-run and build allocate `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss
 
 - Invalid config: exit `2`; see `reports/diagnostics.json`.
 - Input base/MR Loader collision: rejected before Zig as `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` or `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`.
-- Frontend/lowering unsupported shape: exit `3`; see lowering and frontend skip reports.
+- Frontend/lowering unsupported shape: the method is listed as `skipped`; a default build continues only after explicit Y at the pre-Zig confirmation gate.
 - Zig checksum, missing toolchain, or required target unbuildable: exit `4`; see packaging report and failure report.
 - Signing or packaging policy failure: exit `5`.
 - Artifact audit failure, including blocking plaintext leaks: exit `6`; no final JAR is retained.

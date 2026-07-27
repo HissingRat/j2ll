@@ -32,44 +32,44 @@ class WeirdBytecodeSeedCorpusTest {
                 new SupportedSeed("catch-all-rethrow", AsmFixtureBuilder.classWithCatchAllFinallyShape("pkg/FinallyShape"), "cleanup"))) {
             SsaMethodResult result = lower(seed.classBytes(), seed.methodName());
 
-            assertEquals(LoweringStatus.LOWERED, result.status(), seed.name());
+            assertEquals(LoweringStatus.NATIVE_LOWERED, result.status(), seed.name());
             assertTrue(result.irMethod().isPresent(), seed.name());
             assertTrue(new IrMethodValidator().validate(result.irMethod().orElseThrow()).isEmpty(), seed.name());
         }
     }
 
     @Test
-    void unsupportedWeirdBytecodeSeedsUsePreciseFallbackOrFrontendDiagnostics() {
+    void unsupportedWeirdBytecodeSeedsAreSkippedWithPreciseDiagnostics() {
         for (UnsupportedSeed seed : List.of(
                 new UnsupportedSeed(
                         "multi-exit-finally",
                         AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/BadFinally"),
                         "badFinally",
-                        LoweringStatus.HALF_LOWERED,
+                        LoweringStatus.SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY),
                 new UnsupportedSeed(
                         "exception-state-merge-finally",
                         AsmFixtureBuilder.classWithUnsupportedExceptionStateMergeFinallyShape("pkg/StateMergeFinally"),
                         "badStateMergeFinally",
-                        LoweringStatus.HALF_LOWERED,
+                        LoweringStatus.SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE),
                 new UnsupportedSeed(
                         "monitor-finally-interaction",
                         AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinally"),
                         "badMonitorFinally",
-                        LoweringStatus.HALF_LOWERED,
+                        LoweringStatus.SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION),
                 new UnsupportedSeed(
                         "nested-finally",
                         AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinally"),
                         "badNestedFinally",
-                        LoweringStatus.HALF_LOWERED,
+                        LoweringStatus.SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY),
                 new UnsupportedSeed(
                         "legacy-jsr-ret",
                         AsmFixtureBuilder.classWithLegacyJsrRetSubroutine("pkg/LegacySubroutine"),
                         "legacyFinally",
-                        LoweringStatus.FRONTEND_SKIPPED,
+                        LoweringStatus.SKIPPED,
                         LoweringDiagnostics.UNSUPPORTED_FINALLY_SUBROUTINE))) {
             ParsedMethod parsedMethod = parseMethod(seed.classBytes(), seed.methodName());
             MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();

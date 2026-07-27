@@ -14,7 +14,7 @@ The output is **not** a standalone native executable or a replacement Java runti
        -> JNI registration + embedded native libraries -> output JAR
 ```
 
-The current beta performs structural native builds for all six fixed targets through managed Zig `0.15.2`: Windows GNU x86_64/AArch64, Linux GNU x86_64/AArch64 with a glibc 2.17 baseline, and macOS x86_64/AArch64 with minimum versions 10.15/11.0. Runtime child-JVM parity is currently exercised on the host target; non-host runtime E2E remains separate release evidence. JVM semantics that are not safely lowered use explicit helper-backed or bytecode-preserving fallback paths. Protection improves resistance to inspection, but it is not irreversible: runtime code must retain enough information to execute the protected program.
+The current beta performs structural native builds for all six fixed targets through managed Zig `0.15.2`: Windows GNU x86_64/AArch64, Linux GNU x86_64/AArch64 with a glibc 2.17 baseline, and macOS x86_64/AArch64 with minimum versions 10.15/11.0. Runtime child-JVM parity is currently exercised on the host target; non-host runtime E2E remains separate release evidence. Selected Code-bearing methods finish as either `nativeLowered` or `skipped`: helper-backed JNI execution counts as native lowering, while unsupported methods keep only their original Java body and require an explicit pre-Zig confirmation. Protection improves resistance to inspection, but it is not irreversible: runtime code must retain enough information to execute the protected program.
 
 All schema v1 IR/LLVM protection booleans now dispatch real, bounded implementations rather than placeholder warnings. This includes program-level method inlining/splitting and IR call indirection, LLVM opaque-predicate/block/global-layout transforms, and native-registration method-table hiding. `fieldInternalization` is also implemented for a strict `private static` `boolean/byte/short/char/int/long/float/double` plus reference/array subset, but defaults to `false` because approved fields are removed from Java reflection. It normally requires `CLOSED_WORLD`; during a real build, another configured world prompts for explicit Y/N approval to analyze only references inside the current input JAR. That per-run approval does not change `worldModel`, does not scan configured classpath entries, and records the accepted external-observer boundary in the field report. Primitive values use descriptor-aware atomic raw-bit storage; JVM references and arrays remain on the JVM heap in a per-defining-Class `ClassValue<Object[]>` sidecar. `ClassValue` caches the sidecar across calls; each native function activation obtains its JNI local reference lazily on the first executed access, reuses it, and releases it on exit without a native strong global reference. All eight work items have passing real-Zig Windows-host child-JVM evidence and six-target feature-specific build-graph/content/privacy/export evidence. These are still conservative subsets: inapplicable shapes are reported as skipped, optimized machine-code retention is not guaranteed for optimizer-sensitive transforms, and cross-linking does not imply non-host JVM runtime validation.
 
@@ -76,15 +76,23 @@ For a complete walkthrough, see [`docs/getting-started.md`](docs/getting-started
 
 ### Method results
 
-Every selector match receives an explicit result in `reports/lowering-report.json`:
+Every selected Code-bearing method receives one of two explicit results in
+`reports/lowering-report.json`:
 
-- `lowered`: the method was rewritten and its implementation is provided by generated native code plus JVM/JNI helpers.
-- `halfLowered`: the method uses a native entry, but one or more operations use an explicit JVM fallback. In schema v1, bytecode needed by ordinary-method fallback is stored as an encoded `nativeEmbeddedClassBlob` in the native artifact, not as a plaintext generated class in the output JAR.
-- `frontendSkipped`: the original bytecode remains runnable because the method shape cannot yet be safely native-wrapped. The reason is also recorded in `reports/frontend-skip-report.json`.
-- `notApplicable`: the selector matched a method without a lowerable body, such as an abstract or already-native method.
-- `failed`: j2ll could not preserve a safe result; the build fails and no final JAR is retained.
+- `nativeLowered`: the original method body was replaced by a verified native implementation. LLVM, generated stubs/templates, and JVM/JNI runtime helpers are all valid implementation techniques when they do not replay a copy of the original method bytecode.
+- `skipped`: the method keeps its original Java bytecode and receives no native body or `RegisterNatives` binding. Its stable reason is also written to `reports/skipped-method-report.json`.
 
-There are no silent selector skips. `halfLowered` and `frontendSkipped` are conservative compatibility outcomes, not equivalent to `failed`, but they usually provide less protection than a fully `lowered` method.
+Programmatic pipeline overloads fail closed when skipped methods exist unless the caller supplies an explicit `SkippedMethodApproval`; the report records the confirmation decision.
+
+Abstract, already-native, and other no-Code declarations are separate selector
+eligibility evidence; they do not receive a lowering status or trigger the
+confirmation gate. Build failures are invocation-level diagnostics rather than
+method results.
+
+There are no silent skips and no embedded bytecode compatibility path. Before
+any Zig workspace or invocation, a default build lists every skipped method and
+asks `continue? (Y/N)`. Only an explicit `Y` continues; `N` or EOF stops without
+writing a final JAR. Piped `Y` is supported for automation.
 
 ### Managed Zig 0.15.2
 
@@ -119,7 +127,7 @@ A successful build writes its primary artifact to:
 <resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/<input-name>.jar
 ```
 
-Native libraries live directly under `<workspace>/native/<library-file-name>` and are embedded in the final JAR under `<embeddedLibraryDirectory>/<library-file-name>`. The same directory contains exactly one generated Java 17 class, `<embeddedLibraryDirectory>/Loader.class`, which always handles native loading and includes `defineHiddenFallback` only when this build actually uses `nativeEmbeddedClassBlob`. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are not emitted. The directory must be a canonical Java internal package path. A colliding input base or multi-release Loader entry is rejected before Zig with `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` or `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Use an application-unique value if different output artifacts can coexist in the same `ClassLoader`, because equal directories give their loaders the same binary name. Optional class-aligned IR/LLVM/C and debug artifacts live under `<workspace>/intermediates/` when enabled by config.
+Native libraries live directly under `<workspace>/native/<library-file-name>` and are embedded in the final JAR under `<embeddedLibraryDirectory>/<library-file-name>`. The same directory contains exactly one generated Java 17 class, `<embeddedLibraryDirectory>/Loader.class`, which only handles native loading/registration and, when needed, the JVM-managed `ClassValue<Object[]>` field sidecar. It has no bytecode decoder or class-definition API. The retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries are not emitted. The directory must be a canonical Java internal package path. A colliding input base or multi-release Loader entry is rejected before Zig with `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` or `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Use an application-unique value if different output artifacts can coexist in the same `ClassLoader`, because equal directories give their loaders the same binary name. Optional class-aligned IR/LLVM/C and debug artifacts live under `<workspace>/intermediates/` when enabled by config.
 
 Start diagnosis with:
 
@@ -130,7 +138,7 @@ Start diagnosis with:
 - `reports/lowering-report.json`: per-method lowering decisions.
 - `reports/field-internalization-report.json`: hash-only field keep/internalize decisions, final paths, hybrid storage/cache/lifecycle policy, and field-removal evidence.
 - `reports/packaging-report.json`: JAR preservation, signatures, Zig bootstrap, and target artifacts.
-- `reports/artifact-audit.json`: final artifact, native-resource, symbol, metadata, fallback-blob, and sensitive-plaintext checks.
+- `reports/artifact-audit.json`: final artifact, native-resource, symbol, metadata, absence-of-embedded-bytecode, and sensitive-plaintext checks.
 - `reports/release-readiness.json`: readiness checks and missing evidence.
 - `reports/failure-report.json`: primary stage/reason on failed runs; `finalArtifactWritten=false`.
 
@@ -165,7 +173,7 @@ j2ll 是一个 **JVM-hosted JAR 混淆与 native lowering 工具**。它会改�
        -> JNI registration + embedded native libraries -> output JAR
 ```
 
-当前 beta 已通过 managed Zig `0.15.2` 接实六个固定目标的结构性真实构建：Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64，以及最低版本分别为 10.15/11.0 的 macOS x86_64/AArch64。Child JVM runtime parity 当前仍在 host target 上执行；非 host runtime E2E 是独立的待补发布证据。暂时不能安全 native lowering 的 JVM 语义会进入明确的 helper 或 bytecode-preserving fallback。Protection 能提高分析成本，但不是不可逆保证，因为程序运行时仍必须保留执行所需的信息。
+当前 beta 已通过 managed Zig `0.15.2` 接实六个固定目标的结构性真实构建：Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64，以及最低版本分别为 10.15/11.0 的 macOS x86_64/AArch64。Child JVM runtime parity 当前仍在 host target 上执行；非 host runtime E2E 是独立的待补发布证据。被选中且带 Code 的方法最终只有 `nativeLowered` 或 `skipped` 两种状态：通过 JNI/runtime helper 执行仍算真实 native lowering；暂不支持的方法只保留原 Java body，并在 Zig 前要求用户明确确认。Protection 能提高分析成本，但不是不可逆保证，因为程序运行时仍必须保留执行所需的信息。
 
 Schema v1 的 IR/LLVM protection boolean 现在都调度真实但受限的实现，不再只是 placeholder warning：包括 program-level method inline/split、IR call indirection、LLVM opaque predicate/block/global layout，以及 native registration method-table hiding。`fieldInternalization` 也已实现严格的 `private static boolean/byte/short/char/int/long/float/double` 与 reference/array 子集，但默认 `false`，因为获准字段会从 Java reflection surface 删除。它通常要求 `CLOSED_WORLD`；实际 build 遇到其他 world 时会用 Y/N 明确询问是否只分析当前输入 JAR 内的引用。本次授权不会改写 `worldModel`、不会扫描配置的 `classPath`，并会把用户接受的 external-observer 边界写入 field report。primitive 使用 descriptor-aware atomic raw-bit storage；JVM reference/array 始终留在 JVM heap，由 per-defining-Class `ClassValue<Object[]>` sidecar 持有。`ClassValue` 跨调用缓存 sidecar；每个 native function activation 在首次实际访问时惰性获取 JNI local ref，复用后在退出时释放，不建立 native strong global ref。8 项均已有通过的 real-Zig Windows host child-JVM，以及六目标 feature-specific build-graph/content/privacy/export 证据；不适用 shape 仍会保守记录为 pass skipped，optimizer-sensitive transform 不保证最终 machine code 稳定保留，cross-link 成功也不代表非 host JVM runtime 已验证。
 
@@ -225,15 +233,22 @@ java -jar build/cli/j2ll.jar --debug --config <config.json>
 
 ### 方法结果
 
-每个 selector 命中的方法都会在 `reports/lowering-report.json` 中得到明确结果：
+每个被 selector 选中且带 Code 的方法都会在
+`reports/lowering-report.json` 中得到两种结果之一：
 
-- `lowered`：方法已 rewrite，具体实现由生成的 native code 与 JVM/JNI helper 提供。
-- `halfLowered`：方法使用 native entry，但至少一个 operation 显式回到 JVM 执行。Schema v1 会把 ordinary-method fallback 所需 bytecode 作为编码后的 `nativeEmbeddedClassBlob` 放进 native artifact，不会把明文 generated fallback class 写进 output JAR。
-- `frontendSkipped`：当前 method shape 还不能安全 native-wrap，因此保留可运行的原始 bytecode；原因也会进入 `reports/frontend-skip-report.json`。
-- `notApplicable`：selector 命中了没有可 lower body 的方法，例如 abstract 或 already-native method。
-- `failed`：j2ll 无法产生安全结果；构建失败，不保留 final JAR。
+- `nativeLowered`：原 method body 已由经过验证的 native implementation 取代。LLVM、生成式 stub/template 与 JVM/JNI runtime helper 都可以参与实现，但不能重放原方法字节码副本。
+- `skipped`：保留原 Java bytecode，不生成 native body，也不进入 `RegisterNatives`；稳定 reason 同时写入 `reports/skipped-method-report.json`。
 
-Selector 不会被静默跳过。`halfLowered` 和 `frontendSkipped` 是保守兼容结果，不等同于失败，但保护强度通常低于完整 `lowered`。
+程序化 pipeline 在存在 skipped method 时默认 fail closed；只有调用方显式提供 `SkippedMethodApproval` 才能批准继续，报告会记录确认决定。
+
+abstract、already-native 和其他无 Code declaration 只作为 selector eligibility
+证据记录，不产生 lowering status，也不触发确认。构建失败属于 invocation-level
+diagnostic，不是方法状态。
+
+Selector 不会被静默跳过，native artifact 中也不再嵌入兼容用字节码。默认 build
+在创建任何 Zig workspace 或调用 Zig 前列出全部 skipped methods，并询问
+`continue? (Y/N)`；只有显式 `Y` 继续，`N` 或 EOF 都会终止且不写 final JAR。
+自动化可以通过管道传入 `Y`。
 
 ### Managed Zig 0.15.2
 
@@ -268,7 +283,7 @@ SHA-256 mismatch 属于 native/toolchain failure，不会写 final JAR。当前�
 <resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/<input-name>.jar
 ```
 
-Native library 直接位于 `<workspace>/native/<library-file-name>`，并以 `<embeddedLibraryDirectory>/<library-file-name>` 路径嵌入 final JAR。同一目录中只生成一个 Java 17 的 `<embeddedLibraryDirectory>/Loader.class`：它始终负责 native loading，只有本次构建实际使用 `nativeEmbeddedClassBlob` 时才包含 `defineHiddenFallback`；旧 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 和 `j2ll/generated/**/NativeLoader.class` 不再输出。该目录必须是规范 Java internal package path；输入 base 或 multi-release 同名 Loader 会在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。若多个不同 output artifact 可能进入同一个 `ClassLoader`，应为每个应用选择唯一目录，因为相同目录会得到相同 loader binary name。Config 启用时，class-aligned IR/LLVM/C 与 debug artifacts 写入 `<workspace>/intermediates/`。
+Native library 直接位于 `<workspace>/native/<library-file-name>`，并以 `<embeddedLibraryDirectory>/<library-file-name>` 路径嵌入 final JAR。同一目录中只生成一个 Java 17 的 `<embeddedLibraryDirectory>/Loader.class`：它只负责 native loading/registration，以及实际需要时由 JVM 管理的 `ClassValue<Object[]>` field sidecar；不包含字节码 decoder 或 class-definition API。旧 `J2llFallbackSupport.class`、`J2llNativeLoaderSupport.class` 和 `j2ll/generated/**/NativeLoader.class` 不再输出。该目录必须是规范 Java internal package path；输入 base 或 multi-release 同名 Loader 会在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。若多个不同 output artifact 可能进入同一个 `ClassLoader`，应为每个应用选择唯一目录，因为相同目录会得到相同 loader binary name。Config 启用时，class-aligned IR/LLVM/C 与 debug artifacts 写入 `<workspace>/intermediates/`。
 
 排查问题时优先查看：
 
@@ -279,7 +294,7 @@ Native library 直接位于 `<workspace>/native/<library-file-name>`，并以 `<
 - `reports/lowering-report.json`：逐方法 lowering 决策。
 - `reports/field-internalization-report.json`：hash-only field 保留/内置决策、final path、hybrid storage/cache/lifecycle policy 和字段删除证据。
 - `reports/packaging-report.json`：JAR 保留策略、签名、Zig bootstrap 和 target artifact。
-- `reports/artifact-audit.json`：final artifact、native resource、symbol、metadata、fallback blob 与 sensitive plaintext 审计。
+- `reports/artifact-audit.json`：final artifact、native resource、symbol、metadata、无嵌入字节码副本与 sensitive plaintext 审计。
 - `reports/release-readiness.json`：readiness 检查与缺失证据。
 - `reports/failure-report.json`：失败时的主要 stage/reason，且 `finalArtifactWritten=false`。
 

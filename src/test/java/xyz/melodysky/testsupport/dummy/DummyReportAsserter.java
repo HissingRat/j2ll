@@ -12,12 +12,13 @@ import java.util.jar.JarFile;
 public final class DummyReportAsserter {
     private static final List<String> REQUIRED_REPORTS = List.of(
             "artifact-audit.json",
-            "frontend-skip-report.json",
+            "index.json",
             "known-blockers.json",
             "lowering-report.json",
             "packaging-report.json",
             "protection-report.json",
             "release-readiness.json",
+            "skipped-method-report.json",
             "summary.json",
             "summary.md",
             "support-matrix.json",
@@ -44,7 +45,7 @@ public final class DummyReportAsserter {
             String allReports = allReportText(reports);
             String artifactAudit = Files.readString(reports.resolve("artifact-audit.json"));
             String readiness = Files.readString(reports.resolve("release-readiness.json"));
-            String frontendSkip = Files.readString(reports.resolve("frontend-skip-report.json"));
+            String skippedMethods = Files.readString(reports.resolve("skipped-method-report.json"));
             String symbolAudit = Files.readString(reports.resolve("symbol-audit.json"));
             if (!artifactAudit.contains("\"passed\": true")) {
                 failures.add("audit: artifact-audit.json did not pass");
@@ -55,8 +56,8 @@ public final class DummyReportAsserter {
             if (!readiness.contains("\"finalArtifactWritten\": true")) {
                 failures.add("readiness: finalArtifactWritten was not true");
             }
-            if (profile.equals("basic") && frontendSkip.contains("\"status\": \"frontendSkipped\"")) {
-                failures.add("reports: basic profile has unexpected frontendSkipped entry");
+            if (profile.equals("basic") && skippedMethods.contains("\"status\": \"skipped\"")) {
+                failures.add("reports: basic profile has unexpected skipped method");
             }
             for (String reasonCode : expectedReasonCodes) {
                 if (!allReports.contains("\"reasonCode\": \"" + reasonCode + "\"")

@@ -19,8 +19,7 @@ public record MethodInliningCandidate(
         boolean singleTarget,
         boolean callerUsesFinalNativePath,
         boolean calleeUsesFinalNativePath,
-        boolean reflectionSensitive,
-        boolean fallbackSensitive) implements Comparable<MethodInliningCandidate> {
+        boolean reflectionSensitive) implements Comparable<MethodInliningCandidate> {
     public MethodInliningCandidate {
         Objects.requireNonNull(callerMethodKey, "callerMethodKey");
         Objects.requireNonNull(calleeMethodKey, "calleeMethodKey");

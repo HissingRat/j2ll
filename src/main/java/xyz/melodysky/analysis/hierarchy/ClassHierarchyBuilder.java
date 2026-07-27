@@ -97,8 +97,7 @@ public final class ClassHierarchyBuilder {
                             DiagnosticStage.HIERARCHY,
                             HierarchyDiagnostics.MISSING_EXTERNAL_CLASS,
                             "created conservative external placeholder for " + missingName)
-                    .at(DiagnosticLocation.classLocation(missingName))
-                    .withConservativeFallbackAvailable(true));
+                    .at(DiagnosticLocation.classLocation(missingName)));
         });
     }
 

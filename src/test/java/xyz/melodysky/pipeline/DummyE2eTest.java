@@ -65,7 +65,12 @@ class DummyE2eTest {
         Path workspace = workspace(profile);
         MainlinePipelineResult pipeline;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-" + profile))) {
-            pipeline = new MainlinePipeline().run(config(inputJar, selectors), workspace);
+            pipeline = new MainlinePipeline().run(
+                    config(inputJar, selectors),
+                    workspace,
+                    xyz.melodysky.progress.BuildProgressListener.none(),
+                    xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
+                    SkippedMethodApproval.allowAll());
         }
         if (!pipeline.successful()) {
             failures.add("pipeline: build failed: " + pipeline.diagnostics());
@@ -346,11 +351,9 @@ class DummyE2eTest {
             Map<String, List<MethodSummary>> methodsByStatus,
             String unavailableReason) {
         private static final List<String> STATUS_ORDER = List.of(
-                "lowered",
-                "halfLowered",
-                "frontendSkipped",
-                "notApplicable",
-                "failed",
+                "nativeLowered",
+                "skipped",
+                "ineligible",
                 "excluded");
 
         static LoweringSummary read(Path loweringReport, Path outputJar) {
@@ -374,8 +377,8 @@ class DummyE2eTest {
                 }
                 countRequested(root.getAsJsonArray("requestedMethods"), statuses, reasons, methodsByStatus, nativeMethods);
                 countEligibility(
-                        root.getAsJsonArray("notApplicable"),
-                        "notApplicable",
+                        root.getAsJsonArray("ineligible"),
+                        "ineligible",
                         statuses,
                         reasons,
                         methodsByStatus,
@@ -411,7 +414,7 @@ class DummyE2eTest {
                 String status = string(method, "status", "unknown");
                 increment(statuses, status);
                 addReason(reasons, status, string(method, "reasonCode", null));
-                addSiteReasons(reasons, status, method.getAsJsonArray("fallbackSites"));
+                addSiteReasons(reasons, status, method.getAsJsonArray("helperBackedSites"));
                 addInterestingMethod(methodsByStatus, status, method, nativeMethods);
             }
         }
@@ -452,9 +455,8 @@ class DummyE2eTest {
                 String status,
                 JsonObject method,
                 NativeMethodIndex nativeMethods) {
-            if (!"lowered".equals(status)
-                    && !"halfLowered".equals(status)
-                    && !"frontendSkipped".equals(status)) {
+            if (!"nativeLowered".equals(status)
+                    && !"skipped".equals(status)) {
                 return;
             }
             methodsByStatus.computeIfAbsent(status, ignored -> new ArrayList<>())
@@ -468,13 +470,13 @@ class DummyE2eTest {
                     + string(method, "descriptor", "");
             TreeMap<String, Integer> reasons = new TreeMap<>();
             addReasonTo(reasons, string(method, "reasonCode", null));
-            JsonArray fallbackSites = method.getAsJsonArray("fallbackSites");
-            if (fallbackSites != null) {
-                for (JsonElement site : fallbackSites) {
+            JsonArray helperBackedSites = method.getAsJsonArray("helperBackedSites");
+            if (helperBackedSites != null) {
+                for (JsonElement site : helperBackedSites) {
                     addReasonTo(reasons, string(site.getAsJsonObject(), "reasonCode", null));
                 }
             }
-            boolean expectedNative = ("lowered".equals(status) || "halfLowered".equals(status))
+            boolean expectedNative = "nativeLowered".equals(status)
                     && "nativeOriginal".equals(string(method, "rewriteStrategy", null));
             boolean actualNative = nativeMethods.contains(key);
             return new MethodSummary(key, reasons, expectedNative, actualNative, nativeMethods.available());
@@ -524,14 +526,11 @@ class DummyE2eTest {
                             .append('=')
                             .append(entry.getValue()));
             builder.append('\n');
-            appendReasons(builder, "halfLowered");
-            appendReasons(builder, "frontendSkipped");
-            appendReasons(builder, "notApplicable");
-            appendReasons(builder, "failed");
+            appendReasons(builder, "skipped");
+            appendReasons(builder, "ineligible");
             appendReasons(builder, "excluded");
             appendLoweredMismatches(builder);
-            appendMethods(builder, "halfLowered");
-            appendMethods(builder, "frontendSkipped");
+            appendMethods(builder, "skipped");
             return builder.toString();
         }
 
@@ -576,13 +575,13 @@ class DummyE2eTest {
         }
 
         private void appendLoweredMismatches(StringBuilder builder) {
-            List<MethodSummary> mismatches = methodsByStatus.getOrDefault("lowered", List.of()).stream()
+            List<MethodSummary> mismatches = methodsByStatus.getOrDefault("nativeLowered", List.of()).stream()
                     .filter(method -> !method.expectedMatchesActual())
                     .toList();
             if (mismatches.isEmpty()) {
                 return;
             }
-            builder.append("  lowered native mismatches:\n");
+            builder.append("  nativeLowered native mismatches:\n");
             for (MethodSummary method : mismatches) {
                 builder.append("    ! ")
                         .append(method.key())
