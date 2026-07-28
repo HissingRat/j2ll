@@ -2,8 +2,10 @@ package xyz.melodysky.toolchain.initializer;
 
 import java.util.Optional;
 import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 
 /**
  * Builds a verifier-safe Java/native boundary for {@code <init>} and
@@ -18,8 +20,22 @@ import xyz.melodysky.packaging.MethodRewriteStrategy;
 public final class InitializerImplementationPlanner {
     private final ConstructorPrefixAnalyzer prefixAnalyzer =
             new ConstructorPrefixAnalyzer();
-    private final ConstructorIrBodySplitter bodySplitter =
-            new ConstructorIrBodySplitter();
+    private final ConstructorIrBodySplitter bodySplitter;
+
+    public InitializerImplementationPlanner() {
+        this(RuntimeTokenMapper.compatibility());
+    }
+
+    /**
+     * Uses the build-scoped runtime token identity shared by the source SSA
+     * lowerer. Constructor splitting compares the independently lowered Java
+     * prefix with that source IR, so the two lowerers must derive identical
+     * class/runtime metadata tokens.
+     */
+    public InitializerImplementationPlanner(RuntimeTokenMapper runtimeTokens) {
+        bodySplitter = new ConstructorIrBodySplitter(
+                new BytecodeToSsaLowerer(runtimeTokens));
+    }
 
     public Optional<InitializerImplementationPlan> plan(
             MethodRewriteDecision decision,

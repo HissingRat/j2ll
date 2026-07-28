@@ -59,7 +59,7 @@
 | --- | --- | --- |
 | Critical | 仅含 `CONST_CLASS` 的方法在 planner、LLVM 与 C bridge 间对 `JNIEnv*` 的判断不一致 | 使用共享 LLVM function ABI policy；planned/inferred ABI 不一致时在 Zig 前失败，并覆盖 static/instance class literal |
 | High | instance wrapper 曾把 receiver runtime class 当作 internalized static field 的 defining class | wrapper 通过 registered native method 的 defining-loader context 解析声明 owner；不再使用 `GetObjectClass(self)` |
-| High | reference-returning JNI helper 在 native loop 中可无界累积 local ref；void/primitive direct LLVM callee 内部产生的 ref 也会留在同一 JNI frame | 沿 frozen same-owner direct-call closure传播 owned-ref production 摘要；CFG 循环、循环调用 ref-producing callee、传递调用链或 ref-producing call SCC 的受影响方法明确 `skipped`，reason 为 `UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME` |
+| High | reference-producing JNI helper 在 native loop 中可无界累积 local ref；循环内 `jvalue[] alloca` 也会持续增长native stack | 对每个method生成并验证dynamic ownership/release plan，在normal/parallel/handler/explicit-throw edge精确释放；ref-producing registered callee改走JNI nested activation；`jvalue[]` scratch只在activation prologue分配一次。无法证明的shape明确 `skipped`，reason 为 `UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME` |
 | High | 单一 native-text decoder、固定常量与相邻 seed shares 仍可被一个提取器批量识别 | 改为 build/site-scoped codec plan；审计 decoder shape/fanout、seed/cipher 共址和跨构建自动恢复率 |
 | High | method-table hiding 仍留下 token 数组与 function relocation 数组 | 最终产物不得持久化 token→function join database；owner-local 临时 `JNINativeMethod` 直接按 build-diverse 顺序构造并清零 |
 | High | 所有 LLVM binding 都采用相同 wrapper→volatile slot→bridge→LLVM 拓扑 | 删除持久 function-pointer slot，按 build/binding 选择不同且语义等价的 local bridge shape；用最终 binary mapping reuse rate 验收 |
@@ -561,14 +561,25 @@ DLL中，相同coarse shape降为36/57，正式mapping reuse为5/57（8.77%）�
 `directSingleCallee`也从37/57降到30/57与26/57。它说明最终机器码形态确实变化，
 但仍有5个mapping可直接复用，不能把降低复用率写成classifier已经失效。
 
-JNI local-reference lifetime 也在这个 direct-call boundary 上 fail closed：
-`NativeLocalReferenceCallGraphSafety` 先冻结最终候选 direct-call closure，把
-reachable owned-ref production（包括 void/primitive callee 内部产生而不返回的
-reference）沿传递调用链传播，再检查 caller CFG cycle 与 direct-call SCC。命中
-的方法及其仍会 direct-call 该风险路径的上游 root 不进入 implementation plan，
-`FinalNativeCoverageResolver` 使用 planner 保存的
-`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME` 精确 reason 保留原 Java body。经
-JVM/JNI bridge 调用的方法不属于该 internal direct-call closure。
+JNI local-reference lifetime 现在以per-method ownership plan fail closed：
+classifier区分borrowed/owned/null，site-sensitive CFG facts与release scheduler
+区分normal live-out和instruction exceptional needs，并跟踪dynamic ownership、
+last use、normal/parallel edge、loop/backedge、typed/catch-all handler与显式
+`athrow`；validator拒绝重复ownership transfer、handler live-set不一致和
+其他无法证明有界释放的shape。`FinalNativeCoverageResolver`使用planner保存的
+`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`精确reason保留这类Java body。
+返回reference或内部产生owned/pending-exception reference的registered native
+callee改走JVM/JNI bridge以获得嵌套local frame；direct LLVM call只用于无此类
+reference production的callee，无法桥接的compiler-internal shape fail closed。
+JNI bridge的`jvalue[]` scratch按function最大arity只在activation prologue执行
+一次`alloca`，loop/catch/backedge只复用该slot。
+
+2026-07-28的当前v2样本验证中，原57个`nativeLowered`/14个`skipped`
+提升为71个`nativeLowered`/0个`skipped`；Windows x64、Linux x64/arm64与
+macOS x64/arm64五目标均完成build/link，artifact audit通过并保留final JAR。
+独立real-Zig fixture覆盖6个bounded local-reference方法，其中包含25万次普通
+loop与10万次caught-exception backedge；child JVM使用`-Xcheck:jni`且与原JAR
+输出一致。
 
 实现证据：focused planner/source tests覆盖同 build可复现、跨 build shape/
 symbol/permutation变化、四种 topology、零参数 `void` ABI、非法 plan fail

@@ -99,7 +99,7 @@ class ProtectionBackendIntegrationTest {
     }
 
     @Test
-    void flatteningReferenceMethodWithUnprotectedJvmHelperReachesValidatedLlvm() {
+    void ownedReferenceMethodSkipsFlatteningAndStillReachesValidatedLlvm() {
         IrValue array = new IrValue("%p0", IrType.REFERENCE);
         IrValue length = new IrValue("%length", IrType.I32);
         IrValue pending = new IrValue("%pending", IrType.REFERENCE);
@@ -150,11 +150,16 @@ class ProtectionBackendIntegrationTest {
         String llvm = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
                 .lowerClass(new IrClass(method.owner(), List.of(protectedResult.method()))));
 
-        assertTrue(protectedResult.diagnostics().isEmpty(), protectedResult.diagnostics().toString());
+        assertTrue(protectedResult.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.decision().equals(
+                        "CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE")),
+                protectedResult.diagnostics().toString());
         assertTrue(protectedResult.reports().stream()
                 .anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
-                        && report.status().equals("RAN")));
-        assertTrue(llvm.contains("switch i32"), llvm);
+                        && report.status().equals("SKIPPED")
+                        && report.reasonCode().equals(
+                                "CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE")));
+        assertFalse(llvm.contains("switch i32"), llvm);
         assertTrue(llvm.contains("call i32 @j2ll_rt_array_length_i32("), llvm);
         assertTrue(llvm.contains("call ptr @j2ll_rt_pending_exception("), llvm);
         assertFalse(llvm.contains("call void @j2ll_rt_clear_exception("), llvm);

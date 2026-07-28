@@ -35,6 +35,7 @@ import xyz.melodysky.report.ArtifactAuditResult;
 import xyz.melodysky.report.EmbeddedLibraryReport;
 import xyz.melodysky.report.SensitivePlaintextFact;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.CapturedTimerTaskFixture;
 import xyz.melodysky.testsupport.FakeManagedZig;
 import xyz.melodysky.testsupport.JvmRunner;
 import xyz.melodysky.toolchain.HostPlatform;
@@ -342,6 +343,69 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 .orElseThrow();
         assertFalse(outputMethod.accessFlags().isNative());
         assertTrue(outputMethod.hasCode());
+    }
+
+    @Test
+    void buildScopedTokensPreserveCapturedTimerTaskConstructorPlan() throws Exception {
+        String owner = CapturedTimerTaskFixture.OWNER;
+        String methodKey =
+                owner + "#<init>!" + CapturedTimerTaskFixture.DESCRIPTOR;
+        Path inputJar = temp.resolve("captured-timer-task.jar");
+        writeJar(
+                inputJar,
+                owner + ".class",
+                CapturedTimerTaskFixture.classBytes());
+        ResolvedConfig config = config(inputJar, methodKey);
+        Path workspace = temp.resolve("out/captured-timer-task");
+
+        MainlinePipelineResult result = runPipeline(config, workspace);
+
+        assertTrue(result.successful(), result.diagnostics().toString());
+        String loweringReport = Files.readString(
+                workspace.resolve("reports/lowering-report.json"));
+        String skippedReport = Files.readString(
+                workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains(methodKey), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"status\": \"nativeLowered\""), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"rewriteStrategy\": \"constructorStub\""), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""),
+                loweringReport);
+        assertFalse(loweringReport.contains(
+                "\"reasonCode\": \"NATIVE_IMPLEMENTATION_UNAVAILABLE\""),
+                loweringReport);
+        assertFalse(skippedReport.contains(methodKey), skippedReport);
+
+        assertTrue(result.nativeRegistrationPlan().entries().stream()
+                .anyMatch(entry -> entry.registrationOwner().equals(owner)
+                        && entry.methodName().startsWith("__j2ll_init_body$")
+                        && entry.descriptor().equals(
+                                CapturedTimerTaskFixture.NATIVE_BODY_DESCRIPTOR)));
+
+        var outputClass = new AsmClassParser()
+                .parseAll(new JarClassFileSource(result.outputJar()))
+                .artifact()
+                .orElseThrow()
+                .program()
+                .findClass(owner)
+                .orElseThrow();
+        var constructor = outputClass.methods().stream()
+                .filter(method -> method.name().equals("<init>")
+                        && method.descriptor().equals(
+                                CapturedTimerTaskFixture.DESCRIPTOR))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(constructor.accessFlags().isNative());
+        assertTrue(constructor.hasCode());
+        var nativeBody = outputClass.methods().stream()
+                .filter(method -> method.name().startsWith(
+                        "__j2ll_init_body$"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(nativeBody.accessFlags().isNative());
+        assertFalse(nativeBody.hasCode());
     }
 
     @Test

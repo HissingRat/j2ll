@@ -279,6 +279,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
         // buffers. Keeping it as an independent fragment also ensures
         // JNI_OnLoad never becomes a decode-all entry point.
         builder.append(registrationSource);
+        HostJniLocalReferenceRuntimeSource.appendIfNeeded(
+                builder,
+                implementationPlan);
         return requireHardenedGeneratedSource(builder.toString());
     }
 

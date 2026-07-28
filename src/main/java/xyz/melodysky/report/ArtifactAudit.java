@@ -921,12 +921,47 @@ public class ArtifactAudit {
             List<String> forbiddenPlaintexts,
             List<String> hits) {
         for (String forbidden : forbiddenPlaintexts) {
-            if (!forbidden.isEmpty() && text.contains(forbidden)) {
+            if (!forbidden.isEmpty()
+                    && containsWorkspacePlaintext(path, text, forbidden)) {
                 hits.add(displayPath(workspaceRoot, path)
                         + ":sha256="
                         + sha256(forbidden.getBytes(StandardCharsets.UTF_8)));
             }
         }
+    }
+
+    private boolean containsWorkspacePlaintext(
+            Path path,
+            String text,
+            String forbidden) {
+        int fromIndex = 0;
+        while (fromIndex < text.length()) {
+            int match = text.indexOf(forbidden, fromIndex);
+            if (match < 0) {
+                return false;
+            }
+            if (!isJniNativeMethodSignatureMember(path, text, forbidden, match)) {
+                return true;
+            }
+            fromIndex = match + forbidden.length();
+        }
+        return false;
+    }
+
+    private boolean isJniNativeMethodSignatureMember(
+            Path path,
+            String text,
+            String forbidden,
+            int match) {
+        if (!forbidden.equals("signature")
+                || !path.getFileName().toString()
+                        .toLowerCase(java.util.Locale.ROOT)
+                        .endsWith(".c")) {
+            return false;
+        }
+        int lineStart = text.lastIndexOf('\n', match);
+        String prefix = text.substring(lineStart + 1, match);
+        return prefix.matches("\\s*methods\\[\\d+\\]\\.");
     }
 
     private String displayPath(Path workspaceRoot, Path path) {

@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,6 +38,8 @@ import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.runtime.jni.RuntimeLocalAbiDomain;
 import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlan;
 import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlanner;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
+import xyz.melodysky.toolchain.localref.NativeLocalReferenceNormalEdge;
 
 public final class LlvmModuleLowerer {
     private final LlvmNameMangler nameMangler;
@@ -164,6 +167,28 @@ public final class LlvmModuleLowerer {
             Map<String, Set<String>> directCallsByMethod,
             Map<String, Set<String>> staticCallsByMethod,
             Map<String, LlvmFunctionAbi> plannedFunctionAbis) {
+        return lowerClass(
+                irClass,
+                linkage,
+                visibility,
+                directCallsByMethod,
+                staticCallsByMethod,
+                plannedFunctionAbis,
+                Map.of());
+    }
+
+    public LlvmModule lowerClass(
+            IrClass irClass,
+            LlvmLinkage linkage,
+            LlvmVisibility visibility,
+            Map<String, Set<String>> directCallsByMethod,
+            Map<String, Set<String>> staticCallsByMethod,
+            Map<String, LlvmFunctionAbi> plannedFunctionAbis,
+            Map<String, NativeLocalReferencePlan>
+                    localReferencePlansByMethod) {
+        java.util.Objects.requireNonNull(
+                localReferencePlansByMethod,
+                "localReferencePlansByMethod");
         Map<String, LlvmFunctionAbi> functionAbis = functionAbis(
                 irClass,
                 directCallsByMethod,
@@ -171,7 +196,9 @@ public final class LlvmModuleLowerer {
                 plannedFunctionAbis);
         return new LlvmModule(
                 irClass.internalName(),
-                runtimeHelperDeclarations(irClass),
+                runtimeHelperDeclarations(
+                        irClass,
+                        localReferencePlansByMethod),
                 irClass.methods().stream()
                         .map(method -> lowerMethod(
                                 method,
@@ -179,7 +206,9 @@ public final class LlvmModuleLowerer {
                                 visibility,
                                 directCallsByMethod.getOrDefault(method.methodKey(), Set.of()),
                                 staticCallsByMethod.getOrDefault(method.methodKey(), Set.of()),
-                                functionAbis))
+                                functionAbis,
+                                Optional.ofNullable(localReferencePlansByMethod
+                                        .get(method.methodKey()))))
                         .toList());
     }
 
@@ -217,7 +246,10 @@ public final class LlvmModuleLowerer {
         return Map.copyOf(result);
     }
 
-    private List<LlvmDeclaration> runtimeHelperDeclarations(IrClass irClass) {
+    private List<LlvmDeclaration> runtimeHelperDeclarations(
+            IrClass irClass,
+            Map<String, NativeLocalReferencePlan>
+                    localReferencePlansByMethod) {
         ArrayList<LlvmDeclaration> declarations = new ArrayList<>(runtimeHelpers.helpers().stream()
                 .filter(helper -> helper.kind() != RuntimeHelperKind.STRING_CONSTANT)
                 .map(helper -> new LlvmDeclaration(
@@ -250,6 +282,10 @@ public final class LlvmModuleLowerer {
                         "businessStringConstantLocal")));
         addLocalizedRuntimeBindingDeclarations(irClass, declarations);
         declarations.addAll(nativeFields.declarations());
+        if (localReferencePlansByMethod.values().stream()
+                .anyMatch(NativeLocalReferencePlan::emitsReleases)) {
+            declarations.add(LlvmLocalReferenceLowering.declaration());
+        }
         return List.copyOf(declarations);
     }
 
@@ -504,7 +540,17 @@ public final class LlvmModuleLowerer {
             LlvmVisibility visibility,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys,
-            Map<String, LlvmFunctionAbi> functionAbis) {
+            Map<String, LlvmFunctionAbi> functionAbis,
+            Optional<NativeLocalReferencePlan> localReferencePlan) {
+        localReferencePlan.ifPresent(plan -> {
+            if (!plan.methodKey().equals(method.methodKey())) {
+                throw new IllegalArgumentException(
+                        "local-reference plan belongs to another method: "
+                                + plan.methodKey());
+            }
+        });
+        Optional<LlvmLocalReferenceLowering> localReferences =
+                localReferencePlan.map(LlvmLocalReferenceLowering::new);
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
         LlvmFunctionAbi functionAbi = functionAbis.get(method.methodKey());
         if (functionAbi.passesJniEnv()) {
@@ -517,6 +563,12 @@ public final class LlvmModuleLowerer {
                 .map(parameter -> new LlvmParameter(typeLowerer.lower(parameter.type()), parameter.name()))
                 .forEach(parameters::add);
         boolean cacheReferenceSidecar = nativeFields.usesReferenceSidecar(method);
+        LlvmJvalueScratchPlan jvalueScratch =
+                new LlvmJvalueScratchPlanner().plan(
+                        method,
+                        instruction -> jvalueScratchArguments(
+                                instruction,
+                                staticCallMethodKeys));
         LlvmType functionReturnType = typeLowerer.lower(method.returnType());
         LlvmExceptionFlowLowerer exceptionFlowLowerer = new LlvmExceptionFlowLowerer(
                 method.blocks().stream()
@@ -535,8 +587,20 @@ public final class LlvmModuleLowerer {
             for (int instructionIndex = 0;
                     instructionIndex < block.instructions().size();
                     instructionIndex++) {
+                int localInstructionIndex = instructionIndex;
                 xyz.melodysky.ir.model.IrInstruction instruction =
                         block.instructions().get(instructionIndex);
+                xyz.melodysky.toolchain.localref
+                                .NativeLocalReferenceReleaseSchedule
+                        releases = localReferencePlan
+                                .map(plan -> plan.releasesAfter(
+                                        block.name(),
+                                        localInstructionIndex))
+                                .orElseGet(() -> new xyz.melodysky.toolchain
+                                        .localref
+                                        .NativeLocalReferenceReleaseSchedule(
+                                        List.of(),
+                                        List.of()));
                 chunks.add(new LlvmExceptionFlowLowerer.InstructionChunk(
                         instruction,
                         lowerInstructions(
@@ -545,31 +609,60 @@ public final class LlvmModuleLowerer {
                                 staticCallMethodKeys,
                                 functionAbis,
                                 block.name(),
-                                instructionIndex)));
+                                instructionIndex,
+                                jvalueScratch),
+                        localReferences
+                                .map(lowering -> lowering.releases(
+                                        releases.normalPath()))
+                                .orElse(List.of()),
+                        localReferences
+                                .map(lowering -> lowering.releases(
+                                        releases.exceptionalPath()))
+                                .orElse(List.of())));
             }
             LlvmExceptionFlowLowerer.BlockResult lowered = exceptionFlowLowerer.lower(
                     block,
                     chunks,
                     lowerTerminator(block),
                     functionReturnType,
-                    exceptionalExitCleanup);
+                    exceptionalExitCleanup,
+                    localReferences
+                            .map(lowering -> lowering.releases(
+                                    localReferencePlan
+                                            .orElseThrow()
+                                            .releasesBeforeTerminator(
+                                                    block.name())))
+                            .orElse(List.of()));
             loweredBlocks.add(lowered);
             normalExitBlocks.put(block.name(), lowered.normalExitBlock());
             exceptionalIncoming.addAll(lowered.exceptionalIncoming());
         }
 
+        NormalEdgeLowering normalEdges = lowerNormalEdges(
+                method,
+                loweredBlocks,
+                localReferencePlan,
+                localReferences);
         Map<String, List<PhiIncoming>> phiIncoming =
-                phiIncoming(method, normalExitBlocks, exceptionalIncoming);
+                phiIncoming(
+                        method,
+                        normalExitBlocks,
+                        exceptionalIncoming,
+                        normalEdges.predecessors());
         ArrayList<LlvmBasicBlock> blocks = new ArrayList<>();
-        if (cacheReferenceSidecar) {
-            blocks.add(referenceSidecarPrologue(method));
+        if (cacheReferenceSidecar || jvalueScratch.required()) {
+            blocks.add(activationPrologue(
+                    method,
+                    cacheReferenceSidecar,
+                    jvalueScratch));
         }
-        for (LlvmExceptionFlowLowerer.BlockResult lowered : loweredBlocks) {
-            for (LlvmBasicBlock block : lowered.blocks()) {
+        for (List<LlvmBasicBlock> lowered : normalEdges.blocks()) {
+            for (LlvmBasicBlock block : lowered) {
                 blocks.add(withPhiInstructions(
                         block,
                         method,
-                        phiIncoming.getOrDefault(block.name(), List.of())));
+                        phiIncoming.getOrDefault(block.name(), List.of()),
+                        localReferences));
             }
         }
         return new LlvmFunction(
@@ -581,34 +674,82 @@ public final class LlvmModuleLowerer {
                 blocks);
     }
 
-    private LlvmBasicBlock referenceSidecarPrologue(IrMethod method) {
+    private NormalEdgeLowering lowerNormalEdges(
+            IrMethod method,
+            List<LlvmExceptionFlowLowerer.BlockResult> loweredBlocks,
+            Optional<NativeLocalReferencePlan> localReferencePlan,
+            Optional<LlvmLocalReferenceLowering> localReferences) {
+        Set<String> usedNames = loweredBlocks.stream()
+                .flatMap(result -> result.blocks().stream())
+                .map(LlvmBasicBlock::name)
+                .collect(java.util.stream.Collectors.toCollection(
+                        java.util.LinkedHashSet::new));
+        ArrayList<List<LlvmBasicBlock>> result = new ArrayList<>();
+        LinkedHashMap<NativeLocalReferenceNormalEdge, String>
+                predecessors = new LinkedHashMap<>();
+        LlvmLocalReferenceEdgeLowerer edgeLowerer =
+                new LlvmLocalReferenceEdgeLowerer();
+        for (int index = 0; index < method.blocks().size(); index++) {
+            LlvmLocalReferenceEdgeLowerer.EdgeResult lowered =
+                    localReferencePlan.isPresent()
+                            ? edgeLowerer.lower(
+                                    method.blocks().get(index),
+                                    loweredBlocks.get(index),
+                                    localReferencePlan.orElseThrow(),
+                                    localReferences.orElseThrow(),
+                                    usedNames)
+                            : edgeLowerer.splitParallelEdges(
+                                    method.blocks().get(index),
+                                    loweredBlocks.get(index),
+                                    method.methodKey(),
+                                    usedNames);
+            result.add(lowered.blocks());
+            predecessors.putAll(lowered.predecessorByEdge());
+        }
+        return new NormalEdgeLowering(result, predecessors);
+    }
+
+    private LlvmBasicBlock activationPrologue(
+            IrMethod method,
+            boolean cacheReferenceSidecar,
+            LlvmJvalueScratchPlan jvalueScratch) {
         if (method.blocks().isEmpty()) {
             throw new IllegalArgumentException(
-                    "reference field sidecar requires a method entry block");
+                    "activation prologue requires a method entry block");
         }
         if (!method.blocks().get(0).parameters().isEmpty()) {
             throw new IllegalArgumentException(
-                    "reference field sidecar requires a parameter-free method entry block");
+                    "activation prologue requires a parameter-free method entry block");
         }
         Set<String> names = method.blocks().stream()
                 .map(IrBlock::name)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        String base = "j2ll.nfs.prologue." + stableHash(method.methodKey());
+        String base = "j2ll.activation.prologue."
+                + stableHash(method.methodKey());
         String name = base;
         int suffix = 1;
         while (names.contains(name)) {
             name = base + "." + suffix++;
         }
+        ArrayList<LlvmInstruction> instructions = new ArrayList<>();
+        if (cacheReferenceSidecar) {
+            instructions.addAll(
+                    nativeFields.referenceSidecarCacheInitialization());
+        }
+        if (jvalueScratch.required()) {
+            instructions.add(jvalueScratch.allocation());
+        }
         return new LlvmBasicBlock(
                 name,
-                nativeFields.referenceSidecarCacheInitialization(),
+                instructions,
                 LlvmTerminator.gotoBlock(method.blocks().get(0).name()));
     }
 
     private LlvmBasicBlock withPhiInstructions(
             LlvmBasicBlock block,
             IrMethod method,
-            List<PhiIncoming> phiIncoming) {
+            List<PhiIncoming> phiIncoming,
+            Optional<LlvmLocalReferenceLowering> localReferences) {
         IrBlock source = method.blocks().stream()
                 .filter(candidate -> candidate.name().equals(block.name()))
                 .findFirst()
@@ -618,6 +759,7 @@ public final class LlvmModuleLowerer {
         }
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
         for (int index = 0; index < source.parameters().size(); index++) {
+            int parameterIndex = index;
             IrValue parameter = source.parameters().get(index);
             ArrayList<String> incoming = new ArrayList<>();
             for (PhiIncoming predecessor : phiIncoming) {
@@ -632,6 +774,23 @@ public final class LlvmModuleLowerer {
                     Optional.of(parameter.name()),
                     "phi " + typeLowerer.lower(parameter.type()).text() + " "
                             + String.join(", ", incoming)));
+            if (parameter.type()
+                    == xyz.melodysky.ir.model.IrType.REFERENCE) {
+                localReferences.flatMap(lowering ->
+                                lowering.ownershipPhi(
+                                        parameter,
+                                        phiIncoming.stream()
+                                                .map(predecessor ->
+                                                        new LlvmLocalReferenceLowering
+                                                                .OwnershipIncoming(
+                                                                predecessor
+                                                                        .predecessorBlock(),
+                                                                        predecessor
+                                                                        .arguments()
+                                                                        .get(parameterIndex)))
+                                                .toList()))
+                        .ifPresent(instructions::add);
+            }
         }
         instructions.addAll(block.instructions());
         return new LlvmBasicBlock(block.name(), instructions, block.terminator());
@@ -640,7 +799,9 @@ public final class LlvmModuleLowerer {
     private Map<String, List<PhiIncoming>> phiIncoming(
             IrMethod method,
             Map<String, String> normalExitBlocks,
-            List<LlvmExceptionFlowLowerer.ExceptionalIncoming> exceptionalIncoming) {
+            List<LlvmExceptionFlowLowerer.ExceptionalIncoming> exceptionalIncoming,
+            Map<NativeLocalReferenceNormalEdge, String>
+                    normalEdgePredecessors) {
         HashMap<String, ArrayList<PhiIncoming>> incoming = new HashMap<>();
         for (IrBlock block : method.blocks()) {
             String predecessor = normalExitBlocks.getOrDefault(block.name(), block.name());
@@ -648,7 +809,12 @@ public final class LlvmModuleLowerer {
                 case GOTO -> addPhiIncoming(
                         incoming,
                         block.terminator().target().orElseThrow(),
-                        predecessor,
+                        normalPredecessor(
+                                block,
+                                0,
+                                block.terminator().target().orElseThrow(),
+                                predecessor,
+                                normalEdgePredecessors),
                         block.terminator().targetArguments());
                 case THROW -> {
                 }
@@ -656,22 +822,58 @@ public final class LlvmModuleLowerer {
                     addPhiIncoming(
                             incoming,
                             block.terminator().trueTarget().orElseThrow(),
-                            predecessor,
+                            normalPredecessor(
+                                    block,
+                                    0,
+                                    block.terminator()
+                                            .trueTarget()
+                                            .orElseThrow(),
+                                    predecessor,
+                                    normalEdgePredecessors),
                             block.terminator().trueTargetArguments());
                     addPhiIncoming(
                             incoming,
                             block.terminator().falseTarget().orElseThrow(),
-                            predecessor,
+                            normalPredecessor(
+                                    block,
+                                    1,
+                                    block.terminator()
+                                            .falseTarget()
+                                            .orElseThrow(),
+                                    predecessor,
+                                    normalEdgePredecessors),
                             block.terminator().falseTargetArguments());
                 }
                 case SWITCH -> {
                     addPhiIncoming(
                             incoming,
                             block.terminator().defaultTarget().orElseThrow(),
-                            predecessor,
+                            normalPredecessor(
+                                    block,
+                                    0,
+                                    block.terminator()
+                                            .defaultTarget()
+                                            .orElseThrow(),
+                                    predecessor,
+                                    normalEdgePredecessors),
                             block.terminator().defaultTargetArguments());
-                    for (var switchCase : block.terminator().switchCases()) {
-                        addPhiIncoming(incoming, switchCase.target(), predecessor, switchCase.arguments());
+                    for (int index = 0;
+                            index < block.terminator().switchCases().size();
+                            index++) {
+                        var switchCase =
+                                block.terminator()
+                                        .switchCases()
+                                        .get(index);
+                        addPhiIncoming(
+                                incoming,
+                                switchCase.target(),
+                                normalPredecessor(
+                                        block,
+                                        index + 1,
+                                        switchCase.target(),
+                                        predecessor,
+                                        normalEdgePredecessors),
+                                switchCase.arguments());
                     }
                 }
                 case RETURN -> {
@@ -689,6 +891,21 @@ public final class LlvmModuleLowerer {
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
                         Map.Entry::getKey,
                         entry -> List.copyOf(entry.getValue())));
+    }
+
+    private String normalPredecessor(
+            IrBlock block,
+            int ordinal,
+            String target,
+            String defaultPredecessor,
+            Map<NativeLocalReferenceNormalEdge, String>
+                    normalEdgePredecessors) {
+        return normalEdgePredecessors.getOrDefault(
+                new NativeLocalReferenceNormalEdge(
+                        block.name(),
+                        ordinal,
+                        target),
+                defaultPredecessor);
     }
 
     private void addPhiIncoming(
@@ -735,7 +952,8 @@ public final class LlvmModuleLowerer {
             Set<String> staticCallMethodKeys,
             Map<String, LlvmFunctionAbi> functionAbis,
             String blockName,
-            int instructionIndex) {
+            int instructionIndex,
+            LlvmJvalueScratchPlan jvalueScratch) {
         Optional<BusinessStringConstantRef> businessString =
                 BusinessStringConstantRef.fromInstruction(instruction);
         if (businessString.isPresent()) {
@@ -749,7 +967,8 @@ public final class LlvmModuleLowerer {
                     directCallMethodKeys,
                     staticCallMethodKeys,
                     functionAbis,
-                    stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
+                    stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")),
+                    jvalueScratch);
         }
         if (instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
                 || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC) {
@@ -1275,27 +1494,58 @@ public final class LlvmModuleLowerer {
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys,
             Map<String, LlvmFunctionAbi> functionAbis,
-            String scratchSuffix) {
+            String scratchSuffix,
+            LlvmJvalueScratchPlan jvalueScratch) {
         if (isConstructorCallHelperInstruction(instruction)) {
-            return lowerConstructorCallBridge(instruction, scratchSuffix);
+            return lowerConstructorCallBridge(
+                    instruction,
+                    scratchSuffix,
+                    jvalueScratch);
         }
         if (isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)) {
-            return lowerStaticCallBridge(instruction, scratchSuffix);
+            return lowerStaticCallBridge(
+                    instruction,
+                    scratchSuffix,
+                    jvalueScratch);
         }
         if (isDispatchHelperInstruction(instruction)) {
-            return lowerDispatchCallBridge(instruction, scratchSuffix);
+            return lowerDispatchCallBridge(
+                    instruction,
+                    scratchSuffix,
+                    jvalueScratch);
         }
         return List.of(lowerCall(instruction, directCallMethodKeys, functionAbis));
     }
 
+    private List<IrValue> jvalueScratchArguments(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            Set<String> staticCallMethodKeys) {
+        if (isConstructorCallHelperInstruction(instruction)
+                || isDispatchHelperInstruction(instruction)) {
+            return instruction.operands().subList(
+                    1,
+                    instruction.operands().size());
+        }
+        if (isStaticCallBridgeInstruction(
+                instruction,
+                staticCallMethodKeys)) {
+            return instruction.operands();
+        }
+        return List.of();
+    }
+
     private List<LlvmInstruction> lowerConstructorCallBridge(
             xyz.melodysky.ir.model.IrInstruction instruction,
-            String scratchSuffix) {
+            String scratchSuffix,
+            LlvmJvalueScratchPlan jvalueScratch) {
         ArrayList<LlvmInstruction> lowered = new ArrayList<>();
-        String argsPointer = appendJvalueScratch(
-                lowered,
+        LlvmJvalueScratchPlan.ScratchUse scratch = jvalueScratch.use(
                 instruction.operands().subList(1, instruction.operands().size()),
-                scratchSuffix);
+                scratchSuffix,
+                this::typedOperand,
+                this::jvalueStoreAlign);
+        lowered.addAll(scratch.instructions());
+        String argsPointer = scratch.pointerOperand();
         String methodKey = instruction.symbol().orElseThrow();
         String operation = "constructor_call";
         String helper = localizedDispatchHelper(
@@ -1319,9 +1569,16 @@ public final class LlvmModuleLowerer {
 
     private List<LlvmInstruction> lowerStaticCallBridge(
             xyz.melodysky.ir.model.IrInstruction instruction,
-            String scratchSuffix) {
+            String scratchSuffix,
+            LlvmJvalueScratchPlan jvalueScratch) {
         ArrayList<LlvmInstruction> lowered = new ArrayList<>();
-        String argsPointer = appendJvalueScratch(lowered, instruction.operands(), scratchSuffix);
+        LlvmJvalueScratchPlan.ScratchUse scratch = jvalueScratch.use(
+                instruction.operands(),
+                scratchSuffix,
+                this::typedOperand,
+                this::jvalueStoreAlign);
+        lowered.addAll(scratch.instructions());
+        String argsPointer = scratch.pointerOperand();
         String methodKey = instruction.symbol().orElseThrow();
         String descriptor = methodDescriptor(methodKey).orElseThrow();
         String returnType = staticCallBridgeReturnType(descriptor);
@@ -1346,12 +1603,16 @@ public final class LlvmModuleLowerer {
 
     private List<LlvmInstruction> lowerDispatchCallBridge(
             xyz.melodysky.ir.model.IrInstruction instruction,
-            String scratchSuffix) {
+            String scratchSuffix,
+            LlvmJvalueScratchPlan jvalueScratch) {
         ArrayList<LlvmInstruction> lowered = new ArrayList<>();
-        String argsPointer = appendJvalueScratch(
-                lowered,
+        LlvmJvalueScratchPlan.ScratchUse scratch = jvalueScratch.use(
                 instruction.operands().subList(1, instruction.operands().size()),
-                scratchSuffix);
+                scratchSuffix,
+                this::typedOperand,
+                this::jvalueStoreAlign);
+        lowered.addAll(scratch.instructions());
+        String argsPointer = scratch.pointerOperand();
         String methodKey = instruction.symbol().orElseThrow();
         String descriptor = methodDescriptor(methodKey).orElseThrow();
         String returnType = staticCallBridgeReturnType(descriptor);
@@ -1373,35 +1634,6 @@ public final class LlvmModuleLowerer {
                 + ")";
         lowered.add(LlvmInstruction.raw(instruction.result().map(IrValue::name), call));
         return List.copyOf(lowered);
-    }
-
-    private String appendJvalueScratch(
-            List<LlvmInstruction> lowered,
-            List<IrValue> arguments,
-            String scratchSuffix) {
-        if (arguments.isEmpty()) {
-            return "ptr null";
-        }
-        String arrayName = "%j2ll_args_" + scratchSuffix;
-        String baseName = "%j2ll_args_base_" + scratchSuffix;
-        String arrayType = "[" + arguments.size() + " x i64]";
-        lowered.add(LlvmInstruction.raw(
-                Optional.of(arrayName),
-                "alloca " + arrayType + ", align 8"));
-        lowered.add(LlvmInstruction.raw(
-                Optional.of(baseName),
-                "getelementptr inbounds " + arrayType + ", ptr " + arrayName + ", i32 0, i32 0"));
-        for (int index = 0; index < arguments.size(); index++) {
-            IrValue argument = arguments.get(index);
-            String slotName = "%j2ll_arg_" + scratchSuffix + "_" + index;
-            lowered.add(LlvmInstruction.raw(
-                    Optional.of(slotName),
-                    "getelementptr inbounds i64, ptr " + baseName + ", i32 " + index));
-            lowered.add(LlvmInstruction.raw(
-                    Optional.empty(),
-                    "store " + typedOperand(argument) + ", ptr " + slotName + ", align " + jvalueStoreAlign(argument)));
-        }
-        return "ptr " + baseName;
     }
 
     private int jvalueStoreAlign(IrValue argument) {
@@ -2324,6 +2556,15 @@ public final class LlvmModuleLowerer {
     private record PhiIncoming(String predecessorBlock, List<IrValue> arguments) {
         private PhiIncoming {
             arguments = List.copyOf(arguments);
+        }
+    }
+
+    private record NormalEdgeLowering(
+            List<List<LlvmBasicBlock>> blocks,
+            Map<NativeLocalReferenceNormalEdge, String> predecessors) {
+        private NormalEdgeLowering {
+            blocks = blocks.stream().map(List::copyOf).toList();
+            predecessors = Map.copyOf(predecessors);
         }
     }
 }

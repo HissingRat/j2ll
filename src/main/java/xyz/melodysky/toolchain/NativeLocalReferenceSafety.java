@@ -15,14 +15,13 @@ import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
 
 /**
- * Conservative boundary for JNI local references created inside native loops.
+ * Detects methods that need ownership-aware JNI local-reference planning.
  *
  * <p>JNI frees local references when the registered native method returns, not
- * when a generated helper returns. Until the LLVM backend has an
- * ownership-aware last-use {@code DeleteLocalRef} plan, a reference-producing
- * helper in a cycle could grow the caller's local-reference table without a
- * bound. Such a method must stay in Java instead of being lowered with a
- * latent resource failure.</p>
+ * when a generated helper returns. A reference-producing helper in a cycle
+ * therefore requires a validated ownership/last-use plan; the implementation
+ * planner fails the complete method closed when that plan cannot prove bounded
+ * release on every reachable normal and exceptional path.</p>
  */
 public final class NativeLocalReferenceSafety {
     public static final String UNBOUNDED_REASON_CODE =
@@ -60,61 +59,17 @@ public final class NativeLocalReferenceSafety {
                 .anyMatch(this::createsOwnedLocalReference);
     }
 
-    /**
-     * Returns direct LLVM-call candidates reached by this method.
-     *
-     * <p>The caller decides which candidates are actually part of the final
-     * direct-call closure. Calls lowered through a JVM/JNI dispatch bridge
-     * must not be included in that closure.</p>
-     */
-    public Set<String> reachableDirectCallTargets(IrMethod method) {
-        if (method.blocks().isEmpty()) {
-            return Set.of();
-        }
-        Set<String> reachable = reachable(
-                method.blocks().get(0).name(),
-                successors(method));
-        LinkedHashSet<String> targets = new LinkedHashSet<>();
-        method.blocks().stream()
-                .filter(block -> reachable.contains(block.name()))
-                .flatMap(block -> block.instructions().stream())
-                .filter(this::isDirectCallCandidate)
-                .flatMap(instruction -> instruction.symbol().stream())
-                .forEach(targets::add);
-        return Set.copyOf(targets);
-    }
-
-    /**
-     * Returns direct LLVM-call candidates whose call instruction is in a
-     * reachable control-flow cycle.
-     */
-    public Set<String> directCallTargetsInCycles(IrMethod method) {
-        if (method.blocks().isEmpty()) {
-            return Set.of();
-        }
-        Map<String, List<String>> successors = successors(method);
-        Set<String> reachable = reachable(
-                method.blocks().get(0).name(),
-                successors);
-        LinkedHashSet<String> targets = new LinkedHashSet<>();
-        method.blocks().stream()
-                .filter(block -> reachable.contains(block.name()))
-                .filter(block -> participatesInCycle(
-                        block.name(),
-                        successors))
-                .flatMap(block -> block.instructions().stream())
-                .filter(this::isDirectCallCandidate)
-                .flatMap(instruction -> instruction.symbol().stream())
-                .forEach(targets::add);
-        return Set.copyOf(targets);
-    }
-
     private boolean createsOwnedLocalReference(IrBlock block) {
         return block.instructions().stream()
                 .anyMatch(this::createsOwnedLocalReference);
     }
 
     private boolean createsOwnedLocalReference(IrInstruction instruction) {
+        if (instruction.exceptionSites().stream()
+                .flatMap(site -> site.exceptionValue().stream())
+                .anyMatch(value -> value.type() == IrType.REFERENCE)) {
+            return true;
+        }
         if (instruction.result()
                 .map(result -> result.type() != IrType.REFERENCE)
                 .orElse(true)) {
@@ -128,16 +83,6 @@ public final class NativeLocalReferenceSafety {
          */
         return instruction.opcode() != IrOpcode.CONST_NULL
                 && instruction.opcode() != IrOpcode.CHECKCAST;
-    }
-
-    private boolean isDirectCallCandidate(IrInstruction instruction) {
-        if (instruction.opcode() == IrOpcode.CALL_STATIC) {
-            return instruction.symbol().isPresent();
-        }
-        return instruction.opcode() == IrOpcode.CALL_SPECIAL
-                && instruction.symbol()
-                        .map(symbol -> !symbol.contains("#<init>!"))
-                        .orElse(false);
     }
 
     private Map<String, List<String>> successors(IrMethod method) {

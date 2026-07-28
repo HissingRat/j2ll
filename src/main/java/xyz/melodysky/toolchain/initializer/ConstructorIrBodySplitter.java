@@ -26,6 +26,14 @@ import xyz.melodysky.packaging.MethodRewriteDecision;
  * captured-field stores that must remain on the Java side.</p>
  */
 final class ConstructorIrBodySplitter implements Opcodes {
+    private final BytecodeToSsaLowerer ssaLowerer;
+
+    ConstructorIrBodySplitter(BytecodeToSsaLowerer ssaLowerer) {
+        this.ssaLowerer = java.util.Objects.requireNonNull(
+                ssaLowerer,
+                "ssaLowerer");
+    }
+
     Optional<IrMethod> split(
             MethodRewriteDecision decision,
             IrMethod source,
@@ -101,7 +109,7 @@ final class ConstructorIrBodySplitter implements Opcodes {
         if (cfg.artifact().isEmpty()) {
             return Optional.empty();
         }
-        var ssa = new BytecodeToSsaLowerer().lower(cfg.artifact().orElseThrow());
+        var ssa = ssaLowerer.lower(cfg.artifact().orElseThrow());
         if (ssa.artifact().isEmpty()
                 || ssa.artifact().orElseThrow().irMethod().isEmpty()) {
             return Optional.empty();

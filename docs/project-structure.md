@@ -211,7 +211,7 @@ xyz.melodysky.toolchain.symbols
   non-sensitive kind + domain-separated hash；不得把 business string carrier
   或额外 owner/member mapping 写入 lowering report。
 - `FailureReportWriter`：失败运行 sidecar writer，记录 error diagnostics 的 stage/reason/message/affected artifact，并固定 `finalArtifactWritten=false`。
-- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、sensitive plaintext facts，以及每个 `nativeLowered` method 的 implementation/registration closure、每个 `skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
+- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、sensitive plaintext facts，以及每个 `nativeLowered` method 的 implementation/registration closure、每个 `skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；generated C只排除精确的JNI ABI结构访问`methods[n].signature`，同文件任意其他`signature`原文仍阻断；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
 - `PackagingReportWriter`：`packaging-report.json` 的稳定 JSON writer。
 - `FieldInternalizationReportWriter`：`field-internalization-report.json` writer，只写 hash-only field identity、final implementation path、hybrid storage/cache/lifecycle policy、field removal 和稳定 reason。
 - `ProtectionReportCoverageCollector`：把 protection producer 的显式 per-subject coverage 合并进 `protection-report.json`；未持久化 applicability 的旧 producer 只能降为 `UNKNOWN`，不得从 `SKIPPED` 推断。
@@ -931,7 +931,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `HostJniReachableRuntimeSourceEmitter`
 - `HostNativeFieldStorageSource`
 - `NativeLocalReferenceSafety`
-- `NativeLocalReferenceCallGraphSafety`
+- `toolchain.localref.NativeLocalReferencePlanner`
+- `toolchain.localref.NativeLocalReferencePlanValidator`
 - `ProcessRunner`
 - `TargetTriple`
 - `ToolchainDiagnostics`
@@ -958,7 +959,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。
 - registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextStorageLayout` only reuses equal method-name/descriptor text inside one owner and its purpose domain, never across owners. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB decoded text; larger owners retain heap allocation. Both paths zero the text scratch and `JNINativeMethod[]`, and the heap path then frees them.
 - runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
-- JNI local-reference lifetime：`NativeLocalReferenceSafety`只负责单方法reachable CFG facts；`NativeLocalReferenceCallGraphSafety`在planner冻结的same-owner direct-call closure上传播owned-ref production并检查caller loop/direct-call SCC。`NativeImplementationPlan`保存精确unavailable reason，供`FinalNativeCoverageResolver`决定整方法`skipped`；不要把program-level摘要塞回LLVM emitter。
+- JNI local-reference lifetime：`NativeLocalReferenceSafety`识别需要精确规划的reachable cyclic CFG；`toolchain.localref`下的classifier、site-sensitive CFG facts、release scheduler、transfer safety与validator形成per-method immutable plan，覆盖normal/parallel/handler/explicit-throw edge。handler需求只回传到block live-in，不进入normal live-out。`NativeImplementationPlan`保存plan或精确unavailable reason，LLVM backend只消费已验证plan；registered native的ref-producing callee改走JVM/JNI nested activation，不能安全桥接的compiler-internal callee fail closed。
 - native text：`toolchain.nativetext.NativeTextEncoder` 生成 build/purpose/use-scoped
   ciphertext、codec plan与`NativeTextStoragePermutation`。多字节ciphertext由
   `NativeTextStoragePermutationPlanner`派生offset/coprime-stride affine

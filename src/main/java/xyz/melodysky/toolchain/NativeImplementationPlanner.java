@@ -28,6 +28,9 @@ import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanner;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanningResult;
 
 public final class NativeImplementationPlanner {
     private static final Set<String> LLVM_SCALAR_DESCRIPTORS = Set.of("Z", "B", "C", "S", "I", "J", "F", "D");
@@ -38,8 +41,8 @@ public final class NativeImplementationPlanner {
     private final NativeExceptionFlowSupport exceptionFlowSupport = new NativeExceptionFlowSupport();
     private final NativeLocalReferenceSafety localReferenceSafety =
             new NativeLocalReferenceSafety();
-    private final NativeLocalReferenceCallGraphSafety localReferenceCallGraphSafety =
-            new NativeLocalReferenceCallGraphSafety();
+    private final NativeLocalReferencePlanner localReferencePlanner =
+            new NativeLocalReferencePlanner();
     private final JvmExceptionInstructionSemantics exceptionSemantics =
             new JvmExceptionInstructionSemantics();
     private final InitializerImplementationPlanner initializerPlanner =
@@ -131,27 +134,34 @@ public final class NativeImplementationPlanner {
                 irMethods,
                 initializerPlans,
                 preparedInitializerPlans);
-        LinkedHashSet<String> initiallySupportedLlvmMethods =
-                supportedLlvmMethods(
-                        decisionsByMethod,
-                        nativeBodies,
-                        availableProgramMethodKeys,
-                        compilerInternalMethodKeys,
-                        Set.of());
-        LinkedHashMap<String, IrMethod> callGraphMethods =
-                new LinkedHashMap<>(irMethods);
-        callGraphMethods.putAll(nativeBodies);
-        NativeLocalReferenceCallGraphAnalysis localReferenceAnalysis =
-                localReferenceCallGraphSafety.analyze(
-                        callGraphMethods,
-                        initiallySupportedLlvmMethods);
-        LinkedHashSet<String> unsafeMethodKeys = new LinkedHashSet<>(
-                localReferenceAnalysis.unboundedMethodKeys());
+        LinkedHashMap<String, IrMethod> analysisBodies =
+                new LinkedHashMap<>(nativeBodies);
+        compilerInternalMethodKeys.stream()
+                .sorted()
+                .forEach(methodKey -> {
+                    IrMethod method = irMethods.get(methodKey);
+                    if (method != null) {
+                        analysisBodies.put(methodKey, method);
+                    }
+                });
+        LinkedHashMap<String, NativeLocalReferencePlanningResult>
+                localReferenceResults =
+                        localReferenceResults(analysisBodies);
+        LinkedHashSet<String> unsafeMethodKeys = localReferenceResults
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().plan().isEmpty())
+                .map(Map.Entry::getKey)
+                .collect(java.util.stream.Collectors.toCollection(
+                        LinkedHashSet::new));
+        LinkedHashSet<String> jvmBridgeMethodKeys =
+                new LinkedHashSet<>(availableProgramMethodKeys);
+        jvmBridgeMethodKeys.removeAll(compilerInternalMethodKeys);
         LinkedHashSet<String> supportedLlvmMethods =
                 supportedLlvmMethods(
                         decisionsByMethod,
-                        nativeBodies,
-                        availableProgramMethodKeys,
+                        analysisBodies,
+                        jvmBridgeMethodKeys,
                         compilerInternalMethodKeys,
                         unsafeMethodKeys);
         LinkedHashMap<String, String> unavailableReasonCodes =
@@ -161,6 +171,14 @@ public final class NativeImplementationPlanner {
                 .forEach(methodKey -> unavailableReasonCodes.put(
                         methodKey,
                         NativeLocalReferenceSafety.UNBOUNDED_REASON_CODE));
+        LinkedHashMap<String, NativeLocalReferencePlan>
+                localReferencePlans = new LinkedHashMap<>();
+        localReferenceResults.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> entry.getValue().plan().ifPresent(
+                        plan -> localReferencePlans.put(
+                                entry.getKey(),
+                                plan)));
         for (Map.Entry<String, MethodRewriteDecision> planned : decisionsByMethod.entrySet()) {
             NativeRegistrationEntry entry = entriesByMethod.get(planned.getKey());
             MethodRewriteDecision decision = planned.getValue();
@@ -168,7 +186,11 @@ public final class NativeImplementationPlanner {
             if (maybeIr.isPresent() && supportedLlvmMethods.contains(decision.method().methodKey())) {
                 IrMethod irMethod = maybeIr.orElseThrow();
                 List<String> fieldKeys = fieldKeys(irMethod);
-                List<String> directCallTargets = directCallTargets(irMethod, supportedLlvmMethods);
+                List<String> directCallTargets = directCallTargets(
+                        irMethod,
+                        supportedLlvmMethods,
+                        analysisBodies,
+                        compilerInternalMethodKeys);
                 List<String> allocationKeys = allocationKeys(irMethod);
                 List<String> typeCheckKeys = typeCheckKeys(irMethod);
                 List<String> classObjectKeys = classObjectKeys(irMethod);
@@ -177,7 +199,7 @@ public final class NativeImplementationPlanner {
                 List<String> staticCallKeys = staticCallKeys(
                         irMethod,
                         directCallTargets,
-                        availableProgramMethodKeys);
+                        jvmBridgeMethodKeys);
                 List<String> dispatchKeys = dispatchKeys(irMethod);
                 List<String> stringHelperSymbols = stringHelperSymbols(irMethod);
                 boolean jdkScalarHelper = containsJdkScalarHelper(irMethod);
@@ -244,7 +266,22 @@ public final class NativeImplementationPlanner {
         }
         return new NativeImplementationPlan(
                 implementations,
-                unavailableReasonCodes);
+                unavailableReasonCodes,
+                localReferencePlans);
+    }
+
+    private LinkedHashMap<String, NativeLocalReferencePlanningResult>
+            localReferenceResults(Map<String, IrMethod> nativeBodies) {
+        LinkedHashMap<String, NativeLocalReferencePlanningResult> results =
+                new LinkedHashMap<>();
+        nativeBodies.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .filter(entry -> localReferenceSafety
+                        .hasUnboundedLocalReferenceRisk(entry.getValue()))
+                .forEach(entry -> results.put(
+                        entry.getKey(),
+                        localReferencePlanner.plan(entry.getValue())));
+        return results;
     }
 
     private LinkedHashSet<String> supportedLlvmMethods(
@@ -274,7 +311,9 @@ public final class NativeImplementationPlanner {
                         irMethod,
                         sameOwnerDirectCallTargets(
                                 irMethod,
-                                supportedLlvmMethods),
+                                supportedLlvmMethods,
+                                nativeBodies,
+                                compilerInternalMethodKeys),
                         availableProgramMethodKeys)) {
                     supportedLlvmMethods.add(entry.getKey());
                     changed = true;
@@ -363,7 +402,8 @@ public final class NativeImplementationPlanner {
         if (method.blocks().isEmpty()) {
             return false;
         }
-        if (localReferenceSafety.hasUnboundedLocalReferenceRisk(method)) {
+        if (localReferenceSafety.hasUnboundedLocalReferenceRisk(method)
+                && localReferencePlanner.plan(method).plan().isEmpty()) {
             return false;
         }
         for (var block : method.blocks()) {
@@ -1535,15 +1575,26 @@ public final class NativeImplementationPlanner {
                 .toList();
     }
 
-    private List<String> directCallTargets(IrMethod method, Set<String> supportedLlvmMethods) {
-        return sameOwnerDirectCallTargets(method, supportedLlvmMethods).stream()
+    private List<String> directCallTargets(
+            IrMethod method,
+            Set<String> supportedLlvmMethods,
+            Map<String, IrMethod> nativeBodies,
+            Set<String> compilerInternalMethodKeys) {
+        return sameOwnerDirectCallTargets(
+                        method,
+                        supportedLlvmMethods,
+                        nativeBodies,
+                        compilerInternalMethodKeys)
+                .stream()
                 .sorted()
                 .toList();
     }
 
     private Set<String> sameOwnerDirectCallTargets(
             IrMethod method,
-            Set<String> supportedLlvmMethods) {
+            Set<String> supportedLlvmMethods,
+            Map<String, IrMethod> nativeBodies,
+            Set<String> compilerInternalMethodKeys) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC
@@ -1551,6 +1602,19 @@ public final class NativeImplementationPlanner {
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .filter(supportedLlvmMethods::contains)
                 .filter(target -> target.startsWith(method.owner() + "#"))
+                .filter(target -> {
+                    IrMethod body = nativeBodies.get(target);
+                    if (compilerInternalMethodKeys.contains(target)) {
+                        return body != null
+                                && body.returnType() != IrType.REFERENCE
+                                && !localReferenceSafety
+                                        .createsOwnedLocalReference(body);
+                    }
+                    return body == null
+                            || (body.returnType() != IrType.REFERENCE
+                                    && !localReferenceSafety
+                                            .createsOwnedLocalReference(body));
+                })
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 

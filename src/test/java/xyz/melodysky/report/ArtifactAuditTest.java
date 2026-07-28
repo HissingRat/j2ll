@@ -136,6 +136,67 @@ class ArtifactAuditTest {
     }
 
     @Test
+    void ignoresRequiredJniNativeMethodSignatureMemberName() throws Exception {
+        Path workspace = temp.resolve("jni-method-signature-member");
+        Path generated = workspace.resolve(
+                "native/zig-workspace/jni/registration.c");
+        Files.createDirectories(generated.getParent());
+        Files.writeString(
+                generated,
+                "methods[0].signature = (char*)(text_scratch + 7);",
+                StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                                "signature",
+                                "pkg/Foo#run!()V",
+                                "nativeMetadataStringEncoding",
+                                List.of("generated-c", "native-library"))
+                        .withAuditClassification(
+                                "NATIVE_METADATA_STRING",
+                                "blocking",
+                                "NATIVE_METADATA_PLAINTEXT"));
+
+        assertTrue(result.passed(), result.checks().toString());
+    }
+
+    @Test
+    void stillRejectsSignatureOutsideRequiredJniMemberSyntax()
+            throws Exception {
+        Path workspace = temp.resolve("signature-literal");
+        Path generated = workspace.resolve(
+                "native/zig-workspace/jni/registration.c");
+        Files.createDirectories(generated.getParent());
+        Files.writeString(
+                generated,
+                """
+                methods[0].signature = (char*)(text_scratch + 7);
+                const char *leak = "signature";
+                """,
+                StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                                "signature",
+                                "pkg/Foo#run!()V",
+                                "nativeMetadataStringEncoding",
+                                List.of("generated-c", "native-library"))
+                        .withAuditClassification(
+                                "NATIVE_METADATA_STRING",
+                                "blocking",
+                                "NATIVE_METADATA_PLAINTEXT"));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(
+                json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_FOUND\""),
+                json);
+        assertFalse(json.contains("\"signature\""), json);
+    }
+
+    @Test
     void loweringReportIsBlockingPlaintextSurface() throws Exception {
         Path workspace = temp.resolve("lowering-report");
         String secret = "report-sensitive-business-string";

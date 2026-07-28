@@ -337,8 +337,6 @@ public final class MainlinePipeline {
                         parsedClass -> parsedClass,
                         (left, right) -> left,
                         LinkedHashMap::new));
-        InitializerImplementationPlanner initializerPlanner =
-                new InitializerImplementationPlanner();
         ArrayList<ProtectionPassReport> protectionReports = new ArrayList<>();
         BuildProtectionIdentity buildProtectionIdentity =
                 BuildProtectionIdentity.from(config.protection());
@@ -368,6 +366,8 @@ public final class MainlinePipeline {
                 RuntimeTokenMapper.fromBytes(nativeTextBuildKey.bytes());
         BytecodeToSsaLowerer ssaLowerer =
                 new BytecodeToSsaLowerer(runtimeTokens);
+        InitializerImplementationPlanner initializerPlanner =
+                new InitializerImplementationPlanner(runtimeTokens);
         boolean llvmNameObfuscationEnabled = config.protection().enabled()
                 && config.protection().llvm().enabled()
                 && config.protection().llvm().nameObfuscation();
@@ -888,11 +888,13 @@ public final class MainlinePipeline {
                     implementation.staticCallKeys(),
                     implementation.dispatchKeys(),
                     implementation.stringHelperSymbols(),
-                    Optional.of(protectionResult.method())));
+                    Optional.of(protectionResult.method()),
+                    implementation.initializerPlan()));
         }
         return new NativeImplementationPlan(
                 implementations,
-                implementationPlan.unavailableReasonCodes());
+                implementationPlan.unavailableReasonCodes(),
+                implementationPlan.localReferencePlans());
     }
 
     private MainlinePipelineResult failed(

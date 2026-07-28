@@ -56,12 +56,32 @@ final class LlvmExceptionFlowLowerer {
             LlvmTerminator regularTerminator,
             LlvmType functionReturnType,
             List<LlvmInstruction> exceptionalExitCleanup) {
+        return lower(
+                block,
+                chunks,
+                regularTerminator,
+                functionReturnType,
+                exceptionalExitCleanup,
+                List.of());
+    }
+
+    BlockResult lower(
+            IrBlock block,
+            List<InstructionChunk> chunks,
+            LlvmTerminator regularTerminator,
+            LlvmType functionReturnType,
+            List<LlvmInstruction> exceptionalExitCleanup,
+            List<LlvmInstruction> normalTerminatorCleanup) {
         Objects.requireNonNull(block, "block");
         chunks = List.copyOf(Objects.requireNonNull(chunks, "chunks"));
         Objects.requireNonNull(regularTerminator, "regularTerminator");
         Objects.requireNonNull(functionReturnType, "functionReturnType");
         exceptionalExitCleanup =
                 List.copyOf(Objects.requireNonNull(exceptionalExitCleanup, "exceptionalExitCleanup"));
+        normalTerminatorCleanup =
+                List.copyOf(Objects.requireNonNull(
+                        normalTerminatorCleanup,
+                        "normalTerminatorCleanup"));
 
         ArrayList<LlvmBasicBlock> blocks = new ArrayList<>();
         ArrayList<ExceptionalIncoming> exceptionalIncoming = new ArrayList<>();
@@ -72,6 +92,7 @@ final class LlvmExceptionFlowLowerer {
             InstructionChunk chunk = chunks.get(instructionIndex);
             currentInstructions.addAll(chunk.instructions());
             if (chunk.source().exceptionSites().isEmpty()) {
+                currentInstructions.addAll(chunk.normalCleanup());
                 continue;
             }
 
@@ -95,9 +116,12 @@ final class LlvmExceptionFlowLowerer {
                     LlvmTerminator.branch(pendingFlag, pendingTarget, continuation)));
 
             if (site.handlers().isEmpty()) {
+                ArrayList<LlvmInstruction> cleanup =
+                        new ArrayList<>(chunk.exceptionalCleanup());
+                cleanup.addAll(exceptionalExitCleanup);
                 blocks.add(new LlvmBasicBlock(
                         pendingTarget,
-                        exceptionalExitCleanup,
+                        cleanup,
                         returnDefault(functionReturnType)));
             } else {
                 DispatchResult dispatch = dispatch(
@@ -107,13 +131,15 @@ final class LlvmExceptionFlowLowerer {
                         true,
                         functionReturnType,
                         exceptionalExitCleanup,
+                        chunk.exceptionalCleanup(),
                         suffix);
                 blocks.addAll(dispatch.blocks());
                 exceptionalIncoming.addAll(dispatch.exceptionalIncoming());
             }
 
             currentBlockName = continuation;
-            currentInstructions = new ArrayList<>();
+            currentInstructions =
+                    new ArrayList<>(chunk.normalCleanup());
         }
 
         if (block.terminator().kind() == IrTerminatorKind.THROW
@@ -121,6 +147,7 @@ final class LlvmExceptionFlowLowerer {
             IrValue exception = block.terminator().value().orElseThrow();
             String suffix = stableHash(block.name() + ":terminator");
             String dispatchEntry = uniqueBlockName("j2ll.ex.dispatch." + suffix);
+            currentInstructions.addAll(normalTerminatorCleanup);
             blocks.add(new LlvmBasicBlock(
                     currentBlockName,
                     currentInstructions,
@@ -132,6 +159,7 @@ final class LlvmExceptionFlowLowerer {
                     false,
                     functionReturnType,
                     exceptionalExitCleanup,
+                    List.of(),
                     suffix);
             blocks.addAll(dispatch.blocks());
             exceptionalIncoming.addAll(dispatch.exceptionalIncoming());
@@ -143,6 +171,7 @@ final class LlvmExceptionFlowLowerer {
                     currentInstructions,
                     returnDefault(functionReturnType)));
         } else {
+            currentInstructions.addAll(normalTerminatorCleanup);
             if (block.terminator().kind() == IrTerminatorKind.RETURN
                     || block.terminator().kind() == IrTerminatorKind.THROW) {
                 currentInstructions.addAll(exceptionalExitCleanup);
@@ -184,6 +213,7 @@ final class LlvmExceptionFlowLowerer {
             boolean clearPendingException,
             LlvmType functionReturnType,
             List<LlvmInstruction> exceptionalExitCleanup,
+            List<LlvmInstruction> protectedSiteCleanup,
             String suffix) {
         List<IrExceptionEdge> handlers = reachableHandlers(declaredHandlers);
         ArrayList<String> adapterNames = new ArrayList<>(handlers.size());
@@ -203,11 +233,15 @@ final class LlvmExceptionFlowLowerer {
         ArrayList<ExceptionalIncoming> exceptionalIncoming = new ArrayList<>();
         String firstHandlerEntry = handlerEntry(checkNames, adapterNames, 0);
         if (clearPendingException) {
+            ArrayList<LlvmInstruction> entryInstructions =
+                    new ArrayList<>();
+            entryInstructions.add(LlvmInstruction.raw(
+                    Optional.empty(),
+                    "call void @j2ll_rt_clear_exception(ptr %j2ll_env)"));
+            entryInstructions.addAll(protectedSiteCleanup);
             blocks.add(new LlvmBasicBlock(
                     entryBlock,
-                    List.of(LlvmInstruction.raw(
-                            Optional.empty(),
-                            "call void @j2ll_rt_clear_exception(ptr %j2ll_env)")),
+                    entryInstructions,
                     LlvmTerminator.gotoBlock(firstHandlerEntry)));
         } else if (!entryBlock.equals(firstHandlerEntry)) {
             blocks.add(new LlvmBasicBlock(
@@ -362,10 +396,26 @@ final class LlvmExceptionFlowLowerer {
         }
     }
 
-    record InstructionChunk(IrInstruction source, List<LlvmInstruction> instructions) {
+    record InstructionChunk(
+            IrInstruction source,
+            List<LlvmInstruction> instructions,
+            List<LlvmInstruction> normalCleanup,
+            List<LlvmInstruction> exceptionalCleanup) {
         InstructionChunk {
             Objects.requireNonNull(source, "source");
             instructions = List.copyOf(Objects.requireNonNull(instructions, "instructions"));
+            normalCleanup = List.copyOf(Objects.requireNonNull(
+                    normalCleanup,
+                    "normalCleanup"));
+            exceptionalCleanup = List.copyOf(Objects.requireNonNull(
+                    exceptionalCleanup,
+                    "exceptionalCleanup"));
+        }
+
+        InstructionChunk(
+                IrInstruction source,
+                List<LlvmInstruction> instructions) {
+            this(source, instructions, List.of(), List.of());
         }
     }
 

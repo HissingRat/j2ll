@@ -4,6 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
@@ -18,6 +22,11 @@ import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
+import xyz.melodysky.packaging.NativeRegistrationPlanner;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
+import xyz.melodysky.testsupport.CapturedTimerTaskFixture;
+import xyz.melodysky.toolchain.NativeImplementationPath;
+import xyz.melodysky.toolchain.NativeImplementationPlanner;
 
 class InitializerImplementationPlannerTest implements Opcodes {
     private final InitializerImplementationPlanner planner =
@@ -47,6 +56,73 @@ class InitializerImplementationPlannerTest implements Opcodes {
         assertTrue(plan.nativeBody().blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.PUT_FIELD));
+    }
+
+    @Test
+    void capturedFieldAndRequireNonNullPrefixProducesTimerTaskNativeBodyHelper() {
+        ParsedClass parsedClass = parsed(
+                CapturedTimerTaskFixture.OWNER,
+                CapturedTimerTaskFixture.classBytes());
+        MethodRewriteDecision decision = decision(parsedClass, "<init>");
+        RuntimeTokenMapper runtimeTokens = RuntimeTokenMapper.fromBytes(
+                "captured-timer-task-build-token"
+                        .getBytes(StandardCharsets.UTF_8));
+        IrMethod source = irMethod(decision.method(), runtimeTokens);
+        InitializerImplementationPlan initializerPlan =
+                new InitializerImplementationPlanner(runtimeTokens)
+                        .plan(decision, source)
+                        .orElseThrow();
+
+        ConstructorPrefixPlan prefix =
+                initializerPlan.constructorPrefix().orElseThrow();
+        assertEquals(9, prefix.initializationOpcodeIndex());
+        assertEquals("java/util/TimerTask", prefix.targetOwner());
+        assertEquals("()V", prefix.targetDescriptor());
+
+        List<xyz.melodysky.ir.model.IrInstruction> sourceInstructions =
+                source.blocks().stream()
+                        .flatMap(block -> block.instructions().stream())
+                        .toList();
+        assertTrue(sourceInstructions.stream()
+                .anyMatch(instruction ->
+                        instruction.opcode() == IrOpcode.PUT_FIELD));
+        assertTrue(sourceInstructions.stream()
+                .anyMatch(instruction ->
+                        instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                                && instruction.symbol()
+                                        .map("j2ll_rt_objects_require_non_null"::equals)
+                                        .orElse(false)));
+        assertTrue(sourceInstructions.stream()
+                .anyMatch(instruction ->
+                        instruction.opcode() == IrOpcode.CALL_SPECIAL
+                                && instruction.symbol()
+                                        .map("java/util/TimerTask#<init>!()V"::equals)
+                                        .orElse(false)));
+        assertTrue(initializerPlan.nativeBody().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .findAny()
+                .isEmpty());
+
+        var nativePlan = new NativeImplementationPlanner().plan(
+                new NativeRegistrationPlanner().plan(List.of(decision)),
+                List.of(decision),
+                Map.of(decision.method().methodKey(), initializerPlan.nativeBody()),
+                Set.of(decision.method().methodKey()),
+                Set.of(),
+                Map.of(decision.method().methodKey(), initializerPlan));
+
+        assertTrue(nativePlan.unavailableReasonCodes().isEmpty());
+        assertEquals(1, nativePlan.implementations().size());
+        var implementation = nativePlan.implementations().get(0);
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_CONSTRUCTOR_SPLIT_BODY_IR", implementation.reasonCode());
+        assertEquals(
+                CapturedTimerTaskFixture.NATIVE_BODY_DESCRIPTOR,
+                implementation.entry().descriptor());
+        assertTrue(implementation.entry().methodName().startsWith("__j2ll_init_body$"));
+        assertEquals(
+                initializerPlan,
+                implementation.initializerPlan().orElseThrow());
     }
 
     @Test
@@ -80,7 +156,13 @@ class InitializerImplementationPlannerTest implements Opcodes {
     }
 
     private IrMethod irMethod(ParsedMethod method) {
-        return new BytecodeToSsaLowerer()
+        return irMethod(method, RuntimeTokenMapper.compatibility());
+    }
+
+    private IrMethod irMethod(
+            ParsedMethod method,
+            RuntimeTokenMapper runtimeTokens) {
+        return new BytecodeToSsaLowerer(runtimeTokens)
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()

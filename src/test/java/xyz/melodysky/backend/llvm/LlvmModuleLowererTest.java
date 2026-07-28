@@ -507,8 +507,8 @@ class LlvmModuleLowererTest {
         assertTrue(text.contains("bitcast double %p3 to i64"));
         assertEquals(1, occurrences(text, "%j2ll_nfs_ref_cache = alloca ptr"), text);
         assertEquals(1, occurrences(text, "store ptr null, ptr %j2ll_nfs_ref_cache"), text);
-        assertTrue(text.contains("j2ll.nfs.prologue."));
-        assertTrue(text.indexOf("j2ll.nfs.prologue.") < text.indexOf("entry:"));
+        assertTrue(text.contains("j2ll.activation.prologue."));
+        assertTrue(text.indexOf("j2ll.activation.prologue.") < text.indexOf("entry:"));
         assertEquals(
                 3,
                 occurrences(text, "call ptr @j2ll_nfs_reference_sidecar_cached("),
@@ -1054,6 +1054,120 @@ class LlvmModuleLowererTest {
                         "ptr %p0",
                         "ptr %j2ll_args_base_"));
         assertFalse(text.contains("vtable"));
+    }
+
+    @Test
+    void hoistsLoopJvalueScratchToOneActivationPrologueSlot() {
+        IrValue receiver = new IrValue("%receiver", IrType.REFERENCE);
+        IrValue argument = new IrValue("%argument", IrType.REFERENCE);
+        IrValue number = new IrValue("%number", IrType.I32);
+        IrValue result = new IrValue("%result", IrType.REFERENCE);
+        IrValue widerResult =
+                new IrValue("%widerResult", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/LoopDispatch",
+                "run",
+                "(Lpkg/I;Ljava/lang/String;I)V",
+                IrType.VOID,
+                List.of(receiver, argument, number),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.gotoBlock("loop")),
+                        new IrBlock(
+                                "loop",
+                                List.of(
+                                        IrInstruction.call(
+                                                Optional.of(result),
+                                                IrOpcode.CALL_INTERFACE,
+                                                List.of(
+                                                        receiver,
+                                                        argument),
+                                                "pkg/I#name!"
+                                                        + "(Ljava/lang/String;)"
+                                                        + "Ljava/lang/String;"),
+                                        IrInstruction.call(
+                                                Optional.of(widerResult),
+                                                IrOpcode.CALL_VIRTUAL,
+                                                List.of(
+                                                        receiver,
+                                                        argument,
+                                                        number),
+                                                "pkg/I#format!"
+                                                        + "(Ljava/lang/String;I)"
+                                                        + "Ljava/lang/String;")),
+                                IrTerminator.gotoBlock("loop"))));
+
+        String text = new LlvmTextEmitter().emit(
+                new LlvmModuleLowerer().lowerClass(
+                        new IrClass(
+                                "pkg/LoopDispatch",
+                                List.of(method))));
+
+        String allocation =
+                "%j2ll_jvalue_scratch = alloca [2 x i64], align 8";
+        int prologue = text.indexOf("j2ll.activation.prologue.");
+        int allocationOffset = text.indexOf(allocation);
+        int loop = text.indexOf("loop:");
+        assertEquals(1, occurrences(text, allocation), text);
+        assertTrue(prologue >= 0, text);
+        assertTrue(allocationOffset > prologue, text);
+        assertTrue(loop > allocationOffset, text);
+        assertFalse(text.substring(loop).contains("alloca "), text);
+        assertEquals(
+                2,
+                occurrences(
+                        text.substring(loop),
+                        "ptr %j2ll_jvalue_scratch"),
+                text);
+    }
+
+    @Test
+    void splitsParallelBranchEdgesEvenWithoutLocalReferenceCleanup() {
+        IrValue condition = new IrValue("%condition", IrType.I32);
+        IrValue first = new IrValue("%first", IrType.I32);
+        IrValue second = new IrValue("%second", IrType.I32);
+        IrValue merged = new IrValue("%merged", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/Parallel",
+                "pick",
+                "(III)I",
+                IrType.I32,
+                List.of(condition, first, second),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.branch(
+                                        condition,
+                                        "merge",
+                                        List.of(first),
+                                        "merge",
+                                        List.of(second))),
+                        new IrBlock(
+                                "merge",
+                                List.of(merged),
+                                List.of(),
+                                IrTerminator.returnValue(merged))));
+
+        String text = new LlvmTextEmitter().emit(
+                new LlvmModuleLowerer().lowerClass(
+                        new IrClass("pkg/Parallel", List.of(method))));
+
+        assertEquals(
+                2,
+                text.lines()
+                        .filter(line -> line.startsWith(
+                                "j2ll.lref.edge."))
+                        .filter(line -> line.endsWith(":"))
+                        .count(),
+                text);
+        String phi = text.lines()
+                .filter(line -> line.contains("%merged = phi i32"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(2, occurrences(phi, "%j2ll.lref.edge."), text);
     }
 
     private static String localAbiCall(

@@ -17,6 +17,9 @@ import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 
 public final class ControlFlowFlatteningPass implements ProtectionPass {
+    private static final String OWNED_LOCAL_REFERENCE_REASON =
+            "CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE";
+
     @Override
     public String name() {
         return "CONTROL_FLOW_FLATTENING";
@@ -39,6 +42,10 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
     public String skipReasonCode(IrMethod method) {
         if (isStubBackedMethod(method)) {
             return "PROTECTION_STUB_BACKED_METHOD";
+        }
+        if (hasSupportedStructuralShape(method)
+                && createsOwnedLocalReference(method)) {
+            return OWNED_LOCAL_REFERENCE_REASON;
         }
         if (hasSupportedStructuralShape(method) && hasCrossBlockInstructionValueUse(method)) {
             return "CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE";
@@ -197,7 +204,26 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
 
     private boolean isSafeShape(IrMethod method) {
         return hasSupportedStructuralShape(method)
+                && !createsOwnedLocalReference(method)
                 && !hasCrossBlockInstructionValueUse(method);
+    }
+
+    private boolean createsOwnedLocalReference(IrMethod method) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(this::createsOwnedLocalReference);
+    }
+
+    private boolean createsOwnedLocalReference(IrInstruction instruction) {
+        boolean referenceResult = instruction.result()
+                .map(result -> result.type() == IrType.REFERENCE)
+                .orElse(false);
+        boolean borrowedOrNullResult = instruction.opcode() == IrOpcode.CONST_NULL
+                || instruction.opcode() == IrOpcode.CHECKCAST;
+        boolean exceptionReference = instruction.exceptionSites().stream()
+                .anyMatch(site -> site.exceptionValue().isPresent());
+        return (referenceResult && !borrowedOrNullResult)
+                || exceptionReference;
     }
 
     private boolean hasSupportedStructuralShape(IrMethod method) {

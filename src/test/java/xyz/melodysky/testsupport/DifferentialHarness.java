@@ -10,9 +10,29 @@ public final class DifferentialHarness {
             Path originalJar,
             Path outputJar,
             String mainClass) throws IOException, InterruptedException {
+        return compareOriginalToOutputJar(
+                originalJar,
+                outputJar,
+                mainClass,
+                List.of());
+    }
+
+    public DifferentialResult compareOriginalToOutputJar(
+            Path originalJar,
+            Path outputJar,
+            String mainClass,
+            List<String> jvmArgs) throws IOException, InterruptedException {
         JvmRunner runner = new JvmRunner();
-        JvmRunResult original = runner.run(originalJar, mainClass, List.of());
-        JvmRunResult output = runner.run(outputJar, mainClass, List.of());
+        JvmRunResult original = runner.run(
+                originalJar,
+                mainClass,
+                jvmArgs,
+                List.of());
+        JvmRunResult output = runner.run(
+                outputJar,
+                mainClass,
+                jvmArgs,
+                List.of());
         return new DifferentialResult(
                 original,
                 output,

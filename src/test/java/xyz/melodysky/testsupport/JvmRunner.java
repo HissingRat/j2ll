@@ -10,8 +10,17 @@ import java.util.concurrent.TimeUnit;
 
 public final class JvmRunner {
     public JvmRunResult run(Path jar, String mainClass, List<String> args) throws IOException, InterruptedException {
+        return run(jar, mainClass, List.of(), args);
+    }
+
+    public JvmRunResult run(
+            Path jar,
+            String mainClass,
+            List<String> jvmArgs,
+            List<String> args) throws IOException, InterruptedException {
         ArrayList<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString());
+        command.addAll(jvmArgs);
         command.add("--enable-native-access=ALL-UNNAMED");
         command.add("-cp");
         command.add(jar.toString());

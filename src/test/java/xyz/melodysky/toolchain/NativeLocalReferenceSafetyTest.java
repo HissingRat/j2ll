@@ -4,8 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -73,6 +77,39 @@ class NativeLocalReferenceSafetyTest {
                         IrTerminator.gotoBlock("dead"))));
 
         assertFalse(safety.hasUnboundedLocalReferenceRisk(method));
+    }
+
+    @Test
+    void countsCaughtPendingExceptionLocalsProducedInsideACycle() {
+        IrValue result = new IrValue("%result", IrType.I32);
+        IrValue exception = new IrValue("%exception", IrType.REFERENCE);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrInstruction throwing = IrInstruction.operation(
+                        Optional.of(result),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(),
+                        "j2ll_rt_test")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(new IrExceptionEdge(
+                                "catch",
+                                "java/lang/RuntimeException",
+                                List.of(exception))),
+                        Optional.of(exception)));
+        IrMethod method = method(List.of(
+                new IrBlock(
+                        "loop",
+                        List.of(throwing),
+                        IrTerminator.gotoBlock("loop")),
+                new IrBlock(
+                        "catch",
+                        List.of(caught),
+                        List.of("java/lang/RuntimeException"),
+                        List.of(),
+                        IrTerminator.gotoBlock("loop"))));
+
+        assertTrue(safety.hasUnboundedLocalReferenceRisk(method));
+        assertTrue(safety.createsOwnedLocalReference(method));
     }
 
     private IrMethod method(List<IrBlock> blocks) {

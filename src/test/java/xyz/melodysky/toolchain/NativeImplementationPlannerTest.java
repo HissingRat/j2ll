@@ -317,7 +317,42 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void rejectsCallerLoopThatDirectlyInvokesReferenceProducingPrimitiveCallee() {
+    void routesReferenceReturningStaticCalleeThroughJniInsteadOfAssumingOwnedReturn() {
+        ParsedClass parsedClass = parse(
+                "pkg/ReferenceCalls.class",
+                referenceReturningStaticCallClass());
+        MethodRewriteDecision identity =
+                decision(parsedClass, "identity");
+        MethodRewriteDecision call = decision(parsedClass, "call");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(
+                        List.of(identity, call));
+        Map<String, IrMethod> irMethods = Map.of(
+                identity.method().methodKey(),
+                irMethod(parsedClass, "identity"),
+                call.method().methodKey(),
+                irMethod(parsedClass, "call"));
+
+        NativeImplementationPlan plan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(identity, call),
+                        irMethods);
+
+        NativeMethodImplementation implementation = plan
+                .implementationFor(call.method().methodKey())
+                .orElseThrow();
+        assertTrue(implementation.directCallTargets().isEmpty());
+        assertEquals(
+                List.of(identity.method().methodKey()),
+                implementation.staticCallKeys());
+        assertEquals(
+                "LLVM_STATIC_CALL_HELPER_IR",
+                implementation.reasonCode());
+    }
+
+    @Test
+    void routesLoopCallToReferenceProducingPrimitiveCalleeThroughJni() {
         ParsedClass parsedClass = parse(
                 "pkg/ReferenceCallLoop.class",
                 AsmFixtureBuilder.classWithStaticCall(
@@ -398,12 +433,13 @@ class NativeImplementationPlannerTest implements Opcodes {
                         irMethods);
 
         assertTrue(plan.implementationFor(leaf.method().methodKey()).isPresent());
-        assertTrue(plan.implementationFor(caller.method().methodKey()).isEmpty());
+        NativeMethodImplementation callerImplementation = plan
+                .implementationFor(caller.method().methodKey())
+                .orElseThrow();
+        assertTrue(callerImplementation.directCallTargets().isEmpty());
         assertEquals(
-                NativeLocalReferenceSafety.UNBOUNDED_REASON_CODE,
-                plan.unavailableReasonCodeFor(
-                                caller.method().methodKey())
-                        .orElseThrow());
+                List.of(leaf.method().methodKey()),
+                callerImplementation.staticCallKeys());
     }
 
     @Test
@@ -1265,6 +1301,49 @@ class NativeImplementationPlannerTest implements Opcodes {
         substring.visitInsn(ARETURN);
         substring.visitMaxs(0, 0);
         substring.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] referenceReturningStaticCallClass() {
+        ClassWriter writer = new ClassWriter(
+                ClassWriter.COMPUTE_FRAMES
+                        | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                V17,
+                ACC_PUBLIC | ACC_SUPER,
+                "pkg/ReferenceCalls",
+                null,
+                "java/lang/Object",
+                null);
+        MethodVisitor identity = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "identity",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                null,
+                null);
+        identity.visitCode();
+        identity.visitVarInsn(ALOAD, 0);
+        identity.visitInsn(ARETURN);
+        identity.visitMaxs(0, 0);
+        identity.visitEnd();
+        MethodVisitor call = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "call",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                null,
+                null);
+        call.visitCode();
+        call.visitVarInsn(ALOAD, 0);
+        call.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/ReferenceCalls",
+                "identity",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                false);
+        call.visitInsn(ARETURN);
+        call.visitMaxs(0, 0);
+        call.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }

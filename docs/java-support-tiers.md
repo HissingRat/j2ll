@@ -82,7 +82,7 @@ Bridge、synthetic、enum-generated 和 record-generated methods默认按普通�
 - JVM-hosted Thread互操作，不实现 native scheduler。
 - volatile、final publication、monitor happens-before的保守 marker/helper。
 - JNI local/global reference lifetime。
-- Internal LLVM direct call共享外层registered-native JNI local frame；owned local-reference production必须跨same-owner direct-call摘要传播。caller CFG循环、传递callee链或direct-call SCC无法证明有界时，以`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`整方法跳过。
+- Ownership-aware local-reference release使用site-sensitive liveness区分normal live-out与instruction exceptional needs，覆盖可证明的普通路径、parallel edge adapter、loop/backedge重定义、typed/catch-all handler transfer/exit与显式`athrow`，并在last use或唯一ownership transfer边界承担`DeleteLocalRef`责任。重复transfer、handler live-set不一致或其他无法证明有界释放的shape以`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`整方法跳过。返回reference或内部产生owned/pending-exception reference的registered native callee通过JVM/JNI bridge获得嵌套local frame；direct LLVM call只保留给不产生这些reference的callee，无法桥接的compiler-internal shape fail closed。
 - 激进优化未来需要的 guard/slow-path；slow path必须是显式 JVM/JNI helper语义，不能重放 selected caller bytecode。
 
 当前边界：
@@ -90,11 +90,13 @@ Bridge、synthetic、enum-generated 和 record-generated methods默认按普通�
 - 可抛出 JVM exception 的 JNI/runtime helper instruction位于 user try region时，SSA 显式携带 pending exception value、按 classfile 顺序排列的 handler edge，以及 throw-site live locals；throwable和locals通过block arguments进入handler parameter。
 - LLVM在每个受保护 helper site后立即读取pending exception。存在异常时先清除JNI pending state，再按声明顺序执行typed `instanceof`匹配；catch-all直接进入handler，全部typed handler不匹配时恢复并rethrow原异常。显式 `athrow` 使用同一有序handler dispatch，但不重复读取/清除pending state。
 - simple typed/multi-catch、catch-all continuation以及受限cleanup/rethrow shape已进入真实 native path。无法形成一致throw-site frame/block arguments、不可约exception-state merge、复杂monitor/finally interaction，或当前包含任意exception table的constructor仍将整个 selected method标记为 `skipped`。
+- CFF不应用于其余structural条件原本可接受、但会产生owned JNI local ref的方法，因为dispatcher synthetic cycle会使既有release proof失效；该pass以`CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE`记录`SKIPPED`并保留输入IR，method仍可沿已验证的ownership-aware native path成为`nativeLowered`。
 - synchronized method/block已有 JNI monitor E2E；`Thread.sleep(J)V` 通过 JVM-backed helper执行并保留 `InterruptedException` pending-flow。`Thread.start/join`、Thread constructor与wait/notify等尚未接入真实 helper matrix的shape仍统一 `skipped`，不伪造 native scheduler或 monitor queue。
 
 测试要求：
 
 - exception/finally/synchronized runtime parity。
+- owned local-ref的loop/backedge、handler与direct-call release parity，以及无法证明有界时的精确`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`负例。
 - volatile/multithread smoke。
 - skipped method原 body保留、无 registration/native bytecode copy。
 

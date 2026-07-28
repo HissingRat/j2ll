@@ -8,10 +8,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 
 public record NativeImplementationPlan(
         List<NativeMethodImplementation> implementations,
-        Map<String, String> unavailableReasonCodes) {
+        Map<String, String> unavailableReasonCodes,
+        Map<String, NativeLocalReferencePlan> localReferencePlans) {
     public NativeImplementationPlan {
         implementations = implementations.stream()
                 .filter(Objects::nonNull)
@@ -29,11 +31,39 @@ public record NativeImplementationPlan(
                 .forEach(entry ->
                         stableReasons.put(entry.getKey(), entry.getValue()));
         unavailableReasonCodes = Collections.unmodifiableMap(stableReasons);
+        LinkedHashMap<String, NativeLocalReferencePlan> stableLocalReferences =
+                new LinkedHashMap<>();
+        Objects.requireNonNull(
+                        localReferencePlans,
+                        "localReferencePlans")
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getKey() != null
+                        && entry.getValue() != null)
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    if (!entry.getKey().equals(entry.getValue().methodKey())) {
+                        throw new IllegalArgumentException(
+                                "local-reference plan key does not match method: "
+                                        + entry.getKey());
+                    }
+                    stableLocalReferences.put(
+                            entry.getKey(),
+                            entry.getValue());
+                });
+        localReferencePlans =
+                Collections.unmodifiableMap(stableLocalReferences);
+    }
+
+    public NativeImplementationPlan(
+            List<NativeMethodImplementation> implementations,
+            Map<String, String> unavailableReasonCodes) {
+        this(implementations, unavailableReasonCodes, Map.of());
     }
 
     public NativeImplementationPlan(
             List<NativeMethodImplementation> implementations) {
-        this(implementations, Map.of());
+        this(implementations, Map.of(), Map.of());
     }
 
     public NativeRegistrationPlan registrationPlan() {
@@ -50,6 +80,11 @@ public record NativeImplementationPlan(
 
     public Optional<String> unavailableReasonCodeFor(String methodKey) {
         return Optional.ofNullable(unavailableReasonCodes.get(methodKey));
+    }
+
+    public Optional<NativeLocalReferencePlan> localReferencePlanFor(
+            String methodKey) {
+        return Optional.ofNullable(localReferencePlans.get(methodKey));
     }
 
     public List<NativeMethodImplementation> llvmImplementations() {

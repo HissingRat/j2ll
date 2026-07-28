@@ -113,7 +113,7 @@
 - Monitor/synchronized/volatile/final/thread happens-before使用 JVM/JNI helper/marker；`Thread.sleep(J)V`通过JVM-backed helper执行并保留`InterruptedException`语义。不伪造 scheduler或 monitor queue，未支持的其他Thread/wait-notify caller为 `skipped`。
 - Class init active-use guard与 `<clinit>` begin/end/failed helper必须保持 JVM ordering。
 - JDK/reflection/MethodHandle/lambda/Unsafe/VarHandle只有 validated direct/helper/dispatch matrix算 `nativeLowered`；超出 matrix的 selected caller为 `skipped`。
-- JNI helper返回的owned local ref必须有可证明的activation/last-use lifetime。internal LLVM direct call不建立新的JNI local frame，因此owned-ref production摘要必须沿同owner direct-call closure传递；ownership-aware `DeleteLocalRef`尚未覆盖的method CFG cycle、循环内ref-producing callee或ref-producing direct-call SCC必须将受影响方法整方法`skipped`并记录`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`。不能依赖helper/internal callee返回、递归展开或循环迭代自动释放local ref。
+- JNI helper返回的owned local ref必须有可证明的activation/last-use lifetime。backend消费per-method ownership/release plan；site-sensitive liveness必须区分normal live-out与instruction exceptional needs，并在普通边、parallel edge adapter、loop/backedge、typed/catch-all handler与显式`athrow`路径发出`DeleteLocalRef`。重复ownership transfer、handler live-set不一致或其他无法证明有界释放的shape将整方法`skipped`并记录`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`。registered native callee只要返回reference或内部产生owned/pending-exception reference，就必须走JVM/JNI bridge获得嵌套local frame；只允许不产生这类reference的callee直接LLVM调用，compiler-internal callee无法安全桥接时fail closed。JNI bridge的`jvalue[]` scratch按function最大arity只在activation prologue分配一次，loop/backedge只复用；不能依赖helper/internal callee返回、递归展开或循环迭代自动释放local ref。
 - Unsafe offset是 metadata token，不是 native object memory offset；不绕开 JVM读取 object layout。
 
 ## Protection
@@ -128,6 +128,10 @@
 - `ControlFlowFlatteningPass` 的 dispatcher state 使用 per-build、per-method 派生的
   dense permutation，状态集合始终为 `[0, blockCount)`；不得为了多样性扩张状态空间、
   引入查表或增加运行时 transition work。
+- CFF会引入synthetic dispatcher cycle，因此对其余structural条件原本可应用、但会产生
+  owned JNI local ref的方法必须pass-level `SKIPPED`并记录
+  `CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE`，保留该pass输入IR供后续native lowering；
+  这个protection skip不得改变method outcome。不得为了提高CFF覆盖而绕过ownership/release proof。
 - Final `LLVM_NATIVE_PATH`与 compiler-internal helper只由 `NativeLlvmCompiler`编译一次；reports、intermediates和 Zig writer共用同一 validated module/pass result。
 - Protection pass对单 method不适用只记录 pass `SKIPPED` reason，不自动改变 method outcome；compiler/runtime implementation无法保持语义才产生 method `skipped`。
 - Protection coverage必须由producer逐method或真实module subject显式写`requested/applicability/affected/status/reasonCode`；function pass只按`affectedFunctions`映射，module/global pass不得把一个global变化扩写成所有method affected，validation failure无法确定逐method applicability时写`unknown`。collector不得从汇总`SKIPPED`或旧`affectedMethods`推断。

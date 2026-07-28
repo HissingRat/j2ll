@@ -33,6 +33,7 @@ import xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 
 /**
  * Produces the one authoritative final LLVM compilation.
@@ -88,7 +89,8 @@ public final class NativeLlvmCompiler {
                     LlvmVisibility.HIDDEN,
                     inputs.directCallsByMethod(),
                     inputs.staticCallsByMethod(),
-                    inputs.functionAbisByMethod());
+                    inputs.functionAbisByMethod(),
+                    inputs.localReferencePlansByMethod());
             LlvmModule nameProtected =
                     new LlvmNameObfuscationPass().run(lowered, protectionConfig);
             LlvmBlockLayoutPerturbationResult blockLayout =
@@ -150,6 +152,14 @@ public final class NativeLlvmCompiler {
                 .append(implementation.stringHelperSymbols()).append('|')
                 .append(implementation.initializerPlan())
                 .append('\n'));
+        implementationPlan.localReferencePlans().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> canonical
+                        .append("localRefs|")
+                        .append(entry.getKey())
+                        .append('|')
+                        .append(entry.getValue())
+                        .append('\n'));
         irMethods.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> canonical
@@ -172,6 +182,8 @@ public final class NativeLlvmCompiler {
         LinkedHashMap<String, Set<String>> staticCallsByMethod = new LinkedHashMap<>();
         LinkedHashMap<String, LlvmFunctionAbi> functionAbisByMethod =
                 new LinkedHashMap<>();
+        LinkedHashMap<String, NativeLocalReferencePlan>
+                localReferencePlansByMethod = new LinkedHashMap<>();
         LinkedHashSet<String> registeredMethodKeys = implementationPlan.llvmImplementations().stream()
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
@@ -189,6 +201,11 @@ public final class NativeLlvmCompiler {
             functionAbisByMethod.put(
                     implementation.methodKey(),
                     implementation.llvmFunctionAbi());
+            implementationPlan
+                    .localReferencePlanFor(implementation.methodKey())
+                    .ifPresent(plan -> localReferencePlansByMethod.put(
+                            implementation.methodKey(),
+                            plan));
             IrMethod method = implementation.initializerPlan()
                     .map(plan -> plan.nativeBody())
                     .orElseGet(() -> irMethods.get(implementation.methodKey()));
@@ -228,6 +245,12 @@ public final class NativeLlvmCompiler {
                 }
                 directCallsByMethod.putIfAbsent(targetKey, Set.of());
                 staticCallsByMethod.putIfAbsent(targetKey, Set.of());
+                implementationPlan
+                        .localReferencePlanFor(targetKey)
+                        .ifPresent(plan ->
+                                localReferencePlansByMethod.putIfAbsent(
+                                        targetKey,
+                                        plan));
             }
         }
 
@@ -239,6 +262,8 @@ public final class NativeLlvmCompiler {
                 java.util.Collections.unmodifiableMap(directCallsByMethod),
                 java.util.Collections.unmodifiableMap(staticCallsByMethod),
                 java.util.Collections.unmodifiableMap(functionAbisByMethod),
+                java.util.Collections.unmodifiableMap(
+                        localReferencePlansByMethod),
                 java.util.Collections.unmodifiableSet(registeredMethodKeys));
     }
 
@@ -273,6 +298,8 @@ public final class NativeLlvmCompiler {
             Map<String, Set<String>> directCallsByMethod,
             Map<String, Set<String>> staticCallsByMethod,
             Map<String, LlvmFunctionAbi> functionAbisByMethod,
+            Map<String, NativeLocalReferencePlan>
+                    localReferencePlansByMethod,
             Set<String> registeredMethodKeys) {
     }
 }

@@ -502,7 +502,7 @@ class ProtectionPipelineTest {
     }
 
     @Test
-    void controlFlowFlatteningSupportsReferenceCallsFieldsAndUnprotectedPendingExceptions() {
+    void controlFlowFlatteningSkipsOwnedReferenceCallsFieldsAndPendingExceptions() {
         IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
         IrValue fieldValue = new IrValue("%field", IrType.REFERENCE);
         IrValue helperValue = new IrValue("%helper", IrType.REFERENCE);
@@ -568,17 +568,65 @@ class ProtectionPipelineTest {
         var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
                 .runDetailed(method, ProtectionConfig.enabled(19));
 
+        assertEquals(method, result.method());
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
-                && report.status().equals("RAN")));
-        IrBlock body = result.method().blocks().stream()
-                .filter(block -> block.instructions().contains(fieldGet))
-                .findFirst()
-                .orElseThrow();
-        assertTrue(body.instructions().contains(helperCall));
-        assertTrue(body.instructions().contains(javaCall));
-        assertEquals(fieldGet.exceptionSites(), body.instructions().get(0).exceptionSites());
-        assertEquals(helperCall.exceptionSites(), body.instructions().get(1).exceptionSites());
-        assertEquals(javaCall.exceptionSites(), body.instructions().get(2).exceptionSites());
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals(
+                        "CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningAllowsNullAndBorrowedReferenceResults() {
+        IrValue input = new IrValue("%p0", IrType.REFERENCE);
+        IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
+        IrValue borrowed = new IrValue("%borrowed", IrType.REFERENCE);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrInstruction nullConstant = IrInstruction.constNull(nullValue);
+        IrInstruction checkcast = IrInstruction.operation(
+                java.util.Optional.of(borrowed),
+                IrOpcode.CHECKCAST,
+                List.of(input),
+                "checkcast:java/lang/Object");
+        IrMethod method = new IrMethod(
+                "pkg/CffBorrowed",
+                "choose",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(input),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        nullConstant,
+                                        checkcast,
+                                        IrInstruction.binary(
+                                                condition,
+                                                IrOpcode.CMP_EQ_REF,
+                                                borrowed,
+                                                nullValue)),
+                                IrTerminator.branch(condition, "nil", "value")),
+                        new IrBlock("nil", List.of(), IrTerminator.returnValue(input)),
+                        new IrBlock("value", List.of(), IrTerminator.returnValue(input))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("CONTROL_FLOW_FLATTENING")
+                        && report.status().equals("RAN")
+                        && report.reasonCode().equals(
+                                "CONTROL_FLOW_FLATTENING")));
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block ->
+                        block.terminator().kind() == IrTerminatorKind.SWITCH));
+        assertTrue(result.method().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction == nullConstant));
+        assertTrue(result.method().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction == checkcast));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
     }
 
@@ -626,7 +674,7 @@ class ProtectionPipelineTest {
     }
 
     @Test
-    void controlFlowFlatteningPreservesProvenClassInitGuardOrdering() {
+    void controlFlowFlatteningSkipsOwnedClassInitGuardReferenceWithoutReordering() {
         IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
         IrValue classId = new IrValue("%classId", IrType.I64);
         IrValue classObject = new IrValue("%class", IrType.REFERENCE);
@@ -684,15 +732,14 @@ class ProtectionPipelineTest {
         var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
                 .runDetailed(method, ProtectionConfig.enabled(19));
 
+        assertEquals(method, result.method());
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
-                && report.status().equals("RAN")));
-        IrBlock body = result.method().blocks().stream()
-                .filter(block -> block.instructions().contains(object))
-                .findFirst()
-                .orElseThrow();
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals(
+                        "CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE")));
         assertEquals(
                 List.of(object, guard, happensBefore),
-                body.instructions().subList(1, 4));
+                result.method().blocks().get(0).instructions().subList(1, 4));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
     }
 
