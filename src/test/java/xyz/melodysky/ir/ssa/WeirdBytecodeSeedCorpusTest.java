@@ -29,7 +29,23 @@ class WeirdBytecodeSeedCorpusTest {
                 new SupportedSeed("unreachable-block", AsmFixtureBuilder.classWithUnreachableBlockMethod("pkg/Unreachable"), "unreachable"),
                 new SupportedSeed("table-switch", AsmFixtureBuilder.classWithTableSwitchMethod("pkg/TableSwitch"), "select"),
                 new SupportedSeed("lookup-switch", AsmFixtureBuilder.classWithLookupSwitchMethod("pkg/LookupSwitch"), "lookup"),
-                new SupportedSeed("catch-all-rethrow", AsmFixtureBuilder.classWithCatchAllFinallyShape("pkg/FinallyShape"), "cleanup"))) {
+                new SupportedSeed("catch-all-rethrow", AsmFixtureBuilder.classWithCatchAllFinallyShape("pkg/FinallyShape"), "cleanup"),
+                new SupportedSeed(
+                        "multi-exit-finally",
+                        AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/BadFinally"),
+                        "badFinally"),
+                new SupportedSeed(
+                        "exception-state-merge-finally",
+                        AsmFixtureBuilder.classWithUnsupportedExceptionStateMergeFinallyShape("pkg/StateMergeFinally"),
+                        "badStateMergeFinally"),
+                new SupportedSeed(
+                        "monitor-finally-interaction",
+                        AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinally"),
+                        "badMonitorFinally"),
+                new SupportedSeed(
+                        "nested-finally",
+                        AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinally"),
+                        "badNestedFinally"))) {
             SsaMethodResult result = lower(seed.classBytes(), seed.methodName());
 
             assertEquals(LoweringStatus.NATIVE_LOWERED, result.status(), seed.name());
@@ -41,30 +57,6 @@ class WeirdBytecodeSeedCorpusTest {
     @Test
     void unsupportedWeirdBytecodeSeedsAreSkippedWithPreciseDiagnostics() {
         for (UnsupportedSeed seed : List.of(
-                new UnsupportedSeed(
-                        "multi-exit-finally",
-                        AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/BadFinally"),
-                        "badFinally",
-                        LoweringStatus.SKIPPED,
-                        LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY),
-                new UnsupportedSeed(
-                        "exception-state-merge-finally",
-                        AsmFixtureBuilder.classWithUnsupportedExceptionStateMergeFinallyShape("pkg/StateMergeFinally"),
-                        "badStateMergeFinally",
-                        LoweringStatus.SKIPPED,
-                        LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE),
-                new UnsupportedSeed(
-                        "monitor-finally-interaction",
-                        AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinally"),
-                        "badMonitorFinally",
-                        LoweringStatus.SKIPPED,
-                        LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION),
-                new UnsupportedSeed(
-                        "nested-finally",
-                        AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinally"),
-                        "badNestedFinally",
-                        LoweringStatus.SKIPPED,
-                        LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY),
                 new UnsupportedSeed(
                         "legacy-jsr-ret",
                         AsmFixtureBuilder.classWithLegacyJsrRetSubroutine("pkg/LegacySubroutine"),

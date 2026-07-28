@@ -6,10 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import org.junit.jupiter.api.Test;
 
 class CliArtifactSmokeTest {
+    private static final int JAVA_17_CLASS_MAJOR = 61;
+
     @Test
     void generatedCliJarRunsHelpAndVersion() throws Exception {
         Path jar = Path.of("build/cli/j2ll.jar");
@@ -42,6 +47,34 @@ class CliArtifactSmokeTest {
         assertEquals(0, help.exitCode(), help.stderr());
         assertEquals(0, validate.exitCode(), validate.stderr());
         assertTrue(validate.stdout().contains("config=ok"), validate.stdout());
+    }
+
+    @Test
+    void generatedCliJarTargetsTheDocumentedJava17RuntimeFloor() throws Exception {
+        Path jar = Path.of("build/cli/j2ll.jar");
+        assertTrue(Files.isRegularFile(jar), "expected runnable CLI jar at " + jar);
+
+        try (JarFile archive = new JarFile(jar.toFile())) {
+            Enumeration<JarEntry> entries = archive.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement();
+                if (entry.isDirectory()
+                        || !entry.getName().endsWith(".class")
+                        || entry.getName().startsWith("META-INF/versions/")) {
+                    continue;
+                }
+                byte[] header;
+                try (var input = archive.getInputStream(entry)) {
+                    header = input.readNBytes(8);
+                }
+                assertEquals(8, header.length, "truncated class entry " + entry.getName());
+                int major = ((header[6] & 0xff) << 8) | (header[7] & 0xff);
+                assertTrue(
+                        major <= JAVA_17_CLASS_MAJOR,
+                        () -> entry.getName() + " requires classfile major " + major
+                                + ", above the Java 17 runtime floor");
+            }
+        }
     }
 
     private ProcessResult runJar(Path jar, String... arguments) throws Exception {

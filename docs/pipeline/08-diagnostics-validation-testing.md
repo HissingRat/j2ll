@@ -85,6 +85,8 @@ Diagnostic 需要稳定排序，方便测试和回归定位。同一输入不应
 - Symbol audit validator：actual exports must match allowlist。
 - Packaging validator：manifest/resource preservation、loader presence、native registration completeness、skipped-method no-rewrite/no-registration、embedded library layout。
 
+SSA dominance 以 method 第一个 block 为 entry，并同时把普通 terminator edge、显式 throw edge和 instruction-level exception handler edge纳入 CFG。method parameter支配所有可达 block；block parameter在本 block 入口定义；instruction result必须在同 block use之前定义，或由严格支配 use block的定义产生。检查范围包括instruction operands、return/throw value、branch/switch condition、所有normal target arguments、exception-edge arguments，以及exception-site handler arguments。exception-site `exceptionValue`只在该site对应的handler arguments中可用，不能泄漏到正常continuation。不可达 block稳定报告 `IR_UNREACHABLE_BLOCK`，且不再追加误导性的dominance/use-before-def噪声。
+
 validator 失败应该指向 stage 和 artifact id，避免只给出泛泛的 `IllegalStateException`。
 
 ## 测试矩阵
@@ -112,6 +114,8 @@ validator 失败应该指向 stage 和 artifact id，避免只给出泛泛的 `I
 - 加 opcode lowering：必须有 frontend/SSA test。
 - 加 IR instruction/terminator：必须有 validator test 和 backend test。
 - 加 runtime helper：必须有 backend declaration test 和 runtime stub generator test。
+- 加 protected JVM exception flow：必须同时覆盖throw-site locals/handler arguments、IR validator、pending/clear/typed-dispatch/rethrow LLVM shape，以及real-Zig host child-JVM differential；non-host runtime证据单独记录。
+- 改constructor/`<clinit>` boundary：必须覆盖initializer plan、verifier、rewriter/registration一致性和child-JVM class-init ordering。
 - 加 analysis：必须有 focused analysis test；涉及 invoke/devirtualization 时补 pipeline test。
 - 加 pass：必须有 pass unit test。
 - 改 pipeline 编排：必须有 pipeline test。

@@ -31,12 +31,68 @@ import xyz.melodysky.jvm.MethodSignature;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.protection.audit.ProtectionApplicability;
 import xyz.melodysky.report.ProtectionPassReport;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
 
 class ProgramIrProtectionCoordinatorTest implements Opcodes {
+    @Test
+    void callIndirectionUsesNativePlanAbiWhenPartitioningEqualIrSignatures() {
+        IrMethod plainTarget = constantMethod("plainTarget", 7);
+        IrMethod envTarget = constantMethod("envTarget", 9);
+        IrValue plainResult = new IrValue("%plain_result", IrType.I32);
+        IrValue envResult = new IrValue("%env_result", IrType.I32);
+        IrMethod caller = new IrMethod(
+                "pkg/Calls",
+                "caller",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.call(
+                                        Optional.of(plainResult),
+                                        IrOpcode.CALL_STATIC,
+                                        List.of(),
+                                        plainTarget.methodKey()),
+                                IrInstruction.call(
+                                        Optional.of(envResult),
+                                        IrOpcode.CALL_STATIC,
+                                        List.of(),
+                                        envTarget.methodKey())),
+                        IrTerminator.returnValue(envResult))));
+        NativeImplementationPlan implementationPlan = new NativeImplementationPlan(List.of(
+                implementation(caller, ACC_PUBLIC | ACC_STATIC, false, false),
+                implementation(plainTarget, ACC_PUBLIC | ACC_STATIC, false, false),
+                implementation(envTarget, ACC_PUBLIC | ACC_STATIC, true, false)));
+
+        ProgramIrProtectionResult result = new ProgramIrProtectionCoordinator().run(
+                Map.of(
+                        caller.methodKey(), caller,
+                        plainTarget.methodKey(), plainTarget,
+                        envTarget.methodKey(), envTarget),
+                implementationPlan,
+                new ParsedProgram(List.of()),
+                new ReflectionPlan(List.of(), List.of(), List.of(), List.of()),
+                new CallGraph(List.of()),
+                callIndirectionOnly(),
+                29L);
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(
+                2,
+                result.javaMethods().get(caller.methodKey()).blocks().get(0)
+                        .instructions().stream()
+                        .map(instruction -> instruction.callIndirection()
+                                .orElseThrow()
+                                .groupId())
+                        .distinct()
+                        .count());
+    }
+
     @Test
     void invokedynamicResolutionInTheSameCallerDoesNotEnterDirectCallClassification() {
         IrValue receiver = new IrValue("%receiver", IrType.REFERENCE);
@@ -122,6 +178,13 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
         assertEquals(
                 IrCallIndirectionReasons.BACKEND_UNSUPPORTED_SHAPE,
                 report.reasonCode());
+        assertEquals(2, report.coverageFacts().size());
+        assertTrue(report.coverageFacts().stream()
+                .allMatch(fact -> fact.requested()
+                        && !fact.affected()
+                        && fact.applicability()
+                                == ProtectionApplicability.NOT_APPLICABLE
+                        && fact.status().equals("SKIPPED")));
         assertEquals(
                 IrOpcode.CALL_VIRTUAL,
                 result.javaMethods()
@@ -144,6 +207,14 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
     private NativeMethodImplementation implementation(
             IrMethod method,
             int access) {
+        return implementation(method, access, false, false);
+    }
+
+    private NativeMethodImplementation implementation(
+            IrMethod method,
+            int access,
+            boolean passesJniEnv,
+            boolean passesOwnerClass) {
         ParsedMethod parsed = new ParsedMethod(
                 method.owner(),
                 method.name(),
@@ -178,7 +249,34 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                 decision,
                 NativeImplementationPath.LLVM_NATIVE_PATH,
                 Optional.of("j2ll_test_impl_" + method.name()),
-                "TEST");
+                "TEST",
+                passesJniEnv,
+                passesOwnerClass,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                Optional.empty());
+    }
+
+    private IrMethod constantMethod(String name, int value) {
+        IrValue result = new IrValue("%" + name + "_result", IrType.I32);
+        return new IrMethod(
+                "pkg/Calls",
+                name,
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.constInt(result, value)),
+                        IrTerminator.returnValue(result))));
     }
 
     private IrProtectionConfig callIndirectionOnly() {

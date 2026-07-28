@@ -9,11 +9,11 @@ import java.util.TreeMap;
 import xyz.melodysky.ir.pass.protection.ProtectionRandom;
 
 /**
- * Produces a deterministic split-table registration plan.
+ * Produces a deterministic, build-diverse owner-local registration layout.
  *
- * <p>Token collisions are resolved by a deterministic counter suffix. The
- * metadata and function-pointer tables deliberately use independent orders so
- * their array indices do not reveal the binding relationship.</p>
+ * <p>Opaque tokens are retained only as hash-only report evidence. Generated
+ * native code consumes the physical registration order directly and never
+ * emits a persistent token or function-pointer database.</p>
  */
 public final class MethodTableHidingPlanner {
     public MethodTableHidingPlan plan(
@@ -57,31 +57,17 @@ public final class MethodTableHidingPlanner {
                 } while (!usedTokens.add(token));
                 planned.add(new MethodTableHidingEntry(entry, token));
             }
-            long mask = unsignedLong(random.token(
-                    "METHOD_TABLE_HIDING_MASK",
-                    planId + ":" + owner.getKey(),
-                    16));
-            List<MethodTableHidingEntry> metadataOrder = planned.stream()
+            List<MethodTableHidingEntry> registrationOrder = planned.stream()
                     .sorted(Comparator
                             .comparing((MethodTableHidingEntry entry) -> random.token(
-                                    "METHOD_TABLE_HIDING_METADATA_ORDER",
-                                    planId + ":" + stableIdentity(entry.registration()),
-                                    32))
-                            .thenComparing(MethodTableHidingEntry::registration))
-                    .toList();
-            List<MethodTableHidingEntry> functionOrder = planned.stream()
-                    .sorted(Comparator
-                            .comparing((MethodTableHidingEntry entry) -> random.token(
-                                    "METHOD_TABLE_HIDING_FUNCTION_ORDER",
+                                    "METHOD_TABLE_HIDING_REGISTRATION_ORDER",
                                     planId + ":" + stableIdentity(entry.registration()),
                                     32))
                             .thenComparing(MethodTableHidingEntry::registration))
                     .toList();
             owners.add(new MethodTableHidingOwnerPlan(
                     owner.getKey(),
-                    mask,
-                    metadataOrder,
-                    functionOrder));
+                    registrationOrder));
         }
         return new MethodTableHidingPlan(true, planId, owners);
     }

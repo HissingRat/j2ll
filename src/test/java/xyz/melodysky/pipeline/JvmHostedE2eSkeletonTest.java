@@ -100,7 +100,7 @@ class JvmHostedE2eSkeletonTest implements Opcodes {
         assertTrue(packagingReport.contains("\"exportedSymbols\""));
         assertTrue(packagingReport.contains("\"method\": \"add\""));
         assertTrue(packagingReport.contains("\"JNI_OnLoad\""));
-        assertTrue(packagingReport.contains("\"j2ll_register\""));
+        assertFalse(packagingReport.contains("\"j2ll_register\""));
         assertTrue(packagingReport.contains(HostPlatform.detect().orElseThrow().target().libraryFileName()));
     }
 

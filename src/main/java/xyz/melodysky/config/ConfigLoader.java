@@ -7,11 +7,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.io.Reader;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -24,6 +22,7 @@ import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class ConfigLoader {
+    private static final SecureRandom PROTECTION_RANDOM = new SecureRandom();
     private static final Set<String> TOP_LEVEL_FIELDS = Set.of(
             "schemaVersion",
             "jarFile",
@@ -149,10 +148,11 @@ public final class ConfigLoader {
         Path outputDirectory = resolve(base, root.get("outputDirectory").getAsString());
         validatePaths(jarFile, outputDirectory, diagnostics);
         List<Path> classPath = classPath(base, root.getAsJsonArray("classPath"));
-        String seed = nullableString(root.getAsJsonObject("protection"), "seed");
-        if (seed == null) {
-            seed = deriveSeed(jarFile, outputDirectory, whiteList, blackList);
-        }
+        String configuredSeed = nullableString(root.getAsJsonObject("protection"), "seed");
+        ProtectionSeedMode seedMode = configuredSeed == null
+                ? ProtectionSeedMode.RANDOMIZED
+                : ProtectionSeedMode.REPRODUCIBLE;
+        String seed = configuredSeed == null ? randomSeed() : configuredSeed;
 
         ResolvedConfig config = new ResolvedConfig(
                 schemaVersion,
@@ -170,7 +170,7 @@ public final class ConfigLoader {
                 signaturePolicy,
                 signing,
                 parseIntermediates(root.getAsJsonObject("intermediates")),
-                parseProtection(root.getAsJsonObject("protection"), seed));
+                parseProtection(root.getAsJsonObject("protection"), seed, seedMode));
         return new ConfigLoadResult(Optional.of(config), diagnostics);
     }
 
@@ -409,10 +409,14 @@ public final class ConfigLoader {
                 intermediates.get("includePerClassC").getAsBoolean());
     }
 
-    private ProtectionConfig parseProtection(JsonObject protection, String seed) {
+    private ProtectionConfig parseProtection(
+            JsonObject protection,
+            String seed,
+            ProtectionSeedMode seedMode) {
         return new ProtectionConfig(
                 protection.get("enabled").getAsBoolean(),
                 seed,
+                seedMode,
                 parseIrProtection(protection.getAsJsonObject("ir")),
                 parseLlvmProtection(protection.getAsJsonObject("llvm")),
                 parseBinaryProtection(protection.getAsJsonObject("binary")));
@@ -479,27 +483,10 @@ public final class ConfigLoader {
         return path.isAbsolute() ? path.normalize() : baseDirectory.resolve(path).normalize();
     }
 
-    private String deriveSeed(Path jarFile, Path outputDirectory, List<Selector> whiteList, List<Selector> blackList) {
-        StringBuilder material = new StringBuilder()
-                .append(jarFile)
-                .append('\n')
-                .append(outputDirectory);
-        for (Selector selector : whiteList) {
-            material.append("\nw:").append(selector.raw());
-        }
-        for (Selector selector : blackList) {
-            material.append("\nb:").append(selector.raw());
-        }
-        return sha256(material.toString()).substring(0, 16);
-    }
-
-    private String sha256(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(input.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is unavailable", exception);
-        }
+    private String randomSeed() {
+        byte[] seed = new byte[32];
+        PROTECTION_RANDOM.nextBytes(seed);
+        return HexFormat.of().formatHex(seed);
     }
 
     private boolean hasErrors(List<Diagnostic> diagnostics) {

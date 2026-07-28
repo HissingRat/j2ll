@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrSwitchCase;
@@ -29,7 +30,7 @@ final class MethodInliningRewriter {
         if (callBlock.isExceptionHandler()
                 || !callBlock.exceptionCatchTypes().isEmpty()
                 || !callBlock.exceptionEdges().isEmpty()
-                || !call.exceptionSites().isEmpty()
+                || !canDiscardUnprotectedCallEvidence(caller, call)
                 || !accessIsSafe(caller, callee, call, site.candidate())
                 || !returnShapeMatches(callee, call)) {
             return MethodInliningRewriteResult.rejected(MethodInliningReason.UNSAFE_CALL_SITE);
@@ -134,6 +135,63 @@ final class MethodInliningRewriter {
             return call.result().isEmpty();
         }
         return call.result().filter(result -> result.type() == callee.returnType()).isPresent();
+    }
+
+    /**
+     * A frontend direct call carries pending-exception evidence even when the
+     * analysis-approved callee is pure. Inlining removes that call, so its
+     * unprotected synthetic exception definition may be removed as well. A
+     * protected edge, a more specific exception check, or any observable use
+     * of the exception value remains a fail-closed boundary.
+     */
+    private boolean canDiscardUnprotectedCallEvidence(
+            IrMethod caller,
+            IrInstruction call) {
+        for (var site : call.exceptionSites()) {
+            if (site.kind() != IrExceptionSiteKind.JVM_PENDING_EXCEPTION
+                    || !site.handlers().isEmpty()
+                    || site.exceptionValue()
+                            .filter(value -> isUsed(caller, value))
+                            .isPresent()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isUsed(IrMethod method, IrValue value) {
+        for (IrBlock block : method.blocks()) {
+            if (block.instructions().stream()
+                    .anyMatch(instruction -> instruction.operands().contains(value))) {
+                return true;
+            }
+            if (block.exceptionEdges().stream()
+                    .flatMap(edge -> edge.arguments().stream())
+                    .anyMatch(value::equals)) {
+                return true;
+            }
+            if (block.instructions().stream()
+                    .flatMap(instruction -> instruction.exceptionSites().stream())
+                    .flatMap(site -> site.handlers().stream())
+                    .flatMap(edge -> edge.arguments().stream())
+                    .anyMatch(value::equals)) {
+                return true;
+            }
+            IrTerminator terminator = block.terminator();
+            if (terminator.value().filter(value::equals).isPresent()
+                    || terminator.condition().filter(value::equals).isPresent()
+                    || terminator.switchValue().filter(value::equals).isPresent()
+                    || terminator.targetArguments().contains(value)
+                    || terminator.trueTargetArguments().contains(value)
+                    || terminator.falseTargetArguments().contains(value)
+                    || terminator.defaultTargetArguments().contains(value)
+                    || terminator.switchCases().stream()
+                            .flatMap(switchCase -> switchCase.arguments().stream())
+                            .anyMatch(value::equals)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean hasUniqueDefinitions(IrMethod method) {

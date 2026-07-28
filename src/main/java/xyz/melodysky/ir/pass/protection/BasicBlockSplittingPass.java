@@ -42,27 +42,28 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
         if (!enabled(config) || !applicable(method)) {
             return method;
         }
-        IrBlock original = splitCandidate(method);
-        if (original == null) {
+        SplitCandidate candidate = splitCandidate(method);
+        if (candidate == null) {
             return method;
         }
+        IrBlock original = candidate.block();
         ProtectionRandom random = new ProtectionRandom(config.seed());
         String token = random.token(name(), method.methodKey() + ":" + original.name(), 10);
         String suffixName = uniqueBlockName(method, "split_" + token);
-        int splitIndex = splitIndex(original, token);
+        int splitIndex = splitIndex(candidate, token);
 
         IrBlock prefix = new IrBlock(
                 original.name(),
                 original.parameters(),
                 original.exceptionCatchTypes(),
-                original.exceptionEdges(),
+                List.of(),
                 original.instructions().subList(0, splitIndex),
                 IrTerminator.gotoBlock(suffixName));
         IrBlock suffix = new IrBlock(
                 suffixName,
                 List.of(),
                 List.of(),
-                List.of(),
+                original.exceptionEdges(),
                 original.instructions().subList(splitIndex, original.instructions().size()),
                 original.terminator());
 
@@ -84,31 +85,39 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
                 blocks);
     }
 
-    private IrBlock splitCandidate(IrMethod method) {
+    private SplitCandidate splitCandidate(IrMethod method) {
         for (IrBlock block : method.blocks()) {
-            if (isSafeBlock(block)) {
-                return block;
+            List<Integer> boundaries = safeSplitBoundaries(block);
+            if (!boundaries.isEmpty()) {
+                return new SplitCandidate(block, boundaries);
             }
         }
         return null;
     }
 
-    private boolean isSafeBlock(IrBlock block) {
+    private List<Integer> safeSplitBoundaries(IrBlock block) {
         if (block.instructions().size() < 2
-                || !block.parameters().isEmpty()
                 || block.isExceptionHandler()
-                || !block.exceptionCatchTypes().isEmpty()
-                || !block.exceptionEdges().isEmpty()) {
-            return false;
+                || block.instructions().stream()
+                        .map(IrInstruction::opcode)
+                        .anyMatch(this::isMonitorOrJmmSensitiveOpcode)) {
+            return List.of();
         }
-        return block.instructions().stream().allMatch(instruction -> instruction.exceptionSites().isEmpty()
-                && !isSensitiveOpcode(instruction.opcode()));
+        ArrayList<Integer> boundaries = new ArrayList<>();
+        for (int index = 1; index < block.instructions().size(); index++) {
+            IrOpcode before = block.instructions().get(index - 1).opcode();
+            IrOpcode after = block.instructions().get(index).opcode();
+            if (!isDangerousClassInitAdjacency(before, after)) {
+                boundaries.add(index);
+            }
+        }
+        return List.copyOf(boundaries);
     }
 
-    private int splitIndex(IrBlock block, String token) {
-        int availableBoundaries = block.instructions().size() - 1;
+    private int splitIndex(SplitCandidate candidate, String token) {
         long tokenValue = Long.parseUnsignedLong(token, 16);
-        return 1 + (int) Long.remainderUnsigned(tokenValue, availableBoundaries);
+        int selected = (int) Long.remainderUnsigned(tokenValue, candidate.boundaries().size());
+        return candidate.boundaries().get(selected);
     }
 
     private String uniqueBlockName(IrMethod method, String preferredName) {
@@ -128,24 +137,28 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
         return method.name().equals("<init>") || method.name().equals("<clinit>");
     }
 
-    private boolean isSensitiveOpcode(IrOpcode opcode) {
-        return opcode == IrOpcode.CALL_RUNTIME_HELPER
-                || opcode == IrOpcode.CALL_STATIC
-                || opcode == IrOpcode.CALL_SPECIAL
-                || opcode == IrOpcode.CALL_VIRTUAL
-                || opcode == IrOpcode.CALL_INTERFACE
-                || opcode == IrOpcode.CALL_DYNAMIC
-                || opcode == IrOpcode.GET_STATIC
-                || opcode == IrOpcode.PUT_STATIC
-                || opcode == IrOpcode.GET_FIELD
-                || opcode == IrOpcode.PUT_FIELD
-                || opcode == IrOpcode.MONITOR_ENTER
+    private boolean isMonitorOrJmmSensitiveOpcode(IrOpcode opcode) {
+        return opcode == IrOpcode.MONITOR_ENTER
                 || opcode == IrOpcode.MONITOR_EXIT
                 || opcode == IrOpcode.MONITOR_EXIT_ON_EXCEPTION
                 || opcode == IrOpcode.VOLATILE_READ_BARRIER
                 || opcode == IrOpcode.VOLATILE_WRITE_BARRIER
                 || opcode == IrOpcode.FINAL_FIELD_PUBLICATION
-                || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE
+                || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE;
+    }
+
+    private boolean isDangerousClassInitAdjacency(IrOpcode before, IrOpcode after) {
+        return isClassInitOpcode(before) || isClassInitOpcode(after);
+    }
+
+    private boolean isClassInitOpcode(IrOpcode opcode) {
+        return opcode == IrOpcode.CLASS_OBJECT
+                || opcode == IrOpcode.CLASS_INIT_GUARD
+                || opcode == IrOpcode.CLASS_INIT_BEGIN
+                || opcode == IrOpcode.CLASS_INIT_END
+                || opcode == IrOpcode.CLASS_INIT_FAILED
                 || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
     }
+
+    private record SplitCandidate(IrBlock block, List<Integer> boundaries) {}
 }

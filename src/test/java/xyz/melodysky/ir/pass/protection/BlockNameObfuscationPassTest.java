@@ -60,8 +60,13 @@ class BlockNameObfuscationPassTest {
     private IrMethod exceptionalControlFlowMethod() {
         IrValue zero = new IrValue("%zero", IrType.I32);
         IrValue condition = new IrValue("%condition", IrType.I1);
+        IrValue pendingException = new IrValue("%pendingException", IrType.REFERENCE);
         IrValue caught = new IrValue("%caught", IrType.REFERENCE);
         IrExceptionEdge handler = new IrExceptionEdge("handler", "java/lang/Throwable");
+        IrExceptionEdge handlerTransfer = new IrExceptionEdge(
+                "handler",
+                "java/lang/Throwable",
+                List.of(pendingException));
         IrInstruction mayThrow = IrInstruction.operation(
                         Optional.empty(),
                         IrOpcode.CALL_RUNTIME_HELPER,
@@ -69,7 +74,8 @@ class BlockNameObfuscationPassTest {
                         "mayThrow")
                 .withExceptionSite(new IrExceptionSite(
                         IrExceptionSiteKind.NULL_CHECK,
-                        List.of(handler)));
+                        List.of(handlerTransfer),
+                        Optional.of(pendingException)));
         return new IrMethod(
                 "pkg/Exceptional",
                 "process",

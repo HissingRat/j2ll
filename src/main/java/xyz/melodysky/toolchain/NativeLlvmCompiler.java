@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
@@ -86,7 +87,8 @@ public final class NativeLlvmCompiler {
                     LlvmLinkage.EXTERNAL,
                     LlvmVisibility.HIDDEN,
                     inputs.directCallsByMethod(),
-                    inputs.staticCallsByMethod());
+                    inputs.staticCallsByMethod(),
+                    inputs.functionAbisByMethod());
             LlvmModule nameProtected =
                     new LlvmNameObfuscationPass().run(lowered, protectionConfig);
             LlvmBlockLayoutPerturbationResult blockLayout =
@@ -145,7 +147,8 @@ public final class NativeLlvmCompiler {
                 .append(implementation.constructorCallKeys()).append('|')
                 .append(implementation.staticCallKeys()).append('|')
                 .append(implementation.dispatchKeys()).append('|')
-                .append(implementation.stringHelperSymbols())
+                .append(implementation.stringHelperSymbols()).append('|')
+                .append(implementation.initializerPlan())
                 .append('\n'));
         irMethods.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
@@ -167,6 +170,8 @@ public final class NativeLlvmCompiler {
             Map<String, IrMethod> irMethods) throws IOException {
         LinkedHashMap<String, Set<String>> directCallsByMethod = new LinkedHashMap<>();
         LinkedHashMap<String, Set<String>> staticCallsByMethod = new LinkedHashMap<>();
+        LinkedHashMap<String, LlvmFunctionAbi> functionAbisByMethod =
+                new LinkedHashMap<>();
         LinkedHashSet<String> registeredMethodKeys = implementationPlan.llvmImplementations().stream()
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
@@ -181,7 +186,12 @@ public final class NativeLlvmCompiler {
             staticCallsByMethod.put(
                     implementation.methodKey(),
                     Set.copyOf(implementation.staticCallKeys()));
-            IrMethod method = irMethods.get(implementation.methodKey());
+            functionAbisByMethod.put(
+                    implementation.methodKey(),
+                    implementation.llvmFunctionAbi());
+            IrMethod method = implementation.initializerPlan()
+                    .map(plan -> plan.nativeBody())
+                    .orElseGet(() -> irMethods.get(implementation.methodKey()));
             if (method == null) {
                 throw new IOException(
                         "LLVM_NATIVE_PATH method has no protected IR: "
@@ -193,7 +203,9 @@ public final class NativeLlvmCompiler {
         }
         for (NativeMethodImplementation implementation
                 : implementationPlan.llvmImplementations()) {
-            IrMethod caller = irMethods.get(implementation.methodKey());
+            IrMethod caller = implementation.initializerPlan()
+                    .map(plan -> plan.nativeBody())
+                    .orElseGet(() -> irMethods.get(implementation.methodKey()));
             for (String targetKey : implementation.directCallTargets()) {
                 if (registeredMethodKeys.contains(targetKey)) {
                     continue;
@@ -226,6 +238,7 @@ public final class NativeLlvmCompiler {
                 java.util.Collections.unmodifiableMap(methodsByOwner),
                 java.util.Collections.unmodifiableMap(directCallsByMethod),
                 java.util.Collections.unmodifiableMap(staticCallsByMethod),
+                java.util.Collections.unmodifiableMap(functionAbisByMethod),
                 java.util.Collections.unmodifiableSet(registeredMethodKeys));
     }
 
@@ -259,6 +272,7 @@ public final class NativeLlvmCompiler {
             Map<String, List<IrMethod>> methodsByOwner,
             Map<String, Set<String>> directCallsByMethod,
             Map<String, Set<String>> staticCallsByMethod,
+            Map<String, LlvmFunctionAbi> functionAbisByMethod,
             Set<String> registeredMethodKeys) {
     }
 }

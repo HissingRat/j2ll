@@ -1,6 +1,7 @@
 package xyz.melodysky.toolchain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.LinkedHashMap;
@@ -16,6 +17,9 @@ import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -51,6 +55,57 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertEquals(1, plan.implementations().size());
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, plan.implementations().get(0).path());
         assertEquals("LLVM_PRIMITIVE_SCALAR_IR", plan.implementations().get(0).reasonCode());
+    }
+
+    @Test
+    void classLiteralOnlyMethodsFreezeJniEnvAbiForStaticAndInstanceBodies() {
+        ParsedClass parsedClass = parse(
+                "pkg/ClassLiteralOps.class",
+                AsmFixtureBuilder
+                        .classWithStaticAndInstanceClassLiteralMethods(
+                                "pkg/ClassLiteralOps",
+                                "java/lang/String"));
+        MethodRewriteDecision staticLiteral =
+                decision(parsedClass, "staticLiteral");
+        MethodRewriteDecision instanceLiteral =
+                decision(parsedClass, "instanceLiteral");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(
+                        List.of(staticLiteral, instanceLiteral));
+        Map<String, IrMethod> irMethods = Map.of(
+                staticLiteral.method().methodKey(),
+                irMethod(parsedClass, "staticLiteral"),
+                instanceLiteral.method().methodKey(),
+                irMethod(parsedClass, "instanceLiteral"));
+
+        NativeImplementationPlan plan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(staticLiteral, instanceLiteral),
+                        irMethods);
+
+        NativeMethodImplementation staticImplementation = plan
+                .implementationFor(staticLiteral.method().methodKey())
+                .orElseThrow();
+        NativeMethodImplementation instanceImplementation = plan
+                .implementationFor(instanceLiteral.method().methodKey())
+                .orElseThrow();
+        assertTrue(staticImplementation.passesJniEnv());
+        assertTrue(instanceImplementation.passesJniEnv());
+        assertFalse(staticImplementation.passesOwnerClass());
+        assertFalse(instanceImplementation.passesOwnerClass());
+        assertEquals(
+                List.of("class:Ljava/lang/String;"),
+                staticImplementation.classObjectKeys());
+        assertEquals(
+                List.of("class:Ljava/lang/String;"),
+                instanceImplementation.classObjectKeys());
+        assertEquals(
+                staticImplementation.llvmFunctionAbi(),
+                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false));
+        assertEquals(
+                instanceImplementation.llvmFunctionAbi(),
+                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false));
     }
 
     @Test
@@ -262,6 +317,96 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
+    void rejectsCallerLoopThatDirectlyInvokesReferenceProducingPrimitiveCallee() {
+        ParsedClass parsedClass = parse(
+                "pkg/ReferenceCallLoop.class",
+                AsmFixtureBuilder.classWithStaticCall(
+                        "pkg/ReferenceCallLoop"));
+        MethodRewriteDecision leaf = decision(parsedClass, "value");
+        MethodRewriteDecision caller = decision(parsedClass, "call");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(
+                        List.of(leaf, caller));
+        IrValue text = new IrValue("%text", IrType.REFERENCE);
+        IrValue leafPending = new IrValue(
+                "%leafPending",
+                IrType.REFERENCE);
+        IrValue leafValue = new IrValue("%leafValue", IrType.I32);
+        IrMethod leafIr = new IrMethod(
+                leaf.method().owner(),
+                leaf.method().name(),
+                leaf.method().descriptor(),
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.symbolicConstant(
+                                                text,
+                                                IrOpcode.CONST_STRING,
+                                                "plain:v1:owned-local")
+                                        .withExceptionSite(
+                                                new IrExceptionSite(
+                                                        IrExceptionSiteKind
+                                                                .JVM_PENDING_EXCEPTION,
+                                                        List.of(),
+                                                        java.util.Optional.of(
+                                                                leafPending))),
+                                IrInstruction.constInt(leafValue, 7)),
+                        IrTerminator.returnValue(leafValue))));
+        IrValue callValue = new IrValue("%callValue", IrType.I32);
+        IrValue callPending = new IrValue(
+                "%callPending",
+                IrType.REFERENCE);
+        IrMethod callerIr = new IrMethod(
+                caller.method().owner(),
+                caller.method().name(),
+                caller.method().descriptor(),
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.gotoBlock("loop")),
+                        new IrBlock(
+                                "loop",
+                                List.of(IrInstruction.call(
+                                                java.util.Optional.of(
+                                                        callValue),
+                                                IrOpcode.CALL_STATIC,
+                                                List.of(),
+                                                leaf.method().methodKey())
+                                        .withExceptionSite(
+                                                new IrExceptionSite(
+                                                        IrExceptionSiteKind
+                                                                .JVM_PENDING_EXCEPTION,
+                                                        List.of(),
+                                                        java.util.Optional.of(
+                                                                callPending)))),
+                                IrTerminator.gotoBlock("loop"))));
+        Map<String, IrMethod> irMethods = Map.of(
+                leaf.method().methodKey(),
+                leafIr,
+                caller.method().methodKey(),
+                callerIr);
+
+        NativeImplementationPlan plan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(leaf, caller),
+                        irMethods);
+
+        assertTrue(plan.implementationFor(leaf.method().methodKey()).isPresent());
+        assertTrue(plan.implementationFor(caller.method().methodKey()).isEmpty());
+        assertEquals(
+                NativeLocalReferenceSafety.UNBOUNDED_REASON_CODE,
+                plan.unavailableReasonCodeFor(
+                                caller.method().methodKey())
+                        .orElseThrow());
+    }
+
+    @Test
     void selectsDirectLlvmCallPathWhenPrivateSpecialCalleeIsAlsoLlvmNative() {
         ParsedClass parsedClass = parse("pkg/SpecialCalls.class", privateSpecialCallClass());
         MethodRewriteDecision helper = decision(parsedClass, "helper");
@@ -451,7 +596,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void doesNotSelectLlvmPathWhenNestedArrayExceptionMustReachJavaHandler() {
+    void selectsLlvmPathWhenNestedArrayExceptionCanReachJavaHandler() {
         ParsedClass parsedClass = parse(
                 "pkg/ProtectedByteMatrices.class",
                 AsmFixtureBuilder.classWithProtectedReferenceArrayAllocation(
@@ -467,7 +612,15 @@ class NativeImplementationPlannerTest implements Opcodes {
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
 
-        assertTrue(plan.implementationFor(decision.method().methodKey()).isEmpty());
+        NativeMethodImplementation implementation =
+                plan.implementationFor(decision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_ALLOCATION_HELPER_IR", implementation.reasonCode());
+        assertEquals(List.of("referenceArray:[B"), implementation.allocationKeys());
+        assertEquals(
+                List.of("instanceof:java/lang/NegativeArraySizeException"),
+                implementation.typeCheckKeys());
+        assertTrue(implementation.passesJniEnv());
     }
 
     @Test
@@ -513,6 +666,72 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertTrue(castImplementation.passesJniEnv());
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, instanceOfImplementation.path());
         assertEquals(List.of("instanceof:java/lang/String"), instanceOfImplementation.typeCheckKeys());
+    }
+
+    @Test
+    void includesStableDeduplicatedTypedCatchMetadataForProtectedJvmExceptions() {
+        ParsedClass parsedClass = parse("pkg/StringHelpers.class", stringHelperClass());
+        MethodRewriteDecision decision = decision(parsedClass, "length");
+        IrValue text = new IrValue("p0", IrType.REFERENCE);
+        IrValue length = new IrValue("length", IrType.I32);
+        IrValue exception = new IrValue("pending", IrType.REFERENCE);
+        IrValue caught = new IrValue("caught", IrType.REFERENCE);
+        IrValue fallback = new IrValue("fallback", IrType.I32);
+        IrExceptionSite exceptionSite = new IrExceptionSite(
+                IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                List.of(
+                        new IrExceptionEdge(
+                                "handler",
+                                "java/lang/RuntimeException",
+                                List.of(exception)),
+                        new IrExceptionEdge(
+                                "handler",
+                                "java/lang/NullPointerException",
+                                List.of(exception)),
+                        new IrExceptionEdge(
+                                "handler",
+                                "java/lang/RuntimeException",
+                                List.of(exception)),
+                        new IrExceptionEdge("handler", "<any>", List.of(exception))),
+                java.util.Optional.of(exception));
+        IrMethod irMethod = new IrMethod(
+                "pkg/StringHelpers",
+                "length",
+                "(Ljava/lang/String;)I",
+                IrType.I32,
+                List.of(text),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(IrInstruction.operation(
+                                                java.util.Optional.of(length),
+                                                IrOpcode.CALL_RUNTIME_HELPER,
+                                                List.of(text),
+                                                "j2ll_rt_string_length")
+                                        .withExceptionSite(exceptionSite)),
+                                IrTerminator.returnValue(length)),
+                        new IrBlock(
+                                "handler",
+                                List.of(caught),
+                                List.of("java/lang/RuntimeException"),
+                                List.of(IrInstruction.constInt(fallback, -1)),
+                                IrTerminator.returnValue(fallback))));
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeMethodImplementation implementation = new NativeImplementationPlanner()
+                .plan(
+                        registrationPlan,
+                        List.of(decision),
+                        Map.of(decision.method().methodKey(), irMethod))
+                .implementationFor(decision.method().methodKey())
+                .orElseThrow();
+
+        assertEquals(
+                List.of(
+                        "instanceof:java/lang/NullPointerException",
+                        "instanceof:java/lang/RuntimeException"),
+                implementation.typeCheckKeys());
     }
 
     @Test
@@ -577,7 +796,11 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
         assertEquals("LLVM_STRING_CONCAT_CONSTANTS_HELPER_IR", implementation.reasonCode());
         assertTrue(implementation.passesJniEnv());
-        assertTrue(implementation.stringHelperSymbols().contains("j2ll_rt_string_constant"));
+        assertTrue(implementation.stringHelperSymbols().stream()
+                .anyMatch(symbol -> symbol.startsWith(
+                        "j2ll_rt_string_constant_")));
+        assertFalse(implementation.stringHelperSymbols().contains(
+                "j2ll_rt_string_constant"));
         assertTrue(implementation.stringHelperSymbols().contains("j2ll_rt_string_builder_append_i32"));
         assertTrue(implementation.templateIrMethod().isPresent());
     }
@@ -754,19 +977,62 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
-    void selectsGenericBodyHelperForSimpleBranchingConstructorShape() {
+    void selectsLlvmSplitBodyForSimpleBranchingConstructorShape() {
         ParsedClass parsedClass = parse("pkg/BranchingCtor.class", branchingConstructorClass());
         MethodRewriteDecision decision = decision(parsedClass, "<init>");
+        IrMethod constructorIr = irMethod(parsedClass, "<init>");
+        assertTrue(
+                new xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner()
+                        .plan(decision, constructorIr)
+                        .isPresent(),
+                () -> "initializer plan missing for " + constructorIr);
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
         NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
-                Map.of(decision.method().methodKey(), irMethod(parsedClass, "<init>")));
+                Map.of(decision.method().methodKey(), constructorIr));
 
         NativeMethodImplementation implementation = plan.implementationFor(decision.method().methodKey()).orElseThrow();
-        assertEquals(NativeImplementationPath.TEMPLATE_JNI_PATH, implementation.path());
-        assertEquals("GENERIC_CONSTRUCTOR_BODY_HELPER", implementation.reasonCode());
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_CONSTRUCTOR_SPLIT_BODY_IR", implementation.reasonCode());
         assertTrue(implementation.templateIrMethod().isPresent());
+        assertTrue(implementation.initializerPlan().isPresent());
+        assertTrue(implementation.initializerPlan().orElseThrow().nativeBody().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .noneMatch(instruction -> instruction.symbol()
+                        .map(symbol -> symbol.equals("java/lang/Object#<init>!()V"))
+                        .orElse(false)));
+    }
+
+    @Test
+    void selectsLlvmPathForClassInitializerLifecycleHelpers() {
+        ParsedClass parsedClass = parse(
+                "pkg/StaticLifecycle.class",
+                classInitializerLifecycleClass());
+        MethodRewriteDecision decision = decision(parsedClass, "<clinit>");
+        IrMethod initializerIr = irMethod(parsedClass, "<clinit>");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                Map.of(decision.method().methodKey(), initializerIr));
+
+        NativeMethodImplementation implementation =
+                plan.implementationFor(decision.method().methodKey()).orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("LLVM_CLASS_INITIALIZER_BODY_IR", implementation.reasonCode());
+        assertTrue(implementation.initializerPlan().isPresent());
+        assertTrue(initializerIr.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CLASS_INIT_BEGIN));
+        assertTrue(initializerIr.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CLASS_INIT_END));
+        assertTrue(initializerIr.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CLASS_INIT_FAILED));
     }
 
     private ParsedClass parse(String entry, byte[] bytes) {
@@ -1092,6 +1358,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     private IrMethod reflectionMemberIr(String helperSymbol) {
         IrValue token = new IrValue("token", IrType.I64);
         IrValue member = new IrValue("member", IrType.REFERENCE);
+        IrValue pending = new IrValue("reflectionPending", IrType.REFERENCE);
         return new IrMethod(
                 "pkg/ReflectionPlan",
                 "member",
@@ -1103,10 +1370,14 @@ class NativeImplementationPlannerTest implements Opcodes {
                         List.of(
                                 IrInstruction.constLong(token, 1L),
                                 IrInstruction.operation(
-                                        java.util.Optional.of(member),
-                                        IrOpcode.CALL_RUNTIME_HELPER,
-                                        List.of(token),
-                                        helperSymbol)),
+                                                java.util.Optional.of(member),
+                                                IrOpcode.CALL_RUNTIME_HELPER,
+                                                List.of(token),
+                                                helperSymbol)
+                                        .withExceptionSite(new IrExceptionSite(
+                                                IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                                                List.of(),
+                                                java.util.Optional.of(pending)))),
                         IrTerminator.returnValue(member))));
     }
 
@@ -1115,6 +1386,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrValue target = new IrValue("target", IrType.REFERENCE);
         IrValue token = new IrValue("token", IrType.I64);
         IrValue value = new IrValue("value", IrType.I32);
+        IrValue pending = new IrValue("unsafePending", IrType.REFERENCE);
         return new IrMethod(
                 "pkg/UnsafePlan",
                 "read",
@@ -1124,10 +1396,14 @@ class NativeImplementationPlannerTest implements Opcodes {
                 List.of(new IrBlock(
                         "entry",
                         List.of(IrInstruction.operation(
-                                java.util.Optional.of(value),
-                                IrOpcode.CALL_RUNTIME_HELPER,
-                                List.of(target, token),
-                                "j2ll_rt_unsafe_get_int|field:pkg/UnsafeTarget#value!I")),
+                                        java.util.Optional.of(value),
+                                        IrOpcode.CALL_RUNTIME_HELPER,
+                                        List.of(target, token),
+                                        "j2ll_rt_unsafe_get_int|field:pkg/UnsafeTarget#value!I")
+                                .withExceptionSite(new IrExceptionSite(
+                                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                                        List.of(),
+                                        java.util.Optional.of(pending)))),
                         IrTerminator.returnValue(value))));
     }
 
@@ -1219,6 +1495,23 @@ class NativeImplementationPlannerTest implements Opcodes {
         constructor.visitInsn(RETURN);
         constructor.visitMaxs(0, 0);
         constructor.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] classInitializerLifecycleClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/StaticLifecycle", null, "java/lang/Object", null);
+        writer.visitField(ACC_PRIVATE | ACC_STATIC, "value", "Ljava/lang/Object;", null, null).visitEnd();
+        MethodVisitor initializer = writer.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
+        initializer.visitCode();
+        initializer.visitTypeInsn(NEW, "java/lang/Object");
+        initializer.visitInsn(DUP);
+        initializer.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        initializer.visitFieldInsn(PUTSTATIC, "pkg/StaticLifecycle", "value", "Ljava/lang/Object;");
+        initializer.visitInsn(RETURN);
+        initializer.visitMaxs(0, 0);
+        initializer.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }

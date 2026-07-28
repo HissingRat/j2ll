@@ -73,14 +73,15 @@ Schema v1 不提供 `requiredNative`。如果 final plan 含 skipped methods，d
 
 ## 当前语义快照
 
-- SSA merge 使用 block parameters；合法但尚未建模的 exception/finally/monitor shape 统一把整个 selected method 标记为 `skipped`，不生成 bytecode-preserving embedded implementation。
-- LLVM direct path 与 JNI/runtime helper-backed path 都属于 `nativeLowered`。helper 可以调用 JVM API、执行普通 JVM dispatch、维护 pending exception/reference lifetime；只要 selected caller 的原 bytecode未被复制或重放即可。
-- JDK String/StringBuilder/System.arraycopy/Math/boxing/Objects、受限 reflection、Unsafe/VarHandle、MethodHandle/lambda、field/array/allocation/type/monitor/exception/call dispatch 等已实现 subset继续走 helper-backed native lowering。超出经过验证 descriptor/shape matrix 的 caller 变为 `skipped`。
-- Class initialization、constructor 和有 Code interface method 继续使用合法 Java stub + generated native body helper；无法把全部用户语义移入 native helper 的 method 变为 `skipped`。
+- SSA merge 使用 block parameters。受保护JNI/runtime helper site还显式携带pending exception value、按classfile顺序排列的typed/catch-all handler和throw-site live locals；throwable与locals通过exception edge arguments进入handler。无法形成一致exception frame或涉及尚未支持的monitor/finally交互时，整个 selected method 才变为 `skipped`。
+- LLVM direct path 与 JNI/runtime helper-backed path 都属于 `nativeLowered`。helper 可以调用 JVM API、执行普通 JVM dispatch、维护 pending exception/reference lifetime；受保护helper site会立即读取并清除pending exception、按序匹配typed/catch-all handler，未匹配时rethrow。selected caller 的原 bytecode不会被复制或重放。
+- JDK String/StringBuilder/System.arraycopy/Math/boxing/Objects、env-backed `Object.getClass()`、JVM-backed `Thread.sleep(J)V`、受限 reflection、Unsafe/VarHandle、MethodHandle/lambda、field/array/allocation/type/monitor/exception/call dispatch 等已实现 subset继续走 helper-backed native lowering。超出经过验证 descriptor/shape matrix 的 caller 变为 `skipped`。
+- Constructor只把精确的线性verifier prefix保留在Java stub中：真实 `this(...)` / `super(...)` 调用及其原实参完成后，post-init body进入same-owner native helper。`<clinit>`保留loader/bootstrap stub，完整initializer body进入native helper；无法安全分割或最终native plan不完整的initializer变为 `skipped`。
 - 唯一 runtime class 是 Java 17 `<embeddedLibraryDirectory>/Loader.class`。它只负责 native library 选择、SHA-256 校验、加载和注册，并在 field internalization 实际需要 reference/array slot 时按需加入 `ClassValue<Object[]>` sidecar。
 - runtime/source/package 中不再存在 bytecode-preserving helper class、embedded class blob、blob carrier/decoder 或 hidden-class define API。
 - `fieldInternalization` 只批准所有真实 accessor 最终均为 `nativeLowered` 且符合 storage ABI 的字段。任一 accessor 为 `skipped`、unselected、cross-owner 或存在动态观察边界时保留 JVM field；reference/array 状态仍由 Loader 的 JVM-managed `ClassValue<Object[]>` sidecar持有。
 - managed Zig `0.15.2` 通过一次 matrix-wide invocation 构建 selected targets；source set 只含 per-class LLVM、JNI wrapper C 和 runtime/helper C。六目标结构性交叉产物证据与 non-host JVM runtime E2E 继续分开。
+- 本轮新增的protected pending-exception与initializer真实运行证据当前只覆盖Windows real-Zig host child JVM；`Object.getClass()`与`Thread.sleep(J)V`当前只有focused planner/LLVM/C ABI evidence，其他目标只可引用结构性交叉构建证据。
 - artifact audit 验证每个 `nativeLowered` method 的 native body/registration closure、每个 `skipped` method 的原 body 保留且无 registration，以及 fallback bytecode复制表面在 generated C/native/JAR 中不存在。
 - release-readiness/support/opcode/known-blocker reports 用 `nativeLowered`/helper-backed evidence和精确 `skipped` reason表达覆盖。长期工作按 reason code逐项扩大 native support，目标是持续减少 skipped methods。
 

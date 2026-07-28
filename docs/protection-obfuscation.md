@@ -1,5 +1,9 @@
 # Protection And Obfuscation Plan
 
+Native 产物的攻击者模型、Ghidra 实测基线、per-build 多样性与逐项验收清单见
+[`native-hardening-attacker-validation.md`](native-hardening-attacker-validation.md)。本文件描述各 pass
+的语义边界；不能仅凭 pass 已启用就推断最终产物不存在批量恢复捷径。
+
 本文档定义 rewrite 后 j2ll 的保护/混淆设计。目标是把混淆分成三个清晰层次，避免把 Java 语义、LLVM emission 和 binary packaging 混在一起。
 
 ```text
@@ -11,7 +15,14 @@ SSA IR protection passes
 核心原则：
 
 - 先保证语义正确，再增加强度。
-- schema v1 中每个 IR/LLVM pass 字段都是直接 boolean 开关；需要可重复输出时使用全局 protection seed。
+- schema v1 中每个 IR/LLVM pass 字段都是直接 boolean 开关；`seed: null` 的正式构建默认启用 per-build 多样性，需要可重复输出时显式配置 protection seed。
+- Build-root派生只通过类型安全的`BuildProtectionDomain` registry；mainline
+  使用集中`BuildProtectionMaterials`冻结各stage材料，不允许stage临时发明
+  字符串domain或直接复用另一stage的seed。
+- 提高静态批量分析成本优先于压缩产物，但变换必须有显式大小边界：优先
+  table-free storage、bounded call topology和同值小组复用，并在攻击者回归中
+  记录final native/generated-C字节数与dual-build delta。大小指标是回归证据，
+  不是plaintext、export、语义或final-binary审计的替代品。
 - 每个 pass 声明输入 IR 形态、输出 IR 形态、是否保持 SSA、是否改变 CFG、是否需要 runtime helper。
 - 不做脆弱的 LLVM `.ll` 文本后处理。LLVM IR 混淆必须基于 LLVM module model。
 - 对外只导出 loader/bootstrap 需要的 JNI / C ABI wrapper；Java method 对应的 LLVM function 在跨 object link 时可使用 `external hidden`，但不得进入 dynamic export list。
@@ -172,7 +183,22 @@ canonicalize
 - repeated literal cache policy。
 - final binary string audit，确认明文不出现。
 
-当前 v1 已接实 deterministic native-side string encryption：SSA 中的 `j2ll_rt_string_constant|string:<literal>` carrier、普通 `CONST_STRING` / `ldc String`，以及安全的 TEMPLATE constructor body string literal 都会改写为 `j2ll_rt_string_constant|enc:v1:<token>:<keyHex>:<cipherHex>` helper call。JNI helper C 生成 encrypted table，在 native side 解密后通过 `NewStringUTF` 创建 JVM `String`。该 path 不把 `String` 当作 native char pointer 长期保存。artifact audit 中 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和 StringConcat constant carrier stable generated-C surface 是 blocking sensitive fact，并分别记录 `promotionReason=llvmNativeSurface`、`templateStableSurface`、`stableGeneratedCSurface`；report 只写 literal hash。class name / descriptor / reflection metadata token / lambda 或 MethodHandle bootstrap metadata 仍不加密；reflection-sensitive method 的普通 `CONST_STRING` 记录 `STRING_ENCRYPTION_REFLECTION_SENSITIVE` skip，相关 metadata fact 只按 `metadataSensitiveObservedOnly` 进入 observed-only evidence，避免破坏静态 metadata 解析。
+当前 v1 已接实 native-side string encryption：SSA 中的 `j2ll_rt_string_constant|string:<literal>` carrier、普通 `CONST_STRING` / `ldc String`，以及安全的 TEMPLATE constructor body string literal 都会进入业务字符串 native representation。`StringEncryptionPass` 的新产出固定为 `enc:v2`；它的 64-bit carrier token 与 encrypted-payload key 绑定，token SSA 名称和数值都从 build/method/site 材料派生。`enc:v1` 解析只保留为 compiler-internal 兼容边界，不是生产 emission 合同。最终生成物不再包含统一 token dispatcher 或 encrypted table；每个不同 Java 字符串值使用 build-scoped hash-only helper symbol、独立 ciphertext/派生材料和 inline decode/volatile clear，LLVM call 与 generated C 由同一 build identity 映射。pass 写入 emitted LLVM 的 token SSA value name 同样由 build seed 与 method/site/token 派生为 hash-only identifier，不再保留稳定 `%j2ll_str_token_<index>` 跨构建锚点。
+
+native-text emitter 不再生成统一固定 decoder 或相邻 XOR seed shares；每个 use identity 从四种 codec family（Weyl ARX、dual-lane ARX、32-bit Feistel、fold/rotate）中选择，并派生独立 schedule、遍历方向、rotate/shift 与常量，解码形状直接内联到拥有 scratch 的调用点。多字节 ciphertext 还通过 build/purpose/use-scoped affine bijection 按 `(offset + logicalIndex * stride) mod length` 物理存放；stride 与 length 互质。解码只维护 activation-local physical cursor，不生成 permutation table、额外 ciphertext byte、padding 或第二份副本。空/单字节输入只能使用 identity layout。`GeneratedNativeHardeningAudit` 要求生产 source 提供 `AFFINE_CIPHERTEXT_STORAGE` evidence，并以 `INVALID_AFFINE_CIPHERTEXT_STORAGE` 阻断多字节 identity/direct-index 回归。
+
+每次 ciphertext indexed read 都通过 `const volatile unsigned char` lvalue 形成跨平台 runtime boundary，防止 Zig/Clang 在 `ReleaseSafe` 中把常量 ciphertext + key 解码循环折叠回最终 binary 明文；generated-C audit 对缺失或混用 direct read 的 source fail closed，`-O2` object test 扫描全部 12-byte UTF-8/UTF-16LE sliding windows。helper 在栈上恢复 JNI modified UTF-8，调用 `NewStringUTF` 后立即清零，包括 JNI 返回 `NULL` 且保留 pending exception 的路径。相同值允许在单次构建内共享一个小 helper group。通用 runtime metadata、business string、registration text 分别使用独立 build material；registration/runtime metadata 也保持不同 purpose/lifetime/lookup。generated-C audit 会阻断 reusable decoder fanout、固定 SplitMix shape、相邻 seed/cipher、optimizer-foldable read与非法affine storage。artifact audit 中 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和 StringConcat constant carrier stable generated-C surface 是 blocking sensitive fact，并分别记录 `promotionReason=llvmNativeSurface`、`templateStableSurface`、`stableGeneratedCSurface`；report 只写 literal hash，lowering helper evidence只写 kind + identity hash。class name / descriptor / reflection metadata token / lambda 或 MethodHandle bootstrap metadata 仍不加密；reflection-sensitive method 的普通 `CONST_STRING` 记录 `STRING_ENCRYPTION_REFLECTION_SENSITIVE` skip，相关 metadata fact 只按 `metadataSensitiveObservedOnly` 进入 observed-only evidence，避免破坏静态 metadata 解析。
+
+上述新carrier/storage结构的focused/full tests与真实六目标均已通过。
+`build_2026-07-28_09-53-53`和`build_2026-07-28_09-56-32`各有39个carrier，
+跨构建name/token overlap均为0，且两次artifact/readiness audit通过。Windows
+Ghidra动态probe均以exit 0捕获10 owners / 57 bindings并确认没有
+`j2llRegister`动态导出；它证明registration入口合同，不证明业务字符串或
+wrapper在静态上不可恢复。独立Ghidra normalized-p-code复验得到两份更新DLL的
+`direct/multiple/unresolved=30/19/8`与`26/26/5`；正式mapping reuse为
+5/57（8.77%），14个shape changed、28个resolution changed、10个在任一构建中
+unresolved。最终machine-code业务字符串恢复率仍需单独测量，不能从probe成功或
+wrapper reuse下降推导。
 
 ### 方法内联/拆分
 
@@ -199,7 +225,7 @@ canonicalize
 
 当前 v1 已接入两个受限的 program-level SSA pass：
 
-- `MethodInliningPass` 只处理 caller/callee 都有 preliminary `LLVM_NATIVE_PATH` 证据的 `CALL_STATIC`，以及 same-owner private-self `CALL_SPECIAL`。callee 必须是小型 pure-scalar IR，递归、reflection、field/call/helper、non-native、exception、monitor/JMM、`<init>` / `<clinit>` shape 都稳定跳过。它支持 value/block remap 和多个 return 汇入 typed continuation，但不删除原 Java method 或仍需的 native registration。
+- `MethodInliningPass` 只处理 caller/callee 都有 preliminary `LLVM_NATIVE_PATH` 证据的 `CALL_STATIC`，以及 same-owner private-self `CALL_SPECIAL`。callee 必须是小型 pure-scalar IR，递归、reflection、field/call/helper、non-native、exception、monitor/JMM、`<init>` / `<clinit>` shape 都稳定跳过。frontend direct call 的无 handler pending-exception evidence 只有在 callee 已证明 non-throwing、synthetic exception value 完全无 use 时才可随 call 删除；protected edge、specific exception kind 或 observable exception value 继续 fail closed。它支持 value/block remap 和多个 return 汇入 typed continuation，但不删除原 Java method 或仍需的 native registration。
 - `MethodSplittingPass` 只 outline ordinary LLVM-native method 中单个 basic block 的 pure-scalar suffix；live-in 必须是可用 scalar，当前只允许一个 scalar live-out。outlined helper 是 compiler-internal IR/LLVM function，不是新的 Java method，也不进入 `RegisterNatives`。原 terminator/多个 successor 仍留在 caller，caller/helper 校验失败时整体回滚。
 
 两者都由 `ProgramIrProtectionCoordinator` 在 per-method protection 之后运行，使用全局 seed，并分别产生 `METHOD_INLINING` / `METHOD_SPLITTING` report row。focused model、Windows real-Zig child-JVM parity/pass-RAN，以及六目标 feature-specific build-graph/content/privacy/export evidence 均已通过。
@@ -225,7 +251,7 @@ canonicalize
 - devirtualized call indirect parity。
 - unresolved external/non-native target。
 
-IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 per-owner LLVM module 边界约束：只接受 caller/target 都有 native path 证据的 same-owner static/private-special bytecode-direct call。virtual/interface（包括已证明 single target 的 devirtualized call）和 cross-owner static/special 当前走原 JNI bridge，并以 `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE` fail closed；unresolved/multi-target、dynamic/helper、non-native target、constructor/class-initializer 和 signature mismatch 也稳定跳过。approved `IrInstruction` 携带 typed `IrCallIndirectionRef`，IR validator 校验 plan/group/entry/signature/invoke kind；`LlvmIrCallIndirectionPass` 只消费该 metadata，生成 internal `j2ll_ircit_<sha256>` table，不在 backend 重新做 Java call resolution。
+IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 per-owner LLVM module 边界约束：只接受 caller/target 都有 native path 证据的 same-owner static/private-special bytecode-direct call。virtual/interface（包括已证明 single target 的 devirtualized call）和 cross-owner static/special 当前走原 JNI bridge，并以 `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE` fail closed；unresolved/multi-target、dynamic/helper、non-native target、constructor/class-initializer 和 signature mismatch 也稳定跳过。approved `IrInstruction` 携带 typed `IrCallIndirectionRef`，IR validator 校验 plan/group/entry/signature/invoke kind。group key 同时包含 Java/SSA signature 与 preliminary native plan 的 hidden `JNIEnv*` / owner-`jclass` ABI proof；表面 IR signature 相同、实际 LLVM function-pointer type 不同的 target 必须拆组，forged mixed-ABI group 由 validator fail closed。`LlvmIrCallIndirectionPass` 只消费该 metadata，生成 internal `j2ll_ircit_<sha256>` table，不在 backend 重新做 Java call resolution，且仍独立核对真实函数类型。
 
 当前 v1 已接实 LLVM module model 层的保守子集：对 same-class selected static/private direct LLVM call，`LlvmCallIndirectionPass` 按 LLVM function signature 分组，默认在 module 中生成 deterministic hidden function-pointer table `j2ll_cit_<sha256>`。caller 按 seed 派生的 stable table order 取出 function pointer 并 indirect call 原 hidden LLVM function，成功记录 `CALL_INDIRECTION_TABLE`。如果 table 形态不可用，保留 deterministic hidden dispatcher switch `j2ll_cid_<sha256>` alternate form，caller 传入 selector，成功记录 `CALL_INDIRECTION_DISPATCHER`。该 pass 只操作 `LlvmModule` model 和 Zig workspace 使用的 `.ll` source，不做最终 `.ll` 文本 regex；table/dispatcher symbol 使用 protection seed 稳定生成，不进入 dynamic export allowlist。当前不处理 virtual/interface generic dispatch、non-native/unresolved call、lambda/MethodHandle bootstrap metadata shape、monitor/exception/JMM-sensitive shape。无适用 direct call 的 table mode 记录 `CALL_INDIRECTION_TABLE_UNSUPPORTED_SHAPE` skip。
 
@@ -253,9 +279,31 @@ IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 
 - symbol audit：内部 Java method name 不导出。
 - RegisterNatives/JNI wrapper 仍可绑定。
 
-`methodTableHiding` 当前已实现为 packaging/native-registration 协作 plan，不伪装成单 method IR rewrite。`MethodTableHidingPlanner` 按 registration owner 生成 deterministic collision-free token，metadata table 与 function-pointer table 使用不同顺序，function token 再按 owner mask 编码；native side 按 token 组装临时 `JNINativeMethod[]` 后仍调用 JVM `RegisterNatives`。生成器只接受与 final registration plan 精确一致的 plan，mismatch/unknown token fail closed。
+`methodTableHiding` 当前已实现为 packaging/native-registration 协作 plan，不伪装成单 method IR rewrite。`MethodTableHidingPlanner` 按 registration owner 生成 build-diverse 的物理 registration order；opaque binding token 只作为 hash-only report evidence，不进入 generated C 或 final native。每个 owner 在自己的注册窗口内以 straight-line assignment 构造唯一临时 `JNINativeMethod[]`，不生成 persistent token/function table，也不执行 nested runtime join。生成器只接受与 final registration plan 精确一致的 plan，mismatch fail closed。
 
-owner/name/descriptor 是 JVM registration 必需信息，运行时仍会解码使用；静态 generated C/native surface 通过 `CMetadataStringObfuscator` 保存为 writable encoded byte array。这是 at-rest obfuscation，不是运行时内存保密。table、decode helper 和 implementation symbol 保持 internal/hidden，动态导出仍只有 loader roots。`protection-report.json` 使用 `METHOD_TABLE_HIDING`，`packaging-report.json` 写 hash/token-only plan evidence。当前 gated real-Zig host E2E 已覆盖多 method 注册和双 ClassLoader；六目标专项已覆盖 two-owner generated-C/build-graph/privacy/export。多 owner + virtual/interface 的真实 runtime 与 non-host JVM runtime 仍待补。
+owner/name/descriptor 是 JVM registration 必需信息，运行时仍会短暂形成明文；最终 generated C/native 不再使用全局 metadata 目录或 aggregate decode-all。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，在该 owner 的注册窗口内解码到临时 scratch；owner name 在 defining-loader lookup 返回后立即清零，method/descriptor scratch 和 `JNINativeMethod[]` 则在 `RegisterNatives` 成功或失败后以 volatile zeroizer 清理再释放。aggregate root、per-owner helper 和 implementation symbol 均为 internal/hidden，动态导出仅保留 `JNI_OnLoad`。multi-owner rollback 会同时检查每次 `UnregisterNatives` 的 status 与 pending exception；rollback 不完整时通过 `FatalError` fail closed，完整时恢复原始 pending exception，并检查 `Throw` status 与 pending-exception evidence，恢复失败同样 fail closed。rollback/exception-restore 的低敏感错误文案也使用 registration 专用 text domain，按 aggregate/owner identity 独立编码，只在对应 `FatalError` 路径的 local scratch 中恢复；`GeneratedNativeHardeningAudit` 以 `STABLE_REGISTRATION_DIAGNOSTIC` 阻断历史稳定明文及任意 direct/adjacent `FatalError` C string literal 重新成为跨构建 xref 锚点。这仍是 at-rest obfuscation，不是运行时内存保密。`protection-report.json` 使用 `METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT`，`packaging-report.json` 明确写入 transient strategy、未生成 runtime token/function table，以及 hash/token-only report evidence。当前 gated real-Zig host E2E 已覆盖多 method 注册和双 ClassLoader；六目标专项已覆盖 two-owner generated-C/build-graph/privacy/export。多 owner + virtual/interface 的真实 runtime 与 non-host JVM runtime 仍待补。
+
+### JNI wrapper local ABI topology
+
+`LLVM_NATIVE_PATH` wrapper 与规范 LLVM body 之间由 build identity 为每个 binding
+选择四种 local topology 之一：direct canonical、单层参数重排 bridge、双层参数
+重排 bridge，或 bounded branched 参数重排 bridge。branched 形态只使用一个
+activation-local volatile predicate，在“一层 route”和“两层 route”之间选择；
+最多生成三个 `static` bridge，且只重排调用本来已有的 native 参数。这一上限和
+四选一策略用于控制代码膨胀，不引入持久 function pointer、cookie、额外 JVM
+状态或 native object representation。
+
+所有 bridge 都不得执行 JNI、解引用 Java reference、改变 local-reference
+lifetime，或观察/清除 pending exception。它只增加静态 wrapper classifier
+需要处理的 call topology，不是安全边界；动态 hook `RegisterNatives` 仍能获得
+binding，结构化 binary analyzer 也可能恢复 route。当前 source/planner 与
+cross-target fixture已覆盖该第四种形态；全套test、强制该shape的
+`ZigCrossTargetBuildTest`和`ProtectionCrossTargetEvidenceTest`真实六目标均已
+通过。`HostNativeLocalAbiBridgeCParityTest`另真实编译并分别执行两条branched
+route，覆盖异构sentinel参数顺序、零参数`void` conditional与96-site optimized
+object增长预算。两次Ghidra normalized-p-code复验中，直连比例从第三轮
+37/57降至30/57与26/57，更新双构建mapping reuse为5/57；这是最终binary难度
+提升的证据，但动态binding capture仍完整，不能宣称静态classifier已经失效。
 
 ### Field internalization
 
@@ -473,13 +521,26 @@ LLVM pass booleans 为 `nameObfuscation`、`opaquePredicates`、`blockLayoutPert
 - pass 对某个 method 不适用时，只跳过该 protection pass 并 warning；不要因此改变 method 的 `nativeLowered` / `skipped` outcome。只有 compiler/runtime implementation本身无法保持语义时才把 selected method 标记为 `skipped`。
 - pass 缺少硬依赖时，例如 `classPath`、JDK metadata、target toolchain capability，preflight error 并提示补齐输入或关闭该 pass。
 
-当前 `reports/protection-report.json` 为 stable schema v1，按 pass 记录 `passName`、`layer`、`status`、`reasonCode`、`affectedMethods`、`affectedSymbols` 和 `seedHash`；`FAKE_BRANCHES`、`BASIC_BLOCK_SPLITTING` 与 `BLOCK_NAME_OBFUSCATION` 是独立 pass row。program/backend 协作项还会分别记录 `METHOD_INLINING`、`METHOD_SPLITTING`、`IR_CALL_INDIRECTION`、`IR_CALL_INDIRECTION_BACKEND`、`FIELD_INTERNALIZATION`、`METHOD_TABLE_HIDING`、`LLVM_OPAQUE_PREDICATES`、`LLVM_BLOCK_LAYOUT_PERTURBATION` 和 `LLVM_GLOBAL_LAYOUT`。raw protection seed 不写入 report、final JAR metadata、library default name 或 summary。Runtime loader 名称固定来自规范 `embeddedLibraryDirectory`，不是 seed-derived 命名。已接实 status 使用 `RAN` / `SKIPPED` / `FAILED`；method/module 级不适用使用稳定 reason code，例如 `METHOD_INLINING_NO_CANDIDATE`、`METHOD_SPLITTING_NO_SAFE_REGION`、`IR_CALL_INDIRECTION_NO_CANDIDATE`、`FIELD_INTERNALIZATION_NO_CANDIDATE`、`METHOD_TABLE_HIDING_NO_CANDIDATE`、`LLVM_OPAQUE_PREDICATES_NO_CANDIDATE`、`LLVM_BLOCK_LAYOUT_NO_CANDIDATE`、`LLVM_GLOBAL_LAYOUT_NO_CANDIDATE`、`CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE` 和 `PROTECTION_MONITOR_SENSITIVE_SKIP`。
+当前 `reports/protection-report.json` 为 stable schema v1，按 pass 记录 `passName`、`layer`、`status`、`reasonCode`、`affectedMethods`、`affectedSymbols` 和 `seedHash`，并在 root `coverage` 中稳定聚合 hash-only per-subject `requested`、`applicability`、`affected`、`status` 与 `reasonCode`；`FAKE_BRANCHES`、`BASIC_BLOCK_SPLITTING` 与 `BLOCK_NAME_OBFUSCATION` 是独立 pass row。IR per-method producer 直接持久化真实 applicability；尚未迁移的 program/LLVM producer 使用 `UNKNOWN`，report adapter 不得从 `SKIPPED` 推断 `NOT_APPLICABLE`，也不得把旧汇总字段自动升级为 affected evidence。program/backend 协作项还会分别记录 `METHOD_INLINING`、`METHOD_SPLITTING`、`IR_CALL_INDIRECTION`、`IR_CALL_INDIRECTION_BACKEND`、`FIELD_INTERNALIZATION`、`METHOD_TABLE_HIDING`、`LLVM_OPAQUE_PREDICATES`、`LLVM_BLOCK_LAYOUT_PERTURBATION` 和 `LLVM_GLOBAL_LAYOUT`。raw protection seed 不写入 report、final JAR metadata、library default name 或 summary。Runtime loader 名称固定来自规范 `embeddedLibraryDirectory`，不是 seed-derived 命名。已接实 status 使用 `RAN` / `SKIPPED` / `FAILED`；method/module 级不适用使用稳定 reason code，例如 `METHOD_INLINING_NO_CANDIDATE`、`METHOD_SPLITTING_NO_SAFE_REGION`、`IR_CALL_INDIRECTION_NO_CANDIDATE`、`FIELD_INTERNALIZATION_NO_CANDIDATE`、`METHOD_TABLE_HIDING_NO_CANDIDATE`、`LLVM_OPAQUE_PREDICATES_NO_CANDIDATE`、`LLVM_BLOCK_LAYOUT_NO_CANDIDATE`、`LLVM_GLOBAL_LAYOUT_NO_CANDIDATE`、`CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`、`CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE` 和 `PROTECTION_MONITOR_SENSITIVE_SKIP`。Protection pass 输入非法时仍保留 build-level validation error；只有某个 pass 的 candidate 输出 validation 失败时，管线才回滚到该 pass 输入，并保留 `FAILED` evidence、`affected=false` 与含 validator code 的 `PASS_VALIDATION_FAILED` warning，非法 candidate 不进入后续 pass/backend。
 
 Protection 不再为 unsupported selected Code-bearing method保存或编码原 Java bytecode。Final implementation plan只能把这类 method标记为 `nativeLowered` 或 `skipped`：前者必须由 LLVM、生成式 template/stub或 approved JNI/runtime helper完整承担语义；后者保留原 method body、不注册且不生成 native bytecode副本。No-Code eligibility没有 method status。唯一 Loader只负责 native loading/registration，并在 field plan需要时加入 `ClassValue<Object[]>` sidecar；没有 class-definition/blob-decoding API。Artifact audit必须阻断任何 embedded method bytecode、generated fallback class/carrier/decoder重新进入 native或 JAR。
 
 Default build在 final plan形成后、Zig workspace创建前按稳定顺序列出 skipped methods并明确其 Java bytecode会保留，然后提示 `continue? (Y/N)`。只有显式 `Y`继续；`N`/EOF终止。`--validate` / `--dry-run`不读取 stdin；dry-run 记录 `skippedMethodAnalysisPerformed=false`、`skippedMethodConfirmation=deferredUntilDefaultBuild` 和 `skippedMethodConfirmationDecision=confirmationRequiredIfSkippedMethodsAreFound`。该 gate与 protection pass自身的 per-method `SKIPPED` status不同：protection pass不适用不会自动改变 method outcome。
 
 Release-readiness reports record artifact hygiene plus protection-sensitive native/helper/skipped boundaries as stable feature/opcode/status/reason/testCoverage rows，so enabled protection不会隐藏 unsupported shape或 silent skip。Protection reports保留 hash-only seed identity和 `sensitivePlaintextFacts`；artifact audit消费 connected LLVM/template/helper facts，阻断 covered generated C/LLVM/native/JAR/report surface中的 plaintext泄漏。
+
+独立 attacker-audit 还提供两个不改变编译产物的回归面：debug LLVM 中精确
+`%j2ll_v_<24-hex> = add i64 0, <token>` carrier 的 name/numeric-token
+hash-only 跨构建复用统计，以及 final native/generated-C 字节数与 dual-build
+delta。默认随机的非空 carrier 集要求两类交集都为零；显式 seed 模式要求集合
+精确一致。该 scanner 不把普通用户 `%j2ll_v_*` 名称当作 carrier，也不在报告中
+写 raw token。大小 evidence 当前用于发现无界膨胀和比较安全收益，不设一个会
+绕过安全审计的全局 hard cap。相对`build_2026-07-27_22-47-23`基线，
+`09-53-53` / `09-56-32`的flat native分别增加6.435% / 6.747%，Windows DLL
+增加6.408% / 6.636%，generated C增加9.341% / 9.077%，LLVM增加0.0106% /
+0.00015%。该实测给出当前样本的成本窗口：“native约+6%至+7%、generated C约
++9%”；它不是所有输入/平台的全局上限。后续跨平台/样本回归继续跟踪，但不得
+为了压回体积而放宽安全gate。
 
 All-on protection release suite至少覆盖一个 LLVM-native method、一个 JNI/runtime helper-backed native method、一个明确 `skipped` boundary、dynamic reflection/MethodHandle/lambda/Unsafe/VarHandle/wait-notify boundary、confirmation Y/N/EOF和 artifact-audit expected failure。Artifact audit同时验证每个 `nativeLowered` method的 implementation/registration closure、每个 `skipped` method的原 body保留且无 registration，并拒绝任何 selected method bytecode副本、hidden symbol export、legacy output path、metadata/native SHA mismatch和 packaged PDB。
 

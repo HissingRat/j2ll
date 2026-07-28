@@ -14,6 +14,8 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrClass;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -90,6 +92,81 @@ class MethodInliningPassTest {
                     .flatMap(instruction -> instruction.result().stream())
                     .forEach(value -> assertTrue(definitions.add(value.name())));
         });
+    }
+
+    @Test
+    void inlinesPureCalleeWithUnprotectedFrontendPendingExceptionEvidence() {
+        IrMethod callee = identityCallee("frontendEvidenceCallee");
+        IrValue argument = value("%argument", IrType.I32);
+        IrValue result = value("%result", IrType.I32);
+        IrValue pendingException = value("%pendingException", IrType.REFERENCE);
+        IrInstruction call = IrInstruction.call(
+                        Optional.of(result),
+                        IrOpcode.CALL_STATIC,
+                        List.of(argument),
+                        callee.methodKey())
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        Optional.of(pendingException)));
+        IrMethod caller = method(
+                "frontendEvidenceCaller",
+                "(I)I",
+                IrType.I32,
+                List.of(argument),
+                new IrBlock(
+                        "entry",
+                        List.of(call),
+                        IrTerminator.returnValue(result)));
+
+        MethodInliningResult inlined =
+                run(caller, callee, staticCandidate(caller, callee));
+        IrMethod rewritten = find(inlined.program(), caller.methodKey());
+
+        assertEquals(1, inlined.inlinedCount());
+        assertFalse(hasOpcode(rewritten, IrOpcode.CALL_STATIC));
+        assertTrue(new IrMethodValidator().validate(rewritten).stream()
+                .noneMatch(diagnostic -> diagnostic.severity()
+                        == xyz.melodysky.diagnostic.DiagnosticSeverity.ERROR));
+    }
+
+    @Test
+    void rejectsDiscardingPendingExceptionEvidenceThatStillHasUses() {
+        IrMethod callee = identityCallee("usedExceptionEvidenceCallee");
+        IrValue argument = value("%argument", IrType.I32);
+        IrValue result = value("%result", IrType.I32);
+        IrValue pendingException = value("%pendingException", IrType.REFERENCE);
+        IrValue observed = value("%observed", IrType.I32);
+        IrInstruction call = IrInstruction.call(
+                        Optional.of(result),
+                        IrOpcode.CALL_STATIC,
+                        List.of(argument),
+                        callee.methodKey())
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        Optional.of(pendingException)));
+        IrMethod caller = method(
+                "usedExceptionEvidenceCaller",
+                "(I)I",
+                IrType.I32,
+                List.of(argument),
+                new IrBlock(
+                        "entry",
+                        List.of(
+                                call,
+                                IrInstruction.binary(
+                                        observed,
+                                        IrOpcode.CMP_EQ_REF,
+                                        pendingException,
+                                        pendingException)),
+                        IrTerminator.returnValue(result)));
+
+        MethodInliningResult rejected =
+                run(caller, callee, staticCandidate(caller, callee));
+
+        assertEquals(0, rejected.inlinedCount());
+        assertEquals(caller, find(rejected.program(), caller.methodKey()));
     }
 
     @Test

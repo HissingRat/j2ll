@@ -161,6 +161,7 @@ public final class IrCallIndirectionPlanner {
                 siteId,
                 targetMethodKey,
                 signature,
+                nativeDirectTargets.functionAbi(targetMethodKey),
                 invokeKind,
                 new IrCallSemantics(
                         invokeKind,
@@ -200,27 +201,32 @@ public final class IrCallIndirectionPlanner {
                 .sorted(Comparator.comparing(candidate -> candidate.siteId().stableKey()))
                 .toList();
         String planInput = mode.name() + ":" + orderedCandidates.stream()
-                .map(candidate -> candidate.siteId().stableKey() + "->" + candidate.targetMethodKey())
+                .map(candidate -> candidate.siteId().stableKey()
+                        + "->"
+                        + candidate.targetMethodKey()
+                        + "@"
+                        + candidate.groupKey().stableKey())
                 .reduce((left, right) -> left + "|" + right)
                 .orElse("");
         String planId = "ircp_" + random.token("IR_CALL_INDIRECTION_PLAN", planInput, 32);
 
-        Map<IrCallSignature, LinkedHashSet<String>> targetsBySignature = new LinkedHashMap<>();
+        Map<GroupKey, LinkedHashSet<String>> targetsByGroup = new LinkedHashMap<>();
         for (Candidate candidate : orderedCandidates) {
-            targetsBySignature
-                    .computeIfAbsent(candidate.signature(), ignored -> new LinkedHashSet<>())
+            targetsByGroup
+                    .computeIfAbsent(candidate.groupKey(), ignored -> new LinkedHashSet<>())
                     .add(candidate.targetMethodKey());
         }
-        Map<IrCallSignature, IrCallIndirectionGroup> groupBySignature = new HashMap<>();
+        Map<GroupKey, IrCallIndirectionGroup> groupByKey = new HashMap<>();
         Map<TargetKey, IrCallIndirectionTarget> targetByKey = new HashMap<>();
         ArrayList<IrCallIndirectionGroup> groups = new ArrayList<>();
-        targetsBySignature.entrySet().stream()
+        targetsByGroup.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> {
-                    IrCallSignature signature = entry.getKey();
+                    GroupKey groupKey = entry.getKey();
+                    IrCallSignature signature = groupKey.signature();
                     String groupId = "ircg_" + random.token(
                             "IR_CALL_INDIRECTION_GROUP",
-                            planId + ":" + signature.stableKey(),
+                            planId + ":" + groupKey.stableKey(),
                             24);
                     List<String> orderedTargets = entry.getValue().stream()
                             .sorted(Comparator
@@ -244,19 +250,19 @@ public final class IrCallIndirectionPlanner {
                         IrCallIndirectionTarget target =
                                 new IrCallIndirectionTarget(entryId, targetMethodKey, indexOrSelector);
                         targets.add(target);
-                        targetByKey.put(new TargetKey(signature, targetMethodKey), target);
+                        targetByKey.put(new TargetKey(groupKey, targetMethodKey), target);
                     }
                     IrCallIndirectionGroup group =
                             new IrCallIndirectionGroup(groupId, signature, targets);
                     groups.add(group);
-                    groupBySignature.put(signature, group);
+                    groupByKey.put(groupKey, group);
                 });
 
         ArrayList<IrCallIndirectionSite> sites = new ArrayList<>();
         for (Candidate candidate : orderedCandidates) {
-            IrCallIndirectionGroup group = groupBySignature.get(candidate.signature());
+            IrCallIndirectionGroup group = groupByKey.get(candidate.groupKey());
             IrCallIndirectionTarget target =
-                    targetByKey.get(new TargetKey(candidate.signature(), candidate.targetMethodKey()));
+                    targetByKey.get(new TargetKey(candidate.groupKey(), candidate.targetMethodKey()));
             IrCallIndirectionRef reference = new IrCallIndirectionRef(
                     planId,
                     group.groupId(),
@@ -317,8 +323,12 @@ public final class IrCallIndirectionPlanner {
             IrCallSiteId siteId,
             String targetMethodKey,
             IrCallSignature signature,
+            IrNativeDirectTargets.FunctionAbi functionAbi,
             IrCallInvokeKind invokeKind,
             IrCallSemantics semantics) {
+        private GroupKey groupKey() {
+            return new GroupKey(signature, functionAbi);
+        }
     }
 
     private record CandidateDecision(Optional<Candidate> candidate, Optional<String> skipReason) {
@@ -331,6 +341,20 @@ public final class IrCallIndirectionPlanner {
         }
     }
 
-    private record TargetKey(IrCallSignature signature, String targetMethodKey) {
+    private record GroupKey(
+            IrCallSignature signature,
+            IrNativeDirectTargets.FunctionAbi functionAbi)
+            implements Comparable<GroupKey> {
+        private String stableKey() {
+            return signature.stableKey() + ":" + functionAbi.stableKey();
+        }
+
+        @Override
+        public int compareTo(GroupKey other) {
+            return stableKey().compareTo(other.stableKey());
+        }
+    }
+
+    private record TargetKey(GroupKey groupKey, String targetMethodKey) {
     }
 }

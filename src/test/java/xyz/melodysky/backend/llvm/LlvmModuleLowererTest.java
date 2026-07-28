@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -21,9 +22,13 @@ import xyz.melodysky.ir.model.IrSwitchCase;
 import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
-import xyz.melodysky.runtime.FieldIdentityToken;
 import xyz.melodysky.analysis.field.NativeFieldStorageKind;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiDomain;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlan;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlanner;
 
 class LlvmModuleLowererTest {
     @Test
@@ -76,6 +81,182 @@ class LlvmModuleLowererTest {
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
         assertFalse(text.contains("pkg_Mathy"));
         assertTrue(text.contains("%sum = add i32 %p0, %p1"));
+    }
+
+    @Test
+    void classLiteralOnlyStaticAndInstanceFunctionsPassJniEnvToLocalizedHelper() {
+        IrValue staticResult =
+                new IrValue("%static_class", IrType.REFERENCE);
+        IrMethod staticLiteral = new IrMethod(
+                "pkg/ClassLiteralOps",
+                "staticLiteral",
+                "()Ljava/lang/Class;",
+                IrType.REFERENCE,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.symbolicConstant(
+                                staticResult,
+                                IrOpcode.CONST_CLASS,
+                                "class:Ljava/lang/String;")),
+                        IrTerminator.returnValue(staticResult))));
+        IrValue self = new IrValue("%this", IrType.REFERENCE);
+        IrValue instanceResult =
+                new IrValue("%instance_class", IrType.REFERENCE);
+        IrMethod instanceLiteral = new IrMethod(
+                "pkg/ClassLiteralOps",
+                "instanceLiteral",
+                "()Ljava/lang/Class;",
+                IrType.REFERENCE,
+                List.of(self),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.symbolicConstant(
+                                instanceResult,
+                                IrOpcode.CONST_CLASS,
+                                "class:Ljava/lang/String;")),
+                        IrTerminator.returnValue(instanceResult))));
+
+        String text = new LlvmTextEmitter().emit(
+                new LlvmModuleLowerer().lowerClass(new IrClass(
+                        "pkg/ClassLiteralOps",
+                        List.of(staticLiteral, instanceLiteral))));
+
+        assertTrue(text.contains(
+                "define external hidden ptr @"
+                        + new LlvmNameMangler().functionName(staticLiteral)
+                        + "(ptr %j2ll_env)"));
+        assertTrue(text.contains(
+                "define external hidden ptr @"
+                        + new LlvmNameMangler().functionName(instanceLiteral)
+                        + "(ptr %j2ll_env, ptr %this)"));
+        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+                RuntimeTokenDomain.CLASS_OBJECT,
+                "class_object",
+                "Ljava/lang/String;");
+        assertEquals(
+                2,
+                occurrences(
+                        text,
+                        "call ptr @"
+                                + helper
+                                + "(ptr %j2ll_env)"),
+                text);
+    }
+
+    @Test
+    void declaresEveryLocalizedReferenceArrayAllocatorThatItCalls() {
+        IrValue length = new IrValue("%p0", IrType.I32);
+        IrValue array = new IrValue("%array", IrType.REFERENCE);
+        String allocationKey = "referenceArray:java/lang/String";
+        IrMethod method = new IrMethod(
+                "pkg/ReferenceArrays",
+                "allocate",
+                "(I)[Ljava/lang/String;",
+                IrType.REFERENCE,
+                List.of(length),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.operation(
+                                Optional.of(array),
+                                IrOpcode.NEW_ARRAY,
+                                List.of(length),
+                                allocationKey)),
+                        IrTerminator.returnValue(array))));
+
+        String text = new LlvmTextEmitter().emit(
+                new LlvmModuleLowerer().lowerClass(new IrClass(
+                        method.owner(),
+                        List.of(method))));
+        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                "new_object_array",
+                allocationKey);
+
+        assertTrue(text.contains(
+                "declare ptr @" + helper
+                        + "(ptr, i32) ; localizedReferenceArrayAllocation"),
+                text);
+        assertTrue(text.contains(
+                "call ptr @" + helper
+                        + "(ptr %j2ll_env, i32 %p0)"),
+                text);
+    }
+
+    @Test
+    void declaresEveryLocalizedLambdaFactoryThatItCalls() {
+        IrValue capture = new IrValue("%p0", IrType.REFERENCE);
+        IrValue metadata = new IrValue("%metadata", IrType.I64);
+        IrValue lambda = new IrValue("%lambda", IrType.REFERENCE);
+        String identity = "lambda:fixture";
+        IrMethod method = new IrMethod(
+                "pkg/Lambdas",
+                "factory",
+                "(Ljava/lang/Object;)Ljava/lang/Runnable;",
+                IrType.REFERENCE,
+                List.of(capture),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.constLong(metadata, 7),
+                                IrInstruction.call(
+                                        Optional.of(lambda),
+                                        IrOpcode.CALL_RUNTIME_HELPER,
+                                        List.of(metadata, capture),
+                                        "j2ll_rt_lambda_new|" + identity)),
+                        IrTerminator.returnValue(lambda))));
+
+        String text = new LlvmTextEmitter().emit(
+                new LlvmModuleLowerer().lowerClass(new IrClass(
+                        method.owner(),
+                        List.of(method))));
+        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+                RuntimeTokenDomain.LAMBDA,
+                "lambda_new",
+                identity);
+
+        assertTrue(text.contains(
+                "declare ptr @" + helper
+                        + "(ptr, ptr) ; localizedLambdaFactory"),
+                text);
+        assertTrue(text.contains(
+                "call ptr @" + helper
+                        + "(ptr %j2ll_env, ptr %p0)"),
+                text);
+    }
+
+    @Test
+    void rejectsPlannerAndLowererFunctionAbiMismatchBeforeEmission() {
+        IrValue result = new IrValue("%class", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/ClassLiteralOps",
+                "literal",
+                "()Ljava/lang/Class;",
+                IrType.REFERENCE,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.symbolicConstant(
+                                result,
+                                IrOpcode.CONST_CLASS,
+                                "class:Ljava/lang/String;")),
+                        IrTerminator.returnValue(result))));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new LlvmModuleLowerer().lowerClass(
+                        new IrClass("pkg/ClassLiteralOps", List.of(method)),
+                        LlvmLinkage.EXTERNAL,
+                        LlvmVisibility.HIDDEN,
+                        Map.of(),
+                        Map.of(),
+                        Map.of(
+                                method.methodKey(),
+                                new LlvmFunctionAbi(false, false))));
+
+        assertTrue(failure.getMessage().contains(method.methodKey()));
+        assertTrue(failure.getMessage().contains("planned="));
+        assertTrue(failure.getMessage().contains("inferred="));
     }
 
     @Test
@@ -148,12 +329,12 @@ class LlvmModuleLowererTest {
 
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Raise", List.of(method))));
 
-        assertTrue(text.contains("call void @j2ll_rt_throw(ptr %j2ll_env, ptr %p0)"));
+        assertTrue(text.contains("call void @j2ll_rt_rethrow(ptr %j2ll_env, ptr %p0)"));
         assertTrue(text.contains("ret void"));
     }
 
     @Test
-    void lowersFieldAccessThroughGenericTokenizedRuntimeHelpers() {
+    void lowersFieldAccessThroughLocalizedBindingHelpers() {
         String staticFieldKey = "pkg/Fields#VALUE!I";
         String instanceFieldKey = "pkg/Fields#value!I";
         IrValue staticValue = new IrValue("%static", IrType.I32);
@@ -185,13 +366,43 @@ class LlvmModuleLowererTest {
 
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(readStatic)));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %j2ll_owner)"));
-        assertTrue(text.contains("call i32 @j2ll_rt_field_get_static_i32(ptr %j2ll_env, ptr %j2ll_owner, i64 "
-                + FieldIdentityToken.token(staticFieldKey) + ")"));
+        RuntimeTokenMapper runtimeTokens =
+                RuntimeTokenMapper.compatibility();
+        String staticHelper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.FIELD_RUNTIME,
+                "field_get_static_i32",
+                staticFieldKey);
+        assertTrue(text.contains(
+                "call i32 @" + staticHelper
+                        + "("
+                        + localAbiCall(
+                                runtimeTokens,
+                                RuntimeLocalAbiDomain.FIELD,
+                                "field_get_static_i32",
+                                staticFieldKey,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        "ptr %j2ll_owner"))
+                        + ")"));
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(readInstance)));
         assertFalse(text.contains("pkg_Fields"));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %p0)"));
-        assertTrue(text.contains("call i32 @j2ll_rt_field_get_field_i32(ptr %j2ll_env, ptr %p0, i64 "
-                + FieldIdentityToken.token(instanceFieldKey) + ")"));
+        String instanceHelper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.FIELD_RUNTIME,
+                "field_get_instance_i32",
+                instanceFieldKey);
+        assertTrue(text.contains(
+                "call i32 @" + instanceHelper
+                        + "("
+                        + localAbiCall(
+                                runtimeTokens,
+                                RuntimeLocalAbiDomain.FIELD,
+                                "field_get_instance_i32",
+                                instanceFieldKey,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        "ptr %p0"))
+                        + ")"));
         assertTrue(!text.contains("@j2ll_get_field_pkg_Fields_value_I"));
     }
 
@@ -778,7 +989,7 @@ class LlvmModuleLowererTest {
     }
 
     @Test
-    void lowersVirtualAndInterfaceDispatchWithArgumentsThroughTokenizedJvmHelpers() {
+    void lowersVirtualAndInterfaceDispatchWithArgumentsThroughLocalizedJvmHelpers() {
         IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
         IrValue intArg = new IrValue("%p1", IrType.I32);
         IrValue intResult = new IrValue("%int_result", IrType.I32);
@@ -808,8 +1019,90 @@ class LlvmModuleLowererTest {
         String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
                 new IrClass("pkg/Dispatch", List.of(method))));
 
-        assertTrue(text.contains("@j2ll_rt_call_virtual_i32_a(ptr %j2ll_env, ptr %p0, i64 "));
-        assertTrue(text.contains("@j2ll_rt_call_interface_ref_a(ptr %j2ll_env, ptr %p0, i64 "));
+        RuntimeTokenMapper runtimeTokens =
+                RuntimeTokenMapper.compatibility();
+        String virtualHelper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "virtual_dispatch_i32",
+                "pkg/Base#add!(I)I");
+        String interfaceHelper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "interface_dispatch_ref",
+                "pkg/I#name!(Ljava/lang/String;)Ljava/lang/String;");
+        assertTrue(text.contains("@" + virtualHelper + "("));
+        assertTrue(text.contains("@" + interfaceHelper + "("));
+        assertLocalAbiInvocation(
+                text,
+                "call i32 @" + virtualHelper + "(",
+                runtimeTokens,
+                RuntimeLocalAbiDomain.DISPATCH,
+                "virtual_dispatch_i32",
+                "pkg/Base#add!(I)I",
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr %p0",
+                        "ptr %j2ll_args_base_"));
+        assertLocalAbiInvocation(
+                text,
+                "call ptr @" + interfaceHelper + "(",
+                runtimeTokens,
+                RuntimeLocalAbiDomain.DISPATCH,
+                "interface_dispatch_ref",
+                "pkg/I#name!(Ljava/lang/String;)Ljava/lang/String;",
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr %p0",
+                        "ptr %j2ll_args_base_"));
         assertFalse(text.contains("vtable"));
+    }
+
+    private static String localAbiCall(
+            RuntimeTokenMapper runtimeTokens,
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalArguments) {
+        RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
+                runtimeTokens,
+                domain,
+                operation,
+                identity,
+                logicalArguments.size());
+        return String.join(
+                ", ",
+                plan.arrange(logicalArguments));
+    }
+
+    private static void assertLocalAbiInvocation(
+            String llvm,
+            String callPrefix,
+            RuntimeTokenMapper runtimeTokens,
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalArgumentPrefixes) {
+        RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
+                runtimeTokens,
+                domain,
+                operation,
+                identity,
+                logicalArgumentPrefixes.size());
+        int start = llvm.indexOf(callPrefix);
+        assertTrue(start >= 0, llvm);
+        int argumentsStart = start + callPrefix.length();
+        int end = llvm.indexOf(')', argumentsStart);
+        assertTrue(end >= argumentsStart, llvm);
+        List<String> actual = List.of(
+                llvm.substring(argumentsStart, end).split(", "));
+        assertEquals(plan.physicalSlots().size(), actual.size(), llvm);
+        for (int physical = 0;
+                physical < plan.physicalSlots().size();
+                physical++) {
+            int logical = plan.physicalSlots().get(physical);
+            assertTrue(
+                    actual.get(physical).startsWith(
+                            logicalArgumentPrefixes.get(logical)),
+                    llvm);
+        }
     }
 }

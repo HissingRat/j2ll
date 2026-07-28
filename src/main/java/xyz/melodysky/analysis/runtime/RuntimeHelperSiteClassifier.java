@@ -262,6 +262,13 @@ final class RuntimeHelperSiteClassifier {
         if (helper.equals("j2ll_rt_system_arraycopy")) {
             return "ARRAYCOPY_HELPER";
         }
+        if (helper.equals("j2ll_rt_thread_sleep")) {
+            return "THREAD_HELPER";
+        }
+        if (helper.equals("j2ll_rt_object_get_class")
+                || helper.equals("j2ll_rt_class_get_class_loader")) {
+            return "JDK_INTRINSIC_HELPER";
+        }
         if (helper.equals("j2ll_rt_class_for_name_static")
                 || helper.startsWith("j2ll_rt_get_declared_field")) {
             return "REFLECTION_HELPER";

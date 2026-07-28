@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.model.IrBlock;
@@ -312,6 +313,105 @@ class IrCallIndirectionPassTest {
     }
 
     @Test
+    void partitionsEqualIrSignaturesByHiddenNativeFunctionAbi() {
+        IrMethod plainTarget = staticTarget("pkg/Sample", "plainTarget", 7);
+        IrMethod envTarget = staticTarget("pkg/Sample", "envTarget", 9);
+        IrValue plainResult = new IrValue("%plain_result", IrType.I32);
+        IrValue envResult = new IrValue("%env_result", IrType.I32);
+        IrMethod caller = new IrMethod(
+                "pkg/Sample",
+                "bothAbiShapes",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.call(
+                                        Optional.of(plainResult),
+                                        IrOpcode.CALL_STATIC,
+                                        List.of(),
+                                        plainTarget.methodKey()),
+                                IrInstruction.call(
+                                        Optional.of(envResult),
+                                        IrOpcode.CALL_STATIC,
+                                        List.of(),
+                                        envTarget.methodKey())),
+                        IrTerminator.returnValue(envResult))));
+        IrProgram program = program(caller, plainTarget, envTarget);
+        IrNativeDirectTargets nativeTargets = new IrNativeDirectTargets(Map.of(
+                caller.methodKey(),
+                IrNativeDirectTargets.FunctionAbi.noHiddenParameters(),
+                plainTarget.methodKey(),
+                IrNativeDirectTargets.FunctionAbi.noHiddenParameters(),
+                envTarget.methodKey(),
+                new IrNativeDirectTargets.FunctionAbi(true, false)));
+
+        IrCallIndirectionResult result = new IrCallIndirectionPass().run(
+                program,
+                new IrDirectCallFacts(List.of(
+                        IrDirectCallFact.bytecodeDirect(
+                                new IrCallSiteId(caller.methodKey(), "entry", 0),
+                                IrCallInvokeKind.STATIC,
+                                plainTarget.methodKey()),
+                        IrDirectCallFact.bytecodeDirect(
+                                new IrCallSiteId(caller.methodKey(), "entry", 1),
+                                IrCallInvokeKind.STATIC,
+                                envTarget.methodKey()))),
+                nativeTargets,
+                IrCallIndirectionMode.TABLE,
+                23L,
+                true);
+
+        assertTrue(result.changed());
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(2, result.plan().orElseThrow().groups().size());
+        assertEquals(
+                2,
+                result.plan().orElseThrow().sites().stream()
+                        .map(site -> site.reference().groupId())
+                        .distinct()
+                        .count());
+    }
+
+    @Test
+    void validatorRejectsAGroupThatMixesHiddenNativeFunctionAbis() {
+        IrMethod plainTarget = staticTarget("pkg/Sample", "plainTarget", 7);
+        IrMethod envTarget = staticTarget("pkg/Sample", "envTarget", 9);
+        IrCallIndirectionGroup mixedGroup = new IrCallIndirectionGroup(
+                "ircg_mixed_abi",
+                IrCallSignature.fromMethod(plainTarget),
+                List.of(
+                        new IrCallIndirectionTarget(
+                                "irce_plain",
+                                plainTarget.methodKey(),
+                                0),
+                        new IrCallIndirectionTarget(
+                                "irce_env",
+                                envTarget.methodKey(),
+                                1)));
+        IrCallIndirectionPlan plan = new IrCallIndirectionPlan(
+                "ircp_mixed_abi",
+                IrCallIndirectionMode.TABLE,
+                List.of(mixedGroup),
+                List.of());
+        IrNativeDirectTargets nativeTargets = new IrNativeDirectTargets(Map.of(
+                plainTarget.methodKey(),
+                IrNativeDirectTargets.FunctionAbi.noHiddenParameters(),
+                envTarget.methodKey(),
+                new IrNativeDirectTargets.FunctionAbi(true, false)));
+
+        var diagnostics = new IrCallIndirectionValidator().validate(
+                program(plainTarget, envTarget),
+                plan,
+                nativeTargets);
+
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains(
+                        "signature group mixes native function ABIs")));
+    }
+
+    @Test
     void unknownTargetIsSkippedEvenWhenSuppliedAsNativeEvidence() {
         String missingTarget = "pkg/Sample#missing!()I";
         IrMethod caller = staticCaller("pkg/Sample", "caller", missingTarget);
@@ -544,8 +644,13 @@ class IrCallIndirectionPassTest {
                         IrTerminator.returnValue(result))));
     }
 
-    private IrProgram program(IrMethod first, IrMethod second) {
-        return new IrProgram(List.of(new IrClass(first.owner(), List.of(first, second))));
+    private IrProgram program(IrMethod first, IrMethod... remaining) {
+        return new IrProgram(List.of(new IrClass(
+                first.owner(),
+                java.util.stream.Stream.concat(
+                                java.util.stream.Stream.of(first),
+                                java.util.Arrays.stream(remaining))
+                        .toList())));
     }
 
     private IrInstruction callInstruction(IrProgram program, String callerMethodKey) {

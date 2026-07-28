@@ -4,6 +4,7 @@ import xyz.melodysky.diagnostic.DiagnosticCode;
 
 public final class IrValidationDiagnostics {
     public static final DiagnosticCode IR_METHOD_HAS_NO_BLOCKS = DiagnosticCode.of("IR_METHOD_HAS_NO_BLOCKS");
+    public static final DiagnosticCode IR_UNREACHABLE_BLOCK = DiagnosticCode.of("IR_UNREACHABLE_BLOCK");
     public static final DiagnosticCode IR_USE_BEFORE_DEF = DiagnosticCode.of("IR_USE_BEFORE_DEF");
     public static final DiagnosticCode IR_RETURN_TYPE_MISMATCH = DiagnosticCode.of("IR_RETURN_TYPE_MISMATCH");
     public static final DiagnosticCode IR_BLOCK_ARGUMENT_MISMATCH = DiagnosticCode.of("IR_BLOCK_ARGUMENT_MISMATCH");

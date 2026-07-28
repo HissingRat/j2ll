@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ConstantDynamic;
@@ -113,6 +114,52 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
                 .sorted()
                 .toList();
         assertEquals(List.of(0, 1), referenceIndices);
+    }
+
+    @Test
+    void diversifiesReferenceSidecarOrderPerSeedAndKeepsEachOwnerDense() {
+        int fieldsPerOwner = 8;
+        ParsedProgram program = program(
+                referenceOwner("pkg/ReferenceA", fieldsPerOwner),
+                referenceOwner("pkg/ReferenceB", fieldsPerOwner));
+        FieldUseIndex index = analyzer.analyze(program);
+
+        NativeFieldInternalizationPlan first = plan(
+                index,
+                AnalysisWorld.CLOSED_WORLD,
+                true,
+                0x51decafL,
+                llvmOnly());
+        NativeFieldInternalizationPlan repeated = plan(
+                index,
+                AnalysisWorld.CLOSED_WORLD,
+                true,
+                0x51decafL,
+                llvmOnly());
+        NativeFieldInternalizationPlan differentSeed = plan(
+                index,
+                AnalysisWorld.CLOSED_WORLD,
+                true,
+                0x51decafL + 1,
+                llvmOnly());
+
+        assertEquals(first.referenceIndicesByOwner(), repeated.referenceIndicesByOwner());
+        assertNotEquals(
+                first.referenceIndicesByOwner(),
+                differentSeed.referenceIndicesByOwner());
+        assertEquals(fieldsPerOwner, first.referenceSidecarSize());
+        assertEquals(
+                List.of("pkg/ReferenceA", "pkg/ReferenceB"),
+                first.referenceIndicesByOwner().keySet().stream().toList());
+        for (Map<FieldId, Integer> ownerIndices
+                : first.referenceIndicesByOwner().values()) {
+            assertEquals(fieldsPerOwner, ownerIndices.size());
+            assertEquals(
+                    java.util.stream.IntStream.range(0, fieldsPerOwner)
+                            .boxed()
+                            .toList(),
+                    ownerIndices.values().stream().sorted().toList());
+        }
     }
 
     @Test
@@ -654,6 +701,28 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
 
     private ParsedProgram candidateProgram() {
         return program(candidateClass());
+    }
+
+    private ParsedClass referenceOwner(String owner, int fieldCount) {
+        ArrayList<ParsedField> fields = new ArrayList<>();
+        ArrayList<AbstractInsnNode> instructions = new ArrayList<>();
+        for (int index = 0; index < fieldCount; index++) {
+            String name = "reference" + index;
+            String descriptor = index % 2 == 0
+                    ? "Ljava/lang/Object;"
+                    : "[Ljava/lang/String;";
+            fields.add(field(owner, name, descriptor, ACC_PRIVATE | ACC_STATIC));
+            instructions.add(new FieldInsnNode(GETSTATIC, owner, name, descriptor));
+            instructions.add(new InsnNode(POP));
+        }
+        instructions.add(new InsnNode(RETURN));
+        return parsedClass(
+                owner,
+                fields,
+                List.of(method(
+                        owner,
+                        "readReferences",
+                        instructions.toArray(AbstractInsnNode[]::new))));
     }
 
     private ParsedClass candidateClass(AbstractInsnNode... extraInstructions) {

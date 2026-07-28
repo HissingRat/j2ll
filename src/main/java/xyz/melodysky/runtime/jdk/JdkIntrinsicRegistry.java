@@ -24,6 +24,7 @@ public final class JdkIntrinsicRegistry {
         ArrayList<JdkIntrinsic> methods = new ArrayList<>(List.of(
                 JdkIntrinsic.direct("java/lang/Object", "<init>", "()V"),
                 JdkIntrinsic.runtimeHelper("java/lang/Object", "getClass", "()Ljava/lang/Class;", RuntimeHelperKind.OBJECT_GET_CLASS),
+                JdkIntrinsic.runtimeHelper("java/lang/Class", "getClassLoader", "()Ljava/lang/ClassLoader;", RuntimeHelperKind.CLASS_GET_CLASS_LOADER),
                 JdkIntrinsic.runtimeHelper("java/lang/Object", "hashCode", "()I", RuntimeHelperKind.OBJECT_HASH_CODE),
                 JdkIntrinsic.runtimeHelper("java/lang/Object", "equals", "(Ljava/lang/Object;)Z", RuntimeHelperKind.OBJECT_EQUALS),
                 JdkIntrinsic.runtimeHelper("java/lang/String", "length", "()I", RuntimeHelperKind.STRING_LENGTH),
@@ -133,6 +134,7 @@ public final class JdkIntrinsicRegistry {
                 JdkIntrinsic.unsupported("java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V", "THREAD_HELPER_UNSUPPORTED: Thread(Runnable) keeps JVM thread semantics"),
                 JdkIntrinsic.unsupported("java/lang/Thread", "start", "()V", "THREAD_HELPER_UNSUPPORTED: Thread.start keeps JVM scheduler semantics"),
                 JdkIntrinsic.unsupported("java/lang/Thread", "join", "()V", "THREAD_HELPER_UNSUPPORTED: Thread.join keeps JVM scheduler semantics"),
+                JdkIntrinsic.runtimeHelper("java/lang/Thread", "sleep", "(J)V", RuntimeHelperKind.THREAD_SLEEP),
                 JdkIntrinsic.unsupported("java/lang/Object", "wait", "()V", "WAIT_NOTIFY_UNSUPPORTED: Object.wait keeps JVM monitor queue semantics"),
                 JdkIntrinsic.unsupported("java/lang/Object", "wait", "(J)V", "WAIT_NOTIFY_UNSUPPORTED: Object.wait(long) keeps JVM monitor queue semantics"),
                 JdkIntrinsic.unsupported("java/lang/Object", "notify", "()V", "WAIT_NOTIFY_UNSUPPORTED: Object.notify keeps JVM monitor queue semantics"),

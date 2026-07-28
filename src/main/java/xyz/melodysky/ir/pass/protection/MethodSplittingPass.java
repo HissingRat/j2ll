@@ -4,10 +4,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
+import xyz.melodysky.ir.model.IrType;
+import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.validate.IrMethodValidator;
 
 /**
@@ -113,11 +117,19 @@ public final class MethodSplittingPass {
             }
             ArrayList<IrInstruction> instructions = new ArrayList<>(
                     block.instructions().subList(0, plan.startInclusive()));
+            IrValue pendingException = new IrValue(
+                    "%j2ll_outline_pending_"
+                            + plan.nativeSymbol().substring("j2ll_oh_".length()),
+                    IrType.REFERENCE);
             instructions.add(IrInstruction.call(
-                    Optional.of(plan.liveOut()),
-                    IrOpcode.CALL_STATIC,
-                    plan.liveIns(),
-                    helper.methodKey()));
+                            Optional.of(plan.liveOut()),
+                            IrOpcode.CALL_STATIC,
+                            plan.liveIns(),
+                            helper.methodKey())
+                    .withExceptionSite(new IrExceptionSite(
+                            IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                            List.of(),
+                            Optional.of(pendingException))));
             blocks.add(new IrBlock(
                     block.name(),
                     block.parameters(),

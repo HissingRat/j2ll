@@ -1,13 +1,20 @@
 package xyz.melodysky.toolchain;
 
 import java.util.List;
-import java.util.TreeMap;
-import xyz.melodysky.runtime.ClassIdentityToken;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 
 final class HostJniAllocationRuntimeSource {
     private HostJniAllocationRuntimeSource() {}
 
     static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
+        append(builder, bindings, RuntimeTokenMapper.compatibility());
+    }
+
+    static void append(
+            StringBuilder builder,
+            List<HostJniCSourceGenerator.Binding> bindings,
+            RuntimeTokenMapper runtimeTokens) {
         List<String> allocationKeys = bindings.stream()
                 .filter(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
                 .flatMap(binding -> binding.allocationKeys().stream())
@@ -20,85 +27,188 @@ final class HostJniAllocationRuntimeSource {
                 .distinct()
                 .sorted()
                 .toList();
-        TreeMap<String, ClassParts> classEntries = new TreeMap<>();
-        builder.append("""
-                typedef struct {
-                    int64_t token;
-                    int64_t class_init_token;
-                    const char* class_name;
-                } j2ll_class_entry;
-
-                static const j2ll_class_entry j2ll_class_table[] = {
-                """);
-        bindings.stream()
-                .filter(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
-                .map(binding -> new ClassParts("L" + binding.decision().method().owner() + ";", binding.decision().method().owner()))
-                .forEach(parts -> classEntries.putIfAbsent(parts.identity(), parts));
-        bindings.stream()
+        List<String> classObjectKeys = bindings.stream()
                 .filter(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
                 .flatMap(binding -> binding.classObjectKeys().stream())
-                .map(HostJniAllocationRuntimeSource::parseClassObjectKey)
-                .forEach(parts -> classEntries.putIfAbsent(parts.identity(), parts));
-        bindings.stream()
+                .distinct()
+                .sorted()
+                .toList();
+        List<String> classForNameKeys = bindings.stream()
                 .filter(binding -> binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
                 .flatMap(binding -> binding.runtimeMetadataKeys().stream())
                 .filter(key -> key.startsWith("class:"))
-                .map(HostJniAllocationRuntimeSource::parseClassObjectKey)
-                .forEach(parts -> classEntries.putIfAbsent(parts.identity(), parts));
-        for (String allocationKey : allocationKeys) {
+                .distinct()
+                .sorted()
+                .toList();
+        for (String allocationKey : runtimeTokens.physicalOrder(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                allocationKeys,
+                key -> key)) {
             ClassParts parts = parseAllocationKey(allocationKey);
-            classEntries.putIfAbsent(parts.identity(), parts);
+            if (allocationKey.startsWith("object:")) {
+                appendObjectAllocator(builder, runtimeTokens, allocationKey, parts);
+            } else {
+                appendReferenceArrayAllocator(
+                        builder,
+                        runtimeTokens,
+                        allocationKey,
+                        parts);
+            }
         }
-        for (String typeCheckKey : typeCheckKeys) {
-            ClassParts parts = parseTypeCheckKey(typeCheckKey);
-            classEntries.putIfAbsent(parts.identity(), parts);
+        for (String typeCheckKey : runtimeTokens.physicalOrder(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                typeCheckKeys,
+                key -> key)) {
+            appendTypeCheck(
+                    builder,
+                    runtimeTokens,
+                    typeCheckKey,
+                    parseTypeCheckKey(typeCheckKey));
         }
-        for (ClassParts parts : classEntries.values()) {
-            builder.append("    { ")
-                    .append(ClassIdentityToken.token(parts.identity()))
-                    .append("LL, ")
-                    .append(stableClassObjectToken(parts.identity()))
-                    .append("LL, \"")
+        for (String classObjectKey : runtimeTokens.physicalOrder(
+                RuntimeTokenDomain.CLASS_OBJECT,
+                classObjectKeys,
+                key -> key)) {
+            appendClassObject(
+                    builder,
+                    runtimeTokens,
+                    classObjectKey,
+                    parseClassObjectKey(classObjectKey));
+        }
+        if (!classForNameKeys.isEmpty()) {
+            builder.append("""
+                    static jclass j2ll_class_for_name_with_init(
+                            JNIEnv* env, const char* internal_name, int initialize);
+
+                    """);
+        }
+        for (String classForNameKey : runtimeTokens.physicalOrder(
+                RuntimeTokenDomain.CLASS_OBJECT,
+                classForNameKeys,
+                key -> key)) {
+            ClassParts parts = parseClassObjectKey(classForNameKey);
+            String symbol = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.CLASS_OBJECT,
+                    "class_for_name",
+                    parts.identity());
+            builder.append("jclass ")
+                    .append(symbol)
+                    .append("(JNIEnv* env, int32_t initialize) {\n")
+                    .append("    return j2ll_class_for_name_with_init(env, \"")
                     .append(escapeCString(parts.jniName()))
-                    .append("\" },\n");
+                    .append("\", initialize);\n")
+                    .append("}\n\n");
         }
-        builder.append("    { 0LL, 0LL, NULL },\n");
-        builder.append("""
-                };
+        builder.append(runtimeHelperBodies());
+    }
 
-                static const char* j2ll_find_class_name(int64_t token) {
-                    for (size_t index = 0; index < sizeof(j2ll_class_table) / sizeof(j2ll_class_table[0]); index++) {
-                        if (j2ll_class_table[index].class_name != NULL && j2ll_class_table[index].token == token) {
-                            return j2ll_class_table[index].class_name;
-                        }
-                    }
-                    return NULL;
-                }
+    private static void appendObjectAllocator(
+            StringBuilder builder,
+            RuntimeTokenMapper runtimeTokens,
+            String allocationKey,
+            ClassParts parts) {
+        String symbol = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                "alloc_object",
+                allocationKey);
+        builder.append("jobject ")
+                .append(symbol)
+                .append("(JNIEnv* env) {\n")
+                .append("    jclass cls = (*env)->FindClass(env, \"")
+                .append(escapeCString(parts.jniName()))
+                .append("\");\n")
+                .append("    if (cls == NULL) return NULL;\n")
+                .append("    jobject object = (*env)->AllocObject(env, cls);\n")
+                .append("    (*env)->DeleteLocalRef(env, cls);\n")
+                .append("    return object;\n")
+                .append("}\n\n");
+    }
 
-                static const char* j2ll_find_class_object_name(int64_t token) {
-                    for (size_t index = 0; index < sizeof(j2ll_class_table) / sizeof(j2ll_class_table[0]); index++) {
-                        if (j2ll_class_table[index].class_name != NULL && j2ll_class_table[index].class_init_token == token) {
-                            return j2ll_class_table[index].class_name;
-                        }
-                    }
-                    return NULL;
-                }
+    private static void appendReferenceArrayAllocator(
+            StringBuilder builder,
+            RuntimeTokenMapper runtimeTokens,
+            String allocationKey,
+            ClassParts parts) {
+        String symbol = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                "new_object_array",
+                allocationKey);
+        builder.append("jarray ")
+                .append(symbol)
+                .append("(JNIEnv* env, int32_t length) {\n")
+                .append("    if (length < 0) {\n")
+                .append("        j2ll_throw_new(env, \"java/lang/NegativeArraySizeException\", \"negative object array length\");\n")
+                .append("        return NULL;\n")
+                .append("    }\n")
+                .append("    jclass component = (*env)->FindClass(env, \"")
+                .append(escapeCString(parts.jniName()))
+                .append("\");\n")
+                .append("    if (component == NULL) return NULL;\n")
+                .append("    jobjectArray array = (*env)->NewObjectArray(env, (jsize)length, component, NULL);\n")
+                .append("    (*env)->DeleteLocalRef(env, component);\n")
+                .append("    return (jarray)array;\n")
+                .append("}\n\n");
+    }
 
-                jobject j2ll_rt_alloc_object(JNIEnv* env, int64_t class_token) {
-                    const char* class_name = j2ll_find_class_name(class_token);
-                    if (class_name == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoClassDefFoundError", "unknown j2ll class token");
-                        return NULL;
-                    }
-                    jclass cls = (*env)->FindClass(env, class_name);
-                    if (cls == NULL) {
-                        return NULL;
-                    }
-                    jobject object = (*env)->AllocObject(env, cls);
-                    (*env)->DeleteLocalRef(env, cls);
-                    return object;
-                }
+    private static void appendTypeCheck(
+            StringBuilder builder,
+            RuntimeTokenMapper runtimeTokens,
+            String typeCheckKey,
+            ClassParts parts) {
+        boolean checkcast = typeCheckKey.startsWith("checkcast:");
+        String operation = checkcast ? "checkcast" : "instanceof";
+        String symbol = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                operation,
+                typeCheckKey);
+        builder.append(checkcast ? "jobject " : "int32_t ")
+                .append(symbol)
+                .append("(JNIEnv* env, jobject value) {\n");
+        if (checkcast) {
+            builder.append("    if (value == NULL) return NULL;\n");
+        } else {
+            builder.append("    if (value == NULL) return 0;\n");
+        }
+        builder.append("    jclass target = (*env)->FindClass(env, \"")
+                .append(escapeCString(parts.jniName()))
+                .append("\");\n")
+                .append(checkcast
+                        ? "    if (target == NULL) return NULL;\n"
+                        : "    if (target == NULL) return 0;\n")
+                .append("    jboolean matched = (*env)->IsInstanceOf(env, value, target);\n")
+                .append("    (*env)->DeleteLocalRef(env, target);\n");
+        if (checkcast) {
+            builder.append("    if (matched != JNI_TRUE) {\n")
+                    .append("        j2ll_throw_new(env, \"java/lang/ClassCastException\", \"j2ll checkcast failed\");\n")
+                    .append("        return NULL;\n")
+                    .append("    }\n")
+                    .append("    return value;\n");
+        } else {
+            builder.append("    return matched == JNI_TRUE ? 1 : 0;\n");
+        }
+        builder.append("}\n\n");
+    }
 
+    private static void appendClassObject(
+            StringBuilder builder,
+            RuntimeTokenMapper runtimeTokens,
+            String classObjectKey,
+            ClassParts parts) {
+        String symbol = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_OBJECT,
+                "class_object",
+                parts.identity());
+        builder.append("jclass ")
+                .append(symbol)
+                .append("(JNIEnv* env) {\n")
+                .append("    return (*env)->FindClass(env, \"")
+                .append(escapeCString(parts.jniName()))
+                .append("\");\n")
+                .append("}\n\n");
+    }
+
+    private static String runtimeHelperBodies() {
+        return """
                 jarray j2ll_rt_new_int_array(JNIEnv* env, int32_t length) {
                     if (length < 0) {
                         j2ll_throw_new(env, "java/lang/NegativeArraySizeException", "negative int array length");
@@ -155,26 +265,7 @@ final class HostJniAllocationRuntimeSource {
                     return (jarray)(*env)->NewDoubleArray(env, (jsize)length);
                 }
 
-                jarray j2ll_rt_new_object_array(JNIEnv* env, int64_t component_token, int32_t length) {
-                    if (length < 0) {
-                        j2ll_throw_new(env, "java/lang/NegativeArraySizeException", "negative object array length");
-                        return NULL;
-                    }
-                    const char* class_name = j2ll_find_class_name(component_token);
-                    if (class_name == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoClassDefFoundError", "unknown j2ll array component token");
-                        return NULL;
-                    }
-                    jclass component = (*env)->FindClass(env, class_name);
-                    if (component == NULL) {
-                        return NULL;
-                    }
-                    jobjectArray array = (*env)->NewObjectArray(env, (jsize)length, component, NULL);
-                    (*env)->DeleteLocalRef(env, component);
-                    return (jarray)array;
-                }
-
-                """);
+                """;
     }
 
     private static ClassParts parseAllocationKey(String allocationKey) {
@@ -218,13 +309,6 @@ final class HostJniAllocationRuntimeSource {
             return new ClassParts(internalOrDescriptor, internalName);
         }
         return new ClassParts("L" + internalOrDescriptor + ";", internalOrDescriptor);
-    }
-
-    private static long stableClassObjectToken(String classDescriptor) {
-        // BytecodeToSsaLowerer hashes the descriptor operand itself. The
-        // surrounding "class:" text belongs to the IR evidence symbol only
-        // and must not participate in the runtime lookup token.
-        return Integer.toUnsignedLong(classDescriptor.hashCode());
     }
 
     private static String escapeCString(String value) {

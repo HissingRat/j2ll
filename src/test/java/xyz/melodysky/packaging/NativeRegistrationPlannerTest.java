@@ -27,12 +27,40 @@ class NativeRegistrationPlannerTest {
         assertNotEquals(first.nativeSymbol(), distinct.nativeSymbol());
     }
 
+    @Test
+    void buildScopedSeedKeepsSymbolsStableWithinABuildAndVariesAcrossBuilds() {
+        NativeRegistrationPlanner planner = new NativeRegistrationPlanner();
+        ParsedClass parsedClass = parsed("sensitive/acme/PlainOwner", "secretMethod");
+
+        NativeRegistrationEntry first = entry(planner, parsedClass, 0x1122334455667788L);
+        NativeRegistrationEntry repeated = entry(planner, parsedClass, 0x1122334455667788L);
+        NativeRegistrationEntry nextBuild = entry(planner, parsedClass, 0x8877665544332211L);
+        NativeRegistrationEntry legacy = entry(planner, parsedClass);
+
+        assertTrue(first.nativeSymbol().matches("j2ll_n_[0-9a-f]{32}"));
+        assertFalse(first.nativeSymbol().contains("PlainOwner"));
+        assertFalse(first.nativeSymbol().contains("secretMethod"));
+        assertEquals(first.nativeSymbol(), repeated.nativeSymbol());
+        assertNotEquals(first.nativeSymbol(), nextBuild.nativeSymbol());
+        assertNotEquals(first.nativeSymbol(), legacy.nativeSymbol());
+    }
+
     private NativeRegistrationEntry entry(NativeRegistrationPlanner planner, ParsedClass parsedClass) {
+        return entry(planner, parsedClass, null);
+    }
+
+    private NativeRegistrationEntry entry(
+            NativeRegistrationPlanner planner,
+            ParsedClass parsedClass,
+            Long buildScopedSeed) {
         MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
                 .filter(candidate -> !candidate.method().name().equals("<init>"))
                 .findFirst()
                 .orElseThrow();
-        return planner.plan(List.of(decision)).entries().get(0);
+        NativeRegistrationPlan plan = buildScopedSeed == null
+                ? planner.plan(List.of(decision))
+                : planner.plan(List.of(decision), buildScopedSeed);
+        return plan.entries().get(0);
     }
 
     private ParsedClass parsed(String owner, String methodName) {

@@ -87,7 +87,10 @@ public final class ReportJsonWriter {
         JsonArray helperBackedSites = new JsonArray();
         for (HelperBackedSiteReport site : method.helperBackedSites()) {
             JsonObject siteJson = new JsonObject();
-            siteJson.addProperty("helper", site.helper());
+            siteJson.addProperty("helperKind", site.helperKind());
+            siteJson.addProperty(
+                    "helperIdentityHash",
+                    site.helperIdentityHash());
             siteJson.addProperty("reasonCode", site.reasonCode());
             helperBackedSites.add(siteJson);
         }

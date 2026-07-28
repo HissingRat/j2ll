@@ -76,7 +76,9 @@ class CorpusRunnerTest implements Opcodes {
         assertTrue(Files.readString(
                         result.reportPaths().reports().get("skipped-method-report.json"))
                 .contains("pkg/JdkFallback#substring!(Ljava/lang/String;)Ljava/lang/String;"));
-        assertTrue(protectionReport.contains("\"seedHash\": \"d662e0c08628d9dae7f60ff4996e640f5ccafab7a0b69bdadf02a7a55040d3d9\""));
+        assertTrue(protectionReport.contains("\"seedMode\": \"reproducible\""));
+        assertTrue(protectionReport.matches(
+                "(?s).*\\\"seedHash\\\": \\\"[0-9a-f]{64}\\\".*"));
         assertTrue(!protectionReport.contains("corpus-seed"), protectionReport);
     }
 

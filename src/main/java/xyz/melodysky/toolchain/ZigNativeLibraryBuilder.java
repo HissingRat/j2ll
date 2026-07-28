@@ -16,11 +16,14 @@ import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig;
+import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.packaging.EmbeddedLibraryLayout;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
 
 public final class ZigNativeLibraryBuilder {
@@ -82,7 +85,10 @@ public final class ZigNativeLibraryBuilder {
             boolean strip) {
         this(
                 new HostJniCSourceGenerator(),
-                new LlvmModuleLowerer(llvmNameMangler),
+                new LlvmModuleLowerer(
+                        llvmNameMangler,
+                        businessStringSymbols(protectionConfig),
+                        runtimeTokens(protectionConfig)),
                 new LlvmTextEmitter(),
                 new ManagedZigLocator(),
                 new ZigBuildWriter(),
@@ -92,6 +98,40 @@ public final class ZigNativeLibraryBuilder {
                 protectionConfig,
                 methodTableHidingEnabled,
                 strip);
+    }
+
+    private static BusinessStringSymbolMapper businessStringSymbols(
+            LlvmProtectionConfig protectionConfig) {
+        NativeTextBuildKey buildKey =
+                businessTextBuildKey(protectionConfig);
+        return BusinessStringSymbolMapper.fromBytes(buildKey.bytes());
+    }
+
+    private static RuntimeTokenMapper runtimeTokens(
+            LlvmProtectionConfig protectionConfig) {
+        return RuntimeTokenMapper.fromBytes(
+                nativeTextBuildKey(protectionConfig).bytes());
+    }
+
+    private static NativeTextBuildKey nativeTextBuildKey(
+            LlvmProtectionConfig protectionConfig) {
+        return NativeTextBuildKey.fromUtf8(
+                "j2ll-zig-native-text-v1:"
+                        + Long.toUnsignedString(protectionConfig.seed()));
+    }
+
+    private static NativeTextBuildKey registrationTextBuildKey(
+            LlvmProtectionConfig protectionConfig) {
+        return NativeTextBuildKey.fromUtf8(
+                "j2ll-zig-registration-text-v1:"
+                        + Long.toUnsignedString(protectionConfig.seed()));
+    }
+
+    private static NativeTextBuildKey businessTextBuildKey(
+            LlvmProtectionConfig protectionConfig) {
+        return NativeTextBuildKey.fromUtf8(
+                "j2ll-zig-business-native-text-v1:"
+                        + Long.toUnsignedString(protectionConfig.seed()));
     }
 
     public ZigNativeLibraryBuilder(
@@ -291,9 +331,91 @@ public final class ZigNativeLibraryBuilder {
             NativeBuildProgressListener progressListener,
             MethodTableHidingPlan methodTablePlan,
             NativeLlvmCompilation llvmCompilation) throws IOException {
+        return build(
+                workspaceRoot,
+                runtimeLoaderPlan,
+                buildPlan,
+                implementationPlan,
+                irMethods,
+                progressListener,
+                methodTablePlan,
+                llvmCompilation,
+                nativeTextBuildKey(protectionConfig),
+                businessTextBuildKey(protectionConfig),
+                registrationTextBuildKey(protectionConfig));
+    }
+
+    public Optional<ZigNativeBuildResult> build(
+            Path workspaceRoot,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeBuildPlan buildPlan,
+            NativeImplementationPlan implementationPlan,
+            Map<String, IrMethod> irMethods,
+            NativeBuildProgressListener progressListener,
+            MethodTableHidingPlan methodTablePlan,
+            NativeLlvmCompilation llvmCompilation,
+            NativeTextBuildKey nativeTextBuildKey) throws IOException {
+        return build(
+                workspaceRoot,
+                runtimeLoaderPlan,
+                buildPlan,
+                implementationPlan,
+                irMethods,
+                progressListener,
+                methodTablePlan,
+                llvmCompilation,
+                nativeTextBuildKey,
+                nativeTextBuildKey,
+                nativeTextBuildKey);
+    }
+
+    public Optional<ZigNativeBuildResult> build(
+            Path workspaceRoot,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeBuildPlan buildPlan,
+            NativeImplementationPlan implementationPlan,
+            Map<String, IrMethod> irMethods,
+            NativeBuildProgressListener progressListener,
+            MethodTableHidingPlan methodTablePlan,
+            NativeLlvmCompilation llvmCompilation,
+            NativeTextBuildKey nativeTextBuildKey,
+            NativeTextBuildKey registrationBuildKey) throws IOException {
+        return build(
+                workspaceRoot,
+                runtimeLoaderPlan,
+                buildPlan,
+                implementationPlan,
+                irMethods,
+                progressListener,
+                methodTablePlan,
+                llvmCompilation,
+                nativeTextBuildKey,
+                nativeTextBuildKey,
+                registrationBuildKey);
+    }
+
+    public Optional<ZigNativeBuildResult> build(
+            Path workspaceRoot,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeBuildPlan buildPlan,
+            NativeImplementationPlan implementationPlan,
+            Map<String, IrMethod> irMethods,
+            NativeBuildProgressListener progressListener,
+            MethodTableHidingPlan methodTablePlan,
+            NativeLlvmCompilation llvmCompilation,
+            NativeTextBuildKey nativeTextBuildKey,
+            NativeTextBuildKey businessTextBuildKey,
+            NativeTextBuildKey registrationBuildKey) throws IOException {
         Objects.requireNonNull(progressListener, "progressListener");
         Objects.requireNonNull(methodTablePlan, "methodTablePlan");
         Objects.requireNonNull(llvmCompilation, "llvmCompilation");
+        Objects.requireNonNull(nativeTextBuildKey, "nativeTextBuildKey");
+        Objects.requireNonNull(
+                businessTextBuildKey,
+                "businessTextBuildKey");
+        Objects.requireNonNull(
+                registrationBuildKey,
+                "registrationBuildKey");
         if (implementationPlan.implementations().isEmpty() || buildPlan.units().isEmpty()) {
             return Optional.empty();
         }
@@ -312,7 +434,10 @@ public final class ZigNativeLibraryBuilder {
                 libraryName,
                 runtimeLoaderPlan,
                 implementationPlan,
-                methodTablePlan);
+                methodTablePlan,
+                nativeTextBuildKey,
+                businessTextBuildKey,
+                registrationBuildKey);
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(runtime, "/* runtime helper C inputs are helper-backed skeletons in this slice */\n", StandardCharsets.UTF_8);
         List<Path> llvmSources = writeLlvmSources(workspace, llvmCompilation);
@@ -352,10 +477,74 @@ public final class ZigNativeLibraryBuilder {
             RuntimeLoaderPlan runtimeLoaderPlan,
             NativeImplementationPlan implementationPlan,
             MethodTableHidingPlan methodTablePlan) throws IOException {
+        return writeJniWrapper(
+                workspace,
+                libraryName,
+                runtimeLoaderPlan,
+                implementationPlan,
+                methodTablePlan,
+                nativeTextBuildKey(protectionConfig),
+                businessTextBuildKey(protectionConfig),
+                registrationTextBuildKey(protectionConfig));
+    }
+
+    Path writeJniWrapper(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeImplementationPlan implementationPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey nativeTextBuildKey) throws IOException {
+        return writeJniWrapper(
+                workspace,
+                libraryName,
+                runtimeLoaderPlan,
+                implementationPlan,
+                methodTablePlan,
+                nativeTextBuildKey,
+                nativeTextBuildKey,
+                nativeTextBuildKey);
+    }
+
+    Path writeJniWrapper(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeImplementationPlan implementationPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey nativeTextBuildKey,
+            NativeTextBuildKey registrationBuildKey) throws IOException {
+        return writeJniWrapper(
+                workspace,
+                libraryName,
+                runtimeLoaderPlan,
+                implementationPlan,
+                methodTablePlan,
+                nativeTextBuildKey,
+                nativeTextBuildKey,
+                registrationBuildKey);
+    }
+
+    Path writeJniWrapper(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeImplementationPlan implementationPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey nativeTextBuildKey,
+            NativeTextBuildKey businessTextBuildKey,
+            NativeTextBuildKey registrationBuildKey) throws IOException {
         Objects.requireNonNull(workspace, "workspace");
         Objects.requireNonNull(runtimeLoaderPlan, "runtimeLoaderPlan");
         Objects.requireNonNull(implementationPlan, "implementationPlan");
         Objects.requireNonNull(methodTablePlan, "methodTablePlan");
+        Objects.requireNonNull(nativeTextBuildKey, "nativeTextBuildKey");
+        Objects.requireNonNull(
+                businessTextBuildKey,
+                "businessTextBuildKey");
+        Objects.requireNonNull(
+                registrationBuildKey,
+                "registrationBuildKey");
         if (!NativeLibraryName.isSafe(libraryName)) {
             throw new IOException("unsafe native library name in build plan: " + libraryName);
         }
@@ -370,7 +559,10 @@ public final class ZigNativeLibraryBuilder {
                 sourceGenerator.generate(
                         implementationPlan,
                         runtimeLoaderPlan,
-                        methodTablePlan),
+                        methodTablePlan,
+                        nativeTextBuildKey,
+                        businessTextBuildKey,
+                        registrationBuildKey),
                 StandardCharsets.UTF_8);
         return wrapper;
     }

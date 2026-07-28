@@ -12,13 +12,25 @@ import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
-import xyz.melodysky.runtime.FieldIdentityToken;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 
 /**
  * Exact lowering for opaque native static-field slots.
  */
 final class NativeFieldLlvmLowering {
     static final String REFERENCE_SIDECAR_CACHE = "%j2ll_nfs_ref_cache";
+    private final RuntimeTokenMapper runtimeTokens;
+
+    NativeFieldLlvmLowering() {
+        this(RuntimeTokenMapper.compatibility());
+    }
+
+    NativeFieldLlvmLowering(RuntimeTokenMapper runtimeTokens) {
+        this.runtimeTokens = java.util.Objects.requireNonNull(
+                runtimeTokens,
+                "runtimeTokens");
+    }
 
     List<LlvmDeclaration> declarations() {
         return List.of(
@@ -89,7 +101,9 @@ final class NativeFieldLlvmLowering {
             return lowerReference(instruction, slot, uniqueSuffix);
         }
         String helper = helper(instruction.opcode(), slot.kind());
-        String token = "i64 " + FieldIdentityToken.token(slot.opaqueSlotId());
+        String token = "i64 " + runtimeTokens.token(
+                RuntimeTokenDomain.NATIVE_FIELD_SLOT,
+                slot.opaqueSlotId());
         if (instruction.opcode() == IrOpcode.GET_NATIVE_STATIC) {
             if (slot.kind() == NativeFieldStorageKind.FLOAT
                     || slot.kind() == NativeFieldStorageKind.DOUBLE) {

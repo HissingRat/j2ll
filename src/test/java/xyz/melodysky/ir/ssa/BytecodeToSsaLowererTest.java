@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
@@ -19,15 +20,25 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
+import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrClass;
+import xyz.melodysky.ir.model.IrExceptionEdge;
 import xyz.melodysky.ir.model.IrExceptionSiteKind;
+import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.validate.IrMethodValidator;
 import xyz.melodysky.pipeline.LoweringStatus;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiDomain;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlan;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlanner;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.ExceptionFlowAsmFixtures;
+import xyz.melodysky.toolchain.NativeExceptionFlowSupport;
 
 class BytecodeToSsaLowererTest {
     @Test
@@ -368,20 +379,17 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersTypedCatchHandlerWithExceptionParameter() {
+    void prunesTypedCatchHandlerWhenProtectedRegionCannotThrow() {
         var method = lower(
                 AsmFixtureBuilder.classWithTryCatchMethod("pkg/TryCatch"),
                 "guarded").irMethod().orElseThrow();
 
-        var handler = method.blocks().stream()
-                .filter(block -> block.isExceptionHandler())
-                .findFirst()
-                .orElseThrow();
-        assertEquals(java.util.List.of("java/lang/RuntimeException"), handler.exceptionCatchTypes());
-        assertEquals(IrType.REFERENCE, handler.parameters().get(0).type());
-        assertTrue(method.blocks().stream().anyMatch(block -> block.exceptionEdges().stream()
-                .anyMatch(edge -> edge.target().equals(handler.name())
-                        && edge.catchType().equals("java/lang/RuntimeException"))));
+        assertFalse(method.blocks().stream().anyMatch(block -> block.isExceptionHandler()));
+        assertFalse(method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction -> instruction.exceptionSites().stream())
+                .anyMatch(site -> !site.handlers().isEmpty()));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
     }
 
     @Test
@@ -397,14 +405,14 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersAthrowToThrowTerminatorAndRuntimeHelperCall() {
+    void lowersAthrowToRethrowHelperAndPendingExceptionReturn() {
         var method = lower(
                 AsmFixtureBuilder.classWithAthrowMethod("pkg/Raise"),
                 "raise").irMethod().orElseThrow();
 
         assertEquals(IrTerminatorKind.THROW, method.blocks().get(0).terminator().kind());
         String llvm = llvm(method);
-        assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env, ptr %p0)"));
+        assertTrue(llvm.contains("call void @j2ll_rt_rethrow(ptr %j2ll_env, ptr %p0)"));
         assertTrue(llvm.contains("ret void"));
     }
 
@@ -427,11 +435,12 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersCatchAllRethrowAndFinallyCleanupShapes() {
+    void prunesUnreachableCatchAllRethrowAndExceptionalFinallyCleanup() {
         var rethrow = lower(
                 AsmFixtureBuilder.classWithCatchAllFinallyShape("pkg/FinallyShape"),
                 "cleanup").irMethod().orElseThrow();
-        assertTrue(rethrow.blocks().stream().anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW));
+        assertFalse(rethrow.blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW));
 
         var cleanup = lower(
                 AsmFixtureBuilder.classWithFinallyCleanupShape("pkg/FinallyCleanup"),
@@ -441,12 +450,13 @@ class BytecodeToSsaLowererTest {
                 .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC)
                 .filter(instruction -> instruction.symbol().orElse("").equals("pkg/FinallyCleanup#cleanupMarker!()V"))
                 .count();
-        assertEquals(2, cleanupCalls);
-        assertTrue(cleanup.blocks().stream().anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW));
+        assertEquals(1, cleanupCalls);
+        assertFalse(cleanup.blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW));
     }
 
     @Test
-    void unsupportedMultiExitFinallyShapeProducesPreciseDiagnostic() {
+    void lowersMultiExitFinallyShapeWithValidExceptionState() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/FinallyShape"),
                 "badFinally");
@@ -454,13 +464,14 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
-        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
-        assertEquals(LoweringDiagnostics.UNSUPPORTED_MULTI_EXIT_FINALLY, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
+        var method = result.artifact().orElseThrow().irMethod().orElseThrow();
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     @Test
-    void unsupportedMonitorFinallyInteractionProducesPreciseDiagnostic() {
+    void lowersMonitorFinallyInteractionWithValidExceptionState() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithUnsupportedMonitorFinallyInteraction("pkg/MonitorFinallyShape"),
                 "badMonitorFinally");
@@ -468,13 +479,15 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
-        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
-        assertEquals(LoweringDiagnostics.UNSUPPORTED_MONITOR_FINALLY_INTERACTION, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
+        var method = result.artifact().orElseThrow().irMethod().orElseThrow();
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+        assertTrue(hasOpcode(method, IrOpcode.MONITOR_EXIT));
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     @Test
-    void unsupportedNestedFinallyProducesPreciseDiagnostic() {
+    void lowersNestedFinallyWithValidExceptionState() {
         ParsedMethod parsedMethod = parseMethod(
                 AsmFixtureBuilder.classWithUnsupportedNestedFinallyShape("pkg/NestedFinallyShape"),
                 "badNestedFinally");
@@ -482,9 +495,10 @@ class BytecodeToSsaLowererTest {
 
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
-        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
-        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
-        assertEquals(LoweringDiagnostics.UNSUPPORTED_NESTED_FINALLY, result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
+        var method = result.artifact().orElseThrow().irMethod().orElseThrow();
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+        assertTrue(result.diagnostics().isEmpty());
     }
 
     @Test
@@ -544,7 +558,8 @@ class BytecodeToSsaLowererTest {
                 && instruction.operands().equals(java.util.List.of(classObject))));
         assertTrue(entryInstructions.stream().anyMatch(instruction -> instruction.opcode() == IrOpcode.MONITOR_EXIT
                 && instruction.operands().equals(java.util.List.of(classObject))));
-        assertTrue(llvm(method).contains("call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(method).contains(
+                "call ptr @" + classObjectHelper(method) + "(ptr %j2ll_env)"));
         assertTrue(llvm(method).contains("call void @j2ll_rt_monitor_enter(ptr %j2ll_env, ptr "));
     }
 
@@ -554,28 +569,69 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithSynchronizedThrowMethod("pkg/SyncThrow"),
                 "syncThrow").irMethod().orElseThrow();
 
-        assertTrue(method.blocks().get(0).instructions().stream()
-                .anyMatch(instruction -> instruction.opcode() == IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
-        assertEquals(IrTerminatorKind.THROW, method.blocks().get(0).terminator().kind());
+        IrBlock throwing = method.blocks().stream()
+                .filter(block -> block.terminator().kind() == IrTerminatorKind.THROW)
+                .filter(block -> !block.isExceptionHandler())
+                .findFirst()
+                .orElseThrow();
+        assertFalse(hasOpcode(throwing, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
+        assertEquals(List.of("<any>"), throwing.exceptionEdges().stream()
+                .map(IrExceptionEdge::catchType)
+                .toList());
+        IrBlock cleanup = method.blocks().stream()
+                .filter(block -> block.name().equals(throwing.exceptionEdges().get(0).target()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(hasOpcode(cleanup, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
         String llvm = llvm(method);
         assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit_on_exception(ptr %j2ll_env, ptr %p0)"));
     }
 
     @Test
-    void lowersSynchronizedBlockExceptionalUnlockShape() {
+    void explicitThrowTriesUserHandlerBeforeSynchronizedCleanup() {
+        IrMethod method = lower(
+                ExceptionFlowAsmFixtures.classWithSynchronizedCaughtExplicitThrow(
+                        "pkg/SyncCaughtThrow"),
+                "caughtThrow").irMethod().orElseThrow();
+
+        IrBlock throwing = method.blocks().stream()
+                .filter(block -> block.terminator().kind() == IrTerminatorKind.THROW)
+                .filter(block -> !block.isExceptionHandler())
+                .findFirst()
+                .orElseThrow();
+        assertFalse(hasOpcode(throwing, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
+        assertEquals(
+                List.of("java/lang/RuntimeException", "<any>"),
+                throwing.exceptionEdges().stream()
+                        .map(IrExceptionEdge::catchType)
+                        .toList());
+        IrBlock userHandler = method.blocks().stream()
+                .filter(block -> block.name().equals(throwing.exceptionEdges().get(0).target()))
+                .findFirst()
+                .orElseThrow();
+        IrBlock cleanup = method.blocks().stream()
+                .filter(block -> block.name().equals(throwing.exceptionEdges().get(1).target()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(userHandler.exceptionCatchTypes().contains("java/lang/RuntimeException"));
+        assertFalse(hasOpcode(userHandler, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
+        assertTrue(hasOpcode(userHandler, IrOpcode.MONITOR_EXIT));
+        assertTrue(hasOpcode(cleanup, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
+    }
+
+    @Test
+    void prunesUnreachableSynchronizedBlockExceptionalUnlockHandler() {
         SsaMethodResult result = lower(
                 AsmFixtureBuilder.classWithSynchronizedExceptionalUnlockShape("pkg/SyncExceptional"),
                 "lockedExceptional");
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
         var method = result.irMethod().orElseThrow();
-        assertTrue(hasOpcode(method, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
-        assertTrue(method.blocks().stream().anyMatch(block -> block.isExceptionHandler()
-                && hasOpcode(block, IrOpcode.MONITOR_EXIT_ON_EXCEPTION)
-                && block.terminator().kind() == IrTerminatorKind.THROW));
+        assertFalse(hasOpcode(method, IrOpcode.MONITOR_EXIT_ON_EXCEPTION));
+        assertEquals(1, countOpcode(method, IrOpcode.MONITOR_EXIT));
         String llvm = llvm(method);
-        assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit_on_exception(ptr %j2ll_env, ptr %p0)"));
-        assertTrue(llvm.contains("call void @j2ll_rt_throw(ptr %j2ll_env, "));
+        assertTrue(llvm.contains("call void @j2ll_rt_monitor_exit(ptr %j2ll_env, ptr %p0)"));
+        assertFalse(llvm.contains("call void @j2ll_rt_rethrow(ptr %j2ll_env, "));
     }
 
     @Test
@@ -733,7 +789,16 @@ class BytecodeToSsaLowererTest {
         assertFalse(hasOpcode(method, IrOpcode.CONST_STRING));
         assertTrue(hasHelper(method, "j2ll_rt_string_constant"));
         String llvm = llvm(method);
-        assertTrue(llvm.contains("@j2ll_rt_string_constant(ptr %j2ll_env"));
+        String localizedHelper = method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction -> xyz.melodysky.ir.model.BusinessStringConstantRef
+                        .fromInstruction(instruction)
+                        .stream())
+                .map(xyz.melodysky.ir.model.BusinessStringConstantRef::helperSymbol)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(llvm.contains("@" + localizedHelper + "(ptr %j2ll_env)"));
+        assertFalse(llvm.contains("@j2ll_rt_string_constant(ptr %j2ll_env, i64"));
         assertTrue(llvm.contains("@j2ll_rt_string_builder_append_ref("));
         assertTrue(llvm.contains("@j2ll_rt_string_builder_append_i32("));
         assertTrue(llvm.contains("@j2ll_rt_string_builder_to_string("));
@@ -769,21 +834,25 @@ class BytecodeToSsaLowererTest {
         byte[] classBytes = AsmFixtureBuilder.classWithLambdaMetafactoryMethods("pkg/LambdaShapes");
 
         var nonCapturing = lower(classBytes, "nonCapturing").irMethod().orElseThrow();
-        assertTrue(llvm(nonCapturing).contains("call ptr @j2ll_rt_lambda_new(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(nonCapturing).matches(
+                "(?s).*call ptr @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr .*"));
         assertFalse(hasOpcode(nonCapturing, IrOpcode.CALL_DYNAMIC));
 
         var capturing = lower(classBytes, "capturing").irMethod().orElseThrow();
-        assertTrue(llvm(capturing).contains("call ptr @j2ll_rt_lambda_new(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(capturing).matches(
+                "(?s).*call ptr @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr %p0\\).*"));
         assertTrue(llvm(capturing).contains("ptr %p0"));
 
         var staticReference = lower(classBytes, "staticReference").irMethod().orElseThrow();
-        assertTrue(llvm(staticReference).contains("@j2ll_rt_lambda_new"));
+        assertTrue(llvm(staticReference).matches(
+                "(?s).*@j2ll_h_[0-9a-f]{16}.*"));
 
         var instanceReference = lower(classBytes, "instanceReference").irMethod().orElseThrow();
         assertTrue(llvm(instanceReference).contains("ptr %p0"));
 
         var constructorReference = lower(classBytes, "constructorReference").irMethod().orElseThrow();
-        assertTrue(llvm(constructorReference).contains("@j2ll_rt_lambda_new"));
+        assertTrue(llvm(constructorReference).matches(
+                "(?s).*@j2ll_h_[0-9a-f]{16}.*"));
     }
 
     @Test
@@ -826,7 +895,8 @@ class BytecodeToSsaLowererTest {
                 .filter(instruction -> instruction.opcode() == IrOpcode.CLASS_INIT_GUARD)
                 .allMatch(instruction -> instruction.symbol().orElseThrow().contains("superBeforeSubclass")));
         String llvm = llvm(method);
-        assertTrue(llvm.contains("call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 "));
+        assertTrue(llvm.contains(
+                "call ptr @" + classObjectHelper(method) + "(ptr %j2ll_env)"));
         assertTrue(llvm.contains("call void @j2ll_rt_class_init_guard(ptr %j2ll_env, ptr "));
         assertTrue(llvm.contains("fence acquire"));
     }
@@ -924,14 +994,22 @@ class BytecodeToSsaLowererTest {
         var stringInstruction = stringConst.blocks().get(0).instructions().get(0);
         assertEquals(IrOpcode.CONST_STRING, stringInstruction.opcode());
         assertEquals("string:secret-value", stringInstruction.symbol().orElseThrow());
-        assertTrue(llvm(stringConst).contains("call ptr @j2ll_rt_string_constant(ptr %j2ll_env, i64 "));
+        String localizedHelper = xyz.melodysky.ir.model.BusinessStringConstantRef
+                .fromInstruction(stringInstruction)
+                .orElseThrow()
+                .helperSymbol();
+        assertTrue(llvm(stringConst).contains(
+                "call ptr @" + localizedHelper + "(ptr %j2ll_env)"));
+        assertFalse(llvm(stringConst).contains(
+                "@j2ll_rt_string_constant(ptr %j2ll_env, i64"));
         assertFalse(llvm(stringConst).contains("secret-value"));
 
         var classConst = lower(classBytes, "classConst").irMethod().orElseThrow();
         var classInstruction = classConst.blocks().get(0).instructions().get(0);
         assertEquals(IrOpcode.CONST_CLASS, classInstruction.opcode());
         assertEquals("class:Ljava/lang/String;", classInstruction.symbol().orElseThrow());
-        assertTrue(llvm(classConst).contains("call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(classConst).contains(
+                "call ptr @" + classObjectHelper(classConst) + "(ptr %j2ll_env)"));
 
         var methodTypeConst = lower(classBytes, "methodTypeConst").irMethod().orElseThrow();
         var methodTypeInstruction = methodTypeConst.blocks().get(0).instructions().get(0);
@@ -957,7 +1035,22 @@ class BytecodeToSsaLowererTest {
         assertTrue(method.blocks().get(0).instructions().stream()
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.GET_STATIC
                         && instruction.symbol().orElseThrow().contains("VALUE")));
-        assertTrue(llvm(method).contains("@j2ll_rt_field_get_static_i32(ptr %j2ll_env, ptr %j2ll_owner, i64 "));
+        String identity = localizedIdentity(method, IrOpcode.GET_STATIC);
+        assertTrue(llvm(method).contains(
+                "@" + localizedHelper(
+                        method,
+                        IrOpcode.GET_STATIC,
+                        RuntimeTokenDomain.FIELD_RUNTIME,
+                        "field_get_static_i32")
+                        + "("
+                        + localAbiCall(
+                                RuntimeLocalAbiDomain.FIELD,
+                                "field_get_static_i32",
+                                identity,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        "ptr %j2ll_owner"))
+                        + ")"));
     }
 
     @Test
@@ -968,7 +1061,22 @@ class BytecodeToSsaLowererTest {
 
         var method = result.irMethod().orElseThrow();
         assertEquals(IrOpcode.GET_FIELD, method.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(method).contains("@j2ll_rt_field_get_field_i32(ptr %j2ll_env, ptr %p0, i64 "));
+        String identity = localizedIdentity(method, IrOpcode.GET_FIELD);
+        assertTrue(llvm(method).contains(
+                "@" + localizedHelper(
+                        method,
+                        IrOpcode.GET_FIELD,
+                        RuntimeTokenDomain.FIELD_RUNTIME,
+                        "field_get_instance_i32")
+                        + "("
+                        + localAbiCall(
+                                RuntimeLocalAbiDomain.FIELD,
+                                "field_get_instance_i32",
+                                identity,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        "ptr %p0"))
+                        + ")"));
     }
 
     @Test
@@ -1004,14 +1112,43 @@ class BytecodeToSsaLowererTest {
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.NEW_OBJECT));
         assertTrue(allocation.blocks().get(0).instructions().stream()
                 .anyMatch(instruction -> instruction.opcode() == IrOpcode.CALL_SPECIAL));
-        assertTrue(llvm(allocation).contains("call ptr @j2ll_rt_alloc_object(ptr %j2ll_env, i64 "));
-        assertTrue(llvm(allocation).contains("call void @j2ll_rt_call_constructor_void(ptr %j2ll_env"));
+        assertTrue(llvm(allocation).contains(
+                "call ptr @" + localizedHelper(
+                        allocation,
+                        IrOpcode.NEW_OBJECT,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "alloc_object")
+                        + "(ptr %j2ll_env)"));
+        String constructorIdentity = localizedIdentity(
+                allocation,
+                IrOpcode.CALL_SPECIAL);
+        String constructorHelper = localizedHelper(
+                allocation,
+                IrOpcode.CALL_SPECIAL,
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "constructor_call");
+        assertLocalAbiInvocation(
+                llvm(allocation),
+                "call void @" + constructorHelper + "(",
+                RuntimeLocalAbiDomain.DISPATCH,
+                "constructor_call",
+                constructorIdentity,
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr ",
+                        "ptr "));
 
         var refArray = lower(
                 AsmFixtureBuilder.classWithReferenceArrayAllocation("pkg/RefArrays", "java/lang/String"),
                 "array").irMethod().orElseThrow();
         assertEquals(IrOpcode.NEW_ARRAY, refArray.blocks().get(0).instructions().get(1).opcode());
-        assertTrue(llvm(refArray).contains("call ptr @j2ll_rt_new_object_array(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(refArray).contains(
+                "call ptr @" + localizedHelper(
+                        refArray,
+                        IrOpcode.NEW_ARRAY,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "new_object_array")
+                        + "(ptr %j2ll_env, i32 "));
     }
 
     @Test
@@ -1035,8 +1172,20 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithStringConcatMakeConcat("pkg/StringBuilderAllocGuard"),
                 "concat").irMethod().orElseThrow();
 
-        assertTrue(llvm(objectAllocation).contains("call ptr @j2ll_rt_alloc_object(ptr %j2ll_env, i64 "));
-        assertTrue(llvm(referenceArray).contains("call ptr @j2ll_rt_new_object_array(ptr %j2ll_env, i64 "));
+        assertTrue(llvm(objectAllocation).contains(
+                "call ptr @" + localizedHelper(
+                        objectAllocation,
+                        IrOpcode.NEW_OBJECT,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "alloc_object")
+                        + "(ptr %j2ll_env)"));
+        assertTrue(llvm(referenceArray).contains(
+                "call ptr @" + localizedHelper(
+                        referenceArray,
+                        IrOpcode.NEW_ARRAY,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "new_object_array")
+                        + "(ptr %j2ll_env, i32 "));
         assertTrue(llvm(primitiveArray).contains("call ptr @j2ll_rt_new_int_array(ptr %j2ll_env, i32 "));
         assertTrue(llvm(multiArray).contains("call ptr @j2ll_rt_new_multi_array_"));
         assertTrue(hasHelper(unsafeAllocate, "j2ll_rt_unsafe_allocate_instance"));
@@ -1080,11 +1229,23 @@ class BytecodeToSsaLowererTest {
 
         var cast = lower(classBytes, "castString").irMethod().orElseThrow();
         assertEquals(IrOpcode.CHECKCAST, cast.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(cast).contains("call ptr @j2ll_rt_checkcast(ptr %j2ll_env"));
+        assertTrue(llvm(cast).contains(
+                "call ptr @" + localizedHelper(
+                        cast,
+                        IrOpcode.CHECKCAST,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "checkcast")
+                        + "(ptr %j2ll_env"));
 
         var instanceOf = lower(classBytes, "isString").irMethod().orElseThrow();
         assertEquals(IrOpcode.INSTANCEOF, instanceOf.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(instanceOf).contains("call i32 @j2ll_rt_instanceof(ptr %j2ll_env"));
+        assertTrue(llvm(instanceOf).contains(
+                "call i32 @" + localizedHelper(
+                        instanceOf,
+                        IrOpcode.INSTANCEOF,
+                        RuntimeTokenDomain.CLASS_RUNTIME,
+                        "instanceof")
+                        + "(ptr %j2ll_env"));
     }
 
     @Test
@@ -1093,13 +1254,47 @@ class BytecodeToSsaLowererTest {
                 AsmFixtureBuilder.classWithVirtualCall("pkg/VirtualCalls", "pkg/RunnableThing"),
                 "call").irMethod().orElseThrow();
         assertEquals(IrOpcode.CALL_VIRTUAL, virtualCall.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(virtualCall).contains("@j2ll_rt_call_virtual_void_a(ptr %j2ll_env"));
+        String virtualIdentity = localizedIdentity(
+                virtualCall,
+                IrOpcode.CALL_VIRTUAL);
+        String virtualHelper = localizedHelper(
+                virtualCall,
+                IrOpcode.CALL_VIRTUAL,
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "virtual_dispatch_void");
+        assertLocalAbiInvocation(
+                llvm(virtualCall),
+                "call void @" + virtualHelper + "(",
+                RuntimeLocalAbiDomain.DISPATCH,
+                "virtual_dispatch_void",
+                virtualIdentity,
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr ",
+                        "ptr "));
 
         var interfaceCall = lower(
                 AsmFixtureBuilder.classWithInterfaceCall("pkg/InterfaceCalls", "pkg/Task"),
                 "call").irMethod().orElseThrow();
         assertEquals(IrOpcode.CALL_INTERFACE, interfaceCall.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(interfaceCall).contains("@j2ll_rt_call_interface_void_a(ptr %j2ll_env"));
+        String interfaceIdentity = localizedIdentity(
+                interfaceCall,
+                IrOpcode.CALL_INTERFACE);
+        String interfaceHelper = localizedHelper(
+                interfaceCall,
+                IrOpcode.CALL_INTERFACE,
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "interface_dispatch_void");
+        assertLocalAbiInvocation(
+                llvm(interfaceCall),
+                "call void @" + interfaceHelper + "(",
+                RuntimeLocalAbiDomain.DISPATCH,
+                "interface_dispatch_void",
+                interfaceIdentity,
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr ",
+                        "ptr "));
 
         var dynamicCall = lower(
                 AsmFixtureBuilder.classWithInvokeDynamic("pkg/DynamicCalls"),
@@ -1128,6 +1323,35 @@ class BytecodeToSsaLowererTest {
         var reflectiveInvoke = lower(classBytes, "reflectiveInvoke").irMethod().orElseThrow();
         assertTrue(hasHelper(reflectiveInvoke, "j2ll_rt_get_declared_method"));
         assertTrue(hasHelper(reflectiveInvoke, "j2ll_rt_reflect_invoke"));
+    }
+
+    @Test
+    void reflectionPeepholePreservesProtectedPendingExceptionTransfer() {
+        byte[] classBytes = AsmFixtureBuilder.classWithStaticReflectionMethods(
+                "pkg/ReflectCaller",
+                "pkg/ReflectTarget");
+
+        IrMethod method = lower(classBytes, "protectedDeclaredField")
+                .irMethod()
+                .orElseThrow();
+
+        var lookup = method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.symbol()
+                        .orElse("")
+                        .startsWith("j2ll_rt_get_declared_field|"))
+                .findFirst()
+                .orElseThrow();
+        var site = lookup.exceptionSites().get(0);
+        IrValue exception = site.exceptionValue().orElseThrow();
+        assertEquals(List.of("java/lang/Exception"), site.handlers().stream()
+                .map(IrExceptionEdge::catchType)
+                .toList());
+        assertEquals(exception, site.handlers().get(0).arguments().get(0));
+        assertFalse(hasOpcode(method, IrOpcode.CONST_CLASS));
+        assertFalse(hasOpcode(method, IrOpcode.CONST_STRING));
+        assertFalse(new NativeExceptionFlowSupport().hasUnsupportedJvmFlow(method));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
     }
 
     @Test
@@ -1187,7 +1411,24 @@ class BytecodeToSsaLowererTest {
         assertTrue(hasOpcode(dynamic, IrOpcode.NEW_ARRAY));
         assertTrue(hasHelper(dynamic, "j2ll_rt_integer_int_value"));
         assertTrue(hasOpcode(dynamic, IrOpcode.CALL_VIRTUAL));
-        assertTrue(llvm(dynamic).contains("@j2ll_rt_call_virtual_ref_a(ptr %j2ll_env"));
+        String dispatchIdentity = localizedIdentity(
+                dynamic,
+                IrOpcode.CALL_VIRTUAL);
+        String dispatchHelper = localizedHelper(
+                dynamic,
+                IrOpcode.CALL_VIRTUAL,
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                "virtual_dispatch_ref");
+        assertLocalAbiInvocation(
+                llvm(dynamic),
+                "call ptr @" + dispatchHelper + "(",
+                RuntimeLocalAbiDomain.DISPATCH,
+                "virtual_dispatch_ref",
+                dispatchIdentity,
+                List.of(
+                        "ptr %j2ll_env",
+                        "ptr ",
+                        "ptr "));
     }
 
     @Test
@@ -1454,5 +1695,97 @@ class BytecodeToSsaLowererTest {
 
     private String llvm(xyz.melodysky.ir.model.IrMethod method) {
         return new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass(method.owner(), java.util.List.of(method))));
+    }
+
+    private String localizedHelper(
+            IrMethod method,
+            IrOpcode opcode,
+            RuntimeTokenDomain domain,
+            String operation) {
+        return RuntimeTokenMapper.compatibility()
+                .helperSymbol(
+                        domain,
+                        operation,
+                        localizedIdentity(method, opcode));
+    }
+
+    private String localizedIdentity(
+            IrMethod method,
+            IrOpcode opcode) {
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.opcode() == opcode)
+                .map(instruction -> instruction.symbol().orElseThrow())
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private String localAbiCall(
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalArguments) {
+        RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
+                RuntimeTokenMapper.compatibility(),
+                domain,
+                operation,
+                identity,
+                logicalArguments.size());
+        return String.join(
+                ", ",
+                plan.arrange(logicalArguments));
+    }
+
+    private void assertLocalAbiInvocation(
+            String llvm,
+            String callPrefix,
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalArgumentPrefixes) {
+        RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
+                RuntimeTokenMapper.compatibility(),
+                domain,
+                operation,
+                identity,
+                logicalArgumentPrefixes.size());
+        int start = llvm.indexOf(callPrefix);
+        assertTrue(start >= 0, llvm);
+        int argumentsStart = start + callPrefix.length();
+        int end = llvm.indexOf(')', argumentsStart);
+        assertTrue(end >= argumentsStart, llvm);
+        List<String> actual = List.of(
+                llvm.substring(argumentsStart, end).split(", "));
+        assertEquals(plan.physicalSlots().size(), actual.size(), llvm);
+        for (int physical = 0;
+                physical < plan.physicalSlots().size();
+                physical++) {
+            int logical = plan.physicalSlots().get(physical);
+            assertTrue(
+                    actual.get(physical).startsWith(
+                            logicalArgumentPrefixes.get(logical)),
+                    llvm);
+        }
+    }
+
+    private String classObjectHelper(IrMethod method) {
+        String symbol = method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.opcode() == IrOpcode.CLASS_OBJECT
+                        || instruction.opcode() == IrOpcode.CONST_CLASS)
+                .map(instruction -> instruction.symbol().orElseThrow())
+                .findFirst()
+                .orElseThrow();
+        String identity = symbol.startsWith("class:")
+                ? symbol.substring("class:".length())
+                : symbol;
+        if (!identity.startsWith("[")
+                && !(identity.startsWith("L") && identity.endsWith(";"))) {
+            identity = "L" + identity + ";";
+        }
+        return RuntimeTokenMapper.compatibility().helperSymbol(
+                RuntimeTokenDomain.CLASS_OBJECT,
+                "class_object",
+                identity);
     }
 }

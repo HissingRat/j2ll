@@ -10,6 +10,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.config.Selector;
+import xyz.melodysky.protection.BuildProtectionIdentity;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class ResolvedConfigReportWriter {
@@ -39,7 +40,10 @@ public final class ResolvedConfigReportWriter {
         root.add("targets", targets);
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
-        root.addProperty("protectionSeedHash", sha256(config.protection().seed()));
+        root.addProperty("protectionSeedMode", config.protection().seedMode().wireName());
+        root.addProperty(
+                "protectionSeedHash",
+                BuildProtectionIdentity.from(config.protection()).identityHash());
         return GSON.toJson(root) + "\n";
     }
 

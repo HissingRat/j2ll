@@ -71,7 +71,10 @@ final class MethodInliningIrRemapper {
 
     private IrInstruction cloneInstruction(IrInstruction instruction) {
         List<IrExceptionSite> sites = instruction.exceptionSites().stream()
-                .map(site -> new IrExceptionSite(site.kind(), remapExceptionEdges(site.handlers())))
+                .map(site -> new IrExceptionSite(
+                        site.kind(),
+                        remapExceptionEdges(site.handlers()),
+                        site.exceptionValue().map(this::value)))
                 .toList();
         return new IrInstruction(
                 instruction.result().map(this::value),
@@ -126,7 +129,10 @@ final class MethodInliningIrRemapper {
 
     private List<IrExceptionEdge> remapExceptionEdges(List<IrExceptionEdge> edges) {
         return edges.stream()
-                .map(edge -> new IrExceptionEdge(blockName(edge.target()), edge.catchType()))
+                .map(edge -> new IrExceptionEdge(
+                        blockName(edge.target()),
+                        edge.catchType(),
+                        remapValues(edge.arguments())))
                 .toList();
     }
 

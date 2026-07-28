@@ -61,7 +61,12 @@ class RuntimeHelperSiteAnalyzerTest implements Opcodes {
                         Optional.empty(),
                         IrOpcode.CALL_RUNTIME_HELPER,
                         List.of(),
-                        "j2ll_rt_string_length"));
+                        "j2ll_rt_string_length"),
+                IrInstruction.operation(
+                        Optional.empty(),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(),
+                        "j2ll_rt_thread_sleep"));
 
         List<RuntimeHelperSite> sites = analyzer.analyze(
                 SsaMethodResult.nativeLowered(source, irMethod),
@@ -70,6 +75,7 @@ class RuntimeHelperSiteAnalyzerTest implements Opcodes {
                 NO_DEFAULT_INTERFACES);
 
         assertTrue(sites.contains(new RuntimeHelperSite("j2ll_rt_string_length", "STRING_HELPER")));
+        assertTrue(sites.contains(new RuntimeHelperSite("j2ll_rt_thread_sleep", "THREAD_HELPER")));
     }
 
     @Test

@@ -128,7 +128,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertTrue(protectionReport.contains("\"passName\": \"FIELD_INTERNALIZATION\""));
         assertTrue(protectionReport.contains("\"passName\": \"METHOD_TABLE_HIDING\""));
         assertTrue(protectionReport.contains(
-                "\"reasonCode\": \"METHOD_TABLE_HIDING_SPLIT_TOKEN_TABLE\""));
+                "\"reasonCode\": \"METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT\""));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         JsonObject methodTableEvidence = JsonParser.parseString(packagingReport)
                 .getAsJsonObject()

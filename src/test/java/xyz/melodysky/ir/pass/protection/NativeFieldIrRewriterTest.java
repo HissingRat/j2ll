@@ -83,6 +83,61 @@ class NativeFieldIrRewriterTest {
     }
 
     @Test
+    void referenceRewriteConsumesExplicitPlanIndicesInsteadOfFieldOrder() {
+        FieldId first = new FieldId(
+                "pkg/State",
+                "alpha",
+                "Ljava/lang/Object;");
+        FieldId second = new FieldId(
+                "pkg/State",
+                "omega",
+                "[Ljava/lang/String;");
+        String firstSlot = "j2ll_nfs_reference_first";
+        String secondSlot = "j2ll_nfs_reference_second";
+        IrMethod input = method(List.of(
+                IrInstruction.fieldGet(
+                        new IrValue("%first", IrType.REFERENCE),
+                        IrOpcode.GET_STATIC,
+                        List.of(),
+                        first.fieldKey()),
+                IrInstruction.fieldGet(
+                        new IrValue("%second", IrType.REFERENCE),
+                        IrOpcode.GET_STATIC,
+                        List.of(),
+                        second.fieldKey())));
+        String methodKey = input.methodKey();
+        NativeFieldInternalizationDecision firstDecision =
+                referenceDecision(first, firstSlot, methodKey, 0);
+        NativeFieldInternalizationDecision secondDecision =
+                referenceDecision(second, secondSlot, methodKey, 1);
+        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+                List.of(firstDecision, secondDecision),
+                Map.of(first.owner(), Map.of(first, 1, second, 0)));
+
+        NativeFieldIrRewriteResult result = rewriter.rewrite(
+                Map.of(methodKey, input),
+                plan);
+        List<IrInstruction> rewritten =
+                result.methods().get(methodKey).blocks().get(0).instructions();
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(
+                Optional.of(new NativeFieldSlotRef(
+                                NativeFieldStorageKind.REFERENCE,
+                                firstSlot,
+                                1)
+                        .encoded()),
+                rewritten.get(0).symbol());
+        assertEquals(
+                Optional.of(new NativeFieldSlotRef(
+                                NativeFieldStorageKind.REFERENCE,
+                                secondSlot,
+                                0)
+                        .encoded()),
+                rewritten.get(1).symbol());
+    }
+
+    @Test
     void emptyPlanIsNoOpAndDoesNotRebuildMethods() {
         IrMethod input = method(List.of(IrInstruction.fieldGet(
                 new IrValue("%result", IrType.I32),
@@ -129,6 +184,47 @@ class NativeFieldIrRewriterTest {
         assertEquals(
                 "FIELD_INTERNALIZATION_INPUT_IR_INVALID",
                 result.diagnostics().get(0).code().value());
+    }
+
+    @Test
+    void unrelatedInvalidIrDoesNotCancelACompleteAccessorRewrite() {
+        IrValue value = new IrValue("%value", IrType.I32);
+        IrMethod accessor = method(List.of(
+                IrInstruction.fieldGet(
+                        new IrValue("%result", IrType.I32),
+                        IrOpcode.GET_STATIC,
+                        List.of(),
+                        APPROVED.fieldKey()),
+                IrInstruction.fieldPut(
+                        IrOpcode.PUT_STATIC,
+                        List.of(value),
+                        APPROVED.fieldKey())));
+        IrMethod unrelatedInvalid = new IrMethod(
+                "pkg/Other",
+                "broken",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(),
+                        IrTerminator.returnVoid())));
+
+        NativeFieldIrRewriteResult result = rewriter.rewrite(
+                Map.of(
+                        accessor.methodKey(), accessor,
+                        unrelatedInvalid.methodKey(), unrelatedInvalid),
+                approvedPlan());
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(List.of(accessor.methodKey()), result.affectedMethods());
+        assertTrue(result.methods().get(accessor.methodKey()).blocks().get(0)
+                .instructions().stream()
+                .allMatch(instruction -> instruction.opcode() == IrOpcode.GET_NATIVE_STATIC
+                        || instruction.opcode() == IrOpcode.PUT_NATIVE_STATIC));
+        assertSame(
+                unrelatedInvalid,
+                result.methods().get(unrelatedInvalid.methodKey()));
     }
 
     @Test
@@ -242,6 +338,29 @@ class NativeFieldIrRewriterTest {
                 Optional.of(SLOT),
                 sites,
                 List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+    }
+
+    private NativeFieldInternalizationDecision referenceDecision(
+            FieldId field,
+            String slot,
+            String methodKey,
+            int bytecodeOffset) {
+        return new NativeFieldInternalizationDecision(
+                field,
+                FieldInternalizationStatus.INTERNALIZED,
+                Optional.of(slot),
+                List.of(new FieldAccessSite(
+                        field,
+                        methodKey,
+                        field.owner(),
+                        "access",
+                        true,
+                        FieldCodeOrigin.INPUT,
+                        FieldReferenceKind.BYTECODE_STATIC_READ,
+                        field.owner(),
+                        bytecodeOffset,
+                        false)),
+                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE));
     }
 
     private void addSites(

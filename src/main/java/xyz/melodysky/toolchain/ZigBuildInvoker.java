@@ -129,8 +129,11 @@ public final class ZigBuildInvoker {
             ZigBuildInvocation invocation,
             ZigBuildWorkspace workspace,
             ZigTargetCompletionMonitor monitor) throws IOException {
-        ExecutorService executor = Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name("j2ll-zig-command-", 0).factory());
+        ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "j2ll-zig-command");
+            thread.setDaemon(true);
+            return thread;
+        });
         Future<ZigCommandResult> command = executor.submit(() -> runner.run(
                 invocation.command(),
                 invocation.workingDirectory(),
@@ -184,11 +187,20 @@ public final class ZigBuildInvoker {
                 StandardCharsets.UTF_8);
         if (result.exitCode() != 0) {
             String output = result.combinedOutput();
-            String tail = output.length() > 4000 ? output.substring(output.length() - 4000) : output;
+            String diagnosticOutput;
+            if (output.length() > 8000) {
+                diagnosticOutput = output.substring(0, 4000)
+                        + System.lineSeparator()
+                        + "... Zig output truncated ..."
+                        + System.lineSeparator()
+                        + output.substring(output.length() - 4000);
+            } else {
+                diagnosticOutput = output;
+            }
             throw new IOException("managed Zig build failed with exit code " + result.exitCode()
                     + "; see " + invocation.logFile().toAbsolutePath()
                     + System.lineSeparator()
-                    + tail);
+                    + diagnosticOutput);
         }
     }
 

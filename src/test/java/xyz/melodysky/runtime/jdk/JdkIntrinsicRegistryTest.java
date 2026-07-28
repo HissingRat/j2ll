@@ -72,6 +72,10 @@ class JdkIntrinsicRegistryTest {
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, threadStart.policy());
         assertEquals("THREAD_HELPER_UNSUPPORTED: Thread.start keeps JVM scheduler semantics", threadStart.reason());
 
+        var threadSleep = registry.lookup("java/lang/Thread", "sleep", "(J)V").orElseThrow();
+        assertEquals(JdkMethodPolicy.RUNTIME_HELPER, threadSleep.policy());
+        assertEquals(RuntimeHelperKind.THREAD_SLEEP, threadSleep.helperKind().orElseThrow());
+
         var objectWait = registry.lookup("java/lang/Object", "wait", "()V").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, objectWait.policy());
         assertEquals("WAIT_NOTIFY_UNSUPPORTED: Object.wait keeps JVM monitor queue semantics", objectWait.reason());
@@ -157,6 +161,42 @@ class JdkIntrinsicRegistryTest {
         assertEquals(27, bridgedMethods.size());
         for (JdkMethodId method : bridgedMethods) {
             JdkIntrinsic intrinsic = registry.lookup(method.owner(), method.name(), method.descriptor()).orElseThrow();
+            assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, intrinsic.policy(), method.methodKey());
+            assertTrue(intrinsic.reason().startsWith("JDK_BRIDGE:"), method.methodKey());
+        }
+    }
+
+    @Test
+    void explicitlyBridgesV2ResourceAndHiddenClassBatchByExactSignature() {
+        JdkIntrinsicRegistry registry = JdkIntrinsicRegistry.defaultRegistry();
+        List<JdkMethodId> bridgedMethods = List.of(
+                method("java/io/InputStream", "close", "()V"),
+                method("java/io/InputStream", "readAllBytes", "()[B"),
+                method("java/lang/Throwable", "addSuppressed", "(Ljava/lang/Throwable;)V"),
+                method(
+                        "java/lang/invoke/MethodHandles",
+                        "privateLookupIn",
+                        "(Ljava/lang/Class;Ljava/lang/invoke/MethodHandles$Lookup;)"
+                                + "Ljava/lang/invoke/MethodHandles$Lookup;"),
+                method(
+                        "java/lang/invoke/MethodHandles$Lookup",
+                        "defineHiddenClass",
+                        "([BZ[Ljava/lang/invoke/MethodHandles$Lookup$ClassOption;)"
+                                + "Ljava/lang/invoke/MethodHandles$Lookup;"),
+                method(
+                        "java/lang/invoke/MethodHandles$Lookup",
+                        "lookupClass",
+                        "()Ljava/lang/Class;"),
+                method("java/nio/ByteBuffer", "wrap", "([B)Ljava/nio/ByteBuffer;"),
+                method("java/nio/ByteBuffer", "get", "()B"),
+                method("java/nio/ByteBuffer", "get", "([B)Ljava/nio/ByteBuffer;"),
+                method("java/nio/ByteBuffer", "remaining", "()I"),
+                method("java/util/Arrays", "fill", "([BB)V"));
+
+        assertEquals(11, bridgedMethods.size());
+        for (JdkMethodId method : bridgedMethods) {
+            JdkIntrinsic intrinsic =
+                    registry.lookup(method.owner(), method.name(), method.descriptor()).orElseThrow();
             assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, intrinsic.policy(), method.methodKey());
             assertTrue(intrinsic.reason().startsWith("JDK_BRIDGE:"), method.methodKey());
         }

@@ -71,7 +71,15 @@ public final class DeadInstructionEliminationPass implements IrMethodPass {
             for (var switchCase : block.terminator().switchCases()) {
                 work.addAll(switchCase.arguments());
             }
+            for (var edge : block.exceptionEdges()) {
+                work.addAll(edge.arguments());
+            }
             for (IrInstruction instruction : block.instructions()) {
+                for (var site : instruction.exceptionSites()) {
+                    for (var edge : site.handlers()) {
+                        work.addAll(edge.arguments());
+                    }
+                }
                 if (instruction.result().isEmpty()
                         || hasSideEffect(instruction.opcode())
                         || !instruction.exceptionSites().isEmpty()) {

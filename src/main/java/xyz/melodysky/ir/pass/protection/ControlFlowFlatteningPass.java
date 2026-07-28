@@ -1,6 +1,7 @@
 package xyz.melodysky.ir.pass.protection;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,9 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
     public String skipReasonCode(IrMethod method) {
         if (isStubBackedMethod(method)) {
             return "PROTECTION_STUB_BACKED_METHOD";
+        }
+        if (hasSupportedStructuralShape(method) && hasCrossBlockInstructionValueUse(method)) {
+            return "CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE";
         }
         return "CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE";
     }
@@ -159,11 +163,12 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
     }
 
     private boolean isSafeShape(IrMethod method) {
+        return hasSupportedStructuralShape(method)
+                && !hasCrossBlockInstructionValueUse(method);
+    }
+
+    private boolean hasSupportedStructuralShape(IrMethod method) {
         if (method.blocks().size() < 2) {
-            return false;
-        }
-        if (!isPrimitiveOrVoid(method.returnType())
-                || method.parameters().stream().map(IrValue::type).anyMatch(type -> !isPrimitive(type))) {
             return false;
         }
         for (IrBlock block : method.blocks()) {
@@ -184,54 +189,141 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
                     || block.terminator().kind() == IrTerminatorKind.SWITCH) {
                 return false;
             }
-            if (block.instructions().stream().anyMatch(instruction -> !instruction.exceptionSites().isEmpty()
-                    || isSensitiveOpcode(instruction.opcode())
-                    || instruction.result().map(IrValue::type).filter(type -> !isPrimitive(type)).isPresent()
-                    || instruction.operands().stream().map(IrValue::type).anyMatch(type -> !isPrimitive(type)))) {
+            if (!hasSafeClassInitializationOrdering(block)
+                    || block.instructions().stream().anyMatch(instruction ->
+                            instruction.exceptionSites().stream().anyMatch(site -> !site.handlers().isEmpty())
+                                    || isMonitorOrJmmSensitiveOpcode(instruction.opcode()))) {
                 return false;
             }
-            if (block.terminator().value().map(IrValue::type).filter(type -> !isPrimitive(type)).isPresent()
-                    || block.terminator().condition().map(IrValue::type).filter(type -> type != IrType.I1).isPresent()) {
+            if (block.terminator().condition().map(IrValue::type).filter(type -> type != IrType.I1).isPresent()) {
                 return false;
             }
         }
         return true;
     }
 
-    private boolean isPrimitiveOrVoid(IrType type) {
-        return type == IrType.VOID || isPrimitive(type);
+    private boolean hasCrossBlockInstructionValueUse(IrMethod method) {
+        HashMap<IrValue, String> definitionBlocks = new HashMap<>();
+        for (IrBlock block : method.blocks()) {
+            for (IrInstruction instruction : block.instructions()) {
+                instruction.result().ifPresent(result -> definitionBlocks.put(result, block.name()));
+                instruction.exceptionSites().forEach(site -> site.exceptionValue()
+                        .ifPresent(result -> definitionBlocks.put(result, block.name())));
+            }
+        }
+        for (IrBlock block : method.blocks()) {
+            for (IrInstruction instruction : block.instructions()) {
+                if (usesDefinitionFromAnotherBlock(
+                        block.name(),
+                        instruction.operands(),
+                        definitionBlocks)) {
+                    return true;
+                }
+                boolean crossBlockHandlerArgument = instruction.exceptionSites().stream()
+                        .flatMap(site -> site.handlers().stream())
+                        .anyMatch(edge -> usesDefinitionFromAnotherBlock(
+                                block.name(),
+                                edge.arguments(),
+                                definitionBlocks));
+                if (crossBlockHandlerArgument) {
+                    return true;
+                }
+            }
+            IrTerminator terminator = block.terminator();
+            if (usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.value().stream().toList(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.condition().stream().toList(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.switchValue().stream().toList(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.targetArguments(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.trueTargetArguments(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.falseTargetArguments(),
+                            definitionBlocks)
+                    || usesDefinitionFromAnotherBlock(
+                            block.name(),
+                            terminator.defaultTargetArguments(),
+                            definitionBlocks)
+                    || terminator.switchCases().stream().anyMatch(switchCase ->
+                            usesDefinitionFromAnotherBlock(
+                                    block.name(),
+                                    switchCase.arguments(),
+                                    definitionBlocks))
+                    || block.exceptionEdges().stream().anyMatch(edge ->
+                            usesDefinitionFromAnotherBlock(
+                                    block.name(),
+                                    edge.arguments(),
+                                    definitionBlocks))) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    private boolean isPrimitive(IrType type) {
-        return type == IrType.I1
-                || type == IrType.I32
-                || type == IrType.I64
-                || type == IrType.F32
-                || type == IrType.F64;
+    private boolean usesDefinitionFromAnotherBlock(
+            String useBlock,
+            List<IrValue> values,
+            Map<IrValue, String> definitionBlocks) {
+        return values.stream()
+                .map(definitionBlocks::get)
+                .anyMatch(definitionBlock ->
+                        definitionBlock != null && !definitionBlock.equals(useBlock));
     }
 
     private boolean isStubBackedMethod(IrMethod method) {
         return method.name().equals("<init>") || method.name().equals("<clinit>");
     }
 
-    private boolean isSensitiveOpcode(IrOpcode opcode) {
-        return opcode == IrOpcode.CALL_RUNTIME_HELPER
-                || opcode == IrOpcode.CALL_STATIC
-                || opcode == IrOpcode.CALL_SPECIAL
-                || opcode == IrOpcode.CALL_VIRTUAL
-                || opcode == IrOpcode.CALL_INTERFACE
-                || opcode == IrOpcode.CALL_DYNAMIC
-                || opcode == IrOpcode.GET_STATIC
-                || opcode == IrOpcode.PUT_STATIC
-                || opcode == IrOpcode.GET_FIELD
-                || opcode == IrOpcode.PUT_FIELD
-                || opcode == IrOpcode.MONITOR_ENTER
+    private boolean isMonitorOrJmmSensitiveOpcode(IrOpcode opcode) {
+        return opcode == IrOpcode.MONITOR_ENTER
                 || opcode == IrOpcode.MONITOR_EXIT
                 || opcode == IrOpcode.MONITOR_EXIT_ON_EXCEPTION
                 || opcode == IrOpcode.VOLATILE_READ_BARRIER
                 || opcode == IrOpcode.VOLATILE_WRITE_BARRIER
                 || opcode == IrOpcode.FINAL_FIELD_PUBLICATION
-                || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE
-                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
+                || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE;
+    }
+
+    private boolean hasSafeClassInitializationOrdering(IrBlock block) {
+        List<IrInstruction> instructions = block.instructions();
+        for (int index = 0; index < instructions.size(); index++) {
+            IrInstruction instruction = instructions.get(index);
+            if (instruction.opcode() == IrOpcode.CLASS_INIT_BEGIN
+                    || instruction.opcode() == IrOpcode.CLASS_INIT_END
+                    || instruction.opcode() == IrOpcode.CLASS_INIT_FAILED) {
+                return false;
+            }
+            if (instruction.opcode() == IrOpcode.CLASS_INIT_GUARD) {
+                if (index == 0
+                        || index + 1 >= instructions.size()
+                        || instructions.get(index - 1).opcode() != IrOpcode.CLASS_OBJECT
+                        || instructions.get(index + 1).opcode() != IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                        || instruction.operands().size() != 1
+                        || instructions.get(index - 1).result().isEmpty()
+                        || !instructions.get(index - 1).result().orElseThrow().equals(instruction.operands().get(0))
+                        || !instructions.get(index + 1).operands().equals(instruction.operands())) {
+                    return false;
+                }
+            }
+            if (instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                    && (index == 0 || instructions.get(index - 1).opcode() != IrOpcode.CLASS_INIT_GUARD)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

@@ -146,7 +146,10 @@ class ReportJsonWriterTest {
                 "j2ll_pkg_Foo_concat_8f3a21c0d4e5f607",
                 "pkg/Foo",
                 "TEMPLATE_JNI_PATH",
-                List.of(new HelperBackedSiteReport("j2ll_rt_string_builder_append_ref", "HELPER_BACKED_LOWERING")),
+                List.of(new HelperBackedSiteReport(
+                        "j2ll_rt_string_builder_append_ref",
+                        "a".repeat(64),
+                        "HELPER_BACKED_LOWERING")),
                 null,
                 null);
 
@@ -172,7 +175,8 @@ class ReportJsonWriterTest {
                       "nativeImplementationPath": "TEMPLATE_JNI_PATH",
                       "helperBackedSites": [
                         {
-                          "helper": "j2ll_rt_string_builder_append_ref",
+                          "helperKind": "j2ll_rt_string_builder_append_ref",
+                          "helperIdentityHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                           "reasonCode": "HELPER_BACKED_LOWERING"
                         }
                       ],

@@ -35,7 +35,10 @@ public final class FakeBranchesPass implements ProtectionPass {
                 || hasIncomingEdge(method, entry.name())) {
             return false;
         }
-        return method.blocks().stream().allMatch(this::isSafeBlock);
+        return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .map(IrInstruction::opcode)
+                .noneMatch(this::isMonitorOrJmmSensitiveOpcode);
     }
 
     @Override
@@ -151,17 +154,6 @@ public final class FakeBranchesPass implements ProtectionPass {
         return false;
     }
 
-    private boolean isSafeBlock(IrBlock block) {
-        if (!block.parameters().isEmpty()
-                || block.isExceptionHandler()
-                || !block.exceptionCatchTypes().isEmpty()
-                || !block.exceptionEdges().isEmpty()) {
-            return false;
-        }
-        return block.instructions().stream().allMatch(instruction -> instruction.exceptionSites().isEmpty()
-                && !isSensitiveOpcode(instruction.opcode()));
-    }
-
     private String uniqueBlockName(IrMethod method, String preferredName) {
         Set<String> names = new HashSet<>();
         method.blocks().stream().map(IrBlock::name).forEach(names::add);
@@ -179,18 +171,8 @@ public final class FakeBranchesPass implements ProtectionPass {
         return method.name().equals("<init>") || method.name().equals("<clinit>");
     }
 
-    private boolean isSensitiveOpcode(IrOpcode opcode) {
-        return opcode == IrOpcode.CALL_RUNTIME_HELPER
-                || opcode == IrOpcode.CALL_STATIC
-                || opcode == IrOpcode.CALL_SPECIAL
-                || opcode == IrOpcode.CALL_VIRTUAL
-                || opcode == IrOpcode.CALL_INTERFACE
-                || opcode == IrOpcode.CALL_DYNAMIC
-                || opcode == IrOpcode.GET_STATIC
-                || opcode == IrOpcode.PUT_STATIC
-                || opcode == IrOpcode.GET_FIELD
-                || opcode == IrOpcode.PUT_FIELD
-                || opcode == IrOpcode.MONITOR_ENTER
+    private boolean isMonitorOrJmmSensitiveOpcode(IrOpcode opcode) {
+        return opcode == IrOpcode.MONITOR_ENTER
                 || opcode == IrOpcode.MONITOR_EXIT
                 || opcode == IrOpcode.MONITOR_EXIT_ON_EXCEPTION
                 || opcode == IrOpcode.VOLATILE_READ_BARRIER

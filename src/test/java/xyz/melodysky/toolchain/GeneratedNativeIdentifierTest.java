@@ -59,7 +59,9 @@ class GeneratedNativeIdentifierTest {
         assertTrue(source.contains(llvmSymbol));
         assertFalse(source.contains("PlainOwner"));
         assertFalse(source.contains("secretMethod"));
-        assertTrue(source.contains("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm)"));
+        assertTrue(source.matches(
+                "(?s).*static jint j2ll_register_[0-9a-f]{24}\\(JavaVM\\* vm\\).*"));
+        assertFalse(source.contains("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm)"));
         assertTrue(source.contains("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)"));
     }
 }

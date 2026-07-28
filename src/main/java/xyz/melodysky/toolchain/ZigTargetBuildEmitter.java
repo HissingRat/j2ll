@@ -181,7 +181,9 @@ final class ZigTargetBuildEmitter {
                 .append("        .linkage = .dynamic,\n")
                 .append("        .name = ").append(quote(libraryName)).append(",\n")
                 .append("        .root_module = module_").append(targetSymbol).append(",\n")
-                .append("    });\n");
+                .append("    });\n")
+                .append("    lib_").append(targetSymbol)
+                .append(".link_gc_sections = true;\n");
         appendForcedEntryPoints(builder, target, targetSymbol);
         builder
                 .append("    lib_").append(targetSymbol).append(".step.dependOn(&")
@@ -223,10 +225,6 @@ final class ZigTargetBuildEmitter {
         builder.append("    lib_").append(targetSymbol)
                 .append(".forceUndefinedSymbol(")
                 .append(quote(prefix + "JNI_OnLoad"))
-                .append(");\n")
-                .append("    lib_").append(targetSymbol)
-                .append(".forceUndefinedSymbol(")
-                .append(quote(prefix + "j2ll_register"))
                 .append(");\n");
     }
 
@@ -242,6 +240,8 @@ final class ZigTargetBuildEmitter {
         ArrayList<String> flags = new ArrayList<>(List.of(
                 "-g0",
                 "-fvisibility=hidden",
+                "-ffunction-sections",
+                "-fdata-sections",
                 "-ffile-compilation-dir=.",
                 "-fdebug-compilation-dir=."));
         for (Path include : sources.includeDirectories()) {

@@ -7,6 +7,7 @@
 - `docs/project-structure.md`
 - `docs/java-support-tiers.md`
 - `docs/protection-obfuscation.md`
+- `docs/native-hardening-attacker-validation.md`
 - `docs/io-config-output-contract.md`
 
 ## 产品与 JVM 边界
@@ -89,6 +90,7 @@
 - 每个真实 accessor最终必须为 `nativeLowered`且 implementation path支持对应 storage ABI。任一 unselected或 `skipped` accessor都保留 JVM field；不存在 bytecode-accessor rewrite path。
 - Primitive使用 per-defining-`jclass` weak-keyed relaxed atomic raw bits，按 descriptor执行 boolean low-bit、窄整数截断/扩展和 float/double bitcast。
 - Reference/array始终留在 JVM heap，由唯一 Loader按需加入 `ClassValue<Object[]>` sidecar强持有。`ClassValue`是跨调用 cache；native activation首次实际访问时惰性获取 local ref、复用并在退出时释放，不建立 native strong global ref。
+- Native instance wrapper向field sidecar传递method/field的declared defining `jclass`，不得用`GetObjectClass(self)`按receiver runtime subclass分裂static storage。
 - Final plan、IR slot rewrite、FieldNode removal和 residual declaration/instruction/Handle/bootstrap audit共用同一 approved plan并 fail closed。
 
 ## Runtime Loader 与 Packaging
@@ -99,25 +101,64 @@
 - `embeddedLibraryDirectory`同时是 resource与 Loader package prefix，必须为规范 Java internal package path；input base/MR同名 Loader在 Zig前分别以稳定 collision reason失败。
 - 普通 Code method可用 `nativeOriginal`；`<init>`、`<clinit>`和有 Code interface method使用合法 stub + generated native body helper。无法把全部用户语义移入 native implementation时整个 method为 `skipped`。
 - Packaging只重写 `nativeLowered` methods，精确保留 `skipped` methods，并验证后者没有 registration/native bytecode copy。
+- `JNI_OnLoad` registration owner lookup直接用 slash internal name调用JNI `FindClass`，利用发起`System.load`的defining-loader context；不得把TCCL作为registration resolver。owner name必须在class lookup返回后立即清零。多 owner registration必须原子；单个 owner 的 `RegisterNatives` 失败也必须先对当前 owner 执行严格回滚，再把原异常交给外层逆序`UnregisterNatives`此前成功owner并清理local refs/scratch。只有每次unregister都返回`JNI_OK`且无pending exception、恢复原异常的`Throw`返回`JNI_OK`并形成pending exception时才允许返回普通失败，否则`FatalError` fail closed。
 - 保留 manifest/resources/services/module-info/multi-release entries。Base class有 versioned counterpart时，命中 method为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS`，不 rewrite/register。
 - Signed JAR：`fail`在 rewrite前拒绝；`strip`移除 signature entries并 warning；`resign`先 preflight keystore/password/alias，再用当前 JDK `jarsigner`。失败不保留 final JAR。
 
 ## JVM 语义边界
 
 - SSA merge使用 block parameters，terminator携带 target arguments；live-in mismatch或未建模 throw-site local frame把整个 method标记 `skipped`。
-- Typed catch、exception edge、显式 `athrow`和 implicit exception sites必须显式建模。Protected JNI pending-exception flow、复杂 finally/state merge/monitor interaction未支持时跳过整个 method，不能继续执行 pending exception。
-- Monitor/synchronized/volatile/final/thread happens-before使用 JVM/JNI helper/marker；不伪造 scheduler或 monitor queue。未支持 Thread/wait-notify caller为 `skipped`。
+- Typed catch、exception edge、显式 `athrow`和 implicit exception sites必须显式建模。Unprotected JNI pending exception立即走descriptor-safe return并保留pending state；protected site先清除pending state，再按classfile顺序dispatch typed/catch-all handler。缺少pending/handler-transfer evidence、复杂 finally/state merge/monitor interaction未支持时跳过整个 method，不能继续执行 pending exception。
+- Method inlining 只能删除 direct-call 的无 handler synthetic pending-exception evidence：callee 必须已证明为 pure/non-throwing，site 没有 handler，exception value 没有任何 use。protected edge、specific exception kind或observable exception value必须保留并跳过该 inline candidate。
+- Monitor/synchronized/volatile/final/thread happens-before使用 JVM/JNI helper/marker；`Thread.sleep(J)V`通过JVM-backed helper执行并保留`InterruptedException`语义。不伪造 scheduler或 monitor queue，未支持的其他Thread/wait-notify caller为 `skipped`。
 - Class init active-use guard与 `<clinit>` begin/end/failed helper必须保持 JVM ordering。
 - JDK/reflection/MethodHandle/lambda/Unsafe/VarHandle只有 validated direct/helper/dispatch matrix算 `nativeLowered`；超出 matrix的 selected caller为 `skipped`。
+- JNI helper返回的owned local ref必须有可证明的activation/last-use lifetime。internal LLVM direct call不建立新的JNI local frame，因此owned-ref production摘要必须沿同owner direct-call closure传递；ownership-aware `DeleteLocalRef`尚未覆盖的method CFG cycle、循环内ref-producing callee或ref-producing direct-call SCC必须将受影响方法整方法`skipped`并记录`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`。不能依赖helper/internal callee返回、递归展开或循环迭代自动释放local ref。
 - Unsafe offset是 metadata token，不是 native object memory offset；不绕开 JVM读取 object layout。
 
 ## Protection
 
-- IR/LLVM pass字段是直接 boolean，使用全局 deterministic seed；schema v1不提供 strength/intensity。
+- IR/LLVM pass字段是直接 boolean；`protection.seed=null` 的正式 build 使用随机 build identity，
+  显式 seed 才进入 reproducible 模式。各 stage 必须从 domain-separated identity 派生材料；
+  schema v1不提供 strength/intensity。
+- Build identity只接受`BuildProtectionDomain`闭集，不允许生产调用方传ad-hoc字符串domain；
+  mainline通过集中derived-material plan消费IR method/program、field、business string、
+  method table、wrapper、LLVM symbol/pass、native text与registration独立域。
 - `fakeBranches`、`basicBlockSplitting`、`blockNameObfuscation`是独立 pass。LLVM visibility/configurable hardening与 mandatory hidden linkage/export audit分开。
 - Final `LLVM_NATIVE_PATH`与 compiler-internal helper只由 `NativeLlvmCompiler`编译一次；reports、intermediates和 Zig writer共用同一 validated module/pass result。
 - Protection pass对单 method不适用只记录 pass `SKIPPED` reason，不自动改变 method outcome；compiler/runtime implementation无法保持语义才产生 method `skipped`。
+- Protection coverage必须由producer逐method或真实module subject显式写`requested/applicability/affected/status/reasonCode`；function pass只按`affectedFunctions`映射，module/global pass不得把一个global变化扩写成所有method affected，validation failure无法确定逐method applicability时写`unknown`。collector不得从汇总`SKIPPED`或旧`affectedMethods`推断。
 - Generated identifiers使用 hash-only token；JNI必要 owner/member/descriptor/error metadata在 generated C中 encoded at rest。Report不写 raw seed或 plaintext。
+- `StringEncryptionPass`的新产出固定为`enc:v2`：carrier数值token必须与
+  encrypted-payload key绑定，token SSA名称与数值都由build/method/site材料派生；
+  `enc:v1`只允许作为compiler-internal兼容读取边界，不能重新成为生产emission。
+- 通用 runtime metadata、business string与registration text分别消费独立
+  build material。Native text按build/purpose/use派生site-bound codec family与
+  schedule并内联到owning activation；不得恢复统一decoder、固定全局codec shape
+  或相邻XOR seed-share/cipher。Generated-C gate必须阻断decoder fanout、
+  fixed-shape和adjacent-seed回归。
+- 多字节native-text ciphertext按build/purpose/use派生的affine bijection物理存放：
+  logical index只通过activation-local cursor映射到physical index；不得新增
+  permutation table或ciphertext padding/副本。Generated-C gate必须以
+  `AFFINE_CIPHERTEXT_STORAGE`验证该结构，并以
+  `INVALID_AFFINE_CIPHERTEXT_STORAGE`阻断identity/direct-index回归；空/单字节
+  identity是不可避免的窄例外。
+- Sensitive generated-C text默认使用activation-local scratch，并在normal/early/failure
+  function exit清零；能明确use window的owner/table metadata优先显式
+  decode/use/zero。只有低敏感普通runtime error文本可显式选择lazy-once；
+  generic lazy decoder、集中text-pointer目录和单decoder批量覆盖必须被source audit阻断。
+- Registration rollback/exception-restore diagnostics必须使用registration text domain，
+  只在对应`FatalError`路径解码；generated-C gate以
+  `STABLE_REGISTRATION_DIAGNOSTIC`阻断稳定明文xref锚点与任意direct/adjacent
+  `FatalError` C string literal。Emitted LLVM中的
+  string-token SSA value name也必须是build-scoped hash-only identifier。
+- `LLVM_NATIVE_PATH` JNI wrapper 与规范 LLVM body 之间使用 build-scoped local ABI topology：每个 binding 从 direct canonical、单层参数重排 bridge、双层参数重排 bridge、bounded branched参数重排 bridge 中派生一种形态。branched形态只在wrapper activation内从两条最多双层的local route中选择，并用最多三个static bridge控制代码膨胀；只允许重排真实原生参数，不得添加 cookie、持久 function-pointer data slot，bridge 不得执行 JNI、改变 reference lifetime 或观察/清除 pending exception。该变换只提高静态分类成本，不是安全边界。
+- 静态分析难度优先于产物大小，但每个加固必须有明确size budget：优先选择
+  table-free、bounded topology和同值组内复用；攻击者回归记录final native与
+  generated-C字节数及dual-build delta。size evidence当前用于回归和取舍，
+  不能替代语义、plaintext、export或final-binary审计；只有对应真实六目标、
+  dual-build与Ghidra证据已在hardening文档中记录时，才能宣称相应验收范围。
+- IR call-indirection group必须同时绑定 Java/SSA signature与final native hidden ABI（`JNIEnv*`/owner `jclass`）；planner按两者分组，validator/backend都拒绝mixed function-pointer type，不能为提高覆盖而放宽。
 - Hidden/internal linkage和 final dynamic export allowlist audit不可关闭。只导出 `JNI_OnLoad`/registration所需 C ABI roots。
 
 ## Zig 与 Cross-Target Build
@@ -127,6 +168,7 @@
 - 一个 generated `build.zig`和一次 matrix-wide invocation编排 per-class `.ll`、Zig-managed `.o`、JNI wrapper C和 runtime helper C。Source set不得含 selected method bytecode carrier。
 - 固定六目标：Windows GNU x64/arm64、Linux GNU x64/arm64、macOS x64/arm64。Selected targets默认 required；真实 capability/preflight/compile/link failure用 `ZIG_TARGET_UNBUILDABLE`阻止 final JAR。Cross-link evidence不等于 non-host OS/JVM runtime E2E。
 - Final workspace libraries扁平写入 `native/<library-file-name>`，Zig workspace为 `native/zig-workspace/`；JAR path为 `<embeddedLibraryDirectory>/<library-file-name>`。
+- `native/zig-cache/**`是非权威的Zig duplicate cache，不进入plaintext hit枚举；flat final library与`native/zig-workspace/**` generated source仍必须逐target审计，不能借cache exclusion放宽。
 - 不新增 host `cc`/`clang`/`llc`/platform linker旁路。
 - Export/content retention roots必须真实引用所需 LLVM/helper members；不能把普通 archive link误作 whole-archive。
 
@@ -144,12 +186,14 @@
 ## Reports 与 Audit
 
 - Primary reports稳定排序并写 `schemaVersion`/`reportVersion`；config/protection只写 seed hash。
+- `lowering-report.json` 的 helper evidence 只写 non-sensitive kind 与 domain-separated identity hash；不得序列化含 owner/member descriptor或business string carrier的完整helper字符串。
 - 必需 evidence包括 diagnostics、lowering、skipped-method、field-internalization、packaging、protection、symbol-audit、artifact-audit、support/opcode matrix、known blockers、summary/index/readiness。
 - Artifact audit验证：
   - 每个 `nativeLowered` method有 native implementation、wrapper/registration与 selected-target artifact闭包；
   - 每个 `skipped` method原 body保留、无 registration/native bytecode copy；
   - 唯一 Loader API/version/name正确；
   - native resource SHA、JAR metadata、report manifest、export allowlist、PDB与 sensitive plaintext policy一致。
+  - plaintext canonical surface覆盖generated C/LLVM、flat final native library与primary report；最终库命中即使source干净也必须阻断。
 - Audit/readiness/signing/required-target failure不得保留成功态 final JAR；failure report写 `finalArtifactWritten=false`。
 - Release suite覆盖 minimal LLVM、mixed helper/protection、精确 skipped boundary、confirmation Y/N/EOF、config/signing/target/audit expected failure、packaging preservation、determinism与 realistic samples。
 - 长期路线按 stable skipped reason逐项补 frontend/SSA/backend/helper/runtime E2E，持续减少 skipped methods。

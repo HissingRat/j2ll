@@ -126,6 +126,42 @@ class ReleaseReadinessGateTest {
     }
 
     @Test
+    void supportedFinallySeedsDoNotCountAsNegativeFrameBoundaryEvidence() throws Exception {
+        writeCompleteReports(temp);
+        Files.writeString(temp.resolve("reports/known-blockers.json"), """
+                {
+                  "blockers": [
+                    {
+                      "id": "handler-frame",
+                      "reasonCode": "UNSUPPORTED_EXCEPTION_STATE_MERGE",
+                      "severity": "rc-blocker",
+                      "targetMilestone": "rc",
+                      "currentBehavior": "skipped",
+                      "reportLocation": "reports/skipped-method-report.json",
+                      "suggestedFuturePath": "extend frame merge"
+                    }
+                  ]
+                }
+                """);
+        Files.writeString(temp.resolve("reports/support-matrix.json"), """
+                {"features":[{"feature":"exception.frame","status":"SKIPPED","reasonCode":"UNSUPPORTED_EXCEPTION_STATE_MERGE","testCoverage":"test"}]}
+                """);
+        Files.writeString(
+                temp.resolve("reports/release-suite-summary.json"),
+                strictSuiteSummary("", "true", "true", outputRun(), ""));
+        refreshIndex(temp);
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp, true);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"reasonCode\": \"KNOWN_BLOCKERS_SUITE_COVERAGE_MISSING\""), json);
+        assertTrue(json.contains("UNSUPPORTED_EXCEPTION_STATE_MERGE"), json);
+        assertTrue(json.contains("\"evidenceType\": \"missing\""), json);
+        assertFalse(json.contains("\"evidenceType\": \"weirdBytecodeSeed\""), json);
+    }
+
+    @Test
     void strictSuiteModeDoesNotRequireFutureOrExplicitNongoalSuiteEvidence() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/known-blockers.json"), """

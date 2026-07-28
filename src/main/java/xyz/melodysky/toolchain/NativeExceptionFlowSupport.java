@@ -1,80 +1,47 @@
 package xyz.melodysky.toolchain;
 
-import xyz.melodysky.ir.model.IrBlock;
+import java.util.List;
+import xyz.melodysky.ir.model.IrExceptionSite;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.model.IrOpcode;
-import xyz.melodysky.ir.model.IrTerminatorKind;
+import xyz.melodysky.ir.ssa.JvmExceptionInstructionSemantics;
 
 /**
- * Describes the exception-flow boundary of the current LLVM/JNI lowering path.
+ * Validates the exception-flow evidence required by the LLVM/JNI lowering path.
  *
- * <p>Explicit {@code athrow} terminators can target an IR exception edge. JNI
- * and runtime-helper calls cannot yet transfer a pending JVM exception to an
- * in-method catch handler, so protected instructions that can raise a JVM
- * exception makes the selected caller unsupported and therefore skipped.
+ * <p>Every JVM-throwable instruction must carry a pending-exception value.
+ * Protected sites additionally carry a complete handler transfer. This keeps
+ * hand-written or protection-rewritten IR from silently executing past a
+ * pending JNI exception.
  */
 public final class NativeExceptionFlowSupport {
-    private static final String SYNCHRONIZED_CLEANUP_BLOCK = "$sync_cleanup";
-    private static final String CLASS_INITIALIZATION_FAILED_BLOCK = "$class_init_failed";
+    private final JvmExceptionInstructionSemantics exceptionSemantics =
+            new JvmExceptionInstructionSemantics();
 
-    public boolean hasUnsupportedProtectedJvmFlow(IrMethod method) {
+    public boolean hasUnsupportedJvmFlow(IrMethod method) {
         return method.blocks().stream()
-                .filter(block -> hasUserExceptionEdge(method, block))
                 .flatMap(block -> block.instructions().stream())
-                .anyMatch(this::canRaiseJvmException);
+                .anyMatch(instruction -> !hasCompletePendingExceptionEvidence(instruction));
     }
 
-    private boolean hasUserExceptionEdge(IrMethod method, IrBlock block) {
-        return block.exceptionEdges().stream()
-                .anyMatch(edge -> !isSyntheticUnwindTarget(method, edge.target()));
-    }
-
-    private boolean isSyntheticUnwindTarget(IrMethod method, String target) {
-        if (target.equals(SYNCHRONIZED_CLEANUP_BLOCK)
-                || target.equals(CLASS_INITIALIZATION_FAILED_BLOCK)) {
-            return true;
+    private boolean hasCompletePendingExceptionEvidence(IrInstruction instruction) {
+        if (!exceptionSemantics.canRaiseJvmException(instruction)) {
+            return instruction.exceptionSites().isEmpty();
         }
-        return method.blocks().stream()
-                .filter(block -> block.name().equals(target))
-                .anyMatch(this::isSyntheticUnwindBlock);
-    }
-
-    private boolean isSyntheticUnwindBlock(IrBlock block) {
-        if (block.terminator().kind() != IrTerminatorKind.THROW
-                || !block.exceptionCatchTypes().equals(java.util.List.of("<any>"))) {
+        List<IrExceptionSite> sites = instruction.exceptionSites();
+        if (sites.isEmpty()) {
             return false;
         }
-        java.util.Set<IrOpcode> opcodes = block.instructions().stream()
-                .map(IrInstruction::opcode)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        boolean synchronizedCleanup = opcodes.contains(IrOpcode.MONITOR_EXIT_ON_EXCEPTION)
-                && opcodes.stream().allMatch(opcode ->
-                        opcode == IrOpcode.MONITOR_EXIT_ON_EXCEPTION
-                                || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE);
-        boolean classInitializationCleanup = opcodes.contains(IrOpcode.CLASS_INIT_FAILED)
-                && opcodes.stream().allMatch(opcode ->
-                        opcode == IrOpcode.CLASS_INIT_FAILED
-                                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE);
-        return synchronizedCleanup || classInitializationCleanup;
-    }
-
-    private boolean canRaiseJvmException(IrInstruction instruction) {
-        IrOpcode opcode = instruction.opcode();
-        return switch (opcode) {
-            case CONST_STRING, CONST_CLASS, CONST_METHOD_TYPE, CONST_METHOD_HANDLE,
-                    CLASS_OBJECT, CLASS_INIT_GUARD, CLASS_INIT_BEGIN, CLASS_INIT_END, CLASS_INIT_FAILED,
-                    DIV_I32, REM_I32, DIV_I64, REM_I64,
-                    NEW_OBJECT, NEW_ARRAY, NEW_MULTI_ARRAY,
-                    ARRAY_LENGTH, ARRAY_LOAD_I32, ARRAY_LOAD_I64, ARRAY_LOAD_F32, ARRAY_LOAD_F64,
-                    ARRAY_LOAD_REF, ARRAY_STORE_I32, ARRAY_STORE_I64, ARRAY_STORE_F32,
-                    ARRAY_STORE_F64, ARRAY_STORE_REF,
-                    CHECKCAST, INSTANCEOF,
-                    GET_STATIC, PUT_STATIC, GET_NATIVE_STATIC, PUT_NATIVE_STATIC, GET_FIELD, PUT_FIELD,
-                    CALL_STATIC, CALL_SPECIAL, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC,
-                    CALL_RUNTIME_HELPER,
-                    MONITOR_ENTER, MONITOR_EXIT, MONITOR_EXIT_ON_EXCEPTION -> true;
-            default -> false;
-        };
+        IrExceptionSite first = sites.get(0);
+        if (first.exceptionValue().isEmpty()) {
+            return false;
+        }
+        var exception = first.exceptionValue().orElseThrow();
+        return sites.stream().allMatch(site ->
+                site.exceptionValue().equals(first.exceptionValue())
+                        && site.handlers().equals(first.handlers())
+                        && site.handlers().stream().allMatch(edge ->
+                                !edge.arguments().isEmpty()
+                                        && edge.arguments().get(0).equals(exception)));
     }
 }

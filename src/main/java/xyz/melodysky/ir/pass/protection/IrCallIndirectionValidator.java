@@ -48,6 +48,7 @@ public final class IrCallIndirectionValidator {
             Map<String, IrMethod> methodsByKey,
             List<Diagnostic> diagnostics) {
         for (IrCallIndirectionGroup group : plan.groups()) {
+            IrNativeDirectTargets.FunctionAbi groupAbi = null;
             for (IrCallIndirectionTarget target : group.targets()) {
                 IrMethod targetMethod = methodsByKey.get(target.targetMethodKey());
                 if (targetMethod == null) {
@@ -61,6 +62,16 @@ public final class IrCallIndirectionValidator {
                     diagnostics.add(error(
                             location,
                             "IR call-indirection plan targets a method without LLVM native-path proof"));
+                } else {
+                    IrNativeDirectTargets.FunctionAbi targetAbi =
+                            nativeDirectTargets.functionAbi(targetMethod.methodKey());
+                    if (groupAbi == null) {
+                        groupAbi = targetAbi;
+                    } else if (!groupAbi.equals(targetAbi)) {
+                        diagnostics.add(error(
+                                location,
+                                "IR call-indirection signature group mixes native function ABIs"));
+                    }
                 }
                 if (!group.signature().equals(IrCallSignature.fromMethod(targetMethod))) {
                     diagnostics.add(error(

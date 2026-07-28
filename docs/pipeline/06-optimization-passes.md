@@ -62,12 +62,12 @@ xyz.melodysky.ir.pass.protection
 - `BasicBlockSplittingPass`：在安全 instruction boundary 拆分 eligible block，只做 block split，不插入 fake branch。
 - `PrimitiveConstantEncryptionPass`：对安全 method 的 `CONST_INT` / `CONST_LONG` 生成 deterministic XOR decode sequence；对 `CONST_FLOAT` / `CONST_DOUBLE` 加密 raw bit pattern，再通过 LLVM bitcast 恢复 JVM 浮点值。
 - `BlockNameObfuscationPass`：按 seed 稳定重命名 block。
-- `MethodInliningPass`：program-level pure-scalar static/private-self direct callee 子集。
+- `MethodInliningPass`：program-level pure-scalar static/private-self direct callee 子集。前端 direct call 即使没有 handler 也会携带 pending-exception evidence；只有 callee 已证明不产生 exception、site 没有 handler，且 synthetic exception value 完全无使用时，inline 才能删除该 evidence。protected edge、具体 exception check 或仍被使用的 exception value 继续 fail closed。
 - `MethodSplittingPass`：program-level single-block scalar suffix outline，helper 只进入 compiler-internal LLVM/native path。
-- `IrCallIndirectionPass`：当前只为已证明的 module-local same-owner static/private-special call 附加 typed semantic plan，再由 backend lower 到 hidden pointer table；virtual/interface 和 cross-owner direct call 在 backend 支持前 fail closed。
+- `IrCallIndirectionPass`：当前只为已证明的 module-local same-owner static/private-special call 附加 typed semantic plan，再由 backend lower 到 hidden pointer table；group key 同时包含 Java/SSA signature 与最终 native function 的隐藏 `JNIEnv*` / owner-`jclass` ABI proof，禁止把表面 IR signature 相同但真实 LLVM function-pointer type 不同的目标混入一组。virtual/interface 和 cross-owner direct call 在 backend 支持前 fail closed。
 - `NativeFieldIrRewriter`：在 declared `CLOSED_WORLD`，或 build 时由用户明确批准的 current-JAR-only field plan 后，把 same-owner static `boolean/byte/short/char/int/long/float/double` 与 reference/array field access 改成带 exact storage-kind 的 opaque slot；primitive 进入 native raw-bit storage，reference/array 进入 JVM-managed ClassValue sidecar。current-JAR-only 不改变 configured world、不读取 classpath，并在报告中保留风险边界。该 Config field 默认关闭。
 
-`methodTableHiding` 不是 SSA method pass；它消费 final native registration plan，在 packaging/toolchain 层生成 split token tables。当前 schema v1 的已知 IR/LLVM pass 字段均已实现；单 method/module 不适用仍只跳过对应 pass并写 protection report，不改变 lowering status。
+`methodTableHiding` 不是 SSA method pass；它消费 final native registration plan，在 packaging/toolchain 层生成 build-diverse owner-local registration order，并只在注册窗口构造临时 `JNINativeMethod[]`。report token 不进入 generated C/native，也不生成 split runtime tables。当前 schema v1 的已知 IR/LLVM pass 字段均已实现；单 method/module 不适用仍只跳过对应 pass并写 protection report，不改变 lowering status。
 
 当前 v1 已实现的 LLVM protection 子集：
 
@@ -118,7 +118,8 @@ canonicalize
 - 当前 schema 字段都已接线；未来 known-but-unavailable pass 仍必须 warning + ignore。pass 对某个 method/module 不适用时 warning + skip that pass。
 - protection pass 必须支持固定 seed，以便复现和测试。
 - `<init>` / `<clinit>` body-helper shape、monitor/JMM/exception/call/field/helper-sensitive method 默认保守跳过 CFG/constant protection，不让保护 pass 破坏 JVM-visible helper semantics。
-- 每次 protection pass 后必须运行 IR validator；失败时该 pass 记录 `FAILED`，不能让 backend 修补非法 IR。
+- control-flow flattening 只处理不含跨基本块 instruction-defined SSA live value 的形态；当前 dispatcher ABI 无法携带这类值时以 `CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE` 跳过该 pass，并保留原始合法 IR。
+- protection pipeline 输入先做 IR validation；输入本身非法仍是 build-level error。每次 protection pass 后再次运行 validator；candidate 失败时该 pass 记录 `FAILED`、回滚到该 pass 的合法输入，并以 `PASS_VALIDATION_FAILED` warning 携带稳定 validator code evidence，不能让后续 pass 或 backend 接收、修补非法 candidate。
 
 ## 测试
 

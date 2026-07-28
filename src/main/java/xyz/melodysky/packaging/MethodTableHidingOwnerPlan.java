@@ -7,40 +7,31 @@ import java.util.Optional;
 
 public record MethodTableHidingOwnerPlan(
         String registrationOwner,
-        long tokenMask,
-        List<MethodTableHidingEntry> metadataOrder,
-        List<MethodTableHidingEntry> functionOrder) {
+        List<MethodTableHidingEntry> registrationOrder) {
     public MethodTableHidingOwnerPlan {
         Objects.requireNonNull(registrationOwner, "registrationOwner");
-        metadataOrder = List.copyOf(Objects.requireNonNull(metadataOrder, "metadataOrder"));
-        functionOrder = List.copyOf(Objects.requireNonNull(functionOrder, "functionOrder"));
-        if (metadataOrder.isEmpty() || metadataOrder.size() != functionOrder.size()) {
-            throw new IllegalArgumentException("method-table owner plan requires matching non-empty tables");
+        registrationOrder = List.copyOf(
+                Objects.requireNonNull(registrationOrder, "registrationOrder"));
+        if (registrationOrder.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "method-table owner plan requires a non-empty registration order");
         }
-        List<MethodTableHidingEntry> canonicalMetadata = metadataOrder.stream()
-                .sorted()
-                .toList();
-        List<MethodTableHidingEntry> canonicalFunctions = functionOrder.stream()
-                .sorted()
-                .toList();
-        if (!canonicalMetadata.equals(canonicalFunctions)) {
-            throw new IllegalArgumentException("metadata and function tables must contain the same bindings");
-        }
-        if (metadataOrder.stream()
+        if (registrationOrder.stream()
                 .anyMatch(entry -> !entry.registration().registrationOwner().equals(registrationOwner))) {
             throw new IllegalArgumentException("owner plan contains a foreign registration binding");
         }
-        long distinctTokens = metadataOrder.stream()
+        long distinctTokens = registrationOrder.stream()
                 .map(MethodTableHidingEntry::token)
                 .distinct()
                 .count();
-        if (distinctTokens != metadataOrder.size()) {
-            throw new IllegalArgumentException("method-table tokens must be collision-free per owner");
+        if (distinctTokens != registrationOrder.size()) {
+            throw new IllegalArgumentException(
+                    "method-table report tokens must be collision-free per owner");
         }
     }
 
     public Optional<NativeRegistrationEntry> lookup(long token) {
-        return metadataOrder.stream()
+        return registrationOrder.stream()
                 .filter(entry -> entry.token() == token)
                 .map(MethodTableHidingEntry::registration)
                 .findFirst();
@@ -53,7 +44,7 @@ public record MethodTableHidingOwnerPlan(
     }
 
     public List<String> affectedSymbols() {
-        return metadataOrder.stream()
+        return registrationOrder.stream()
                 .map(entry -> entry.registration().nativeSymbol())
                 .sorted(Comparator.naturalOrder())
                 .toList();

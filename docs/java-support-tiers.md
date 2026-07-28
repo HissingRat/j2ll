@@ -39,8 +39,8 @@ Tier 0 尚未承诺 executable native lowering，但 selector audit仍不能丢�
 - local、field、static field。
 - JVM-managed object/array allocation、constructor、`this`。
 - static/special/virtual call。
-- `<init>` 合法 Java stub + native body helper。
-- `<clinit>` loader/bootstrap stub + native body helper。
+- `<init>` 保留精确的 verifier-required Java prefix：从入口到真正初始化 `uninitializedThis` 的 `this(...)` / `super(...)` 调用（含原 descriptor 与实参计算），初始化后的 body 交给 same-owner private static native helper。
+- `<clinit>` 保留 loader/bootstrap Java stub；当完整 initializer IR 可由最终 native plan表达时，原 body 交给 same-owner private static native helper。
 - null check、cast、`instanceof`、String constant/concat。
 
 测试要求：
@@ -82,19 +82,23 @@ Bridge、synthetic、enum-generated 和 record-generated methods默认按普通�
 - JVM-hosted Thread互操作，不实现 native scheduler。
 - volatile、final publication、monitor happens-before的保守 marker/helper。
 - JNI local/global reference lifetime。
+- Internal LLVM direct call共享外层registered-native JNI local frame；owned local-reference production必须跨same-owner direct-call摘要传播。caller CFG循环、传递callee链或direct-call SCC无法证明有界时，以`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`整方法跳过。
 - 激进优化未来需要的 guard/slow-path；slow path必须是显式 JVM/JNI helper语义，不能重放 selected caller bytecode。
 
 当前边界：
 
-- typed catch、handler parameter、显式 `athrow` 与 implicit exception-site metadata已进入 SSA/LLVM helper path。
-- 复杂 exception state merge、multi-exit/nested finally、monitor-finally interaction在未实现前将整个 selected method标记为 `skipped`。
-- synchronized method/block已有 JNI monitor E2E；尚未接入真实 helper matrix的 Thread/wait-notify shape统一 `skipped`，不伪造 native scheduler或 monitor queue。
+- 可抛出 JVM exception 的 JNI/runtime helper instruction位于 user try region时，SSA 显式携带 pending exception value、按 classfile 顺序排列的 handler edge，以及 throw-site live locals；throwable和locals通过block arguments进入handler parameter。
+- LLVM在每个受保护 helper site后立即读取pending exception。存在异常时先清除JNI pending state，再按声明顺序执行typed `instanceof`匹配；catch-all直接进入handler，全部typed handler不匹配时恢复并rethrow原异常。显式 `athrow` 使用同一有序handler dispatch，但不重复读取/清除pending state。
+- simple typed/multi-catch、catch-all continuation以及受限cleanup/rethrow shape已进入真实 native path。无法形成一致throw-site frame/block arguments、不可约exception-state merge、复杂monitor/finally interaction，或当前包含任意exception table的constructor仍将整个 selected method标记为 `skipped`。
+- synchronized method/block已有 JNI monitor E2E；`Thread.sleep(J)V` 通过 JVM-backed helper执行并保留 `InterruptedException` pending-flow。`Thread.start/join`、Thread constructor与wait/notify等尚未接入真实 helper matrix的shape仍统一 `skipped`，不伪造 native scheduler或 monitor queue。
 
 测试要求：
 
 - exception/finally/synchronized runtime parity。
 - volatile/multithread smoke。
 - skipped method原 body保留、无 registration/native bytecode copy。
+
+当前受保护pending-exception路径已有SSA/LLVM focused coverage和Windows real-Zig host child-JVM differential；六目标交叉构建只提供结构性产物证据，不代表Linux/macOS或Windows Arm64上的JVM运行时已经执行验证。
 
 ## Tier 4: JDK Runtime Interop
 
@@ -109,9 +113,9 @@ Bridge、synthetic、enum-generated 和 record-generated methods默认按普通�
 
 已接实 subset：
 
-- String/StringBuilder/StringConcat、System.arraycopy、Math、boxing、Objects。
+- String/StringBuilder/StringConcat、System.arraycopy、Math、boxing、Objects、`Thread.sleep(J)V`，以及 `Object.getClass()` / `Class.getClassLoader()` 的env-backed JNI helper。`Object.getClass()` 对null receiver显式产生 `NullPointerException`，非null receiver通过JNI `GetObjectClass` 返回JVM-managed `Class` object。
 - common LambdaMetafactory、LDC MethodHandle direct target 与受限 adapter dispatch。
-- validated descriptor matrix内的 collection/formatter/Throwable/Thread/JDK calls可从 native implementation经 JNI dispatch执行。
+- validated descriptor matrix内的 collection/formatter/Throwable/Thread/JDK calls可从 native implementation经 JNI dispatch执行；当前额外覆盖class-relative resource stream、InputStream close/read、ByteBuffer parse、`Arrays.fill(byte[], byte)`、Throwable suppression与`privateLookupIn`/hidden-class lookup链。
 
 边界：
 
@@ -166,7 +170,7 @@ Piped `Y`是正式自动化入口，非 TTY/CI不能绕过。`--validate`与`--d
 
 当前仍需保持稳定、用于定位待实现 native coverage 的 reason code包括：
 
-- exception/interface：`UNSUPPORTED_DEFAULT_INTERFACE_SUPER`、`UNSUPPORTED_MULTI_EXIT_FINALLY`、`UNSUPPORTED_EXCEPTION_STATE_MERGE`、`UNSUPPORTED_MONITOR_FINALLY_INTERACTION`；
+- exception/interface：`UNSUPPORTED_DEFAULT_INTERFACE_SUPER`、`UNSUPPORTED_JVM_EXCEPTION_FLOW`、`UNSUPPORTED_EXCEPTION_STATE_MERGE`、`UNSUPPORTED_MONITOR_FINALLY_INTERACTION`；
 - reflection/Unsafe：`REFLECTION_DYNAMIC_UNSUPPORTED`、`UNSAFE_RAW_MEMORY_UNSUPPORTED`、`VAR_HANDLE_DYNAMIC_UNSUPPORTED`；
 - MethodHandle/lambda：`METHOD_HANDLE_PERMUTE_UNSUPPORTED`、`METHOD_HANDLE_FILTER_UNSUPPORTED`、`METHOD_HANDLE_FOLD_UNSUPPORTED`、`METHOD_HANDLE_COLLECTOR_UNSUPPORTED`、`ALT_METAFACTORY_UNSUPPORTED`；
 - JVM/JDK boundaries：`JVM_HELPER_UNSUPPORTED`、`THREAD_HELPER_UNSUPPORTED`、`WAIT_NOTIFY_UNSUPPORTED`；

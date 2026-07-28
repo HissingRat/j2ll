@@ -21,10 +21,6 @@ import java.util.stream.Stream;
 
 public final class ReleaseReadinessGate {
     private static final Set<String> WEIRD_SEED_COVERED_REASONS = Set.of(
-            "UNSUPPORTED_MULTI_EXIT_FINALLY",
-            "UNSUPPORTED_EXCEPTION_STATE_MERGE",
-            "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
-            "UNSUPPORTED_NESTED_FINALLY",
             "UNSUPPORTED_FINALLY_SUBROUTINE");
 
     private static final List<String> REQUIRED_REPORTS = List.of(

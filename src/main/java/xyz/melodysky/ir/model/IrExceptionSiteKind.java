@@ -5,5 +5,6 @@ public enum IrExceptionSiteKind {
     ARRAY_BOUNDS,
     ARRAY_STORE,
     CLASS_CAST,
-    DIVISION_BY_ZERO
+    DIVISION_BY_ZERO,
+    JVM_PENDING_EXCEPTION
 }

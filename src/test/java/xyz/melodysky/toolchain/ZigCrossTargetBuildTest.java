@@ -2,6 +2,7 @@ package xyz.melodysky.toolchain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -14,8 +15,13 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
+import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningAudit;
+import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeBinaryPrivacyInspector;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
 import xyz.melodysky.toolchain.symbols.SymbolVisibilityPlanner;
@@ -47,47 +53,106 @@ class ZigCrossTargetBuildTest {
                 "fieldToken_4e902d3bca5f41a6",
                 "(Lj2ll/privacy/Argument_1f7c29e658a34d98;)V",
                 "Lj2ll/privacy/FieldType_85a60137d42b4c9e;");
-        String wrapperSource = new CMetadataStringObfuscator().obfuscate("""
+        List<HostNativeLocalAbiBridgeSource.Parameter> localAbiParameters =
+                List.of(
+                        new HostNativeLocalAbiBridgeSource.Parameter(
+                                "jint",
+                                "first",
+                                "JNI_VERSION_1_8"),
+                        new HostNativeLocalAbiBridgeSource.Parameter(
+                                "jlong",
+                                "second",
+                                "1LL"),
+                        new HostNativeLocalAbiBridgeSource.Parameter(
+                                "jdouble",
+                                "third",
+                                "2.0"),
+                        new HostNativeLocalAbiBridgeSource.Parameter(
+                                "jobject",
+                                "fourth",
+                                "NULL"));
+        HostNativeLocalAbiBridgeSource.Emission localAbi = null;
+        for (int index = 0; index < 1024 && localAbi == null; index++) {
+            HostNativeLocalAbiBridgeSource.Emission candidate =
+                    new HostNativeLocalAbiBridgeSource().emit(
+                            NativeTextBuildKey.fromUtf8(
+                                    "cross-target-local-abi-build-"
+                                            + index),
+                            "j2ll/probe#hidden!(III)I",
+                            "jint",
+                            "j2ll_hidden_llvm",
+                            localAbiParameters);
+            if (candidate.plan().shape()
+                    == NativeLocalAbiPlan.Shape
+                            .BRANCHED_PERMUTING_BRIDGE) {
+                localAbi = candidate;
+            }
+        }
+        assertTrue(localAbi != null);
+        String wrapperSource = """
+                #include <stddef.h>
+                #include <stdint.h>
+                """
+                + new NativeTextCEmitter().runtimeSource()
+                + new GeneratedCFragmentTextObfuscator().obfuscate(
+                NativeTextBuildKey.fromUtf8("cross-target-probe-build"),
+                "cross-target-probe",
+                """
                 #include <jni.h>
                 #include <stddef.h>
                 #include <stdint.h>
 
-                static const char* j2ll_probe_owner =
-                        "j2ll/privacy/Owner_91e8b5fd67a249f4";
-                static const char* j2ll_probe_field_name =
-                        "fieldToken_4e902d3bca5f41a6";
-                static const char* j2ll_probe_field_descriptor =
-                        "Lj2ll/privacy/FieldType_85a60137d42b4c9e;";
                 static volatile uintptr_t j2ll_probe_metadata_sink = 0;
 
                 static jint j2ll_hidden_c(jint value) {
                     return value + 1;
                 }
 
-                extern jint j2ll_hidden_llvm(jint value);
+                extern jint j2ll_hidden_llvm(
+                        jint first,
+                        jlong second,
+                        jdouble third,
+                        jobject fourth);
 
+                """
+                + localAbi.source()
+                + """
                 static void j2ll_probe_native(JNIEnv* env, jobject self, jobject argument) {
                     (void)env;
                     (void)self;
                     (void)argument;
                 }
 
-                static JNINativeMethod j2ll_probe_methods[] = {
-                    {
-                        "nativeMethod_73c4f5e0a8614bbc",
-                        "(Lj2ll/privacy/Argument_1f7c29e658a34d98;)V",
-                        (void*)j2ll_probe_native
-                    },
-                };
-
-                JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm) {
+                static jint j2ll_register(JavaVM* vm) {
                     (void)vm;
+                    const char* j2ll_probe_owner =
+                            "j2ll/privacy/Owner_91e8b5fd67a249f4";
+                    const char* j2ll_probe_field_name =
+                            "fieldToken_4e902d3bca5f41a6";
+                    const char* j2ll_probe_field_descriptor =
+                            "Lj2ll/privacy/FieldType_85a60137d42b4c9e;";
+                    const char* j2ll_probe_method_name =
+                            "nativeMethod_73c4f5e0a8614bbc";
+                    const char* j2ll_probe_method_descriptor =
+                            "(Lj2ll/privacy/Argument_1f7c29e658a34d98;)V";
+                    JNINativeMethod j2ll_probe_methods[1];
+                    j2ll_probe_methods[0].name = (char*)j2ll_probe_method_name;
+                    j2ll_probe_methods[0].signature =
+                            (char*)j2ll_probe_method_descriptor;
+                    j2ll_probe_methods[0].fnPtr = (void*)j2ll_probe_native;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_owner;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_field_name;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_field_descriptor;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_methods[0].name;
                     j2ll_probe_metadata_sink ^= (uintptr_t)j2ll_probe_methods[0].signature;
-                    return j2ll_hidden_c(j2ll_hidden_llvm(JNI_VERSION_1_8)) - 2;
+                """
+                + localAbi.wrapperPrelude()
+                + """
+                    return j2ll_hidden_c(
+                            """
+                + localAbi.wrapperInvocation()
+                + """
+                            ) - 4;
                 }
 
                 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -98,12 +163,29 @@ class ZigCrossTargetBuildTest {
         for (String sensitive : sensitiveMetadata) {
             assertFalse(wrapperSource.contains(sensitive), "generated C plaintext: " + sensitive);
         }
+        assertTrue(new GeneratedNativeHardeningAudit().audit(wrapperSource).passed());
+        assertFalse(wrapperSource.contains("j2ll_encoded_metadata_strings"));
+        assertFalse(wrapperSource.contains("j2ll_decode_metadata_strings"));
+        assertFalse(wrapperSource.contains("j2ll_lab_slot_"));
+        assertFalse(wrapperSource.contains(
+                "static volatile uintptr_t j2ll_lab_"));
+        assertTrue(wrapperSource.contains(
+                "volatile uintptr_t j2ll_lab_"));
+        assertTrue(wrapperSource.contains(
+                "__attribute__((noinline, optnone, used))"));
         Files.writeString(wrapper, wrapperSource, StandardCharsets.UTF_8);
         Path llvm = workspace.llvmDirectory().resolve("probe.ll");
         Files.writeString(llvm, """
-                define hidden i32 @j2ll_hidden_llvm(i32 %value) {
+                define hidden i32 @j2ll_hidden_llvm(
+                        i32 %first,
+                        i64 %second,
+                        double %third,
+                        ptr %fourth) {
                 entry:
-                  %result = add i32 %value, 1
+                  %second32 = trunc i64 %second to i32
+                  %third32 = fptosi double %third to i32
+                  %partial = add i32 %first, %second32
+                  %result = add i32 %partial, %third32
                   ret i32 %result
                 }
                 """, StandardCharsets.UTF_8);
@@ -121,6 +203,11 @@ class ZigCrossTargetBuildTest {
                 zigExecutable.getParent(),
                 "0.15.2",
                 "testProvidedVerifiedExecutable");
+        assertOptimizedBranchedTopology(
+                zigExecutable,
+                wrapper,
+                sources.includeDirectories().get(0),
+                localAbi);
 
         CopyOnWriteArrayList<TargetTriple> completedTargets = new CopyOnWriteArrayList<>();
         new ZigBuildInvoker().invoke(
@@ -160,6 +247,11 @@ class ZigCrossTargetBuildTest {
                     unit.target().directoryName());
             assertFalse(exports.contains("j2ll_hidden_c"), unit.target().directoryName());
             assertFalse(exports.contains("j2ll_hidden_llvm"), unit.target().directoryName());
+            assertFalse(exports.contains("j2ll_register"), unit.target().directoryName());
+            assertFalse(
+                    exports.stream().anyMatch(symbol -> symbol.startsWith(
+                            "j2ll_lab_")),
+                    unit.target().directoryName());
             if (unit.target().isWindows()) {
                 NativeBinaryPrivacyInspector.PePrivacyInfo pe = privacyInspector.inspectPe(binary);
                 assertFalse(pe.hasCoffSymbolTable(), unit.target().directoryName() + " COFF symbol table");
@@ -169,6 +261,72 @@ class ZigCrossTargetBuildTest {
                 assertTrue(outputs.noneMatch(path -> path.getFileName().toString().endsWith(".pdb")),
                         unit.target().directoryName());
             }
+        }
+    }
+
+    private void assertOptimizedBranchedTopology(
+            Path zigExecutable,
+            Path wrapper,
+            Path includeDirectory,
+            HostNativeLocalAbiBridgeSource.Emission localAbi)
+            throws Exception {
+        for (TargetTriple target : TargetTriple.values()) {
+            Path optimized = temp.resolve(
+                    "local-abi-"
+                            + target.directoryName()
+                            + ".ll");
+            ZigCommandResult compile = ZigCommandRunner.process().run(
+                    List.of(
+                            zigExecutable.toString(),
+                            "cc",
+                            "-target",
+                            target.zigTarget(),
+                            "-std=gnu11",
+                            "-O2",
+                            "-S",
+                            "-emit-llvm",
+                            "-I",
+                            includeDirectory.toString(),
+                            wrapper.toString(),
+                            "-o",
+                            optimized.toString()),
+                    temp,
+                    java.util.Map.of());
+            assertEquals(
+                    0,
+                    compile.exitCode(),
+                    target.directoryName()
+                            + ": "
+                            + compile.stderr());
+            String llvm = Files.readString(
+                    optimized,
+                    StandardCharsets.UTF_8);
+            assertTrue(
+                    llvm.contains("load volatile"),
+                    target.directoryName());
+            for (String branchCallee :
+                    localAbi.plan().bridgeSymbols().subList(0, 2)) {
+                assertTrue(
+                        Pattern.compile(
+                                        "\\bcall\\b[^\\n]*@"
+                                                + Pattern.quote(branchCallee)
+                                                + "\\(")
+                                .matcher(llvm)
+                                .find(),
+                        target.directoryName()
+                                + ": "
+                                + branchCallee);
+            }
+            assertTrue(
+                    Pattern.compile(
+                                    "\\bcall\\b[^\\n]*@"
+                                            + Pattern.quote(localAbi.plan()
+                                                    .bridgeSymbols()
+                                                    .get(2))
+                                            + "\\(")
+                            .matcher(llvm)
+                            .find(),
+                    target.directoryName());
         }
     }
 

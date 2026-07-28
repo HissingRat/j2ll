@@ -15,7 +15,7 @@ final class MethodTableHidingPlannerTest {
             new NativeRegistrationEntry("sample/Other", "third", "()V", "j2ll_fn_c")));
 
     @Test
-    void sameSeedProducesStableCollisionFreeSplitTables() {
+    void sameSeedProducesStableCollisionFreeTransientOwnerLayouts() {
         MethodTableHidingPlanner planner = new MethodTableHidingPlanner();
 
         MethodTableHidingPlan first = planner.plan(registrations, true, 41L);
@@ -25,9 +25,12 @@ final class MethodTableHidingPlannerTest {
         assertTrue(first.changed());
         for (MethodTableHidingOwnerPlan owner : first.owners()) {
             assertEquals(
-                    owner.metadataOrder().size(),
-                    owner.metadataOrder().stream().map(MethodTableHidingEntry::token).distinct().count());
-            for (MethodTableHidingEntry entry : owner.metadataOrder()) {
+                    owner.registrationOrder().size(),
+                    owner.registrationOrder().stream()
+                            .map(MethodTableHidingEntry::token)
+                            .distinct()
+                            .count());
+            for (MethodTableHidingEntry entry : owner.registrationOrder()) {
                 assertEquals(entry.registration(), owner.require(entry.token()));
             }
         }
@@ -42,7 +45,7 @@ final class MethodTableHidingPlannerTest {
         assertEquals(
                 registrations.entries(),
                 first.owners().stream()
-                        .flatMap(owner -> owner.metadataOrder().stream())
+                        .flatMap(owner -> owner.registrationOrder().stream())
                         .map(MethodTableHidingEntry::registration)
                         .sorted()
                         .toList());
@@ -54,7 +57,7 @@ final class MethodTableHidingPlannerTest {
                 .plan(registrations, true, 2L)
                 .owner("sample/Owner")
                 .orElseThrow();
-        long wrong = owner.metadataOrder().get(0).token() ^ Long.MIN_VALUE;
+        long wrong = owner.registrationOrder().get(0).token() ^ Long.MIN_VALUE;
 
         assertThrows(IllegalArgumentException.class, () -> owner.require(wrong));
     }

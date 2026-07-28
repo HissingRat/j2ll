@@ -15,7 +15,8 @@ import java.util.regex.Pattern;
 
 public final class ReleaseDeterminismComparator {
     private static final Pattern FALLBACK_ID = Pattern.compile("\"fallbackId\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern STRING_TOKEN = Pattern.compile("enc:v1:([0-9a-f]+):");
+    private static final Pattern STRING_TOKEN =
+            Pattern.compile("enc:v(?:1|2):(-?[0-9]+):");
     private static final Pattern HIDDEN_SYMBOL = Pattern.compile("(j2ll_(?:f|cit|cid)_[0-9a-f]+)");
     private static final Pattern LOADER_PATH =
             Pattern.compile("\"generatedLoaders\"\\s*:\\s*\\[\\s*\"([A-Za-z0-9_$/.]+/Loader)\"");

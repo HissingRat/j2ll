@@ -67,6 +67,9 @@ class OpcodeSupportMatrixWriterTest {
         for (String reasonCode : List.of(
                 "LLVM_NATIVE_PATH",
                 "DISPATCH_HELPER",
+                "JVM_PENDING_EXCEPTION_ORDERED_DISPATCH",
+                "JDK_INTRINSIC_HELPER",
+                "THREAD_HELPER",
                 "MULTIANEWARRAY_UNSUPPORTED",
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "UNSUPPORTED_FINALLY_SUBROUTINE")) {

@@ -10,15 +10,70 @@ import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.pass.PassDiagnostics;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
+import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.validate.IrMethodValidator;
+import xyz.melodysky.protection.audit.ProtectionApplicability;
 
 class ProtectionPipelineTest {
+    @Test
+    void recordsExplicitPerMethodCoverageWithoutChangingSkippedPassMethodOutcome() {
+        IrMethod method = splittableMethod();
+
+        var result = splitAndFakePipeline().runDetailed(
+                method,
+                splitAndFakeConfig(true, false));
+        var splitting = result.reports().stream()
+                .filter(report -> report.passName().equals("BASIC_BLOCK_SPLITTING"))
+                .findFirst()
+                .orElseThrow()
+                .coverageFacts()
+                .get(0);
+        var fakeBranches = result.reports().stream()
+                .filter(report -> report.passName().equals("FAKE_BRANCHES"))
+                .findFirst()
+                .orElseThrow()
+                .coverageFacts()
+                .get(0);
+
+        assertTrue(splitting.requested());
+        assertEquals(ProtectionApplicability.APPLICABLE, splitting.applicability());
+        assertTrue(splitting.affected());
+        assertEquals("RAN", splitting.status());
+        assertFalse(fakeBranches.requested());
+        assertEquals(ProtectionApplicability.UNKNOWN, fakeBranches.applicability());
+        assertFalse(fakeBranches.affected());
+        assertEquals("SKIPPED", fakeBranches.status());
+        assertEquals(
+                splitting.subjectIdentityHash(),
+                fakeBranches.subjectIdentityHash());
+        assertEquals(64, splitting.subjectIdentityHash().length());
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void recordsNotApplicableInsteadOfInferringItFromSkippedStatus() {
+        IrMethod method = method();
+
+        var result = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(7));
+        var fact = result.reports().get(0).coverageFacts().get(0);
+
+        assertEquals(method, result.method());
+        assertTrue(fact.requested());
+        assertEquals(ProtectionApplicability.NOT_APPLICABLE, fact.applicability());
+        assertFalse(fact.affected());
+        assertEquals("SKIPPED", fact.status());
+        assertEquals("NO_STRING_CONSTANT_CARRIER", fact.reasonCode());
+    }
+
     @Test
     void disabledProtectionIsNoOp() {
         IrMethod method = method();
@@ -95,7 +150,7 @@ class ProtectionPipelineTest {
                 .symbol()
                 .orElseThrow();
 
-        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v1:"));
+        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v2:"));
         assertFalse(symbol.contains("value="));
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("STRING_ENCRYPTION")
                 && report.status().equals("RAN")));
@@ -121,12 +176,35 @@ class ProtectionPipelineTest {
 
         assertEquals(2, instructions.size());
         assertEquals(IrOpcode.CONST_LONG, instructions.get(0).opcode());
+        String tokenValueName = instructions.get(0).result().orElseThrow().name();
+        assertTrue(tokenValueName.matches("%j2ll_v_[0-9a-f]{24}"));
+        assertFalse(tokenValueName.startsWith("%j2ll_str_token_"));
         assertEquals(IrOpcode.CALL_RUNTIME_HELPER, instructions.get(1).opcode());
         assertEquals(value, instructions.get(1).result().orElseThrow());
         String symbol = instructions.get(1).symbol().orElseThrow();
-        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v1:"));
+        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v2:"));
         assertFalse(symbol.contains("plain-secret"));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+        var repeated = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(11));
+        var anotherBuild = new ProtectionPipeline(List.of(new StringEncryptionPass()))
+                .runDetailed(method, ProtectionConfig.enabled(12));
+        assertEquals(
+                tokenValueName,
+                repeated.method().blocks().get(0).instructions().get(0)
+                        .result().orElseThrow().name());
+        assertEquals(
+                instructions.get(0).longLiteral(),
+                repeated.method().blocks().get(0).instructions().get(0)
+                        .longLiteral());
+        assertNotEquals(
+                tokenValueName,
+                anotherBuild.method().blocks().get(0).instructions().get(0)
+                        .result().orElseThrow().name());
+        assertNotEquals(
+                instructions.get(0).longLiteral(),
+                anotherBuild.method().blocks().get(0).instructions().get(0)
+                        .longLiteral());
     }
 
     @Test
@@ -147,7 +225,7 @@ class ProtectionPipelineTest {
                 .runDetailed(method, ProtectionConfig.enabled(11));
         String symbol = result.method().blocks().get(0).instructions().get(1).symbol().orElseThrow();
 
-        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v1:"));
+        assertTrue(symbol.startsWith("j2ll_rt_string_constant|enc:v2:"));
         assertFalse(symbol.contains("raw-secret"));
     }
 
@@ -222,16 +300,141 @@ class ProtectionPipelineTest {
     }
 
     @Test
-    void controlFlowFlatteningSkipsHelperSensitiveShapeWithReason() {
+    void controlFlowFlatteningSupportsHelperCallShape() {
         IrMethod method = branchingMethod(true);
+        IrInstruction helper = method.blocks().get(0).instructions().get(0);
 
         var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
                 .runDetailed(method, ProtectionConfig.enabled(19));
 
-        assertEquals(method.blocks(), result.method().blocks());
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
-                && report.status().equals("SKIPPED")
-                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+                && report.status().equals("RAN")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING")));
+        assertTrue(result.method().blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> instruction == helper));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsCrossBlockSsaValueInsteadOfBreakingDominance() {
+        IrValue value = new IrValue("%value", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/CrossBlock",
+                "value",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(IrInstruction.constInt(value, 7)),
+                                IrTerminator.gotoBlock("exit")),
+                        new IrBlock(
+                                "exit",
+                                List.of(),
+                                IrTerminator.returnValue(value))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method, result.method());
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("CONTROL_FLOW_FLATTENING")
+                        && report.status().equals("SKIPPED")
+                        && report.reasonCode().equals(
+                                "CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE")));
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                "CONTROL_FLOW_FLATTENING_CROSS_BLOCK_SSA_VALUE".equals(
+                        diagnostic.decision())));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void validationFailureRollsBackProtectionPassOutput() {
+        IrMethod method = method();
+        IrValue undefined = new IrValue("%undefined", IrType.I32);
+        ProtectionPass invalidPass = new ProtectionPass() {
+            @Override
+            public String name() {
+                return "INVALID_TEST_PASS";
+            }
+
+            @Override
+            public IrMethod run(IrMethod input, ProtectionConfig config) {
+                return new IrMethod(
+                        input.owner(),
+                        input.name(),
+                        input.descriptor(),
+                        IrType.I32,
+                        input.parameters(),
+                        List.of(new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.returnValue(undefined))));
+            }
+        };
+
+        var result = new ProtectionPipeline(List.of(invalidPass))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method, result.method());
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("INVALID_TEST_PASS")
+                        && report.status().equals("FAILED")
+                        && report.reasonCode().equals("PASS_VALIDATION_FAILED")));
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().value().equals("PASS_VALIDATION_FAILED")
+                        && diagnostic.severity().wireName().equals("warning")
+                        && diagnostic.message().contains("IR_USE_BEFORE_DEF")
+                        && "rollbackToPassInput".equals(
+                                diagnostic.decision())));
+        assertTrue(result.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.severity().wireName().equals("error")));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void invalidProtectionInputRemainsABuildLevelValidationError() {
+        IrValue undefined = new IrValue("%undefined", IrType.I32);
+        IrMethod invalid = new IrMethod(
+                "pkg/Invalid",
+                "value",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(),
+                        IrTerminator.returnValue(undefined))));
+        boolean[] invoked = {false};
+        ProtectionPass pass = new ProtectionPass() {
+            @Override
+            public String name() {
+                return "SHOULD_NOT_RUN";
+            }
+
+            @Override
+            public IrMethod run(IrMethod input, ProtectionConfig config) {
+                invoked[0] = true;
+                return input;
+            }
+        };
+
+        var result = new ProtectionPipeline(List.of(pass))
+                .runDetailed(invalid, ProtectionConfig.enabled(19));
+
+        assertFalse(invoked[0]);
+        assertEquals(invalid, result.method());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().value().equals("IR_USE_BEFORE_DEF")
+                        && diagnostic.severity().wireName().equals("error")));
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("SHOULD_NOT_RUN")
+                        && report.status().equals("FAILED")
+                        && report.reasonCode().equals(
+                                "PROTECTION_INPUT_VALIDATION_FAILED")));
     }
 
     @Test
@@ -259,6 +462,236 @@ class ProtectionPipelineTest {
                                 List.of("java/lang/Throwable"),
                                 List.of(),
                                 IrTerminator.returnValue(zero))));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void controlFlowFlatteningSupportsReferenceCallsFieldsAndUnprotectedPendingExceptions() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue fieldValue = new IrValue("%field", IrType.REFERENCE);
+        IrValue helperValue = new IrValue("%helper", IrType.REFERENCE);
+        IrValue callValue = new IrValue("%call", IrType.REFERENCE);
+        IrValue fieldException = new IrValue("%fieldException", IrType.REFERENCE);
+        IrValue helperException = new IrValue("%helperException", IrType.REFERENCE);
+        IrValue callException = new IrValue("%callException", IrType.REFERENCE);
+        IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrInstruction fieldGet = IrInstruction.fieldGet(
+                        fieldValue,
+                        IrOpcode.GET_FIELD,
+                        List.of(receiver),
+                        "pkg/Cff#value!Ljava/lang/Object;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(fieldException)));
+        IrInstruction helperCall = IrInstruction.call(
+                        java.util.Optional.of(helperValue),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(fieldValue),
+                        "j2ll_rt_reference_helper")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(helperException)));
+        IrInstruction javaCall = IrInstruction.call(
+                        java.util.Optional.of(callValue),
+                        IrOpcode.CALL_VIRTUAL,
+                        List.of(helperValue),
+                        "java/lang/Object#toString!()Ljava/lang/String;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(callException)));
+        IrMethod method = new IrMethod(
+                "pkg/Cff",
+                "choose",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(receiver),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        fieldGet,
+                                        helperCall,
+                                        javaCall,
+                                        IrInstruction.constNull(nullValue),
+                                        IrInstruction.binary(
+                                                condition,
+                                                IrOpcode.CMP_EQ_REF,
+                                                callValue,
+                                                nullValue)),
+                                IrTerminator.branch(condition, "nil", "value")),
+                        new IrBlock("nil", List.of(IrInstruction.constNull(
+                                new IrValue("%nil", IrType.REFERENCE))),
+                                IrTerminator.returnValue(receiver)),
+                        new IrBlock("value", List.of(), IrTerminator.returnValue(receiver))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("RAN")));
+        IrBlock body = result.method().blocks().stream()
+                .filter(block -> block.instructions().contains(fieldGet))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(body.instructions().contains(helperCall));
+        assertTrue(body.instructions().contains(javaCall));
+        assertEquals(fieldGet.exceptionSites(), body.instructions().get(0).exceptionSites());
+        assertEquals(helperCall.exceptionSites(), body.instructions().get(1).exceptionSites());
+        assertEquals(javaCall.exceptionSites(), body.instructions().get(2).exceptionSites());
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsProtectedPendingExceptionSite() {
+        IrValue resultValue = new IrValue("%result", IrType.I32);
+        IrValue pending = new IrValue("%pending", IrType.REFERENCE);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrValue handlerValue = new IrValue("%handlerValue", IrType.I32);
+        IrExceptionEdge handler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(pending));
+        IrInstruction helper = IrInstruction.call(
+                        java.util.Optional.of(resultValue),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(),
+                        "j2ll_rt_int_helper")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(handler),
+                        java.util.Optional.of(pending)));
+        IrMethod method = new IrMethod(
+                "pkg/Cff",
+                "protectedCall",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock("entry", List.of(helper), IrTerminator.gotoBlock("exit")),
+                        new IrBlock("exit", List.of(), IrTerminator.returnValue(resultValue)),
+                        new IrBlock(
+                                "handler",
+                                List.of(caught),
+                                List.of("java/lang/RuntimeException"),
+                                List.of(IrInstruction.constInt(handlerValue, 0)),
+                                IrTerminator.returnValue(handlerValue))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+    }
+
+    @Test
+    void controlFlowFlatteningPreservesProvenClassInitGuardOrdering() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue classId = new IrValue("%classId", IrType.I64);
+        IrValue classObject = new IrValue("%class", IrType.REFERENCE);
+        IrValue classException = new IrValue("%classException", IrType.REFERENCE);
+        IrValue guardException = new IrValue("%guardException", IrType.REFERENCE);
+        IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrInstruction object = IrInstruction.operation(
+                        java.util.Optional.of(classObject),
+                        IrOpcode.CLASS_OBJECT,
+                        List.of(classId),
+                        "class:Lpkg/Target;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(classException)));
+        IrInstruction guard = IrInstruction.operation(
+                        java.util.Optional.empty(),
+                        IrOpcode.CLASS_INIT_GUARD,
+                        List.of(classObject),
+                        "class:Lpkg/Target;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(guardException)));
+        IrInstruction happensBefore = IrInstruction.operation(
+                java.util.Optional.empty(),
+                IrOpcode.CLASS_INIT_HAPPENS_BEFORE,
+                List.of(classObject),
+                "classInitGuard");
+        IrMethod method = new IrMethod(
+                "pkg/Cff",
+                "guarded",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(receiver),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.constLong(classId, 7L),
+                                        object,
+                                        guard,
+                                        happensBefore,
+                                        IrInstruction.constNull(nullValue),
+                                        IrInstruction.binary(
+                                                condition,
+                                                IrOpcode.CMP_EQ_REF,
+                                                receiver,
+                                                nullValue)),
+                                IrTerminator.branch(condition, "nil", "value")),
+                        new IrBlock("nil", List.of(), IrTerminator.returnValue(receiver)),
+                        new IrBlock("value", List.of(), IrTerminator.returnValue(receiver))));
+
+        var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
+                .runDetailed(method, ProtectionConfig.enabled(19));
+
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
+                && report.status().equals("RAN")));
+        IrBlock body = result.method().blocks().stream()
+                .filter(block -> block.instructions().contains(object))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(
+                List.of(object, guard, happensBefore),
+                body.instructions().subList(1, 4));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningSkipsUnprovenClassInitOrdering() {
+        IrValue classObject = new IrValue("%class", IrType.REFERENCE);
+        IrValue zero = new IrValue("%zero", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrMethod method = new IrMethod(
+                "pkg/Cff",
+                "badGuard",
+                "(Ljava/lang/Class;)I",
+                IrType.I32,
+                List.of(classObject),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.operation(
+                                                java.util.Optional.empty(),
+                                                IrOpcode.CLASS_INIT_GUARD,
+                                                List.of(classObject),
+                                                "class:Lpkg/Target;"),
+                                        IrInstruction.constInt(zero, 0),
+                                        IrInstruction.binary(condition, IrOpcode.CMP_EQ_I32, zero, zero)),
+                                IrTerminator.branch(condition, "yes", "no")),
+                        new IrBlock("yes", List.of(), IrTerminator.returnValue(zero)),
+                        new IrBlock("no", List.of(), IrTerminator.returnValue(zero))));
 
         var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
                 .runDetailed(method, ProtectionConfig.enabled(19));
@@ -334,7 +767,7 @@ class ProtectionPipelineTest {
     }
 
     @Test
-    void controlFlowFlatteningSkipsReferenceHeavyShapeWithReason() {
+    void controlFlowFlatteningSupportsReferenceSignatureAndReturns() {
         IrValue input = new IrValue("%p0", IrType.REFERENCE);
         IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
         IrValue zero = new IrValue("%zero", IrType.I32);
@@ -358,10 +791,14 @@ class ProtectionPipelineTest {
         var result = new ProtectionPipeline(List.of(new ControlFlowFlatteningPass()))
                 .runDetailed(method, ProtectionConfig.enabled(19));
 
-        assertEquals(method.blocks(), result.method().blocks());
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
-                && report.status().equals("SKIPPED")
-                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
+                && report.status().equals("RAN")
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING")));
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.SWITCH));
+        assertTrue(result.method().blocks().stream()
+                .anyMatch(block -> block.terminator().value().filter(input::equals).isPresent()));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
     }
 
     @Test
@@ -442,6 +879,244 @@ class ProtectionPipelineTest {
     }
 
     @Test
+    void basicBlockSplittingPreservesCallFieldReferenceAndExceptionSitesOnBothSides() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue fieldValue = new IrValue("%field", IrType.REFERENCE);
+        IrValue helperValue = new IrValue("%helper", IrType.REFERENCE);
+        IrValue fieldException = new IrValue("%fieldException", IrType.REFERENCE);
+        IrValue helperException = new IrValue("%helperException", IrType.REFERENCE);
+        IrInstruction fieldGet = IrInstruction.fieldGet(
+                        fieldValue,
+                        IrOpcode.GET_FIELD,
+                        List.of(receiver),
+                        "pkg/Split#value!Ljava/lang/Object;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(fieldException)));
+        IrInstruction helperCall = IrInstruction.call(
+                        java.util.Optional.of(helperValue),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(fieldValue),
+                        "j2ll_rt_reference_helper")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(),
+                        java.util.Optional.of(helperException)));
+        IrMethod method = new IrMethod(
+                "pkg/Split",
+                "read",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(receiver),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(fieldGet, helperCall),
+                        IrTerminator.returnValue(helperValue))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("RAN")));
+        assertEquals(2, result.method().blocks().size());
+        IrBlock prefix = result.method().blocks().get(0);
+        IrBlock suffix = result.method().blocks().get(1);
+        assertEquals(List.of(fieldGet), prefix.instructions());
+        assertEquals(List.of(helperCall), suffix.instructions());
+        assertTrue(fieldGet == prefix.instructions().get(0));
+        assertTrue(helperCall == suffix.instructions().get(0));
+        assertEquals(fieldGet.exceptionSites(), prefix.instructions().get(0).exceptionSites());
+        assertEquals(helperCall.exceptionSites(), suffix.instructions().get(0).exceptionSites());
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void basicBlockSplittingMovesExplicitThrowEdgesAndTerminatorToSuffix() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue nullValue = new IrValue("%null", IrType.REFERENCE);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrExceptionEdge handler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(receiver));
+        IrBlock originalEntry = new IrBlock(
+                "entry",
+                List.of(),
+                List.of(),
+                List.of(handler),
+                List.of(
+                        IrInstruction.constNull(nullValue),
+                        IrInstruction.binary(condition, IrOpcode.CMP_EQ_REF, receiver, nullValue)),
+                IrTerminator.throwValue(receiver));
+        IrBlock originalHandler = new IrBlock(
+                "handler",
+                List.of(caught),
+                List.of("java/lang/RuntimeException"),
+                List.of(),
+                IrTerminator.returnValue(caught));
+        IrMethod method = new IrMethod(
+                "pkg/Split",
+                "throwing",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(receiver),
+                List.of(originalEntry, originalHandler));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(3, result.method().blocks().size());
+        IrBlock prefix = result.method().blocks().get(0);
+        IrBlock suffix = result.method().blocks().get(1);
+        assertTrue(prefix.exceptionEdges().isEmpty());
+        assertEquals(IrTerminatorKind.GOTO, prefix.terminator().kind());
+        assertEquals(List.of(handler), suffix.exceptionEdges());
+        assertEquals(IrTerminatorKind.THROW, suffix.terminator().kind());
+        assertTrue(originalHandler == result.method().blocks().get(2));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void basicBlockSplittingStillSkipsJmmSensitiveBody() {
+        IrValue value = new IrValue("%value", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/Jmm",
+                "read",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.operation(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.VOLATILE_READ_BARRIER,
+                                        List.of(),
+                                        "volatile"),
+                                IrInstruction.constInt(value, 1)),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_CFG_SHAPE_NOT_SUPPORTED")));
+    }
+
+    @Test
+    void basicBlockSplittingStillSkipsMonitorSensitiveBody() {
+        IrValue monitor = new IrValue("%p0", IrType.REFERENCE);
+        IrValue value = new IrValue("%value", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/Monitor",
+                "read",
+                "(Ljava/lang/Object;)I",
+                IrType.I32,
+                List.of(monitor),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.operation(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.MONITOR_ENTER,
+                                        List.of(monitor),
+                                        "monitor"),
+                                IrInstruction.constInt(value, 1)),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_MONITOR_SENSITIVE_SKIP")));
+    }
+
+    @Test
+    void basicBlockSplittingStillSkipsDangerousClassInitAdjacency() {
+        IrValue token = new IrValue("%token", IrType.I64);
+        IrValue classObject = new IrValue("%class", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/ClassInit",
+                "touch",
+                "()V",
+                IrType.VOID,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.constLong(token, 7L),
+                                IrInstruction.operation(
+                                        java.util.Optional.of(classObject),
+                                        IrOpcode.CLASS_OBJECT,
+                                        List.of(token),
+                                        "class:Lpkg/ClassInit;")),
+                        IrTerminator.returnVoid())));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_CFG_SHAPE_NOT_SUPPORTED")));
+    }
+
+    @Test
+    void basicBlockSplittingStillSkipsExceptionHandlerBlock() {
+        IrValue resultValue = new IrValue("%result", IrType.I32);
+        IrValue pending = new IrValue("%pending", IrType.REFERENCE);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrValue one = new IrValue("%one", IrType.I32);
+        IrValue two = new IrValue("%two", IrType.I32);
+        IrExceptionEdge handlerEdge =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(pending));
+        IrInstruction helperCall = IrInstruction.call(
+                        java.util.Optional.of(resultValue),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(),
+                        "j2ll_rt_int_helper")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(handlerEdge),
+                        java.util.Optional.of(pending)));
+        IrMethod method = new IrMethod(
+                "pkg/Handler",
+                "run",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(helperCall),
+                                IrTerminator.returnValue(resultValue)),
+                        new IrBlock(
+                                "handler",
+                                List.of(caught),
+                                List.of("java/lang/RuntimeException"),
+                                List.of(
+                                        IrInstruction.constInt(one, 1),
+                                        IrInstruction.constInt(two, 2)),
+                                IrTerminator.returnValue(two))));
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new BasicBlockSplittingPass()))
+                .runDetailed(method, splitAndFakeConfig(true, false));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("BASIC_BLOCK_SPLITTING")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_CFG_SHAPE_NOT_SUPPORTED")));
+    }
+
+    @Test
     void fakeBranchesOnlyAddsDetourWhenEnabledAlone() {
         IrMethod method = splittableMethod();
 
@@ -459,6 +1134,183 @@ class ProtectionPipelineTest {
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
                 && report.status().equals("RAN")));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void fakeBranchesPreservesHelperFieldReferenceAndProtectedExceptionBody() {
+        IrValue receiver = new IrValue("%p0", IrType.REFERENCE);
+        IrValue fieldValue = new IrValue("%field", IrType.REFERENCE);
+        IrValue helperValue = new IrValue("%helper", IrType.REFERENCE);
+        IrValue callValue = new IrValue("%call", IrType.REFERENCE);
+        IrValue fieldException = new IrValue("%fieldException", IrType.REFERENCE);
+        IrValue helperException = new IrValue("%helperException", IrType.REFERENCE);
+        IrValue callException = new IrValue("%callException", IrType.REFERENCE);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrExceptionEdge fieldHandler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(fieldException));
+        IrExceptionEdge helperHandler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(helperException));
+        IrExceptionEdge callHandler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(callException));
+        IrInstruction fieldGet = IrInstruction.fieldGet(
+                        fieldValue,
+                        IrOpcode.GET_FIELD,
+                        List.of(receiver),
+                        "pkg/Protected#value!Ljava/lang/Object;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(fieldHandler),
+                        java.util.Optional.of(fieldException)));
+        IrInstruction helperCall = IrInstruction.call(
+                        java.util.Optional.of(helperValue),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(fieldValue),
+                        "j2ll_rt_reference_helper")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(helperHandler),
+                        java.util.Optional.of(helperException)));
+        IrInstruction javaCall = IrInstruction.call(
+                        java.util.Optional.of(callValue),
+                        IrOpcode.CALL_VIRTUAL,
+                        List.of(helperValue),
+                        "java/lang/Object#toString!()Ljava/lang/String;")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(callHandler),
+                        java.util.Optional.of(callException)));
+        IrExceptionEdge explicitThrowHandler =
+                new IrExceptionEdge("handler", "java/lang/RuntimeException", List.of(receiver));
+        IrMethod method = new IrMethod(
+                "pkg/Protected",
+                "run",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                IrType.REFERENCE,
+                List.of(receiver),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        fieldGet,
+                                        helperCall,
+                                        javaCall,
+                                        IrInstruction.binary(
+                                                condition,
+                                                IrOpcode.CMP_EQ_REF,
+                                                fieldValue,
+                                                receiver)),
+                                IrTerminator.branch(condition, "normal", "thrower")),
+                        new IrBlock("normal", List.of(), IrTerminator.returnValue(callValue)),
+                        new IrBlock(
+                                "thrower",
+                                List.of(),
+                                List.of(),
+                                List.of(explicitThrowHandler),
+                                List.of(),
+                                IrTerminator.throwValue(receiver)),
+                        new IrBlock(
+                                "handler",
+                                List.of(caught),
+                                List.of("java/lang/RuntimeException"),
+                                List.of(),
+                                IrTerminator.returnValue(caught))));
+        List<IrBlock> originalBlocks = method.blocks();
+        assertTrue(new IrMethodValidator().validate(method).isEmpty());
+
+        var result = new ProtectionPipeline(List.of(new FakeBranchesPass()))
+                .runDetailed(method, splitAndFakeConfig(false, true));
+
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("RAN")));
+        assertEquals(originalBlocks, result.method().blocks().subList(2, result.method().blocks().size()));
+        for (int index = 0; index < originalBlocks.size(); index++) {
+            assertTrue(originalBlocks.get(index) == result.method().blocks().get(index + 2));
+        }
+        assertEquals(fieldGet.exceptionSites(), result.method().blocks().get(2).instructions().get(0).exceptionSites());
+        assertEquals(helperCall.exceptionSites(), result.method().blocks().get(2).instructions().get(1).exceptionSites());
+        assertEquals(javaCall.exceptionSites(), result.method().blocks().get(2).instructions().get(2).exceptionSites());
+        assertEquals(
+                List.of(explicitThrowHandler),
+                result.method().blocks().get(4).exceptionEdges());
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void fakeBranchesStillSkipsJmmSensitiveBody() {
+        IrValue value = new IrValue("%value", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/Jmm",
+                "read",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.operation(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.VOLATILE_READ_BARRIER,
+                                        List.of(),
+                                        "volatile"),
+                                IrInstruction.constInt(value, 1)),
+                        IrTerminator.returnValue(value))));
+
+        var result = new ProtectionPipeline(List.of(new FakeBranchesPass()))
+                .runDetailed(method, splitAndFakeConfig(false, true));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_CFG_SHAPE_NOT_SUPPORTED")));
+    }
+
+    @Test
+    void fakeBranchesStillSkipsMonitorSensitiveBody() {
+        IrValue monitor = new IrValue("%p0", IrType.REFERENCE);
+        IrMethod method = new IrMethod(
+                "pkg/Monitor",
+                "run",
+                "(Ljava/lang/Object;)V",
+                IrType.VOID,
+                List.of(monitor),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.operation(
+                                java.util.Optional.empty(),
+                                IrOpcode.MONITOR_ENTER,
+                                List.of(monitor),
+                                "monitor")),
+                        IrTerminator.returnVoid())));
+
+        var result = new ProtectionPipeline(List.of(new FakeBranchesPass()))
+                .runDetailed(method, splitAndFakeConfig(false, true));
+
+        assertEquals(method.blocks(), result.method().blocks());
+        assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                && report.status().equals("SKIPPED")
+                && report.reasonCode().equals("PROTECTION_MONITOR_SENSITIVE_SKIP")));
+    }
+
+    @Test
+    void fakeBranchesStillSkipsInitializerBodies() {
+        for (String name : List.of("<init>", "<clinit>")) {
+            IrMethod method = new IrMethod(
+                    "pkg/Initializer",
+                    name,
+                    "()V",
+                    IrType.VOID,
+                    List.of(),
+                    List.of(new IrBlock("entry", List.of(), IrTerminator.returnVoid())));
+
+            var result = new ProtectionPipeline(List.of(new FakeBranchesPass()))
+                    .runDetailed(method, splitAndFakeConfig(false, true));
+
+            assertEquals(method.blocks(), result.method().blocks());
+            assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("FAKE_BRANCHES")
+                    && report.status().equals("SKIPPED")
+                    && report.reasonCode().equals("PROTECTION_STUB_BACKED_METHOD")));
+        }
     }
 
     @Test

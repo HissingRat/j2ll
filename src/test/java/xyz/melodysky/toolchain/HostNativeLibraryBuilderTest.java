@@ -89,14 +89,20 @@ class HostNativeLibraryBuilderTest {
         assertFalse(source.contains("defineHiddenFallback"));
         assertFalse(source.contains("fallback blob"));
         assertTrue(source.contains("extern jint " + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
-        assertTrue(source.contains("jint result = (jint)" + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
+        assertTrue(source.contains("return "
+                + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()
+                + "("));
+        assertFalse(source.contains("jint result = (jint)"
+                + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
+        assertFalse(source.contains("j2ll_lab_slot_"));
+        assertFalse(source.contains(" volatile j2ll_lab_"));
         assertTrue(source.contains("return result;"));
         assertFalse(source.contains("return arg0 + arg1;"));
         assertTrue(llvm.contains("define external hidden i32 @"
                 + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
         assertTrue(llvm.contains("add i32"));
         assertTrue(artifact.exportedSymbols().contains("JNI_OnLoad"), artifact.exportedSymbols().toString());
-        assertTrue(artifact.exportedSymbols().contains("j2ll_register"), artifact.exportedSymbols().toString());
+        assertFalse(artifact.exportedSymbols().contains("j2ll_register"), artifact.exportedSymbols().toString());
         assertFalse(artifact.exportedSymbols().contains(registrationPlan.entries().get(0).nativeSymbol()),
                 artifact.exportedSymbols().toString());
         assertFalse(artifact.exportedSymbols().contains(implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()),

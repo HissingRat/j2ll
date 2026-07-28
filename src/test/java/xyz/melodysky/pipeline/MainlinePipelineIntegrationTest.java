@@ -202,12 +202,12 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         Path inputJar = temp.resolve("skipped-gate-input.jar");
         writeJar(
                 inputJar,
-                "pkg/FinallyShape.class",
-                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
-                        "pkg/FinallyShape"));
+                "pkg/JdkGate.class",
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
+                        "pkg/JdkGate"));
         ResolvedConfig config = config(
                 inputJar,
-                "pkg/FinallyShape#badFinally!()V");
+                "pkg/JdkGate#substring!(Ljava/lang/String;)Ljava/lang/String;");
         Path workspace = temp.resolve("out/skipped-gate-rejected");
         java.util.ArrayList<SkippedMethod> offered = new java.util.ArrayList<>();
 
@@ -223,7 +223,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
 
         assertFalse(result.successful());
         assertEquals(
-                List.of("pkg/FinallyShape#badFinally!()V"),
+                List.of("pkg/JdkGate#substring!(Ljava/lang/String;)Ljava/lang/String;"),
                 offered.stream().map(SkippedMethod::methodKey).toList());
         assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.code().equals(
@@ -233,7 +233,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertFalse(Files.exists(result.outputJar()));
         assertTrue(Files.readString(
                         workspace.resolve("reports/skipped-method-report.json"))
-                .contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
+                .contains("JVM_HELPER_UNSUPPORTED"));
         assertTrue(Files.readString(
                         workspace.resolve("reports/skipped-method-report.json"))
                 .contains("\"confirmationDecision\": \"rejected\""));
@@ -245,11 +245,11 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         writeJar(
                 inputJar,
                 "pkg/DefaultGate.class",
-                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
                         "pkg/DefaultGate"));
         ResolvedConfig config = config(
                 inputJar,
-                "pkg/DefaultGate#badFinally!()V");
+                "pkg/DefaultGate#substring!(Ljava/lang/String;)Ljava/lang/String;");
         Path workspace = temp.resolve("out/default-skipped-gate");
 
         MainlinePipelineResult result =
@@ -274,11 +274,11 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         writeJar(
                 inputJar,
                 "pkg/InputError.class",
-                AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape(
+                AsmFixtureBuilder.classWithUnsupportedJdkStringCall(
                         "pkg/InputError"));
         ResolvedConfig config = config(
                 inputJar,
-                "pkg/InputError#badFinally!()V");
+                "pkg/InputError#substring!(Ljava/lang/String;)Ljava/lang/String;");
         Path workspace = temp.resolve("out/skipped-gate-input-error");
 
         MainlinePipelineResult result = new MainlinePipeline().run(
@@ -345,7 +345,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
     }
 
     @Test
-    void finalCoverageTurnsProtectedNestedArrayBackendGapIntoSkippedMethod() throws Exception {
+    void finalCoverageKeepsProtectedNestedArrayNativeImplementation() throws Exception {
         String owner = "pkg/ProtectedByteMatrices";
         String methodKey = owner + "#array!(I)I";
         Path inputJar = temp.resolve("protected-nested-array.jar");
@@ -371,25 +371,24 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                         && method.descriptor().equals("(I)I"))
                 .findFirst()
                 .orElseThrow();
-        assertFalse(array.accessFlags().isNative());
-        assertTrue(array.hasCode());
-        assertFalse(result.nativeRegistrationPlan().entries().stream()
+        assertTrue(array.accessFlags().isNative());
+        assertFalse(array.hasCode());
+        assertTrue(result.nativeRegistrationPlan().entries().stream()
                 .anyMatch(entry -> entry.registrationOwner().equals(owner)
                         && entry.methodName().equals("array")
                         && entry.descriptor().equals("(I)I")));
 
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
+        String skippedReport = Files.readString(
+                workspace.resolve("reports/skipped-method-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""), loweringReport);
         assertTrue(loweringReport.contains(
-                "\"reasonCode\": \"UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW\""), loweringReport);
+                "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""), loweringReport);
         assertTrue(loweringReport.contains(
-                "\"nativeImplementationPath\": null"), loweringReport);
-        assertTrue(skippedReport.contains(methodKey), skippedReport);
-        assertTrue(skippedReport.contains(
-                "\"confirmationDecision\": \"approved\""), skippedReport);
-        assertFalse(packagingReport.contains(methodKey), packagingReport);
+                "\"reasonCode\": null"), loweringReport);
+        assertFalse(skippedReport.contains(methodKey), skippedReport);
+        assertTrue(packagingReport.contains("\"registeredNativeMethods\": ["), packagingReport);
     }
 
     @Test
@@ -412,7 +411,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
     }
 
     @Test
-    void reportsComplexFinallyAsSkippedAndPreservesOriginalBody() throws Exception {
+    void lowersComplexFinallyAndRemovesOriginalBody() throws Exception {
         Path inputJar = temp.resolve("complex-finally-input.jar");
         writeJar(inputJar, "pkg/FinallyShape.class",
                 AsmFixtureBuilder.classWithUnsupportedMultiExitFinallyShape("pkg/FinallyShape"));
@@ -425,12 +424,12 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         String loweringReport = Files.readString(workspace.resolve("reports/lowering-report.json"));
         String skippedReport = Files.readString(workspace.resolve("reports/skipped-method-report.json"));
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
-        assertTrue(loweringReport.contains("\"status\": \"skipped\""), loweringReport);
-        assertTrue(loweringReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"));
-        assertTrue(skippedReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"), skippedReport);
-        assertFalse(packagingReport.contains("UNSUPPORTED_MULTI_EXIT_FINALLY"), packagingReport);
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""), loweringReport);
+        assertTrue(loweringReport.contains(
+                "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""), loweringReport);
+        assertFalse(skippedReport.contains("pkg/FinallyShape#badFinally!()V"), skippedReport);
         assertFalse(packagingReport.contains("\"fallbackBlobs\""), packagingReport);
-        assertTrue(packagingReport.contains("\"registeredNativeMethods\": []"), packagingReport);
+        assertTrue(packagingReport.contains("\"registeredNativeMethods\": ["), packagingReport);
         var outputClass = new AsmClassParser()
                 .parseAll(new JarClassFileSource(result.outputJar()))
                 .artifact()
@@ -442,8 +441,8 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 .filter(method -> method.name().equals("badFinally"))
                 .findFirst()
                 .orElseThrow();
-        assertFalse(badFinally.accessFlags().isNative());
-        assertTrue(badFinally.hasCode());
+        assertTrue(badFinally.accessFlags().isNative());
+        assertFalse(badFinally.hasCode());
     }
 
     @Test
@@ -766,7 +765,7 @@ class MainlinePipelineIntegrationTest implements Opcodes {
 
         for (String reasonCode : List.of(
                 "UNSUPPORTED_DEFAULT_INTERFACE_SUPER",
-                "UNSUPPORTED_MULTI_EXIT_FINALLY",
+                "UNSUPPORTED_JVM_EXCEPTION_FLOW",
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
                 "REFLECTION_DYNAMIC_UNSUPPORTED",

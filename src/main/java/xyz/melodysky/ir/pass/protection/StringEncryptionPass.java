@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import xyz.melodysky.ir.model.BusinessStringConstantRef;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
@@ -13,7 +14,8 @@ import xyz.melodysky.report.SensitivePlaintextFact;
 public final class StringEncryptionPass implements ProtectionPass {
     private static final String CARRIER_PREFIX = "j2ll_rt_string_constant|string:";
     private static final String CONST_STRING_PREFIX = "string:";
-    private static final String ENCRYPTED_PREFIX = "j2ll_rt_string_constant|enc:v1:";
+    private static final String ENCRYPTED_PREFIX =
+            "j2ll_rt_string_constant|enc:v2:";
 
     @Override
     public String name() {
@@ -103,14 +105,27 @@ public final class StringEncryptionPass implements ProtectionPass {
             IrInstruction instruction) {
         if (isStringCarrier(instruction)) {
             String value = instruction.symbol().orElseThrow().substring(CARRIER_PREFIX.length());
-            instructions.add(instructionWithEncryptedSymbol(method, random, instruction, value));
+            instructions.add(instructionWithEncryptedSymbol(
+                    instruction,
+                    encryptedCarrier(method, random, value).symbol()));
             return;
         }
         if (rewriteConstStrings && isOrdinaryConstString(instruction)) {
             String value = constStringValue(instruction);
-            long token = token(value);
+            EncryptedCarrierPlan carrier =
+                    encryptedCarrier(method, random, value);
+            long token = carrier.token();
+            int siteIndex = constStringIndex[0]++;
             xyz.melodysky.ir.model.IrValue tokenValue = new xyz.melodysky.ir.model.IrValue(
-                    "%j2ll_str_token_" + constStringIndex[0]++, xyz.melodysky.ir.model.IrType.I64);
+                    "%j2ll_v_" + random.token(
+                            name() + "_VALUE",
+                            method.methodKey()
+                                    + ":"
+                                    + siteIndex
+                                    + ":"
+                                    + Long.toUnsignedString(token),
+                            24),
+                    xyz.melodysky.ir.model.IrType.I64);
             instructions.add(IrInstruction.constLong(tokenValue, token));
             instructions.add(new IrInstruction(
                     instruction.result(),
@@ -120,14 +135,16 @@ public final class StringEncryptionPass implements ProtectionPass {
                     instruction.longLiteral(),
                     instruction.floatLiteral(),
                     instruction.doubleLiteral(),
-                    java.util.Optional.of(encryptedSymbol(method, random, value)),
+                    java.util.Optional.of(carrier.symbol()),
                     instruction.exceptionSites()));
             return;
         }
         instructions.add(instruction);
     }
 
-    private IrInstruction instructionWithEncryptedSymbol(IrMethod method, ProtectionRandom random, IrInstruction instruction, String value) {
+    private IrInstruction instructionWithEncryptedSymbol(
+            IrInstruction instruction,
+            String encryptedSymbol) {
         return new IrInstruction(
                 instruction.result(),
                 instruction.opcode(),
@@ -136,28 +153,36 @@ public final class StringEncryptionPass implements ProtectionPass {
                 instruction.longLiteral(),
                 instruction.floatLiteral(),
                 instruction.doubleLiteral(),
-                java.util.Optional.of(encryptedSymbol(method, random, value)),
+                java.util.Optional.of(encryptedSymbol),
                 instruction.exceptionSites());
     }
 
-    private String encryptedSymbol(IrMethod method, ProtectionRandom random, String value) {
-        long token = token(value);
+    private EncryptedCarrierPlan encryptedCarrier(
+            IrMethod method,
+            ProtectionRandom random,
+            String value) {
+        long stableIntegrityToken =
+                BusinessStringConstantRef.integrityToken(value);
         byte[] plain = value.getBytes(StandardCharsets.UTF_8);
-        byte[] key = HexFormat.of().parseHex(random.token(name(), method.methodKey() + ":" + token, 32));
+        byte[] key = HexFormat.of().parseHex(random.token(
+                name(),
+                method.methodKey() + ":" + stableIntegrityToken,
+                32));
+        long token = BusinessStringConstantRef.encryptedCarrierToken(
+                value,
+                key);
         byte[] cipher = new byte[plain.length];
         for (int index = 0; index < plain.length; index++) {
             cipher[index] = (byte) (plain[index] ^ key[index % key.length]);
         }
-        return ENCRYPTED_PREFIX
-                + token
-                + ":"
-                + HexFormat.of().formatHex(key)
-                + ":"
-                + HexFormat.of().formatHex(cipher);
-    }
-
-    private long token(String value) {
-        return Integer.toUnsignedLong(("string:" + value).hashCode());
+        return new EncryptedCarrierPlan(
+                token,
+                ENCRYPTED_PREFIX
+                        + token
+                        + ":"
+                        + HexFormat.of().formatHex(key)
+                        + ":"
+                        + HexFormat.of().formatHex(cipher));
     }
 
     private boolean hasStringCarrier(IrMethod method) {
@@ -203,4 +228,8 @@ public final class StringEncryptionPass implements ProtectionPass {
         int separator = symbol.indexOf('|');
         return separator < 0 ? symbol : symbol.substring(0, separator);
     }
+
+    private record EncryptedCarrierPlan(
+            long token,
+            String symbol) {}
 }

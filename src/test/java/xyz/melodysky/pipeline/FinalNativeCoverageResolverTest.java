@@ -13,11 +13,14 @@ import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionSite;
+import xyz.melodysky.ir.model.IrExceptionSiteKind;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
+import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.jvm.AccessFlags;
 import xyz.melodysky.packaging.MethodRewriteDecision;
@@ -86,10 +89,10 @@ class FinalNativeCoverageResolverTest implements Opcodes {
     }
 
     @Test
-    void usesSpecificReasonForProtectedJvmExceptionFlow() {
-        ParsedMethod method = method("protectedGap", "()V");
+    void keepsProtectedJvmExceptionFlowWhenFinalNativeImplementationExists() {
+        ParsedMethod method = method("protectedCall", "()V");
         MethodRewriteDecision decision = decision(method);
-        IrMethod irMethod = unsupportedProtectedJvmFlowIr(method);
+        IrMethod irMethod = supportedProtectedJvmFlowIr(method);
         NativeImplementationPlan plan = plan(List.of(decision), Map.of(method.methodKey(), irMethod));
 
         FinalNativeCoverageResult result = resolver.resolve(
@@ -97,12 +100,114 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                 plan,
                 List.of(SsaMethodResult.nativeLowered(method, irMethod)));
 
+        assertEquals(List.of(decision), result.implementedRewriteDecisions());
+        assertEquals(plan, result.finalImplementationPlan());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, result.finalSsaResults().get(0).status());
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void missingPendingExceptionEvidenceUsesTheGeneralJvmFlowDiagnostic() {
+        ParsedMethod method = method("missingPendingEvidence", "()V");
+        MethodRewriteDecision decision = decision(method);
+        IrMethod irMethod = new IrMethod(
+                method.owner(),
+                method.name(),
+                method.descriptor(),
+                IrType.VOID,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(),
+                        List.of(IrInstruction.call(
+                                Optional.empty(),
+                                IrOpcode.CALL_STATIC,
+                                List.of(),
+                                "pkg/Target#run!()V")),
+                        IrTerminator.returnVoid())));
+
+        FinalNativeCoverageResult result = resolver.resolve(
+                List.of(decision),
+                new NativeImplementationPlan(List.of()),
+                List.of(SsaMethodResult.nativeLowered(method, irMethod)));
+
         SsaMethodResult skipped = result.finalSsaResults().get(0);
         assertEquals(LoweringStatus.SKIPPED, skipped.status());
-        assertEquals("UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW", skipped.reasonCode());
+        assertEquals("UNSUPPORTED_JVM_EXCEPTION_FLOW", skipped.reasonCode());
         assertEquals(
-                "UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW",
-                result.diagnostics().get(0).code().value());
+                "JVM-throwable IR lacks complete pending-exception or handler-transfer evidence",
+                skipped.reason());
+        assertEquals(
+                FinalNativeCoverageDiagnostics.UNSUPPORTED_JVM_EXCEPTION_FLOW,
+                result.diagnostics().get(0).code());
+    }
+
+    @Test
+    void cyclicJniLocalReferenceCreationUsesTheLifetimeDiagnostic() {
+        ParsedMethod method = method("referenceLoop", "()V");
+        MethodRewriteDecision decision = decision(method);
+        IrValue text = new IrValue("%text", IrType.REFERENCE);
+        IrMethod irMethod = new IrMethod(
+                method.owner(),
+                method.name(),
+                method.descriptor(),
+                IrType.VOID,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.gotoBlock("loop")),
+                        new IrBlock(
+                                "loop",
+                                List.of(IrInstruction.symbolicConstant(
+                                        text,
+                                        IrOpcode.CONST_STRING,
+                                        "plain:v1:loop")),
+                                IrTerminator.gotoBlock("loop"))));
+
+        FinalNativeCoverageResult result = resolver.resolve(
+                List.of(decision),
+                new NativeImplementationPlan(List.of()),
+                List.of(SsaMethodResult.nativeLowered(method, irMethod)));
+
+        SsaMethodResult skipped = result.finalSsaResults().get(0);
+        assertEquals(
+                "UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME",
+                skipped.reasonCode());
+        assertEquals(
+                FinalNativeCoverageDiagnostics
+                        .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME,
+                result.diagnostics().get(0).code());
+    }
+
+    @Test
+    void usesPlannerCallGraphLifetimeReasonForAcyclicCallerBody() {
+        ParsedMethod method = method("directCallLifetime", "()V");
+        MethodRewriteDecision decision = decision(method);
+        IrMethod irMethod = supportedVoidIr(method);
+        NativeImplementationPlan plan = new NativeImplementationPlan(
+                List.of(),
+                Map.of(
+                        method.methodKey(),
+                        "UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME"));
+
+        FinalNativeCoverageResult result = resolver.resolve(
+                List.of(decision),
+                plan,
+                List.of(SsaMethodResult.nativeLowered(
+                        method,
+                        irMethod)));
+
+        SsaMethodResult skipped = result.finalSsaResults().get(0);
+        assertEquals(
+                "UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME",
+                skipped.reasonCode());
+        assertTrue(skipped.reason().contains("direct-call cycle"));
+        assertEquals(
+                FinalNativeCoverageDiagnostics
+                        .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME,
+                result.diagnostics().get(0).code());
     }
 
     @Test
@@ -183,26 +288,41 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                 List.of());
     }
 
-    private IrMethod unsupportedProtectedJvmFlowIr(ParsedMethod method) {
+    private IrMethod supportedProtectedJvmFlowIr(ParsedMethod method) {
+        IrValue pending = new IrValue("%pending", IrType.REFERENCE);
+        IrValue caught = new IrValue("%caught", IrType.REFERENCE);
+        IrExceptionEdge edge = new IrExceptionEdge(
+                "catch",
+                "java/lang/RuntimeException",
+                List.of(pending));
         IrInstruction call = IrInstruction.call(
-                Optional.empty(),
-                IrOpcode.CALL_STATIC,
-                List.of(),
-                "pkg/Target#run!()V");
+                        Optional.empty(),
+                        IrOpcode.CALL_STATIC,
+                        List.of(),
+                        "pkg/Target#run!()V")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(edge),
+                        Optional.of(pending)));
         return new IrMethod(
                 method.owner(),
                 method.name(),
                 method.descriptor(),
                 IrType.VOID,
                 List.of(),
-                List.of(new IrBlock(
-                        "entry",
-                        List.of(),
-                        List.of(),
-                        List.of(new IrExceptionEdge(
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                List.of(),
+                                List.of(edge),
+                                List.of(call),
+                                IrTerminator.returnVoid()),
+                        new IrBlock(
                                 "catch",
-                                "java/lang/RuntimeException")),
-                        List.of(call),
-                        IrTerminator.returnVoid())));
+                                List.of(caught),
+                                List.of("java/lang/RuntimeException"),
+                                List.of(),
+                                IrTerminator.returnVoid())));
     }
 }

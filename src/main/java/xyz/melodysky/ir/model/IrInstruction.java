@@ -279,4 +279,18 @@ public record IrInstruction(
                 sites,
                 callIndirection);
     }
+
+    public IrInstruction withExceptionSites(List<IrExceptionSite> sites) {
+        return new IrInstruction(
+                result,
+                opcode,
+                operands,
+                intLiteral,
+                longLiteral,
+                floatLiteral,
+                doubleLiteral,
+                symbol,
+                sites,
+                callIndirection);
+    }
 }

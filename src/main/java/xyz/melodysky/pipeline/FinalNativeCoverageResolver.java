@@ -14,6 +14,7 @@ import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.toolchain.NativeExceptionFlowSupport;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
+import xyz.melodysky.toolchain.NativeLocalReferenceSafety;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
 
 /**
@@ -27,6 +28,8 @@ import xyz.melodysky.toolchain.NativeMethodImplementation;
 public final class FinalNativeCoverageResolver {
     private final NativeExceptionFlowSupport exceptionFlowSupport =
             new NativeExceptionFlowSupport();
+    private final NativeLocalReferenceSafety localReferenceSafety =
+            new NativeLocalReferenceSafety();
 
     public FinalNativeCoverageResult resolve(
             List<MethodRewriteDecision> rewriteDecisions,
@@ -57,7 +60,9 @@ public final class FinalNativeCoverageResolver {
                 finalResults.add(result);
                 continue;
             }
-            String reasonCode = unavailableReasonCode(result);
+            String reasonCode = unavailableReasonCode(
+                    result,
+                    currentImplementationPlan);
             String reason = unavailableReason(reasonCode);
             finalResults.add(SsaMethodResult.skipped(
                     result.sourceMethod(),
@@ -77,12 +82,28 @@ public final class FinalNativeCoverageResolver {
                 diagnostics);
     }
 
-    private String unavailableReasonCode(SsaMethodResult result) {
+    private String unavailableReasonCode(
+            SsaMethodResult result,
+            NativeImplementationPlan implementationPlan) {
+        String plannedReason = implementationPlan
+                .unavailableReasonCodeFor(
+                        result.sourceMethod().methodKey())
+                .orElse(null);
+        if (plannedReason != null) {
+            return plannedReason;
+        }
         if (result.irMethod()
-                .filter(exceptionFlowSupport::hasUnsupportedProtectedJvmFlow)
+                .filter(localReferenceSafety::hasUnboundedLocalReferenceRisk)
                 .isPresent()) {
             return FinalNativeCoverageDiagnostics
-                    .UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW
+                    .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME
+                    .value();
+        }
+        if (result.irMethod()
+                .filter(exceptionFlowSupport::hasUnsupportedJvmFlow)
+                .isPresent()) {
+            return FinalNativeCoverageDiagnostics
+                    .UNSUPPORTED_JVM_EXCEPTION_FLOW
                     .value();
         }
         return FinalNativeCoverageDiagnostics
@@ -92,10 +113,14 @@ public final class FinalNativeCoverageResolver {
 
     private String unavailableReason(String reasonCode) {
         if (reasonCode.equals(FinalNativeCoverageDiagnostics
-                .UNSUPPORTED_PROTECTED_JVM_EXCEPTION_FLOW
+                .UNSUPPORTED_JVM_EXCEPTION_FLOW
                 .value())) {
-            return "JNI/runtime-helper exceptions protected by an in-method Java catch "
-                    + "are not yet materialized as native exception control flow";
+            return "JVM-throwable IR lacks complete pending-exception or handler-transfer evidence";
+        }
+        if (reasonCode.equals(FinalNativeCoverageDiagnostics
+                .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME
+                .value())) {
+            return "a JNI-owned local reference can be created repeatedly inside a native control-flow or direct-call cycle";
         }
         return "no safe final native implementation is available";
     }

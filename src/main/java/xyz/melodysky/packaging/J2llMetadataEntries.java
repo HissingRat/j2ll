@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import xyz.melodysky.config.ResolvedConfig;
+import xyz.melodysky.protection.BuildProtectionIdentity;
 import xyz.melodysky.toolchain.NativeLibraryArtifact;
 import xyz.melodysky.toolchain.ZigNativeBuildResult;
 
@@ -55,7 +56,10 @@ public final class J2llMetadataEntries {
         root.addProperty("tool", "j2ll");
         root.addProperty("toolVersion", "clean-room-rc-candidate");
         root.addProperty("configHash", sha256(normalizedConfigIdentity(config)));
-        root.addProperty("protectionSeedHash", sha256(config.protection().seed()));
+        root.addProperty("protectionSeedMode", config.protection().seedMode().wireName());
+        root.addProperty(
+                "protectionSeedHash",
+                BuildProtectionIdentity.from(config.protection()).identityHash());
         JsonArray targets = new JsonArray();
         nativeBuildResult
                 .map(result -> result.artifacts().stream()
@@ -127,7 +131,10 @@ public final class J2llMetadataEntries {
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
         root.addProperty("protectionEnabled", config.protection().enabled());
-        root.addProperty("protectionSeedHash", sha256(config.protection().seed()));
+        root.addProperty("protectionSeedMode", config.protection().seedMode().wireName());
+        root.addProperty(
+                "protectionSeedHash",
+                BuildProtectionIdentity.from(config.protection()).identityHash());
         return GSON.toJson(root);
     }
 

@@ -6,12 +6,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import xyz.melodysky.ir.model.IrOpcode;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 
 final class HostJniLambdaRuntimeSource {
     private HostJniLambdaRuntimeSource() {}
 
     static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
-        Map<Long, String[]> lambdaSpecs = new TreeMap<>();
+        append(builder, bindings, RuntimeTokenMapper.compatibility());
+    }
+
+    static void append(
+            StringBuilder builder,
+            List<HostJniCSourceGenerator.Binding> bindings,
+            RuntimeTokenMapper runtimeTokens) {
+        Map<String, String[]> lambdaSpecs = new TreeMap<>();
         for (HostJniCSourceGenerator.Binding binding : bindings) {
             if (binding.path() != NativeImplementationPath.LLVM_NATIVE_PATH || binding.templateIrMethod().isEmpty()) {
                 continue;
@@ -26,25 +35,15 @@ final class HostJniLambdaRuntimeSource {
                         String spec = new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
                         String[] fields = spec.split("\n", -1);
                         if (fields.length == 9) {
-                            lambdaSpecs.putIfAbsent(javaStringHashUnsigned("lambda:" + spec), fields);
+                            lambdaSpecs.putIfAbsent("lambda:" + encoded, fields);
                         }
                     });
         }
         if (lambdaSpecs.isEmpty()) {
-            builder.append("""
-                    jobject j2ll_rt_lambda_new(JNIEnv* env, int64_t token, jobject capture) {
-                        (void)token;
-                        (void)capture;
-                        j2ll_throw_new(env, "java/lang/IllegalArgumentException", "unknown lambda token");
-                        return NULL;
-                    }
-
-                    """);
             return;
         }
         builder.append("""
                 typedef struct {
-                    int64_t token;
                     const char* caller_owner;
                     const char* invoked_name;
                     const char* invoked_desc;
@@ -55,43 +54,6 @@ final class HostJniLambdaRuntimeSource {
                     const char* impl_desc;
                     const char* instantiated_desc;
                 } j2ll_lambda_entry;
-                """);
-        builder.append("static const j2ll_lambda_entry j2ll_lambda_table[] = {\n");
-        for (Map.Entry<Long, String[]> entry : lambdaSpecs.entrySet()) {
-            String[] fields = entry.getValue();
-            builder.append("    { ")
-                    .append(entry.getKey())
-                    .append("LL, \"")
-                    .append(escapeCString(fields[0]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[1]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[2]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[3]))
-                    .append("\", ")
-                    .append(Integer.parseInt(fields[4]))
-                    .append(", \"")
-                    .append(escapeCString(fields[5]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[6]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[7]))
-                    .append("\", \"")
-                    .append(escapeCString(fields[8]))
-                    .append("\" },\n");
-        }
-        builder.append("""
-                };
-
-                static const j2ll_lambda_entry* j2ll_find_lambda_entry(int64_t token) {
-                    for (size_t index = 0; index < sizeof(j2ll_lambda_table) / sizeof(j2ll_lambda_table[0]); index++) {
-                        if (j2ll_lambda_table[index].token == token) {
-                            return &j2ll_lambda_table[index];
-                        }
-                    }
-                    return NULL;
-                }
 
                 static jobject j2ll_method_type_from_descriptor(JNIEnv* env, const char* descriptor, jobject loader) {
                     jclass method_type_class = (*env)->FindClass(env, "java/lang/invoke/MethodType");
@@ -164,12 +126,10 @@ final class HostJniLambdaRuntimeSource {
                     return NULL;
                 }
 
-                jobject j2ll_rt_lambda_new(JNIEnv* env, int64_t token, jobject capture) {
-                    const j2ll_lambda_entry* entry = j2ll_find_lambda_entry(token);
-                    if (entry == NULL) {
-                        j2ll_throw_new(env, "java/lang/IllegalArgumentException", "unknown lambda token");
-                        return NULL;
-                    }
+                static jobject j2ll_lambda_new_from_entry(
+                        JNIEnv* env,
+                        const j2ll_lambda_entry* entry,
+                        jobject capture) {
                     jclass method_handles_class = (*env)->FindClass(env, "java/lang/invoke/MethodHandles");
                     jclass lambda_metafactory_class = (*env)->FindClass(env, "java/lang/invoke/LambdaMetafactory");
                     jclass call_site_class = (*env)->FindClass(env, "java/lang/invoke/CallSite");
@@ -311,14 +271,60 @@ final class HostJniLambdaRuntimeSource {
                 }
 
                 """);
+        for (Map.Entry<String, String[]> entry : runtimeTokens.physicalOrder(
+                RuntimeTokenDomain.LAMBDA,
+                List.copyOf(lambdaSpecs.entrySet()),
+                Map.Entry::getKey)) {
+            String[] fields = entry.getValue();
+            String symbol = helperSymbol(runtimeTokens, entry.getKey());
+            builder.append("jobject ")
+                    .append(symbol)
+                    .append("(JNIEnv* env, jobject capture) {\n")
+                    .append("    const char* caller_owner = \"")
+                    .append(escapeCString(fields[0]))
+                    .append("\";\n    const char* invoked_name = \"")
+                    .append(escapeCString(fields[1]))
+                    .append("\";\n    const char* invoked_desc = \"")
+                    .append(escapeCString(fields[2]))
+                    .append("\";\n    const char* sam_desc = \"")
+                    .append(escapeCString(fields[3]))
+                    .append("\";\n    const char* impl_owner = \"")
+                    .append(escapeCString(fields[5]))
+                    .append("\";\n    const char* impl_name = \"")
+                    .append(escapeCString(fields[6]))
+                    .append("\";\n    const char* impl_desc = \"")
+                    .append(escapeCString(fields[7]))
+                    .append("\";\n    const char* instantiated_desc = \"")
+                    .append(escapeCString(fields[8]))
+                    .append("\";\n")
+                    .append("    j2ll_lambda_entry entry;\n")
+                    .append("    entry.caller_owner = caller_owner;\n")
+                    .append("    entry.invoked_name = invoked_name;\n")
+                    .append("    entry.invoked_desc = invoked_desc;\n")
+                    .append("    entry.sam_desc = sam_desc;\n")
+                    .append("    entry.ref_kind = ")
+                    .append(Integer.parseInt(fields[4]))
+                    .append(";\n")
+                    .append("    entry.impl_owner = impl_owner;\n")
+                    .append("    entry.impl_name = impl_name;\n")
+                    .append("    entry.impl_desc = impl_desc;\n")
+                    .append("    entry.instantiated_desc = instantiated_desc;\n")
+                    .append("    return j2ll_lambda_new_from_entry(env, &entry, capture);\n")
+                    .append("}\n\n");
+        }
     }
 
+    static String helperSymbol(
+            RuntimeTokenMapper runtimeTokens,
+            String lambdaIdentity) {
+        return runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.LAMBDA,
+                "lambda_new",
+                lambdaIdentity);
+    }
 
     private static String escapeCString(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    private static long javaStringHashUnsigned(String value) {
-        return Integer.toUnsignedLong(value.hashCode());
-    }
 }

@@ -78,7 +78,9 @@ class ProtectionCrossTargetEvidenceTest {
 
         JsonArray passes = protectionPasses(workspace);
         for (String pass : PASS_ROWS) {
-            assertTrue(hasRanPass(passes, pass), pass);
+            assertTrue(
+                    hasRanPass(passes, pass),
+                    pass + " => " + passEvidence(passes, pass));
         }
         assertSharedLlvmEvidence(workspace, passes);
         assertFieldAndMethodTableEvidence(workspace, config);
@@ -133,13 +135,18 @@ class ProtectionCrossTargetEvidenceTest {
         assertEquals("RAN", methodTable.get("status").getAsString());
         assertEquals(2, methodTable.get("ownerCount").getAsInt());
         assertEquals(19, methodTable.get("bindingCount").getAsInt());
+        assertEquals(
+                "ownerLocalTransientStraightLine",
+                methodTable.get("physicalStrategy").getAsString());
+        assertFalse(methodTable.get("runtimeTokenTableEmitted").getAsBoolean());
+        assertFalse(methodTable.get("runtimeFunctionTableEmitted").getAsBoolean());
 
         Path generatedC = workspace.resolve("native/zig-workspace/jni")
                 .resolve(NativeLibraryName.derive(config.protection().seed()) + ".c");
         String source = Files.readString(generatedC);
         for (String marker : List.of(
-                "j2ll_hidden_method_metadata",
-                "j2ll_hidden_method_function",
+                "JNINativeMethod* methods = NULL",
+                "j2ll_native_text_zero(methods",
                 "j2ll_native_field_state",
                 "j2ll_nfs_get_i32",
                 "j2ll_nfs_get_i64",
@@ -150,6 +157,10 @@ class ProtectionCrossTargetEvidenceTest {
                 "SetObjectArrayElement")) {
             assertTrue(source.contains(marker), marker);
         }
+        assertFalse(source.contains("static const uint64_t j2ll_hmt_"));
+        assertFalse(source.contains("j2ll_hidden_method_function"));
+        assertFalse(source.contains("masked_token"));
+        assertFalse(source.contains("join_scratch"));
         assertFalse(source.contains("NewGlobalRef"));
         for (String sensitive : SENSITIVE_IDENTITIES) {
             assertFalse(source.contains(sensitive), "generated C plaintext: " + sensitive);
@@ -230,6 +241,14 @@ class ProtectionCrossTargetEvidenceTest {
                 .map(element -> element.getAsJsonObject())
                 .anyMatch(pass -> pass.get("passName").getAsString().equals(passName)
                         && pass.get("status").getAsString().equals("RAN"));
+    }
+
+    private List<String> passEvidence(JsonArray passes, String passName) {
+        return passes.asList().stream()
+                .map(element -> element.getAsJsonObject())
+                .filter(pass -> pass.get("passName").getAsString().equals(passName))
+                .map(JsonObject::toString)
+                .toList();
     }
 
     private List<String> affectedSymbols(JsonArray passes, String passName) {

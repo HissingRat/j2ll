@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonParser;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.analysis.field.FieldId;
@@ -88,6 +89,43 @@ class FieldInternalizationReportWriterTest {
         assertEquals(
                 "OUT_OF_SCOPE_USER_ACCEPTED",
                 world.get("externalObserverPolicy").getAsString());
+    }
+
+    @Test
+    void reportConsumesExplicitDiversifiedReferenceIndicesFromPlan() {
+        FieldId first =
+                new FieldId("pkg/State", "alpha", "Ljava/lang/Object;");
+        FieldId second =
+                new FieldId("pkg/State", "omega", "[Ljava/lang/String;");
+        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+                List.of(
+                        approved(first, "j2ll_nfs_first"),
+                        approved(second, "j2ll_nfs_second")),
+                Map.of(first.owner(), Map.of(first, 1, second, 0)));
+
+        var decisions = JsonParser.parseString(
+                        new FieldInternalizationReportWriter().json(plan, true, true))
+                .getAsJsonObject()
+                .getAsJsonArray("decisions");
+        var firstReport = decisions.asList().stream()
+                .map(element -> element.getAsJsonObject())
+                .filter(element -> element
+                        .get("nativeSlotId")
+                        .getAsString()
+                        .equals("j2ll_nfs_first"))
+                .findFirst()
+                .orElseThrow();
+        var secondReport = decisions.asList().stream()
+                .map(element -> element.getAsJsonObject())
+                .filter(element -> element
+                        .get("nativeSlotId")
+                        .getAsString()
+                        .equals("j2ll_nfs_second"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(1, firstReport.get("referenceSidecarIndex").getAsInt());
+        assertEquals(0, secondReport.get("referenceSidecarIndex").getAsInt());
     }
 
     private NativeFieldInternalizationDecision approved(FieldId field, String slot) {

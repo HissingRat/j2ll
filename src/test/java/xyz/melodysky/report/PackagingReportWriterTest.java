@@ -125,13 +125,17 @@ class PackagingReportWriterTest {
                     "enabled": false,
                     "status": "SKIPPED",
                     "planId": null,
+                    "physicalStrategy": "ownerLocalTransientStraightLine",
+                    "runtimeTokenTableEmitted": false,
+                    "runtimeFunctionTableEmitted": false,
+                    "temporaryJniTableZeroized": true,
+                    "bindingTokensAreReportEvidenceOnly": true,
                     "ownerCount": 0,
                     "bindingCount": 0,
                     "owners": []
                   },
                   "exportedSymbols": [
-                    "JNI_OnLoad",
-                    "j2ll_register"
+                    "JNI_OnLoad"
                   ]
                 }
                 """, new PackagingReportWriter().packagingJson(
@@ -141,7 +145,7 @@ class PackagingReportWriterTest {
                 List.of(decision),
                 List.of(new EmbeddedLibraryReport("linux-x64", "native0/x64-linux.so", "012345")),
                 List.of(new NativeRegistrationEntry("pkg/Mathy", "add", "(II)I", "j2ll_pkg_Mathy_add_0123")),
-                List.of("j2ll_register", "JNI_OnLoad"),
+                List.of("JNI_OnLoad"),
                 null));
     }
 
@@ -349,6 +353,15 @@ class PackagingReportWriterTest {
         assertEquals("RAN", evidence.get("status").getAsString());
         assertEquals(hidingPlan.planId(), evidence.get("planId").getAsString());
         assertTrue(evidence.get("planId").getAsString().matches("mth_[0-9a-f]{32}"));
+        assertEquals(
+                "ownerLocalTransientStraightLine",
+                evidence.get("physicalStrategy").getAsString());
+        assertFalse(evidence.get("runtimeTokenTableEmitted").getAsBoolean());
+        assertFalse(evidence.get("runtimeFunctionTableEmitted").getAsBoolean());
+        assertTrue(evidence.get("temporaryJniTableZeroized").getAsBoolean());
+        assertTrue(evidence
+                .get("bindingTokensAreReportEvidenceOnly")
+                .getAsBoolean());
         assertEquals(2, evidence.get("ownerCount").getAsInt());
         assertEquals(3, evidence.get("bindingCount").getAsInt());
 

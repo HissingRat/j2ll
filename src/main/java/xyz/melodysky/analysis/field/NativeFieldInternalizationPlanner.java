@@ -1,9 +1,12 @@
 package xyz.melodysky.analysis.field;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
@@ -14,6 +17,9 @@ import xyz.melodysky.ir.pass.protection.ProtectionRandom;
 import xyz.melodysky.jvm.AccessFlags;
 
 public final class NativeFieldInternalizationPlanner {
+    private static final String REFERENCE_SIDECAR_ORDER_DOMAIN =
+            "FIELD_REFERENCE_SIDECAR_ORDER";
+
     public NativeFieldInternalizationPlan plan(
             FieldUseIndex useIndex,
             AnalysisWorld worldModel,
@@ -79,7 +85,9 @@ public final class NativeFieldInternalizationPlanner {
                         List.copyOf(reasons)));
             }
         }
-        return new NativeFieldInternalizationPlan(decisions);
+        return new NativeFieldInternalizationPlan(
+                decisions,
+                allocateReferenceIndices(decisions, random));
     }
 
     private void addWorldReasons(
@@ -218,6 +226,38 @@ public final class NativeFieldInternalizationPlanner {
             }
             collision++;
         }
+    }
+
+    private Map<String, Map<FieldId, Integer>> allocateReferenceIndices(
+            List<NativeFieldInternalizationDecision> decisions,
+            ProtectionRandom random) {
+        TreeMap<String, ArrayList<FieldId>> fieldsByOwner = new TreeMap<>();
+        decisions.stream()
+                .filter(NativeFieldInternalizationDecision::internalized)
+                .map(NativeFieldInternalizationDecision::field)
+                .filter(field -> NativeFieldStorageKind.fromDescriptor(field.descriptor())
+                        .filter(NativeFieldStorageKind::reference)
+                        .isPresent())
+                .forEach(field -> fieldsByOwner
+                        .computeIfAbsent(field.owner(), ignored -> new ArrayList<>())
+                        .add(field));
+
+        Comparator<FieldId> diversifiedOrder = Comparator
+                .comparing((FieldId field) -> random.token(
+                        REFERENCE_SIDECAR_ORDER_DOMAIN,
+                        field.fieldKey(),
+                        64))
+                .thenComparing(FieldId::fieldKey);
+        LinkedHashMap<String, Map<FieldId, Integer>> result = new LinkedHashMap<>();
+        fieldsByOwner.forEach((owner, fields) -> {
+            fields.sort(diversifiedOrder);
+            LinkedHashMap<FieldId, Integer> indices = new LinkedHashMap<>();
+            for (int index = 0; index < fields.size(); index++) {
+                indices.put(fields.get(index), index);
+            }
+            result.put(owner, indices);
+        });
+        return result;
     }
 
     private FieldId id(ParsedField field) {

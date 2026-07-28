@@ -1,6 +1,7 @@
 package xyz.melodysky.report;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -49,8 +50,7 @@ class KnownBlockersWriterTest {
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "UNSUPPORTED_FINALLY_SUBROUTINE",
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
-                "UNSUPPORTED_MULTI_EXIT_FINALLY",
-                "UNSUPPORTED_NESTED_FINALLY",
+                "NATIVE_IMPLEMENTATION_UNAVAILABLE",
                 "ALT_METAFACTORY_UNSUPPORTED",
                 "METHOD_HANDLE_CHAIN_UNSUPPORTED",
                 "METHOD_HANDLE_PERMUTE_UNSUPPORTED",
@@ -63,6 +63,10 @@ class KnownBlockersWriterTest {
                 "WAIT_NOTIFY_UNSUPPORTED")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);
         }
+        assertFalse(json.contains("\"reasonCode\": \"UNSUPPORTED_MULTI_EXIT_FINALLY\""), json);
+        assertFalse(json.contains("\"reasonCode\": \"UNSUPPORTED_NESTED_FINALLY\""), json);
+        assertTrue(json.contains("supported typed, catch-all and finally shapes continue through native exception dispatch"));
+        assertTrue(json.contains("validated post-init bodies use a native helper"));
         assertTrue(json.contains("\"reportLocation\": \"reports/skipped-method-report.json\""));
         assertTrue(json.contains("\"reportLocation\": \"reports/packaging-report.json\""));
         assertTrue(json.contains("\"severity\": \"future-blocker\""));

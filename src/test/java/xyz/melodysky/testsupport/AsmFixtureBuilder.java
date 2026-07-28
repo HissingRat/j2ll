@@ -5,6 +5,7 @@ import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.FieldVisitor;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.RecordComponentVisitor;
@@ -670,6 +671,50 @@ public final class AsmFixtureBuilder implements Opcodes {
         methodHandle.visitInsn(ARETURN);
         methodHandle.visitMaxs(0, 0);
         methodHandle.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithStaticAndInstanceClassLiteralMethods(
+            String internalName,
+            String targetInternalName) {
+        ClassWriter writer =
+                new ClassWriter(
+                        ClassWriter.COMPUTE_FRAMES
+                                | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                V17,
+                ACC_PUBLIC | ACC_SUPER,
+                internalName,
+                null,
+                "java/lang/Object",
+                null);
+        emitDefaultConstructor(writer);
+
+        MethodVisitor staticLiteral = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "staticLiteral",
+                "()Ljava/lang/Class;",
+                null,
+                null);
+        staticLiteral.visitCode();
+        staticLiteral.visitLdcInsn(Type.getObjectType(targetInternalName));
+        staticLiteral.visitInsn(ARETURN);
+        staticLiteral.visitMaxs(0, 0);
+        staticLiteral.visitEnd();
+
+        MethodVisitor instanceLiteral = writer.visitMethod(
+                ACC_PUBLIC,
+                "instanceLiteral",
+                "()Ljava/lang/Class;",
+                null,
+                null);
+        instanceLiteral.visitCode();
+        instanceLiteral.visitLdcInsn(Type.getObjectType(targetInternalName));
+        instanceLiteral.visitInsn(ARETURN);
+        instanceLiteral.visitMaxs(0, 0);
+        instanceLiteral.visitEnd();
 
         writer.visitEnd();
         return writer.toByteArray();
@@ -2881,6 +2926,41 @@ public final class AsmFixtureBuilder implements Opcodes {
         declaredField.visitInsn(RETURN);
         declaredField.visitMaxs(0, 0);
         declaredField.visitEnd();
+
+        MethodVisitor protectedDeclaredField = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "protectedDeclaredField",
+                "()V",
+                null,
+                null);
+        Label protectedStart = new Label();
+        Label protectedEnd = new Label();
+        Label protectedHandler = new Label();
+        Label protectedDone = new Label();
+        protectedDeclaredField.visitTryCatchBlock(
+                protectedStart,
+                protectedEnd,
+                protectedHandler,
+                "java/lang/Exception");
+        protectedDeclaredField.visitCode();
+        protectedDeclaredField.visitLabel(protectedStart);
+        protectedDeclaredField.visitLdcInsn(Type.getObjectType(targetInternalName));
+        protectedDeclaredField.visitLdcInsn("field");
+        protectedDeclaredField.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        protectedDeclaredField.visitInsn(POP);
+        protectedDeclaredField.visitLabel(protectedEnd);
+        protectedDeclaredField.visitJumpInsn(GOTO, protectedDone);
+        protectedDeclaredField.visitLabel(protectedHandler);
+        protectedDeclaredField.visitInsn(POP);
+        protectedDeclaredField.visitLabel(protectedDone);
+        protectedDeclaredField.visitInsn(RETURN);
+        protectedDeclaredField.visitMaxs(0, 0);
+        protectedDeclaredField.visitEnd();
 
         MethodVisitor declaredConstructor = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,

@@ -13,10 +13,11 @@ import xyz.melodysky.toolchain.TargetTriple;
 
 class ConfigLoaderTest {
     @Test
-    void loadsFullSchemaV1AndDerivesNullableSeed() {
+    void loadsFullSchemaV1AndRandomizesNullableSeed() {
         JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
 
         ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+        ConfigLoadResult second = new ConfigLoader().load(json, Path.of("/cfg"));
 
         assertFalse(result.hasErrors());
         ResolvedConfig config = result.config().orElseThrow();
@@ -28,7 +29,23 @@ class ConfigLoaderTest {
         assertTrue(config.protection().ir().constantEncryption());
         assertTrue(config.protection().ir().blockNameObfuscation());
         assertNotNull(config.protection().seed());
-        assertEquals(16, config.protection().seed().length());
+        assertEquals(64, config.protection().seed().length());
+        assertEquals(ProtectionSeedMode.RANDOMIZED, config.protection().seedMode());
+        assertFalse(config.protection().seed().equals(second.config().orElseThrow().protection().seed()));
+    }
+
+    @Test
+    void explicitSeedSelectsReproducibleMode() {
+        JsonObject json = JsonParser.parseString(
+                        baseJson().replace("\"seed\": null", "\"seed\": \"release-replay\""))
+                .getAsJsonObject();
+
+        ResolvedConfig first = new ConfigLoader().load(json, Path.of("/cfg")).config().orElseThrow();
+        ResolvedConfig second = new ConfigLoader().load(json, Path.of("/cfg")).config().orElseThrow();
+
+        assertEquals(ProtectionSeedMode.REPRODUCIBLE, first.protection().seedMode());
+        assertEquals("release-replay", first.protection().seed());
+        assertEquals(first.protection().seed(), second.protection().seed());
     }
 
     @Test

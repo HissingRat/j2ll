@@ -49,6 +49,7 @@ import xyz.melodysky.frontend.classfile.JarClassFileSource;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
+import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.pass.OptimizationPipeline;
 import xyz.melodysky.ir.pass.PassContext;
@@ -80,6 +81,9 @@ import xyz.melodysky.packaging.InternalizedFieldClassTransform;
 import xyz.melodysky.packaging.SignatureResignPreflight;
 import xyz.melodysky.packaging.SignatureResignPreflightResult;
 import xyz.melodysky.progress.BuildProgressListener;
+import xyz.melodysky.protection.BuildProtectionIdentity;
+import xyz.melodysky.protection.BuildProtectionMaterials;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.report.EmbeddedLibraryReport;
 import xyz.melodysky.report.ArtifactAudit;
 import xyz.melodysky.report.ArtifactAuditResult;
@@ -119,6 +123,8 @@ import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeImplementationPlanner;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 import xyz.melodysky.toolchain.NativeLibraryArtifact;
 import xyz.melodysky.toolchain.NativeLibraryName;
 import xyz.melodysky.toolchain.NativeLlvmCompilation;
@@ -126,6 +132,7 @@ import xyz.melodysky.toolchain.NativeLlvmCompiler;
 import xyz.melodysky.toolchain.NativeLlvmModuleCompilation;
 import xyz.melodysky.toolchain.ZigNativeBuildResult;
 import xyz.melodysky.toolchain.ZigNativeLibraryBuilder;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.TargetTriple;
 import xyz.melodysky.toolchain.ToolchainDiagnostics;
 import xyz.melodysky.toolchain.symbols.ExportList;
@@ -137,7 +144,6 @@ public final class MainlinePipeline {
     private final AsmClassParser parser = new AsmClassParser();
     private final SelectorMatcher selectorMatcher = new SelectorMatcher();
     private final MethodCfgBuilder cfgBuilder = new MethodCfgBuilder();
-    private final BytecodeToSsaLowerer ssaLowerer = new BytecodeToSsaLowerer();
     private final OptimizationPipeline optimizationPipeline = OptimizationPipeline.defaultPipeline();
     private final ProtectionPipeline protectionPipeline = ProtectionPipeline.defaultPipeline();
     private final LlvmTextEmitter llvmEmitter = new LlvmTextEmitter();
@@ -324,8 +330,44 @@ public final class MainlinePipeline {
         Map<String, IrMethod> rawIr = new LinkedHashMap<>();
         Map<String, IrMethod> optimizedIr = new LinkedHashMap<>();
         Map<String, IrMethod> protectedIr = new LinkedHashMap<>();
+        Map<String, InitializerImplementationPlan> initializerPlans = new LinkedHashMap<>();
+        Map<String, ParsedClass> classesByName = program.classes().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        ParsedClass::internalName,
+                        parsedClass -> parsedClass,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        InitializerImplementationPlanner initializerPlanner =
+                new InitializerImplementationPlanner();
         ArrayList<ProtectionPassReport> protectionReports = new ArrayList<>();
-        long seed = seedAsLong(config.protection().seed());
+        BuildProtectionIdentity buildProtectionIdentity =
+                BuildProtectionIdentity.from(config.protection());
+        BuildProtectionMaterials protectionMaterials =
+                BuildProtectionMaterials.derive(buildProtectionIdentity);
+        long irProtectionSeed = protectionMaterials.irMethodSeed();
+        long programProtectionSeed = protectionMaterials.irProgramSeed();
+        long fieldInternalizationSeed = protectionMaterials.fieldSeed();
+        long templateStringSeed =
+                protectionMaterials.businessStringSeed();
+        long methodTableSeed = protectionMaterials.methodTableSeed();
+        long wrapperSymbolSeed = protectionMaterials.wrapperSeed();
+        long llvmNameSeed = protectionMaterials.llvmSymbolSeed();
+        long llvmProtectionSeed =
+                protectionMaterials.llvmProtectionSeed();
+        NativeTextBuildKey nativeTextBuildKey = NativeTextBuildKey.fromBytes(
+                protectionMaterials.nativeTextKey());
+        NativeTextBuildKey businessNativeTextBuildKey =
+                NativeTextBuildKey.fromBytes(
+                        protectionMaterials.businessNativeTextKey());
+        NativeTextBuildKey registrationBuildKey = NativeTextBuildKey.fromBytes(
+                protectionMaterials.registrationKey());
+        BusinessStringSymbolMapper businessStringSymbols =
+                BusinessStringSymbolMapper.fromBytes(
+                        businessNativeTextBuildKey.bytes());
+        RuntimeTokenMapper runtimeTokens =
+                RuntimeTokenMapper.fromBytes(nativeTextBuildKey.bytes());
+        BytecodeToSsaLowerer ssaLowerer =
+                new BytecodeToSsaLowerer(runtimeTokens);
         boolean llvmNameObfuscationEnabled = config.protection().enabled()
                 && config.protection().llvm().enabled()
                 && config.protection().llvm().nameObfuscation();
@@ -342,12 +384,15 @@ public final class MainlinePipeline {
                 && config.protection().llvm().enabled()
                 && config.protection().llvm().globalLayout();
         LlvmNameMangler llvmNameMangler = llvmNameObfuscationEnabled
-                ? LlvmNameMangler.obfuscating(seed)
+                ? LlvmNameMangler.obfuscating(llvmNameSeed)
                 : new LlvmNameMangler();
-        LlvmModuleLowerer llvmLowerer = new LlvmModuleLowerer(llvmNameMangler);
+        LlvmModuleLowerer llvmLowerer = new LlvmModuleLowerer(
+                llvmNameMangler,
+                businessStringSymbols,
+                runtimeTokens);
         xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig llvmProtectionConfig =
                 xyz.melodysky.backend.llvm.protection.LlvmProtectionConfig.selected(
-                        seed,
+                        llvmProtectionSeed,
                         false,
                         llvmOpaquePredicatesEnabled,
                         llvmBlockLayoutPerturbationEnabled,
@@ -394,13 +439,29 @@ public final class MainlinePipeline {
             }
             IrMethod raw = ssa.irMethod().orElseThrow();
             rawIr.put(method.methodKey(), raw);
-            var optimizedResult = optimizationPipeline.run(raw, PassContext.empty());
+            IrMethod optimizationInput = raw;
+            if (method.name().equals("<init>") || method.name().equals("<clinit>")) {
+                ParsedClass ownerClass = classesByName.get(method.owner());
+                if (ownerClass != null) {
+                    MethodRewriteDecision initializerDecision =
+                            rewritePlanner.planMethod(ownerClass, method);
+                    Optional<InitializerImplementationPlan> initializerPlan =
+                            initializerPlanner.plan(initializerDecision, raw);
+                    if (initializerPlan.isPresent()) {
+                        initializerPlans.put(method.methodKey(), initializerPlan.orElseThrow());
+                        optimizationInput = initializerPlan.orElseThrow().nativeBody();
+                    }
+                }
+            }
+            var optimizedResult = optimizationPipeline.run(optimizationInput, PassContext.empty());
             diagnostics.addAll(optimizedResult.diagnostics());
-            IrMethod optimized = optimizedResult.artifact().orElse(raw);
+            IrMethod optimized = optimizedResult.artifact().orElse(optimizationInput);
             optimizedIr.put(method.methodKey(), optimized);
             var protectionResult = protectionPipeline.runDetailed(
                     optimized,
-                    xyz.melodysky.ir.pass.protection.ProtectionConfig.fromResolved(config.protection(), seed));
+                    xyz.melodysky.ir.pass.protection.ProtectionConfig.fromResolved(
+                            config.protection(),
+                            irProtectionSeed));
             diagnostics.addAll(protectionResult.diagnostics());
             protectionReports.addAll(protectionResult.reports());
             protectedIr.put(method.methodKey(), protectionResult.method());
@@ -409,8 +470,12 @@ public final class MainlinePipeline {
 
         buildProgress.nativePlanning(protectedIr.size());
         List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(program, selection.requestedMethods(), ssaResults);
-        NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(rewriteDecisions);
-        NativeImplementationPlanner implementationPlanner = new NativeImplementationPlanner(llvmNameMangler);
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(rewriteDecisions, wrapperSymbolSeed);
+        NativeImplementationPlanner implementationPlanner =
+                new NativeImplementationPlanner(
+                        llvmNameMangler,
+                        businessStringSymbols);
         Set<String> availableProgramMethodKeys = program.classes().stream()
                 .flatMap(parsedClass -> parsedClass.methods().stream())
                 .map(ParsedMethod::methodKey)
@@ -419,7 +484,9 @@ public final class MainlinePipeline {
                 registrationPlan,
                 rewriteDecisions,
                 protectedIr,
-                availableProgramMethodKeys);
+                availableProgramMethodKeys,
+                Set.of(),
+                initializerPlans);
         ProgramIrProtectionResult programProtection =
                 new ProgramIrProtectionCoordinator(llvmNameMangler).run(
                         protectedIr,
@@ -428,7 +495,7 @@ public final class MainlinePipeline {
                         reflectionPlan,
                         callGraph,
                         config.protection().ir(),
-                        seed);
+                        programProtectionSeed);
         diagnostics.addAll(programProtection.diagnostics());
         protectionReports.addAll(programProtection.reports());
         protectedIr.clear();
@@ -439,7 +506,7 @@ public final class MainlinePipeline {
                         program,
                         protectedIr,
                         preliminaryImplementationPlan,
-                        seed,
+                        fieldInternalizationSeed,
                         wholeProgramPolicy);
         diagnostics.addAll(fieldInternalization.diagnostics());
         protectedIr.clear();
@@ -457,7 +524,8 @@ public final class MainlinePipeline {
                 rewriteDecisions,
                 nativeIr,
                 nativeAvailableMethodKeys,
-                programProtection.compilerInternalMethods().keySet());
+                programProtection.compilerInternalMethods().keySet(),
+                initializerPlans);
         FinalNativeCoverageResult finalNativeCoverage =
                 new FinalNativeCoverageResolver().resolve(
                         rewriteDecisions,
@@ -474,7 +542,7 @@ public final class MainlinePipeline {
                 diagnostics,
                 protectionReports,
                 config,
-                seed);
+                templateStringSeed);
         List<Diagnostic> fieldFinalPlanDiagnostics =
                 new FieldInternalizationFinalPlanValidator().validate(
                         fieldInternalizationPlan,
@@ -483,19 +551,19 @@ public final class MainlinePipeline {
         protectionReports.add(protectionEvidenceAssembler.fieldInternalization(
                 fieldInternalization,
                 fieldFinalPlanDiagnostics,
-                seed));
+                fieldInternalizationSeed));
         boolean methodTableHidingEnabled = config.protection().enabled()
                 && config.protection().ir().enabled()
                 && config.protection().ir().methodTableHiding();
         MethodTableHidingPlan methodTableHidingPlan = new MethodTableHidingPlanner().plan(
                 implementationPlan.registrationPlan(),
                 methodTableHidingEnabled,
-                seed);
+                methodTableSeed);
         protectionReports.add(protectionEvidenceAssembler.methodTableHiding(
                 methodTableHidingEnabled,
                 implementationPlan,
                 methodTableHidingPlan,
-                seed));
+                methodTableSeed));
         RuntimeLoaderPlan runtimeLoaderPlan = RuntimeLoaderPlan.create(
                 config.embeddedLibraryDirectory(),
                 fieldInternalizationPlan.referenceSidecarSize());
@@ -520,7 +588,7 @@ public final class MainlinePipeline {
                     blockLayoutResult.affectedFunctions(),
                     blockLayoutResult.validationIssues(),
                     llvmNameMangler,
-                    seed));
+                    llvmProtectionSeed));
             protectionEvidenceAssembler.reportLlvmValidationFailure(
                     diagnostics,
                     "LLVM_BLOCK_LAYOUT_PERTURBATION",
@@ -537,7 +605,7 @@ public final class MainlinePipeline {
                     opaquePredicateResult.affectedFunctions(),
                     opaquePredicateResult.validationIssues(),
                     llvmNameMangler,
-                    seed));
+                    llvmProtectionSeed));
             protectionEvidenceAssembler.reportLlvmValidationFailure(
                     diagnostics,
                     "LLVM_OPAQUE_PREDICATES",
@@ -552,7 +620,7 @@ public final class MainlinePipeline {
                         reportMethods,
                         irCallBackendResult,
                         llvmNameMangler,
-                        seed));
+                        llvmProtectionSeed));
             }
             protectionEvidenceAssembler.reportLlvmValidationFailure(
                     diagnostics,
@@ -561,44 +629,31 @@ public final class MainlinePipeline {
 
             LlvmCallIndirectionResult callIndirectionResult =
                     compiledModule.llvmCallIndirection();
-            protectionReports.add(callIndirectionReport(
+            protectionReports.add(protectionEvidenceAssembler.llvmCallIndirection(
                     llvmCallIndirectionEnabled,
                     reportMethods,
                     callIndirectionResult,
                     llvmNameMangler,
-                    seed));
+                    llvmProtectionSeed));
             LlvmGlobalLayoutResult globalLayoutResult =
                     compiledModule.globalLayout();
             protectionReports.add(protectionEvidenceAssembler.llvmGlobalLayout(
                     llvmGlobalLayoutEnabled,
                     reportMethods,
                     globalLayoutResult,
-                    seed));
+                    llvmProtectionSeed));
             protectionEvidenceAssembler.reportLlvmValidationFailure(
                     diagnostics,
                     "LLVM_GLOBAL_LAYOUT",
                     globalLayoutResult.validationIssues());
-            if (llvmNameObfuscationEnabled) {
-                protectionReports.add(new ProtectionPassReport(
-                        "LLVM_NAME_OBFUSCATION",
-                        "LLVM",
-                        "RAN",
-                        "OK",
-                        reportMethods.stream().map(IrMethod::methodKey).toList(),
-                        compiledModule.module().functions().stream()
-                                .map(function -> function.name())
-                                .toList(),
-                        Long.toString(seed)));
-            } else {
-                protectionReports.add(new ProtectionPassReport(
-                        "LLVM_NAME_OBFUSCATION",
-                        "LLVM",
-                        "SKIPPED",
-                        "PROTECTION_PASS_DISABLED",
-                        reportMethods.stream().map(IrMethod::methodKey).toList(),
-                        List.of(),
-                        Long.toString(seed)));
-            }
+            protectionReports.add(
+                    protectionEvidenceAssembler.llvmNameObfuscation(
+                            llvmNameObfuscationEnabled,
+                            reportMethods,
+                            compiledModule.module().functions().stream()
+                                    .map(function -> function.name())
+                                    .toList(),
+                            llvmNameSeed));
         }
         Map<String, String> llvmTextByClass = llvmCompilation.textByOwner();
 
@@ -660,7 +715,10 @@ public final class MainlinePipeline {
                     nativeIr,
                     buildProgress.nativeBuildProgress(),
                     methodTableHidingPlan,
-                    llvmCompilation);
+                    llvmCompilation,
+                    nativeTextBuildKey,
+                    businessNativeTextBuildKey,
+                    registrationBuildKey);
         }
         List<SymbolAuditReportWriter.LibraryAuditReport> symbolAudits =
                 symbolAudits(nativeBuildPlan, nativeBuildResult);
@@ -832,38 +890,9 @@ public final class MainlinePipeline {
                     implementation.stringHelperSymbols(),
                     Optional.of(protectionResult.method())));
         }
-        return new NativeImplementationPlan(implementations);
-    }
-
-    private ProtectionPassReport callIndirectionReport(
-            boolean enabled,
-            List<IrMethod> methods,
-            LlvmCallIndirectionResult result,
-            LlvmNameMangler llvmNameMangler,
-            long seed) {
-        if (!enabled) {
-            return new ProtectionPassReport(
-                    "CALL_INDIRECTION",
-                    "LLVM",
-                    "SKIPPED",
-                    "PROTECTION_PASS_DISABLED",
-                    methods.stream().map(IrMethod::methodKey).toList(),
-                    List.of(),
-                    Long.toString(seed));
-        }
-        List<String> affectedMethods = methods.stream()
-                .filter(method -> result.affectedFunctions().contains(llvmNameMangler.functionName(method)))
-                .map(IrMethod::methodKey)
-                .sorted()
-                .toList();
-        return new ProtectionPassReport(
-                "CALL_INDIRECTION",
-                "LLVM",
-                result.changed() ? "RAN" : "SKIPPED",
-                result.reasonCode(),
-                affectedMethods,
-                result.dispatcherSymbols(),
-                Long.toString(seed));
+        return new NativeImplementationPlan(
+                implementations,
+                implementationPlan.unavailableReasonCodes());
     }
 
     private MainlinePipelineResult failed(
@@ -970,6 +999,12 @@ public final class MainlinePipeline {
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
         Map<String, List<MethodRewriteDecision>> byClass = new HashMap<>();
+        Map<String, xyz.melodysky.toolchain.initializer.InitializerImplementationPlan> initializerPlans =
+                implementationPlan.implementations().stream()
+                        .filter(implementation -> implementation.initializerPlan().isPresent())
+                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                NativeMethodImplementation::methodKey,
+                                implementation -> implementation.initializerPlan().orElseThrow()));
         decisions.stream()
                 .filter(decision -> implementedMethodKeys.contains(decision.method().methodKey()))
                 .filter(decision -> decision.strategy() == MethodRewriteStrategy.NATIVE_ORIGINAL
@@ -987,8 +1022,12 @@ public final class MainlinePipeline {
                 continue;
             }
             ClassRewriteResult result = loaderInternalName == null
-                    ? classRewriter.rewrite(parsedClass, classDecisions)
-                    : classRewriter.rewrite(parsedClass, classDecisions, loaderInternalName);
+                    ? classRewriter.rewrite(parsedClass, classDecisions, initializerPlans, null)
+                    : classRewriter.rewrite(
+                            parsedClass,
+                            classDecisions,
+                            initializerPlans,
+                            loaderInternalName);
             diagnostics.addAll(result.diagnostics());
             var fieldResult = fieldTransform.apply(
                     result.classBytes(),
@@ -1086,7 +1125,8 @@ public final class MainlinePipeline {
         Files.writeString(reports.resolve("artifact-audit.json"), new ArtifactAuditReportWriter().json(artifactAuditResult));
         Files.writeString(reports.resolve("protection-report.json"),
                 new ProtectionReportWriter().json(
-                        config.protection().seed(),
+                        config.protection().seedMode(),
+                        BuildProtectionIdentity.from(config.protection()).identityHash(),
                         classifiedProtectionReports(protectionReports, implementationPlan)));
         Files.writeString(
                 reports.resolve("field-internalization-report.json"),
@@ -1257,7 +1297,8 @@ public final class MainlinePipeline {
                         report.sensitivePlaintextFacts().stream()
                                 .map(fact -> classifiedSensitiveFact(
                                         fact, llvmNativeMethods, semanticSensitiveMethods, implementationsByMethod))
-                                .toList()))
+                                .toList(),
+                        report.coverageFacts()))
                 .toList();
     }
 
@@ -1322,7 +1363,8 @@ public final class MainlinePipeline {
         if (implementation != null
                 && implementation.stringHelperSymbols().stream()
                         .map(this::runtimeHelperBaseSymbol)
-                        .anyMatch(symbol -> symbol.equals("j2ll_rt_string_constant"))) {
+                        .anyMatch(symbol -> symbol.equals("j2ll_rt_string_constant")
+                                || symbol.startsWith("j2ll_rt_string_constant_"))) {
             return fact.withAuditClassification(
                     "HELPER_PATH_STABLE_GENERATED_C_SURFACE",
                     "blocking",
@@ -1570,12 +1612,4 @@ public final class MainlinePipeline {
         return builder.toString();
     }
 
-    private long seedAsLong(String seed) {
-        String hex = seed.length() > 16 ? seed.substring(0, 16) : seed;
-        try {
-            return Long.parseUnsignedLong(hex, 16);
-        } catch (NumberFormatException exception) {
-            return Integer.toUnsignedLong(seed.hashCode());
-        }
-    }
 }

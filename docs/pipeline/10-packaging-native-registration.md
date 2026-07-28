@@ -42,6 +42,8 @@ xyz.melodysky.packaging
 - `NativeMethodRewriter`
 - `ConstructorStubRewriter`
 - `ClassInitializerStubRewriter`
+- `InitializerImplementationPlan`
+- `ConstructorPrefixPlan`
 - `InterfaceMethodStubRewriter`
 - `RuntimeLoaderPlan`
 - `NativeLoaderClassGenerator`
@@ -72,8 +74,8 @@ build/signing/toolchain/audit failure 是 invocation-level failure，不是 meth
 
 `nativeLowered` 可以由以下完整实现路径承载：
 
-- `LLVM_NATIVE_PATH`：validated SSA/LLVM body 与其 compiler-internal helper closure。
-- `TEMPLATE_JNI_PATH`：从真实 method plan 生成、语义完整且经过测试的 C/JNI body，例如受限 constructor/class-initializer body helper。
+- `LLVM_NATIVE_PATH`：validated SSA/LLVM body 与其 compiler-internal helper closure；受限constructor post-init body与完整supported `<clinit>` body也可通过initializer plan进入该路径。
+- `TEMPLATE_JNI_PATH`：从真实 method plan 生成、语义完整且经过测试的 C/JNI body，例如受限interface/String/array/exception bridge。
 - JVM/JNI runtime helper-backed LLVM/C body：field、array、allocation、String、reflection、dispatch、monitor、exception 等 Java-visible 语义仍由 JVM/JNI 执行，但 Java method 本身已由 native body 承载，因此仍是 `nativeLowered`。
 
 固定方法名猜测、占位模板、unsupported call-site 或仅有 partial IR 都不能成为 native implementation。final plan 缺少任何所需语义时必须把完整 method 改为 `skipped`。
@@ -103,11 +105,13 @@ TUI 在打印列表和读取输入前必须结束/暂停 active progress region�
 Packaging 只为 `nativeLowered` method 生成 rewrite strategy：
 
 - `nativeOriginal`：ordinary class method with Code。移除 Code、设置 `ACC_NATIVE`，以原 name/descriptor 注册。
-- `constructorStub`：保持 `<init>` 合法 Java bytecode和 delegation，再调用 same-owner private static native body helper。
-- `classInitializerStub`：保持或生成 `<clinit>` loader/bootstrap stub，再调用 native body helper。
+- `constructorStub`：保留从入口到唯一、真实初始化`uninitializedThis`的 `this(...)` / `super(...)` invocation为止的精确Java prefix，包括原descriptor与实参计算；随后调用same-owner private static native body helper承载post-init IR。只接受可唯一识别initializing call的线性prefix，并要求整个constructor没有exception table；不满足时完整constructor为`skipped`。
+- `classInitializerStub`：保持或生成 `<clinit>` loader/bootstrap stub，再调用same-owner private static native body helper承载完整、经final plan验证的initializer IR。
 - `interfaceMethodStub`：保持 interface method 合法字节码，并调用拥有 native method 的 generated helper。
 
 `<init>`、`<clinit>` 和 interface method 不能强制使用 `nativeOriginal`。`skipped` method 不生成任何 strategy；no-Code declaration 只保留 eligibility evidence。
+
+Initializer planner产出的prefix/native-body boundary必须被LLVM compiler、rewriter、registration和artifact audit共同消费；packaging不能重新扫描并猜一个不同的constructor split。Constructor helper显式接收`this`与原参数，`<clinit>` helper为无参数static native body。
 
 ## Loader And Registration
 
@@ -138,9 +142,10 @@ Registration rules：
 - ordinary class methods register against their owner class。
 - constructor/class-initializer body helpers register as same-owner private static native helpers。
 - interface helpers register against generated helper classes。
-- tables 按 registration owner 分组并 deterministic。
+- tables 按 registration owner 分组；同一 build identity 保持 deterministic，正式 randomized build 对 ordinary owner-local method order 和 owner order 做 build-scoped 重排，hidden 模式遵从其独立 protection physical order。
 - `skipped` 和 no-Code declarations 都没有 binding。
-- owner lookup 不得在 helper 注册前触发 selected owner `<clinit>`；当前 JNI registration 使用 no-initialize class lookup。
+- owner lookup 不得在 helper 注册前触发 selected owner `<clinit>`；`JNI_OnLoad` 直接以 slash internal name 调用 JNI `FindClass`，依赖发起 `System.load` 的 defining-loader context，不以 TCCL 作为 registration resolver。
+- owner name 在 defining-loader class lookup 返回后立即清零；method/descriptor scratch 只存活到该 owner 的 `RegisterNatives` 完成。多 owner 注册必须是原子的；任一后续 `RegisterNatives` 失败时逆序 `UnregisterNatives` 已成功 owner，清理 retained local refs/scratch。只有每次 unregister 都返回 `JNI_OK` 且没有 pending exception，而且恢复原异常的 `Throw` 返回 `JNI_OK` 并形成 pending exception时，才返回普通 `JNI_ERR`；rollback 或 exception-restore 的 status/evidence failure 通过编码错误文案的 `FatalError` fail closed，避免保留悬空 native binding或静默丢失原异常。
 
 loader state 是 per classloader；extract/load/register 必须幂等且线程安全。失败抛出包含 target/class context 的 `UnsatisfiedLinkError`。
 
@@ -188,6 +193,7 @@ signed input handling 服从 `docs/io-config-output-contract.md` 中的 `signatu
 Packaging validator 至少检查：
 
 - 每个 `nativeLowered` method 都有且只有一个 validated implementation、rewrite 和 registration binding。
+- 每个constructor stub保留的prefix与final initializer plan逐指令一致，helper call只出现在初始化调用之后；每个`<clinit>` stub只保留loader/bootstrap与native helper调用，不复制原initializer body。
 - 每个 `skipped` method 保留原 Code，且没有 rewrite/helper/binding。
 - no-Code eligibility evidence 不进入 executable method counts 或 confirmation。
 - selected target libraries 全部存在且非空。
@@ -202,7 +208,7 @@ Packaging validator 至少检查：
 
 ## 测试
 
-- ordinary `nativeOriginal`、constructor、class initializer 和 interface helper rewrite。
+- ordinary `nativeOriginal`、带参数`this(...)`/`super(...)` verifier prefix + post-init constructor helper、完整class initializer helper和interface helper rewrite。
 - unsupported method -> `skipped`，原 Code byte-for-byte/semantic preservation，且无 native binding。
 - no-Code selector match -> eligibility evidence，且不触发 confirmation。
 - skipped 列表稳定排序、reason 输出、Y continue、N/EOF abort、invalid input 重试。
@@ -213,4 +219,4 @@ Packaging validator 至少检查：
 - fieldInternalization final accessor gate。
 - manifest/resource/service/MR/module-info preservation。
 - signed input `fail`、`strip`、`resign`。
-- six-target artifact/export/privacy audit 与 host child-JVM differential。
+- six-target artifact/export/privacy audit 与 host child-JVM differential。当前新增initializer路径的真实运行证据仅覆盖Windows real-Zig host；其他target不以cross-link证据代替JVM runtime parity。

@@ -4,48 +4,7 @@ final class HostJniTypeAndStringRuntimeSources {
     private HostJniTypeAndStringRuntimeSources() {}
 
     static String typeHelperSource() {
-        return """
-                jobject j2ll_rt_checkcast(JNIEnv* env, jobject value, int64_t class_token) {
-                    if (value == NULL) {
-                        return NULL;
-                    }
-                    const char* class_name = j2ll_find_class_name(class_token);
-                    if (class_name == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoClassDefFoundError", "unknown j2ll type token");
-                        return NULL;
-                    }
-                    jclass target = (*env)->FindClass(env, class_name);
-                    if (target == NULL) {
-                        return NULL;
-                    }
-                    jboolean matched = (*env)->IsInstanceOf(env, value, target);
-                    (*env)->DeleteLocalRef(env, target);
-                    if (matched != JNI_TRUE) {
-                        j2ll_throw_new(env, "java/lang/ClassCastException", "j2ll checkcast failed");
-                        return NULL;
-                    }
-                    return value;
-                }
-
-                int32_t j2ll_rt_instanceof(JNIEnv* env, jobject value, int64_t class_token) {
-                    if (value == NULL) {
-                        return 0;
-                    }
-                    const char* class_name = j2ll_find_class_name(class_token);
-                    if (class_name == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoClassDefFoundError", "unknown j2ll type token");
-                        return 0;
-                    }
-                    jclass target = (*env)->FindClass(env, class_name);
-                    if (target == NULL) {
-                        return 0;
-                    }
-                    jboolean matched = (*env)->IsInstanceOf(env, value, target);
-                    (*env)->DeleteLocalRef(env, target);
-                    return matched == JNI_TRUE ? 1 : 0;
-                }
-
-                """;
+        return "";
     }
 
     static String stringHelperSource() {

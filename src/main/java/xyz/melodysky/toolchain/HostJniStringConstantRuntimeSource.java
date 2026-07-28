@@ -1,163 +1,127 @@
 package xyz.melodysky.toolchain;
 
-import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import xyz.melodysky.ir.model.IrOpcode;
+import xyz.melodysky.ir.model.BusinessStringConstantRef;
+import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
+import xyz.melodysky.ir.model.IrInstruction;
+import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
+import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
+import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
+import xyz.melodysky.toolchain.nativetext.NativeTextEncoding;
+import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
+/**
+ * Emits one small native helper per distinct business-string value.
+ *
+ * <p>There is deliberately no token dispatcher, pointer directory, shared
+ * business decoder or shared business cleanup routine. Each helper owns its
+ * ciphertext, decode material and plaintext lifetime.</p>
+ */
 final class HostJniStringConstantRuntimeSource {
+    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
+            NativeTextBuildKey.fromUtf8(
+                    "j2ll-business-string-symbol-compatibility-v1");
+
     private HostJniStringConstantRuntimeSource() {}
 
-    static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
-        Map<Long, String> constants = new TreeMap<>();
-        Map<Long, EncryptedStringConstant> encryptedConstants = new TreeMap<>();
+    static void append(
+            StringBuilder builder,
+            List<HostJniCSourceGenerator.Binding> bindings) {
+        append(builder, bindings, COMPATIBILITY_BUILD_KEY);
+    }
+
+    static void append(
+            StringBuilder builder,
+            List<HostJniCSourceGenerator.Binding> bindings,
+            NativeTextBuildKey buildKey) {
+        BusinessStringSymbolMapper symbolMapper =
+                BusinessStringSymbolMapper.fromBytes(buildKey.bytes());
+        Map<String, LocalizedBusinessString> constants =
+                constants(bindings, symbolMapper);
+        NativeTextEncoder encoder = new NativeTextEncoder();
+        NativeTextCEmitter emitter = new NativeTextCEmitter();
+        for (LocalizedBusinessString localized : constants.values()) {
+            BusinessStringConstantRef constant = localized.constant();
+            NativeTextEncoding encoding = encoder.encodeBytes(
+                    buildKey,
+                    NativeTextPurpose.BUSINESS_STRING,
+                    "business-string-helper:" + localized.helperSymbol(),
+                    constant.modifiedUtf8Bytes());
+            builder.append(emitter.ciphertextDeclaration(encoding));
+            appendLocalHelper(builder, localized, encoding);
+        }
+    }
+
+    private static void appendLocalHelper(
+            StringBuilder builder,
+            LocalizedBusinessString localized,
+            NativeTextEncoding encoding) {
+        String helperSymbol = localized.helperSymbol();
+        String scratch = "j2ll_business_text_"
+                + helperSymbol.substring(
+                        "j2ll_rt_string_constant_".length());
+        builder.append("jobject ")
+                .append(helperSymbol)
+                .append("(JNIEnv* env) {\n")
+                .append("    char ")
+                .append(scratch)
+                .append("[sizeof(")
+                .append(encoding.symbol())
+                .append("_cipher)];\n")
+                .append(new NativeTextCEmitter().decodeInto(
+                        encoding,
+                        scratch,
+                        "    "))
+                .append("    jstring result = (*env)->NewStringUTF(env, ")
+                .append(scratch)
+                .append(");\n")
+                .append("    volatile unsigned char* clear_cursor =\n")
+                .append("            (volatile unsigned char*)")
+                .append(scratch)
+                .append(";\n")
+                .append("    for (size_t index = 0; index < sizeof(")
+                .append(scratch)
+                .append("); index++) {\n")
+                .append("        clear_cursor[index] = 0u;\n")
+                .append("    }\n")
+                .append("    return result;\n")
+                .append("}\n\n");
+    }
+
+    private static Map<String, LocalizedBusinessString> constants(
+            List<HostJniCSourceGenerator.Binding> bindings,
+            BusinessStringSymbolMapper symbolMapper) {
+        TreeMap<String, LocalizedBusinessString> constants = new TreeMap<>();
         for (HostJniCSourceGenerator.Binding binding : bindings) {
             if (binding.templateIrMethod().isEmpty()) {
                 continue;
             }
-            binding.templateIrMethod().orElseThrow().blocks().stream()
+            IrMethod method = binding.templateIrMethod().orElseThrow();
+            for (IrInstruction instruction : method.blocks().stream()
                     .flatMap(block -> block.instructions().stream())
-                    .filter(instruction -> instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER)
-                    .flatMap(instruction -> instruction.symbol().stream())
-                    .filter(symbol -> symbol.startsWith("j2ll_rt_string_constant|string:"))
-                    .forEach(symbol -> {
-                        String value = symbol.substring("j2ll_rt_string_constant|string:".length());
-                        constants.putIfAbsent(javaStringHashUnsigned("string:" + value), value);
-                    });
-            binding.templateIrMethod().orElseThrow().blocks().stream()
-                    .flatMap(block -> block.instructions().stream())
-                    .filter(instruction -> instruction.opcode() == IrOpcode.CONST_STRING)
-                    .flatMap(instruction -> instruction.symbol().stream())
-                    .forEach(symbol -> {
-                        String value = symbol.startsWith("string:") ? symbol.substring("string:".length()) : symbol;
-                        constants.putIfAbsent(javaStringHashUnsigned("string:" + value), value);
-                    });
-            binding.templateIrMethod().orElseThrow().blocks().stream()
-                    .flatMap(block -> block.instructions().stream())
-                    .filter(instruction -> instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER)
-                    .flatMap(instruction -> instruction.symbol().stream())
-                    .filter(symbol -> symbol.startsWith("j2ll_rt_string_constant|enc:v1:"))
-                    .forEach(symbol -> {
-                        String[] parts = symbol.split(":", 5);
-                        if (parts.length == 5) {
-                            long token = Long.parseLong(parts[2]);
-                            encryptedConstants.putIfAbsent(token, new EncryptedStringConstant(
-                                    token,
-                                    parts[3],
-                                    parts[4],
-                                    parts[4].length() / 2));
-                        }
-                    });
-        }
-        if (constants.isEmpty() && encryptedConstants.isEmpty()) {
-            builder.append("""
-                    jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token) {
-                        (void)token;
-                        j2ll_throw_new(env, "java/lang/IllegalArgumentException", "unknown string constant token");
-                        return NULL;
+                    .toList()) {
+                BusinessStringConstantRef.fromInstruction(instruction).ifPresent(candidate -> {
+                    String helperSymbol = candidate.helperSymbol(symbolMapper);
+                    LocalizedBusinessString existing = constants.putIfAbsent(
+                            helperSymbol,
+                            new LocalizedBusinessString(candidate, helperSymbol));
+                    if (existing != null
+                            && !existing.constant().value().equals(candidate.value())) {
+                        throw new IllegalArgumentException(
+                                "business string helper collision between "
+                                        + existing.helperSymbol()
+                                        + " and "
+                                        + helperSymbol);
                     }
-
-                    """);
-            return;
-        }
-        if (!constants.isEmpty()) {
-            builder.append("typedef struct { int64_t token; const char* value; } j2ll_string_constant_entry;\n")
-                    .append("static const j2ll_string_constant_entry j2ll_string_constant_table[] = {\n");
-            for (Map.Entry<Long, String> entry : constants.entrySet()) {
-                builder.append("    { ")
-                        .append(entry.getKey())
-                        .append("LL, \"")
-                        .append(escapeCString(entry.getValue()))
-                        .append("\" },\n");
+                });
             }
-            builder.append("};\n");
         }
-        if (!encryptedConstants.isEmpty()) {
-            int index = 0;
-            for (EncryptedStringConstant entry : encryptedConstants.values()) {
-                builder.append("static const unsigned char j2ll_str_key_")
-                        .append(index)
-                        .append("[] = { ")
-                        .append(cByteArray(entry.keyHex()))
-                        .append(" };\n")
-                        .append("static const unsigned char j2ll_str_cipher_")
-                        .append(index)
-                        .append("[] = { ")
-                        .append(cByteArray(entry.cipherHex()))
-                        .append(" };\n");
-                index++;
-            }
-            builder.append("""
-                    typedef struct {
-                        int64_t token;
-                        const unsigned char* key;
-                        size_t key_len;
-                        const unsigned char* cipher;
-                        size_t cipher_len;
-                    } j2ll_encrypted_string_constant_entry;
-                    """);
-            builder.append("static const j2ll_encrypted_string_constant_entry j2ll_encrypted_string_constant_table[] = {\n");
-            index = 0;
-            for (EncryptedStringConstant entry : encryptedConstants.values()) {
-                builder.append("    { ")
-                        .append(entry.token())
-                        .append("LL, j2ll_str_key_")
-                        .append(index)
-                        .append(", sizeof(j2ll_str_key_")
-                        .append(index)
-                        .append("), j2ll_str_cipher_")
-                        .append(index)
-                        .append(", ")
-                        .append(entry.length())
-                        .append(" },\n");
-                index++;
-            }
-            builder.append("};\n");
-        }
-        builder.append("jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token) {\n");
-        if (!constants.isEmpty()) {
-            builder.append("    for (size_t index = 0; index < sizeof(j2ll_string_constant_table) / sizeof(j2ll_string_constant_table[0]); index++) {\n")
-                    .append("        if (j2ll_string_constant_table[index].token == token) {\n")
-                    .append("            return (*env)->NewStringUTF(env, j2ll_string_constant_table[index].value);\n")
-                    .append("        }\n")
-                    .append("    }\n");
-        }
-        if (!encryptedConstants.isEmpty()) {
-            builder.append("""
-                    for (size_t index = 0; index < sizeof(j2ll_encrypted_string_constant_table) / sizeof(j2ll_encrypted_string_constant_table[0]); index++) {
-                        const j2ll_encrypted_string_constant_entry* entry = &j2ll_encrypted_string_constant_table[index];
-                        if (entry->token == token) {
-                            char* plain = (char*)malloc(entry->cipher_len + 1);
-                            if (plain == NULL) {
-                                j2ll_throw_new(env, "java/lang/OutOfMemoryError", "string decrypt allocation failed");
-                                return NULL;
-                            }
-                            for (size_t byte_index = 0; byte_index < entry->cipher_len; byte_index++) {
-                                plain[byte_index] = (char)(entry->cipher[byte_index] ^ entry->key[byte_index % entry->key_len]);
-                            }
-                            plain[entry->cipher_len] = 0;
-                            jstring result = (*env)->NewStringUTF(env, plain);
-                            free(plain);
-                            return result;
-                        }
-                    }
-                    """);
-        }
-        builder.append("    j2ll_throw_new(env, \"java/lang/IllegalArgumentException\", \"unknown string constant token\");\n")
-                .append("    return NULL;\n")
-                .append("}\n\n");
-    }
-
-    private static String cByteArray(String hex) {
-        ArrayList<String> bytes = new ArrayList<>();
-        for (int index = 0; index < hex.length(); index += 2) {
-            bytes.add("0x" + hex.substring(index, index + 2));
-        }
-        return String.join(", ", bytes);
-    }
-
-    private record EncryptedStringConstant(long token, String keyHex, String cipherHex, int length) {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(constants));
     }
 
     static boolean isNeeded(List<HostJniCSourceGenerator.Binding> bindings) {
@@ -165,24 +129,11 @@ final class HostJniStringConstantRuntimeSource {
                 .flatMap(binding -> binding.templateIrMethod().stream())
                 .flatMap(method -> method.blocks().stream())
                 .flatMap(block -> block.instructions().stream())
-                .anyMatch(instruction -> instruction.opcode() == IrOpcode.CONST_STRING
-                        || (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
-                                && instruction.symbol()
-                                        .map(symbol -> runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_string_constant"))
-                                        .orElse(false)));
+                .anyMatch(instruction ->
+                        BusinessStringConstantRef.fromInstruction(instruction).isPresent());
     }
 
-
-    private static String runtimeHelperBaseSymbol(String symbol) {
-        int separator = symbol.indexOf('|');
-        return separator < 0 ? symbol : symbol.substring(0, separator);
-    }
-
-    private static String escapeCString(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static long javaStringHashUnsigned(String value) {
-        return Integer.toUnsignedLong(value.hashCode());
-    }
+    private record LocalizedBusinessString(
+            BusinessStringConstantRef constant,
+            String helperSymbol) {}
 }

@@ -73,7 +73,10 @@ public final class BlockNameObfuscationPass implements ProtectionPass {
             return instruction;
         }
         List<IrExceptionSite> exceptionSites = instruction.exceptionSites().stream()
-                .map(site -> new IrExceptionSite(site.kind(), renameExceptionEdges(site.handlers(), renamed)))
+                .map(site -> new IrExceptionSite(
+                        site.kind(),
+                        renameExceptionEdges(site.handlers(), renamed),
+                        site.exceptionValue()))
                 .toList();
         return new IrInstruction(
                 instruction.result(),
@@ -94,7 +97,8 @@ public final class BlockNameObfuscationPass implements ProtectionPass {
         return exceptionEdges.stream()
                 .map(edge -> new IrExceptionEdge(
                         renameTarget(edge.target(), renamed),
-                        edge.catchType()))
+                        edge.catchType(),
+                        edge.arguments()))
                 .toList();
     }
 

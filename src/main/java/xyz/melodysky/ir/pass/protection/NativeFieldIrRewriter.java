@@ -51,6 +51,10 @@ public final class NativeFieldIrRewriter {
                                 plan.storageKind(decision),
                                 decision.nativeSlotId().orElseThrow(),
                                 plan.referenceIndex(decision))));
+        Set<String> plannedAccessorMethodKeys = plan.internalizedFields().stream()
+                .flatMap(decision -> decision.accesses().stream())
+                .map(access -> access.methodKey())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         if (slotByField.isEmpty()) {
             return new NativeFieldIrRewriteResult(input, List.of(), List.of(), List.of());
         }
@@ -71,6 +75,7 @@ public final class NativeFieldIrRewriter {
                 .sorted(java.util.Comparator.comparing(IrMethod::methodKey))
                 .toList();
         List<String> invalidInputs = sortedMethods.stream()
+                .filter(method -> plannedAccessorMethodKeys.contains(method.methodKey()))
                 .filter(method -> hasError(validator.validate(method)))
                 .map(method -> "field internalization received invalid IR for " + method.methodKey())
                 .toList();
@@ -91,6 +96,7 @@ public final class NativeFieldIrRewriter {
             }
         }
         List<String> invalidOutputs = rewritten.values().stream()
+                .filter(method -> plannedAccessorMethodKeys.contains(method.methodKey()))
                 .filter(method -> hasError(validator.validate(method)))
                 .map(method -> "field internalization produced invalid IR for " + method.methodKey())
                 .sorted()

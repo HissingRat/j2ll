@@ -29,7 +29,7 @@
 | IR | `methodInlining` | 已接线，严格 pure-scalar direct-call 子集 | Windows host runtime 与六目标 feature-specific structural evidence 已通过；non-host runtime 待补 |
 | IR | `methodSplitting` | 已接线，单 block suffix / 单 scalar live-out outline 子集 | Windows host actual-symbol/export 与六目标 structural evidence 已通过；non-host runtime 待补 |
 | IR | `callIndirection` | 已接线，当前限 module-local same-owner static/private-special call + hidden LLVM table | Windows host static int/long、异常传播与六目标 table-retention evidence 已通过；更广 dispatch/cross-owner backend/runtime 待补 |
-| Packaging/native registration | `methodTableHiding` | 已接线，split token tables + encoded-at-rest JNI metadata | host 注册/双 ClassLoader 与六目标 multi-owner structural evidence 已通过；virtual/interface 与 non-host runtime 待补 |
+| Packaging/native registration | `methodTableHiding` | 已接线，owner-local transient straight-line table + encoded-at-rest JNI metadata | host 注册/双 ClassLoader 与六目标 multi-owner structural evidence 已通过；virtual/interface 与 non-host runtime 待补 |
 | Program / IR | `fieldInternalization` | 已进入 Config/schema，默认 `false`；严格 `private static` `Z/B/S/C/I/J/F/D`、`L...;` 和 `[...]` 子集已接线 | host 全类型边界、Object identity/null/GC strong-hold、并发/双 ClassLoader 与六目标 primitive/ClassValue storage/privacy evidence 已通过；non-host runtime 待补 |
 | LLVM | `opaquePredicates` | 已接线，validated conditional-branch model 子集 | Windows host 与六目标 emitted-IR/build-graph evidence 已通过；ReleaseSafe 仍可能折叠当前恒真 predicate |
 | LLVM | `blockLayoutPerturbation` | 已接线，只改变 non-entry block emission order | Windows host 与六目标 build-graph/export evidence 已通过；不保证 linker 后的最终 machine-code layout |
@@ -43,12 +43,12 @@
 | --- | --- | --- |
 | Plan/model-driven，不以 ASM 或 `.ll` 文本替换绕过 stage | 已满足 | program coordinator、field plan、LLVM module passes、registration plan 都消费显式模型 |
 | Boolean `false` 为 no-op，`true` 进入真实实现 | 已满足 | 8 项均已列入 current implementation；`fieldInternalization` 与实现同步进入 schema，默认关闭 |
-| 全局 seed 派生 deterministic token/order | 已满足 | focused tests 覆盖同 seed 稳定性；报告只写 seed hash |
+| Build identity 域分离 token/order | 进行中 | 默认 build root 随机；显式 seed 模式覆盖同 seed 稳定性，报告只写 mode 与 context-bound hash |
 | pass 前后 validator / fail-closed rollback | 已满足 | IR、LLVM、field final plan、registration-plan matching 和 packaging transform 都有 validator/fail-closed 边界 |
 | focused unit/golden tests | 已满足 | 8 项均有适用、不适用或 disabled/invalid shape 的 focused coverage |
 | main pipeline wiring | 已满足 | `NativeLlvmCompiler` 只编译 final LLVM implementation/helper closure；reports、intermediates 与 Zig 共用同一 final module result，generated C 与 field transform 由后续对应 stage 消费 |
 | pass-specific host child-JVM E2E | 已满足（Windows host） | `ProgramProtectionNativeRuntimeE2eTest` 覆盖 program/IR/LLVM 六项，`ProtectionStateNativeRuntimeE2eTest` 覆盖 field/method-table；两项 gated real-Zig tests 均已实际通过 |
-| 六目标 feature-specific compile/link/content/privacy/export audit | 已满足 | `ProtectionCrossTargetEvidenceTest` 让共享 LLVM/C sources 分别进入六个 target graph，验证六个非空 artifact、目标格式/架构、精确两个导出根及 UTF-8/UTF-16 raw identity absence |
+| 六目标 feature-specific compile/link/content/privacy/export audit | 已满足 | `ProtectionCrossTargetEvidenceTest` 让共享 LLVM/C sources 分别进入六个 target graph，验证六个非空 artifact、目标格式/架构、仅 `JNI_OnLoad` 导出（平台固有 runtime 符号单独容忍）及 UTF-8/UTF-16 raw identity absence |
 | non-host OS/JVM runtime E2E | 待补 | 所有 8 项都仍受 `CROSS_TARGET_RUNTIME_E2E_PENDING` 边界约束 |
 | stable protection/packaging/audit evidence | 已满足当前 v1 范围 | 各 pass 已写 `RAN`/`SKIPPED`/`FAILED`；field 有独立 report，method-table 有 packaging hash-only evidence；host 与六目标专项测试消费这些证据 |
 
@@ -64,6 +64,7 @@
 - 当前只接受 `CALL_STATIC`，以及 same-owner private `CALL_SPECIAL` 且 receiver 可证明为 `self` 的调用。
 - caller/callee 都必须是 preliminary `LLVM_NATIVE_PATH`，callee 必须是单目标、非 recursive、非 reflection/unsupported-boundary-sensitive。
 - callee 仅允许无 exception/monitor/JMM/call/field/helper side effect 的 pure scalar IR；默认上限为 24 条指令、每 caller 8 个 site。
+- frontend direct call 的无 handler pending-exception evidence 不是永久禁止 inline 的理由：callee 已证明为 pure、site 没有 handler，且 synthetic exception value 无任何 use 时才可随 call 一起删除；protected edge、specific exception kind 或 observable exception value 仍 fail closed。
 - 支持 block/value remap 和多个 return 汇入 typed continuation；失败时整次 site rewrite 回滚。
 - 原 Java method、reflection-visible method 集和仍需的 native registration 不会因 inline 被删除。
 
@@ -72,11 +73,11 @@
 已完成：
 
 - [x] straight-line static、private-self special、multiple return、block parameter/value remap focused tests。
-- [x] recursion、reflection、skipped boundary、exception、monitor/JMM、oversized/invalid shape 的拒绝测试。
+- [x] recursion、reflection、skipped boundary、exception、monitor/JMM、oversized/invalid shape 的拒绝测试；另覆盖 frontend-style unprotected pending-exception evidence 的安全删除与仍有 use 时的拒绝。
 - [x] disabled no-op 与 seed-deterministic generated names。
 - [x] mainline program coordinator 接线，pass 不再 warning + ignore。
-- [x] `ProgramProtectionNativeRuntimeE2eTest` 已在 Windows real-Zig host 断言 `METHOD_INLINING=RAN`、original/output parity、raw method identity 不在 native binary，且动态导出只有两个 loader roots。
-- [x] `ProtectionCrossTargetEvidenceTest` 已验证共享 transformed LLVM 进入六目标 build graph、六库非空、精确两个导出根和 raw identity absence。
+- [x] `ProgramProtectionNativeRuntimeE2eTest` 已在 Windows real-Zig host 断言 `METHOD_INLINING=RAN`、original/output parity、raw method identity 不在 native binary，且动态导出只有 `JNI_OnLoad`。
+- [x] `ProtectionCrossTargetEvidenceTest` 已验证共享 transformed LLVM 进入六目标 build graph、六库非空、仅 `JNI_OnLoad` 导出（平台固有 runtime 符号单独容忍）和 raw identity absence。
 
 ## IR `methodSplitting`
 
@@ -110,6 +111,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - virtual/interface（即使 call graph 已证明 single target）和 cross-owner static/special 当前都以 `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE` fail closed；它们仍走原 JNI dispatch/static bridge，不伪造最终已间接化。
 - unresolved/multi-target、dynamic/helper、skipped callee、constructor/class-initializer、signature mismatch 和非 native path 都稳定跳过该 protection candidate；若底层调用本身没有完整 native implementation，则由方法覆盖契约将 caller 记为 `skipped`。
 - approved site 在 `IrInstruction` 上携带 typed `IrCallIndirectionRef`，由 IR validator 检查 plan/group/entry/signature/invoke kind。
+- group identity 不只看 Java/SSA signature；planner 从 preliminary native implementation plan 取得每个 target 的 hidden `JNIEnv*` / owner-`jclass` ABI proof，并按 `IR signature + hidden ABI` 分组。validator 拒绝 forged mixed-ABI group，LLVM backend 仍独立核对真实 function-pointer type。
 - `LlvmIrCallIndirectionPass` 只消费该 metadata，生成 internal `j2ll_ircit_<sha256>` pointer table；它不重新做 Java call resolution。
 - 后续独立的 LLVM `indirectCalls` pass 不会重复改写已经变成 indirect LLVM call 的 site。
 
@@ -120,7 +122,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 已完成：
 
-- [x] same-owner static/private-special、typed signature grouping，以及 virtual/interface/cross-owner backend-unsupported fail-closed focused tests。
+- [x] same-owner static/private-special、typed signature + hidden native ABI grouping，以及 virtual/interface/cross-owner backend-unsupported fail-closed focused tests。
 - [x] unknown/multi-target/skipped/non-native/class-init-guard-missing 的稳定 pass-skip tests。
 - [x] IR plan/method validator 与 forged/missing metadata failure tests。
 - [x] backend hidden table model test，以及与 LLVM `indirectCalls` 不重复改写的实现边界。
@@ -135,20 +137,19 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 该字段不是单 method IR rewrite。当前实现位于 registration plan 与 native C emission 边界：
 
-- `MethodTableHidingPlanner` 按 registration owner 分组，为每个 binding 分配 deterministic collision-free 64-bit token。
-- metadata table 与 function-pointer table 使用不同的 seed-derived 顺序；function token 另加 owner mask。
-- native registration 在运行时按 token 匹配并临时组装 `JNINativeMethod[]`，随后仍调用 JVM `RegisterNatives`，不改变真实 owner/name/descriptor 绑定。
-- generated source 必须消费与 final `NativeRegistrationPlan` 精确一致的外部 plan；empty/mismatch/unknown token fail closed。
-- owner/name/descriptor 仍是 JNI 运行时必需信息，但最终 generated C 会再通过 `CMetadataStringObfuscator` 变成 writable encoded byte arrays，并在 `j2ll_register` 前解码；这是静态 at-rest obfuscation，不是运行时内存保密。
-- token/function tables、decode helper 和 implementation symbols保持 internal/hidden；dynamic exports 仍只有 loader roots。
+- `MethodTableHidingPlanner` 按 registration owner 分组，为每个 binding 派生 build-scoped physical order；显式 seed 模式下可复现。collision-free 64-bit token 只写 hash-only report evidence，不进入 native runtime。
+- 每个 owner 在自己的 registration window 内以 straight-line assignment 临时组装 `JNINativeMethod[]`，随后仍调用 JVM `RegisterNatives`，不改变真实 owner/name/descriptor 绑定。
+- generated source 必须消费与 final `NativeRegistrationPlan` 精确一致的外部 plan；empty/mismatch fail closed。
+- owner/name/descriptor 仍是 JNI 运行时必需信息，但最终 generated C 不再包含全局 metadata 目录、aggregate decode-all、persistent token/function arrays 或 nested join。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，只在自己的注册窗口解码到临时 scratch，并在 `RegisterNatives` 的成功/失败路径清零临时文本与 `JNINativeMethod[]` 后释放。这是静态 at-rest obfuscation，不是运行时内存保密。
+- aggregate root、per-owner helper、decode helper 和 implementation symbols 保持 internal/hidden；dynamic exports 只保留 JVM 必需的 `JNI_OnLoad`。owner name 在 lookup 后立即清零。rollback 同时检查 `UnregisterNatives` 返回值和 pending exception，exception restore 同时检查 `Throw` status与新的pending exception；任一证据不完整都通过编码诊断的 `FatalError` fail closed。
 
 已完成：
 
-- [x] token determinism、seed variation、collision-free plan、disabled no-op、unknown token failure tests。
+- [x] report-token determinism、physical-order seed variation、collision-free evidence、disabled no-op tests。
 - [x] multi-owner/multi-method generated-C integration、exact-plan matching、host C compile 与 fake-Zig export test。
 - [x] gated real-Zig host child-JVM E2E 覆盖多 method 注册、静态 metadata 隐私与两个独立 ClassLoader。
 - [x] `protection-report.json` 和 `packaging-report.json` 提供 hash/token-only plan/owner/binding evidence。
-- [x] 六目标专项测试已验证 two-owner split tables 位于共享 generated C、C source 进入每个 target graph、六库 raw owner/member identity 不可见且只导出 loader roots。
+- [x] 六目标专项测试已验证 two-owner transient registration source 进入每个 target graph、无 token/function static arrays、六库 raw owner/member identity 不可见且只导出 `JNI_OnLoad`（平台固有 runtime 符号单独容忍）。
 
 待补：
 
@@ -186,7 +187,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 待补：
 
-- [ ] deterministic native/report 双跑。
+- [ ] 显式 seed 模式的 deterministic native/report 双跑，以及默认模式的 diversity 双跑。
 - [ ] 在非 host OS/JVM 上运行同一状态隔离场景。
 
 ## LLVM `opaquePredicates`
@@ -247,7 +248,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - [x] local-only reorder、reference/definition preservation、seed determinism、collision tie-break、disabled/single-candidate no-op 和 invalid-input tests。
 - [x] combined LLVM pipeline model -> text golden 与 validator coverage。
 - [x] mainline `LLVM_GLOBAL_LAYOUT` report 接线，affected symbols 使用已去语义化的 native global names。
-- [x] Windows real-Zig host E2E 已断言 `LLVM_GLOBAL_LAYOUT=RAN`、affected globals 保留在 emitted LLVM、output parity，且最终动态库只导出两个 loader roots。
+- [x] Windows real-Zig host E2E 已断言 `LLVM_GLOBAL_LAYOUT=RAN`、affected globals 保留在 emitted LLVM、output parity，且最终动态库只导出 `JNI_OnLoad`。
 - [x] 六目标专项测试已验证 affected globals 保留在共享 emitted LLVM、该 source 进入每个 target graph，并完成六库 export/privacy audit。
 
 ## 后续证据收口顺序

@@ -17,11 +17,12 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
-    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = targetCompatibility = JavaVersion.VERSION_17
 }
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
-[compileJava, compileTestJava]*.options*.release = 25
+compileJava.options.release = 17
+compileTestJava.options.release = 25
 
 if (!hasProperty('mainClass')) {
     ext.mainClass = 'xyz.melodysky.cli.J2llCli'
@@ -118,6 +119,9 @@ tasks.register('distJ2ll', Sync) {
         into 'docs'
     }
     from('docs/protection-obfuscation.md') {
+        into 'docs'
+    }
+    from('docs/native-hardening-attacker-validation.md') {
         into 'docs'
     }
     from('docs/rewrite-roadmap.md') {

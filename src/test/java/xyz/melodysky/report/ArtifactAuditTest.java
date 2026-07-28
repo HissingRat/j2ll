@@ -40,7 +40,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertTrue(result.passed(), result.checks().toString());
@@ -52,6 +52,121 @@ class ArtifactAuditTest {
         assertTrue(json.contains("\"name\": \"surface.outputJarEntries\""));
         assertTrue(json.contains("\"name\": \"surface.nativeLibraryResources\""));
         assertTrue(json.contains("\"name\": \"surface.symbolAuditOutput\""));
+    }
+
+    @Test
+    void ignoresTransientZigCacheDuplicateForPlaintextEnumeration()
+            throws Exception {
+        Path workspace = temp.resolve("cache-only");
+        String secret = "cache-only-sensitive-value";
+        Path cache = workspace.resolve(
+                "native/zig-cache/local/o/cached.so");
+        Files.createDirectories(cache.getParent());
+        Files.writeString(cache, secret, StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        secret,
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("native-library")));
+
+        assertTrue(result.passed(), result.checks().toString());
+        assertFalse(
+                new ArtifactAuditReportWriter()
+                        .json(result)
+                        .contains("native/zig-cache"),
+                result.checks().toString());
+    }
+
+    @Test
+    void finalNativePlaintextStillFailsWhileCacheDuplicateIsDeduplicated()
+            throws Exception {
+        Path workspace = temp.resolve("final-and-cache");
+        String secret = "final-native-sensitive-value";
+        Path library = workspace.resolve("native/x64-linux.so");
+        Path cache = workspace.resolve(
+                "native/zig-cache/local/o/cached.so");
+        Files.createDirectories(library.getParent());
+        Files.createDirectories(cache.getParent());
+        Files.writeString(library, secret, StandardCharsets.ISO_8859_1);
+        Files.writeString(cache, secret, StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        secret,
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("native-library")));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("native/x64-linux.so:sha256="), json);
+        assertFalse(json.contains("native/zig-cache"), json);
+        assertFalse(json.contains(secret), json);
+    }
+
+    @Test
+    void zigWorkspaceGeneratedSourceRemainsBlockingPlaintextSurface()
+            throws Exception {
+        Path workspace = temp.resolve("zig-workspace-source");
+        String secret = "generated-runtime-sensitive-value";
+        Path generated = workspace.resolve(
+                "native/zig-workspace/runtime/runtime.c");
+        Files.createDirectories(generated.getParent());
+        Files.writeString(generated, secret, StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        secret,
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("generated-c")));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(
+                json.contains(
+                        "native/zig-workspace/runtime/runtime.c:sha256="),
+                json);
+        assertFalse(json.contains(secret), json);
+    }
+
+    @Test
+    void loweringReportIsBlockingPlaintextSurface() throws Exception {
+        Path workspace = temp.resolve("lowering-report");
+        String secret = "report-sensitive-business-string";
+        Path report = workspace.resolve("reports/lowering-report.json");
+        Files.createDirectories(report.getParent());
+        Files.writeString(
+                report,
+                "{\"helper\":\"j2ll_rt_string_constant|string:"
+                        + secret
+                        + "\"}",
+                StandardCharsets.UTF_8);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        secret,
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("report")));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(
+                json.contains(
+                        "reports/lowering-report.json:sha256="),
+                json);
+        assertTrue(
+                json.contains(
+                        "\"reasonCode\": \"LOWERING_HELPER_EVIDENCE_PLAINTEXT_SURFACE\""),
+                json);
+        assertFalse(json.contains(secret), json);
     }
 
     @Test
@@ -91,7 +206,7 @@ class ArtifactAuditTest {
                         "linux-x64",
                         "native0/x64-linux.so",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -123,7 +238,12 @@ class ArtifactAuditTest {
                         "windows-x64",
                         "native0/windows-x64/x64-windows.dll",
                         "0000")),
-                List.of("JNI_OnLoad", "j2ll_f_hidden", "j2ll_cit_table", "Java_pkg_Foo_run"),
+                List.of(
+                        "JNI_OnLoad",
+                        "j2ll_register",
+                        "j2ll_f_hidden",
+                        "j2ll_cit_table",
+                        "Java_pkg_Foo_run"),
                 List.of(SensitivePlaintextFact.of(
                         "secret",
                         "pkg/Foo#secret!()Ljava/lang/String;",
@@ -163,7 +283,7 @@ class ArtifactAuditTest {
                         "windows-x64",
                         "native0/x64-windows.dll",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -192,7 +312,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of(SensitivePlaintextFact.of(
                                 "template-secret",
                                 "pkg/Foo#template!()Ljava/lang/String;",
@@ -235,7 +355,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of(SensitivePlaintextFact.of(
                                 "template-leak",
                                 "pkg/Leaky#<init>!()V",
@@ -254,6 +374,142 @@ class ArtifactAuditTest {
         assertTrue(json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_FOUND\""), json);
         assertTrue(json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_JAR_ENTRY\""), json);
         assertFalse(json.contains("template-leak"), json);
+    }
+
+    @Test
+    void classStructuralUtf8WithSensitiveValueDoesNotCountAsExecutablePlaintext() throws Exception {
+        Path jar = temp.resolve("structural-name.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        writeJar(jar, withMetadata(
+                "native0/x64-linux.so",
+                sha256(nativeBytes),
+                Map.of(
+                        "pkg/State.class",
+                        classWithFieldName("pkg/State", "CONNECTED"),
+                        "native0/x64-linux.so",
+                        nativeBytes)));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        "native0/x64-linux.so",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad"),
+                List.of(SensitivePlaintextFact.of(
+                        "CONNECTED",
+                        "pkg/State#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("generated-c", "llvm-ir", "native-library"))));
+
+        assertTrue(result.passed(), result.checks().toString());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR\""), json);
+        assertFalse(json.contains("CONNECTED"), json);
+    }
+
+    @Test
+    void generatedCOnlyFactDoesNotBlockUnrelatedClassLdc() throws Exception {
+        Path jar = temp.resolve("unrelated-ldc.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        writeJar(jar, withMetadata(
+                "native0/x64-linux.so",
+                sha256(nativeBytes),
+                Map.of(
+                        "pkg/Unselected.class",
+                        classWithStringLdc("pkg/Unselected", "CONNECTED"),
+                        "native0/x64-linux.so",
+                        nativeBytes)));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        "native0/x64-linux.so",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad"),
+                List.of(SensitivePlaintextFact.of(
+                        "CONNECTED",
+                        "pkg/Selected#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("generated-c", "llvm-ir", "native-library"))));
+
+        assertTrue(result.passed(), result.checks().toString());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR\""), json);
+        assertFalse(json.contains("CONNECTED"), json);
+    }
+
+    @Test
+    void classExecutableLdcWithSensitiveValueStillFailsJarAudit() throws Exception {
+        Path jar = temp.resolve("executable-ldc.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        writeJar(jar, withMetadata(
+                "native0/x64-linux.so",
+                sha256(nativeBytes),
+                Map.of(
+                        "pkg/Leaky.class",
+                        classWithStringLdc("pkg/Leaky", "CONNECTED"),
+                        "native0/x64-linux.so",
+                        nativeBytes)));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        "native0/x64-linux.so",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad"),
+                List.of(SensitivePlaintextFact.of(
+                        "CONNECT",
+                        "pkg/Leaky#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("generated-c", "llvm-ir", "native-library"))));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_JAR_ENTRY\""), json);
+        assertFalse(json.contains("CONNECT"), json);
+    }
+
+    @Test
+    void malformedClassUsesRawFailClosedPlaintextFallback() throws Exception {
+        Path jar = temp.resolve("malformed-class.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        writeJar(jar, withMetadata(
+                "native0/x64-linux.so",
+                sha256(nativeBytes),
+                Map.of(
+                        "pkg/Broken.class",
+                        "broken-class".getBytes(StandardCharsets.ISO_8859_1),
+                        "native0/x64-linux.so",
+                        nativeBytes)));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        "native0/x64-linux.so",
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad"),
+                List.of(SensitivePlaintextFact.of(
+                        "CONNECTED",
+                        "pkg/Broken#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("generated-c", "llvm-ir", "native-library"))));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"PLAINTEXT_CLASS_PARSE_FAILED\""), json);
+        assertFalse(json.contains("CONNECTED"), json);
     }
 
     @Test
@@ -276,7 +532,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of(SensitivePlaintextFact.of(
                                 "recipe-secret",
                                 "pkg/Concat#concat!(Ljava/lang/String;I)Ljava/lang/String;",
@@ -316,7 +572,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of(
                         SensitivePlaintextFact.of(
                                         "pkg.Private",
@@ -370,7 +626,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -407,7 +663,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -442,7 +698,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -470,7 +726,7 @@ class ArtifactAuditTest {
                         "macos-arm64",
                         "native0/macos-arm64/arm64-macos.dylib",
                         sha256(nativeBytes))),
-                List.of("JNI_OnLoad", "j2ll_register"),
+                List.of("JNI_OnLoad"),
                 List.of());
 
         assertFalse(result.passed());
@@ -489,6 +745,76 @@ class ArtifactAuditTest {
                 output.closeEntry();
             }
         }
+    }
+
+    private ArtifactAuditResult auditFixture(
+            Path workspace,
+            SensitivePlaintextFact fact) throws Exception {
+        Files.createDirectories(workspace);
+        Path jar = workspace.resolve("output.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        String resourcePath = "native0/x64-linux.so";
+        writeJar(jar, withMetadata(
+                resourcePath,
+                sha256(nativeBytes),
+                Map.of(resourcePath, nativeBytes)));
+        return new ArtifactAudit().audit(
+                workspace,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport(
+                        "linux-x64",
+                        resourcePath,
+                        sha256(nativeBytes))),
+                List.of("JNI_OnLoad"),
+                List.of(fact));
+    }
+
+    private byte[] classWithFieldName(String internalName, String fieldName) {
+        org.objectweb.asm.ClassWriter writer = new org.objectweb.asm.ClassWriter(0);
+        writer.visit(
+                org.objectweb.asm.Opcodes.V17,
+                org.objectweb.asm.Opcodes.ACC_PUBLIC,
+                internalName,
+                null,
+                "java/lang/Object",
+                null);
+        writer.visitField(
+                        org.objectweb.asm.Opcodes.ACC_PUBLIC
+                                | org.objectweb.asm.Opcodes.ACC_STATIC,
+                        fieldName,
+                        "Ljava/lang/String;",
+                        null,
+                        null)
+                .visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] classWithStringLdc(String internalName, String plaintext) {
+        org.objectweb.asm.ClassWriter writer = new org.objectweb.asm.ClassWriter(0);
+        writer.visit(
+                org.objectweb.asm.Opcodes.V17,
+                org.objectweb.asm.Opcodes.ACC_PUBLIC,
+                internalName,
+                null,
+                "java/lang/Object",
+                null);
+        var method = writer.visitMethod(
+                org.objectweb.asm.Opcodes.ACC_PUBLIC
+                        | org.objectweb.asm.Opcodes.ACC_STATIC,
+                "run",
+                "()V",
+                null,
+                null);
+        method.visitCode();
+        method.visitLdcInsn(plaintext);
+        method.visitInsn(org.objectweb.asm.Opcodes.POP);
+        method.visitInsn(org.objectweb.asm.Opcodes.RETURN);
+        method.visitMaxs(1, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private Map<String, byte[]> withMetadata(String jarPath, String sha256, Map<String, byte[]> entries) throws Exception {

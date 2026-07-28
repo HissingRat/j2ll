@@ -40,12 +40,14 @@ import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.MethodTableHidingEntry;
+import xyz.melodysky.packaging.MethodTableHidingOwnerPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.testsupport.FakeManagedZig;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeBinaryPrivacyInspector;
 import xyz.melodysky.toolchain.symbols.SymbolVisibilityPlanner;
 
@@ -63,7 +65,7 @@ final class MethodTableHidingNativeIntegrationTest {
     Path temp;
 
     @Test
-    void generatorUsesExternalHashOnlySplitPlanAndRejectsMismatches() {
+    void generatorUsesExternalTransientLayoutPlanAndRejectsMismatches() {
         Fixture fixture = fixture();
         MethodTableHidingPlan hidingPlan = hidingPlan(fixture, SEED);
 
@@ -100,10 +102,32 @@ final class MethodTableHidingNativeIntegrationTest {
     }
 
     @Test
+    void generatorUsesOneExplicitBuildKeyForRegistrationText() {
+        Fixture fixture = fixture();
+        MethodTableHidingPlan hidingPlan = hidingPlan(fixture, SEED);
+        HostJniCSourceGenerator generator = new HostJniCSourceGenerator();
+
+        String first = generator.generate(
+                fixture.implementationPlan(),
+                fixture.runtimeLoaderPlan(),
+                hidingPlan,
+                NativeTextBuildKey.fromUtf8("jni-build-one"));
+        String second = generator.generate(
+                fixture.implementationPlan(),
+                fixture.runtimeLoaderPlan(),
+                hidingPlan,
+                NativeTextBuildKey.fromUtf8("jni-build-two"));
+
+        assertNotEquals(first, second);
+        assertGeneratedSourceMatchesPlan(first, fixture, hidingPlan);
+        assertGeneratedSourceMatchesPlan(second, fixture, hidingPlan);
+    }
+
+    @Test
     void builderWritesTheExactExternallySuppliedPlanIntoTheWrapper() throws Exception {
         Fixture fixture = fixture();
         MethodTableHidingPlan firstPlan = hidingPlan(fixture, SEED);
-        MethodTableHidingPlan secondPlan = hidingPlan(fixture, SEED + 1);
+        MethodTableHidingPlan secondPlan = reverseOneOwnerRegistrationOrder(firstPlan);
         assertNotEquals(firstPlan, secondPlan);
 
         ZigNativeLibraryBuilder builder = new ZigNativeLibraryBuilder();
@@ -127,15 +151,37 @@ final class MethodTableHidingNativeIntegrationTest {
         assertGeneratedSourceMatchesPlan(firstSource, fixture, firstPlan);
         assertGeneratedSourceMatchesPlan(secondSource, fixture, secondPlan);
         assertNotEquals(firstSource, secondSource);
-        assertTrue(secondPlan.owners().stream()
-                .flatMap(owner -> owner.metadataOrder().stream())
-                .map(MethodTableHidingEntry::token)
-                .map(MethodTableHidingNativeIntegrationTest::hex)
-                .anyMatch(token -> !firstSource.contains("UINT64_C(0x" + token + ")")));
+        assertNotEquals(
+                functionAssignmentOrder(firstSource),
+                functionAssignmentOrder(secondSource));
+    }
+
+    private MethodTableHidingPlan reverseOneOwnerRegistrationOrder(
+            MethodTableHidingPlan sourcePlan) {
+        boolean[] reversed = {false};
+        List<MethodTableHidingOwnerPlan> owners = sourcePlan.owners().stream()
+                .map(owner -> {
+                    if (reversed[0] || owner.registrationOrder().size() < 2) {
+                        return owner;
+                    }
+                    ArrayList<MethodTableHidingEntry> registrationOrder =
+                            new ArrayList<>(owner.registrationOrder());
+                    java.util.Collections.reverse(registrationOrder);
+                    reversed[0] = true;
+                    return new MethodTableHidingOwnerPlan(
+                            owner.registrationOwner(),
+                            registrationOrder);
+                })
+                .toList();
+        assertTrue(reversed[0], "fixture must include an owner with multiple registrations");
+        return new MethodTableHidingPlan(
+                true,
+                sourcePlan.planId() + "_reordered",
+                owners);
     }
 
     @Test
-    void generatedHiddenTableWrapperCompilesAsHostC() throws Exception {
+    void generatedTransientLayoutWrapperCompilesAsHostC() throws Exception {
         Path clang = findClang().orElse(null);
         assumeTrue(clang != null, "clang is required for the generated JNI C compile smoke");
         assumeTrue(
@@ -149,8 +195,46 @@ final class MethodTableHidingNativeIntegrationTest {
                 fixture.runtimeLoaderPlan(),
                 fixture.implementationPlan(),
                 hidingPlan(fixture, SEED));
+        assertWrapperCompiles(clang, workspace, wrapper, "j2ll_mth_compile");
+    }
+
+    @Test
+    void generatedOrdinaryTableWrapperIsEncodedAndCompilesAsHostC() throws Exception {
+        Path clang = findClang().orElse(null);
+        assumeTrue(clang != null, "clang is required for the generated JNI C compile smoke");
+        assumeTrue(
+                Files.isRegularFile(Path.of(System.getProperty("java.home")).resolve("include/jni.h")),
+                "JDK JNI headers are required for the generated JNI C compile smoke");
+        Fixture fixture = fixture();
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp.resolve("ordinary-clang-smoke"));
+        MethodTableHidingPlan ordinaryPlan = new MethodTableHidingPlanner().plan(
+                fixture.registrationPlan(),
+                false,
+                SEED);
+        Path wrapper = new ZigNativeLibraryBuilder().writeJniWrapper(
+                workspace,
+                "j2ll_ordinary_compile",
+                fixture.runtimeLoaderPlan(),
+                fixture.implementationPlan(),
+                ordinaryPlan);
+        String source = Files.readString(wrapper);
+        fixture.registrationPlan().entries().forEach(entry -> {
+            assertFalse(source.contains(entry.registrationOwner()));
+            assertFalse(source.contains(entry.methodName()));
+            assertFalse(source.contains(entry.descriptor()));
+        });
+        assertFalse(source.contains("static JNINativeMethod j2ll_natives_"));
+        assertTrue(source.contains("j2ll_native_text_zero(text_scratch, UINT64_C("));
+        assertWrapperCompiles(clang, workspace, wrapper, "j2ll_ordinary_compile");
+    }
+
+    private void assertWrapperCompiles(
+            Path clang,
+            ZigBuildWorkspace workspace,
+            Path wrapper,
+            String objectStem) throws Exception {
         Path include = new ZigJniHeaderSet().prepare(workspace).get(0);
-        Path object = workspace.jniDirectory().resolve("j2ll_mth_compile.o");
+        Path object = workspace.jniDirectory().resolve(objectStem + ".o");
 
         Process process = new ProcessBuilder(
                         clang.toString(),
@@ -268,23 +352,31 @@ final class MethodTableHidingNativeIntegrationTest {
             Fixture fixture,
             MethodTableHidingPlan plan) {
         assertEquals(
-                plan.owners().size(),
-                occurrences(source, "static const j2ll_hidden_method_metadata j2ll_hmm_"));
+                0,
+                occurrences(source, "static const uint64_t j2ll_hmt_"));
         assertEquals(
-                plan.owners().size(),
+                0,
                 occurrences(source, "static const j2ll_hidden_method_function j2ll_hmf_"));
+        assertFalse(source.contains("j2ll_hidden_method_function"));
+        assertFalse(source.contains("masked_token"));
+        assertFalse(source.contains("metadata_index"));
+        assertFalse(source.contains("function_index"));
+        assertFalse(source.contains("join_scratch"));
         assertFalse(source.contains("static JNINativeMethod j2ll_natives_"));
         for (var owner : plan.owners()) {
-            String ownerToken = CIdentifier.forIdentity(owner.registrationOwner());
-            assertTrue(ownerToken.matches("h_[0-9a-f]{32}"));
-            assertTrue(source.contains("j2ll_hmm_" + ownerToken));
-            assertTrue(source.contains("j2ll_hmf_" + ownerToken));
-            for (MethodTableHidingEntry entry : owner.metadataOrder()) {
-                assertTrue(source.contains("UINT64_C(0x" + hex(entry.token()) + ")"));
-                assertTrue(source.contains(
-                        "UINT64_C(0x" + hex(entry.token() ^ owner.tokenMask()) + ")"));
+            for (MethodTableHidingEntry entry : owner.registrationOrder()) {
+                assertFalse(source.contains(
+                        "UINT64_C(0x" + hex(entry.token()) + ")"));
             }
         }
+        assertEquals(
+                fixture.registrationPlan().entries().size(),
+                functionAssignmentOrder(source).size());
+        assertEquals(
+                plan.owners().size(),
+                occurrences(
+                        source,
+                        "j2ll_native_text_zero(methods, (size_t)count * sizeof(JNINativeMethod));"));
 
         for (var entry : fixture.registrationPlan().entries()) {
             assertFalse(source.contains(entry.registrationOwner()));
@@ -293,8 +385,20 @@ final class MethodTableHidingNativeIntegrationTest {
             assertTrue(source.contains(entry.nativeSymbol()));
         }
         assertEquals(
-                List.of("j2ll_register", "JNI_OnLoad"),
+                List.of("JNI_OnLoad"),
                 exportedRoots(source));
+    }
+
+    private List<String> functionAssignmentOrder(String source) {
+        ArrayList<String> result = new ArrayList<>();
+        Matcher matcher = Pattern.compile(
+                        "methods\\[[0-9]+\\]\\.fnPtr = \\(void\\*\\)"
+                                + "([A-Za-z_][A-Za-z0-9_]*);")
+                .matcher(source);
+        while (matcher.find()) {
+            result.add(matcher.group(1));
+        }
+        return List.copyOf(result);
     }
 
     private List<String> exportedRoots(String source) {

@@ -409,9 +409,16 @@ public final class PackagingReportWriter {
         object.addProperty("enabled", plan.enabled());
         object.addProperty("status", plan.changed() ? "RAN" : "SKIPPED");
         nullableString(object, "planId", plan.enabled() ? plan.planId() : null);
+        object.addProperty(
+                "physicalStrategy",
+                "ownerLocalTransientStraightLine");
+        object.addProperty("runtimeTokenTableEmitted", false);
+        object.addProperty("runtimeFunctionTableEmitted", false);
+        object.addProperty("temporaryJniTableZeroized", true);
+        object.addProperty("bindingTokensAreReportEvidenceOnly", true);
         object.addProperty("ownerCount", plan.owners().size());
         object.addProperty("bindingCount", plan.owners().stream()
-                .mapToInt(owner -> owner.metadataOrder().size())
+                .mapToInt(owner -> owner.registrationOrder().size())
                 .sum());
 
         JsonArray owners = new JsonArray();
@@ -420,9 +427,9 @@ public final class PackagingReportWriter {
                 .forEach(owner -> {
                     JsonObject ownerObject = new JsonObject();
                     ownerObject.addProperty("ownerHash", sha256(owner.registrationOwner()));
-                    ownerObject.addProperty("bindingCount", owner.metadataOrder().size());
+                    ownerObject.addProperty("bindingCount", owner.registrationOrder().size());
                     JsonArray bindingTokens = new JsonArray();
-                    owner.metadataOrder().stream()
+                    owner.registrationOrder().stream()
                             .map(entry -> entry.token())
                             .sorted(Long::compareUnsigned)
                             .map(this::unsignedHex)

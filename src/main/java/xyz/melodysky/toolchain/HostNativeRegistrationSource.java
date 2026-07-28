@@ -1,31 +1,88 @@
 package xyz.melodysky.toolchain;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.TreeMap;
 import xyz.melodysky.packaging.MethodTableHidingEntry;
-import xyz.melodysky.packaging.MethodTableHidingOwnerPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
-import xyz.melodysky.packaging.RegisterNativesTableBuilder;
+import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
+import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
+import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
+import xyz.melodysky.toolchain.nativetext.NativeTextEncoding;
+import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
 /**
- * Emits native registration separately from the already-large JNI wrapper
- * generator.
+ * Orchestrates owner-local, transient JNI registration functions.
+ *
+ * <p>Text planning and per-owner C emission remain separate so this class only
+ * owns whole-plan validation and root registration ordering.</p>
  */
 public final class HostNativeRegistrationSource {
+    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
+            NativeTextBuildKey.fromUtf8("j2ll-registration-text-compatibility-v1");
+
     public String emit(
             NativeRegistrationPlan registrationPlan,
             MethodTableHidingPlan hidingPlan) {
+        return emit(registrationPlan, hidingPlan, COMPATIBILITY_BUILD_KEY);
+    }
+
+    public String emit(
+            NativeRegistrationPlan registrationPlan,
+            MethodTableHidingPlan hidingPlan,
+            NativeTextBuildKey buildKey) {
         validatePlan(registrationPlan, hidingPlan);
-        if (!hidingPlan.changed()) {
-            return new RegisterNativesTableBuilder().emit(registrationPlan)
-                    + ordinaryRegistration(registrationPlan);
+        Objects.requireNonNull(buildKey, "buildKey");
+        NativeTextCEmitter textEmitter = new NativeTextCEmitter();
+        NativeTextEncoding rollbackFailureText = new NativeTextEncoder().encode(
+                buildKey,
+                NativeTextPurpose.REGISTRATION_ERROR,
+                "aggregate-registration:rollback-failed",
+                "native registration rollback failed");
+        NativeTextEncoding exceptionRestoreFailureText =
+                new NativeTextEncoder().encode(
+                        buildKey,
+                        NativeTextPurpose.REGISTRATION_ERROR,
+                        "aggregate-registration:exception-restore-failed",
+                        "native registration exception restore failed");
+        StringBuilder source = new StringBuilder(textEmitter.runtimeSource());
+        source.append(textEmitter.ciphertextDeclaration(rollbackFailureText))
+                .append(textEmitter.ciphertextDeclaration(
+                        exceptionRestoreFailureText))
+                .append('\n');
+        HostNativeOwnerRegistrationSource ownerEmitter =
+                new HostNativeOwnerRegistrationSource();
+        List<NativeRegistrationTextPlan.Owner> owners;
+        if (hidingPlan.changed()) {
+            owners = physicalOwnerOrder(
+                    NativeRegistrationTextPlan.hidden(hidingPlan, buildKey));
+            for (NativeRegistrationTextPlan.Owner owner : owners) {
+                source.append(ownerEmitter.emit(owner));
+            }
+        } else {
+            owners = physicalOwnerOrder(
+                    NativeRegistrationTextPlan.ordinary(registrationPlan, buildKey));
+            for (NativeRegistrationTextPlan.Owner owner : owners) {
+                source.append(ownerEmitter.emit(owner));
+            }
         }
-        return hiddenTables(hidingPlan) + hiddenRegistration(hidingPlan);
+        appendRootRegistration(
+                source,
+                owners,
+                "j2ll_register_" + buildKey.hashHex().substring(0, 24),
+                textEmitter,
+                rollbackFailureText,
+                exceptionRestoreFailureText);
+        return source.toString();
+    }
+
+    private List<NativeRegistrationTextPlan.Owner> physicalOwnerOrder(
+            List<NativeRegistrationTextPlan.Owner> owners) {
+        return owners.stream()
+                .sorted(java.util.Comparator.comparing(
+                        owner -> owner.ownerText().symbol()))
+                .toList();
     }
 
     private void validatePlan(
@@ -44,7 +101,7 @@ public final class HostNativeRegistrationSource {
             return;
         }
         List<NativeRegistrationEntry> planned = hidingPlan.owners().stream()
-                .flatMap(owner -> owner.metadataOrder().stream())
+                .flatMap(owner -> owner.registrationOrder().stream())
                 .map(MethodTableHidingEntry::registration)
                 .sorted()
                 .toList();
@@ -57,181 +114,134 @@ public final class HostNativeRegistrationSource {
         }
     }
 
-    private String hiddenTables(MethodTableHidingPlan plan) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("""
-                typedef struct {
-                    uint64_t token;
-                    const char* name;
-                    const char* descriptor;
-                } j2ll_hidden_method_metadata;
-
-                typedef struct {
-                    uint64_t masked_token;
-                    void* function;
-                } j2ll_hidden_method_function;
-
-                """);
-        for (MethodTableHidingOwnerPlan owner : plan.owners()) {
-            String suffix = CIdentifier.forIdentity(owner.registrationOwner());
-            builder.append("static const j2ll_hidden_method_metadata j2ll_hmm_")
-                    .append(suffix)
-                    .append("[] = {\n");
-            for (MethodTableHidingEntry entry : owner.metadataOrder()) {
-                builder.append("    {UINT64_C(0x")
-                        .append(hex(entry.token()))
-                        .append("), \"")
-                        .append(CSourceEscaper.stringContents(entry.registration().methodName()))
-                        .append("\", \"")
-                        .append(CSourceEscaper.stringContents(entry.registration().descriptor()))
-                        .append("\"},\n");
-            }
-            builder.append("};\n")
-                    .append("static const j2ll_hidden_method_function j2ll_hmf_")
-                    .append(suffix)
-                    .append("[] = {\n");
-            for (MethodTableHidingEntry entry : owner.functionOrder()) {
-                builder.append("    {UINT64_C(0x")
-                        .append(hex(entry.token() ^ owner.tokenMask()))
-                        .append("), (void*)")
-                        .append(entry.registration().nativeSymbol())
-                        .append("},\n");
-            }
-            builder.append("};\n")
-                    .append("static const int j2ll_hmc_")
-                    .append(suffix)
-                    .append(" = ")
-                    .append(owner.metadataOrder().size())
-                    .append(";\n\n");
-        }
-        return builder.toString();
-    }
-
-    private String hiddenRegistration(MethodTableHidingPlan plan) {
-        StringBuilder builder = new StringBuilder();
-        for (MethodTableHidingOwnerPlan owner : plan.owners()) {
-            String suffix = CIdentifier.forIdentity(owner.registrationOwner());
-            builder.append("static jint j2ll_register_")
-                    .append(suffix)
-                    .append("(JNIEnv* env) {\n")
-                    .append("    const int count = j2ll_hmc_")
-                    .append(suffix)
-                    .append(";\n")
-                    .append("    JNINativeMethod* methods = (JNINativeMethod*)calloc((size_t)count, sizeof(JNINativeMethod));\n")
-                    .append("    if (methods == NULL) {\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    for (int metadata_index = 0; metadata_index < count; metadata_index++) {\n")
-                    .append("        uint64_t token = j2ll_hmm_")
-                    .append(suffix)
-                    .append("[metadata_index].token;\n")
-                    .append("        int matched = 0;\n")
-                    .append("        for (int function_index = 0; function_index < count; function_index++) {\n")
-                    .append("            if ((j2ll_hmf_")
-                    .append(suffix)
-                    .append("[function_index].masked_token ^ UINT64_C(0x")
-                    .append(hex(owner.tokenMask()))
-                    .append(")) == token) {\n")
-                    .append("                methods[metadata_index] = (JNINativeMethod){\n")
-                    .append("                    (char*)j2ll_hmm_")
-                    .append(suffix)
-                    .append("[metadata_index].name,\n")
-                    .append("                    (char*)j2ll_hmm_")
-                    .append(suffix)
-                    .append("[metadata_index].descriptor,\n")
-                    .append("                    j2ll_hmf_")
-                    .append(suffix)
-                    .append("[function_index].function\n")
-                    .append("                };\n")
-                    .append("                matched = 1;\n")
-                    .append("                break;\n")
-                    .append("            }\n")
-                    .append("        }\n")
-                    .append("        if (!matched) {\n")
-                    .append("            free(methods);\n")
-                    .append("            return JNI_ERR;\n")
-                    .append("        }\n")
-                    .append("    }\n")
-                    .append("    jclass owner = j2ll_class_for_registration(env, \"")
-                    .append(CSourceEscaper.stringContents(owner.registrationOwner()))
-                    .append("\");\n")
-                    .append("    if (owner == NULL) {\n")
-                    .append("        free(methods);\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    jint status = (*env)->RegisterNatives(env, owner, methods, count);\n")
-                    .append("    (*env)->DeleteLocalRef(env, owner);\n")
-                    .append("    free(methods);\n")
-                    .append("    return status == 0 ? JNI_OK : JNI_ERR;\n")
-                    .append("}\n\n");
-        }
-        appendRootRegistration(builder, plan.owners().stream()
-                .map(MethodTableHidingOwnerPlan::registrationOwner)
-                .toList());
-        return builder.toString();
-    }
-
-    private String ordinaryRegistration(NativeRegistrationPlan plan) {
-        StringBuilder builder = new StringBuilder();
-        for (String owner : entriesByOwner(plan).keySet()) {
-            String registerSymbol = "j2ll_register_" + CIdentifier.forIdentity(owner);
-            String tableName = "j2ll_natives_" + CIdentifier.forIdentity(owner);
-            builder.append("static jint ")
-                    .append(registerSymbol)
-                    .append("(JNIEnv* env) {\n")
-                    .append("    jclass owner = j2ll_class_for_registration(env, \"")
-                    .append(CSourceEscaper.stringContents(owner))
-                    .append("\");\n")
-                    .append("    if (owner == NULL) {\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    if ((*env)->RegisterNatives(env, owner, ")
-                    .append(tableName)
-                    .append(", ")
-                    .append(tableName)
-                    .append("_count) != 0) {\n")
-                    .append("        (*env)->DeleteLocalRef(env, owner);\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    (*env)->DeleteLocalRef(env, owner);\n")
-                    .append("    return JNI_OK;\n")
-                    .append("}\n\n");
-        }
-        appendRootRegistration(builder, new ArrayList<>(entriesByOwner(plan).keySet()));
-        return builder.toString();
-    }
-
-    private void appendRootRegistration(StringBuilder builder, List<String> owners) {
-        builder.append("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm) {\n")
+    private void appendRootRegistration(
+            StringBuilder source,
+            List<NativeRegistrationTextPlan.Owner> owners,
+            String aggregateSymbol,
+            NativeTextCEmitter textEmitter,
+            NativeTextEncoding rollbackFailureText,
+            NativeTextEncoding exceptionRestoreFailureText) {
+        source.append("static jint ")
+                .append(aggregateSymbol)
+                .append("(JavaVM* vm) {\n")
                 .append("    JNIEnv* env = NULL;\n")
                 .append("    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_8) != JNI_OK) {\n")
                 .append("        return JNI_ERR;\n")
                 .append("    }\n");
-        for (String owner : owners.stream().sorted().toList()) {
-            builder.append("    if (j2ll_register_")
-                    .append(CIdentifier.forIdentity(owner))
-                    .append("(env) != JNI_OK) {\n")
-                    .append("        return JNI_ERR;\n")
+        if (owners.isEmpty()) {
+            source.append("    return JNI_VERSION_1_8;\n");
+        } else {
+            source.append("    jthrowable failure_exception = NULL;\n")
+                    .append("    jthrowable rollback_exception = NULL;\n")
+                    .append("    jthrowable observed_exception = NULL;\n")
+                    .append("    jboolean rollback_failed = JNI_FALSE;\n")
+                    .append("    jint unregister_status = JNI_ERR;\n")
+                    .append("    jint throw_status = JNI_ERR;\n")
+                    .append("    char rollback_failure_text[sizeof(")
+                    .append(rollbackFailureText.symbol())
+                    .append("_cipher)];\n")
+                    .append("    char exception_restore_failure_text[sizeof(")
+                    .append(exceptionRestoreFailureText.symbol())
+                    .append("_cipher)];\n");
+            for (int index = 0; index < owners.size(); index++) {
+                source.append("    jclass registered_owner_")
+                        .append(index)
+                        .append(" = NULL;\n");
+            }
+        }
+        for (int index = 0; index < owners.size(); index++) {
+            NativeRegistrationTextPlan.Owner owner = owners.get(index);
+            source.append("    if (j2ll_register_")
+                    .append(HostNativeOwnerRegistrationSource.physicalSuffix(owner))
+                    .append("(env, &registered_owner_")
+                    .append(index)
+                    .append(") != JNI_OK) {\n")
+                    .append("        goto rollback;\n")
                     .append("    }\n");
         }
-        builder.append("    return JNI_VERSION_1_8;\n")
-                .append("}\n\n")
+        if (!owners.isEmpty()) {
+            for (int index = owners.size() - 1; index >= 0; index--) {
+                source.append("    (*env)->DeleteLocalRef(env, registered_owner_")
+                        .append(index)
+                        .append(");\n")
+                        .append("    registered_owner_")
+                        .append(index)
+                        .append(" = NULL;\n");
+            }
+            source.append("    return JNI_VERSION_1_8;\n")
+                    .append("rollback:\n")
+                    .append("    if ((*env)->ExceptionCheck(env)) {\n")
+                    .append("        failure_exception = (*env)->ExceptionOccurred(env);\n")
+                    .append("        (*env)->ExceptionClear(env);\n")
+                    .append("    }\n");
+            for (int index = owners.size() - 1; index >= 0; index--) {
+                source.append("    if (registered_owner_")
+                        .append(index)
+                        .append(" != NULL) {\n")
+                        .append("        unregister_status = (*env)->UnregisterNatives(env, registered_owner_")
+                        .append(index)
+                        .append(");\n")
+                        .append("        if (unregister_status != JNI_OK) {\n")
+                        .append("            rollback_failed = JNI_TRUE;\n")
+                        .append("        }\n")
+                        .append("        if ((*env)->ExceptionCheck(env)) {\n")
+                        .append("            rollback_failed = JNI_TRUE;\n")
+                        .append("            observed_exception = (*env)->ExceptionOccurred(env);\n")
+                        .append("            (*env)->ExceptionClear(env);\n")
+                        .append("            if (rollback_exception == NULL) {\n")
+                        .append("                rollback_exception = observed_exception;\n")
+                        .append("            } else {\n")
+                        .append("                (*env)->DeleteLocalRef(env, observed_exception);\n")
+                        .append("            }\n")
+                        .append("            observed_exception = NULL;\n")
+                        .append("        }\n")
+                        .append("        (*env)->DeleteLocalRef(env, registered_owner_")
+                        .append(index)
+                        .append(");\n")
+                        .append("        registered_owner_")
+                        .append(index)
+                        .append(" = NULL;\n")
+                        .append("    }\n");
+            }
+            source.append("    if (rollback_failed) {\n")
+                    .append("        if (failure_exception != NULL) {\n")
+                    .append("            (*env)->DeleteLocalRef(env, failure_exception);\n")
+                    .append("            failure_exception = NULL;\n")
+                    .append("        }\n")
+                    .append("        if (rollback_exception != NULL) {\n")
+                    .append("            (*env)->DeleteLocalRef(env, rollback_exception);\n")
+                    .append("            rollback_exception = NULL;\n")
+                    .append("        }\n");
+            source.append(textEmitter.decodeInto(
+                    rollbackFailureText,
+                    "rollback_failure_text",
+                    "        "));
+            source.append("        (*env)->FatalError(env, rollback_failure_text);\n")
+                    .append("        j2ll_native_text_zero(rollback_failure_text, sizeof(rollback_failure_text));\n")
+                    .append("        return JNI_ERR;\n")
+                    .append("    }\n")
+                    .append("    if (failure_exception != NULL) {\n")
+                    .append("        throw_status = (*env)->Throw(env, failure_exception);\n")
+                    .append("        (*env)->DeleteLocalRef(env, failure_exception);\n")
+                    .append("        failure_exception = NULL;\n")
+                    .append("        if (throw_status != JNI_OK || !(*env)->ExceptionCheck(env)) {\n");
+            source.append(textEmitter.decodeInto(
+                    exceptionRestoreFailureText,
+                    "exception_restore_failure_text",
+                    "            "));
+            source.append("            (*env)->FatalError(env, exception_restore_failure_text);\n")
+                    .append("            j2ll_native_text_zero(exception_restore_failure_text, sizeof(exception_restore_failure_text));\n")
+                    .append("            return JNI_ERR;\n")
+                    .append("        }\n")
+                    .append("    }\n")
+                    .append("    return JNI_ERR;\n");
+        }
+        source.append("}\n\n")
                 .append("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {\n")
                 .append("    (void)reserved;\n")
-                .append("    return j2ll_register(vm);\n")
+                .append("    return ")
+                .append(aggregateSymbol)
+                .append("(vm);\n")
                 .append("}\n");
-    }
-
-    private Map<String, List<NativeRegistrationEntry>> entriesByOwner(NativeRegistrationPlan plan) {
-        Map<String, List<NativeRegistrationEntry>> result = new TreeMap<>();
-        for (NativeRegistrationEntry entry : plan.entries()) {
-            result.computeIfAbsent(entry.registrationOwner(), ignored -> new ArrayList<>())
-                    .add(entry);
-        }
-        return result;
-    }
-
-    private String hex(long value) {
-        return String.format(java.util.Locale.ROOT, "%016x", value);
     }
 }

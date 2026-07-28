@@ -36,23 +36,16 @@ public final class IrMethodValidator {
             blocksByName.put(block.name(), block);
         }
 
-        HashSet<IrValue> defined = new HashSet<>(method.parameters());
-        for (IrBlock block : method.blocks()) {
-            defined.addAll(block.parameters());
-        }
+        diagnostics.addAll(new IrDominanceValidator().validate(method, blocksByName, location));
         for (IrBlock block : method.blocks()) {
             for (var instruction : block.instructions()) {
-                for (IrValue operand : instruction.operands()) {
-                    if (!defined.contains(operand)) {
-                        diagnostics.add(Diagnostic.error(
-                                        DiagnosticStage.VALIDATION,
-                                        IrValidationDiagnostics.IR_USE_BEFORE_DEF,
-                                        "IR value used before definition: " + operand.name())
-                                .at(location));
-                    }
-                }
                 for (var site : instruction.exceptionSites()) {
-                    validateExceptionEdges(site.handlers(), blocksByName, location, diagnostics);
+                    validateExceptionEdges(
+                            site.handlers(),
+                            blocksByName,
+                            true,
+                            location,
+                            diagnostics);
                 }
                 validateMonitorInstruction(instruction.opcode(), instruction.operands(), location, diagnostics);
                 validateClassInitInstruction(
@@ -62,10 +55,14 @@ public final class IrMethodValidator {
                         location,
                         diagnostics);
                 validateCallIndirection(instruction, location, diagnostics);
-                instruction.result().ifPresent(defined::add);
             }
             validateHandlerShape(block, location, diagnostics);
-            validateExceptionEdges(block.exceptionEdges(), blocksByName, location, diagnostics);
+            validateExceptionEdges(
+                    block.exceptionEdges(),
+                    blocksByName,
+                    block.terminator().kind() == IrTerminatorKind.THROW,
+                    location,
+                    diagnostics);
             if (block.terminator().kind() == IrTerminatorKind.RETURN) {
                 if (method.returnType() == IrType.VOID && block.terminator().value().isPresent()) {
                     diagnostics.add(returnMismatch(location, "void method returns a value"));
@@ -74,20 +71,13 @@ public final class IrMethodValidator {
                     diagnostics.add(returnMismatch(location, "non-void method returns void"));
                 }
                 block.terminator().value().ifPresent(value -> {
-                    if (!defined.contains(value)) {
-                        diagnostics.add(Diagnostic.error(
-                                        DiagnosticStage.VALIDATION,
-                                        IrValidationDiagnostics.IR_USE_BEFORE_DEF,
-                                        "IR return uses value before definition: " + value.name())
-                                .at(location));
-                    }
                     if (method.returnType() != IrType.VOID && value.type() != method.returnType()) {
                         diagnostics.add(returnMismatch(location, "return value type does not match method return type"));
                     }
                 });
             } else if (block.terminator().kind() == IrTerminatorKind.THROW) {
                 IrValue thrown = block.terminator().value().orElse(null);
-                if (thrown == null || !defined.contains(thrown)) {
+                if (thrown == null) {
                     diagnostics.add(Diagnostic.error(
                                     DiagnosticStage.VALIDATION,
                                     IrValidationDiagnostics.IR_USE_BEFORE_DEF,
@@ -105,12 +95,11 @@ public final class IrMethodValidator {
                         block.terminator().target().orElse(null),
                         block.terminator().targetArguments(),
                         blocksByName,
-                        defined,
                         location,
                         diagnostics);
             } else if (block.terminator().kind() == IrTerminatorKind.BRANCH) {
                 IrValue condition = block.terminator().condition().orElse(null);
-                if (condition == null || !defined.contains(condition)) {
+                if (condition == null) {
                     diagnostics.add(Diagnostic.error(
                                     DiagnosticStage.VALIDATION,
                                     IrValidationDiagnostics.IR_USE_BEFORE_DEF,
@@ -123,19 +112,17 @@ public final class IrMethodValidator {
                         block.terminator().trueTarget().orElse(null),
                         block.terminator().trueTargetArguments(),
                         blocksByName,
-                        defined,
                         location,
                         diagnostics);
                 validateTargetWithArguments(
                         block.terminator().falseTarget().orElse(null),
                         block.terminator().falseTargetArguments(),
                         blocksByName,
-                        defined,
                         location,
                         diagnostics);
             } else if (block.terminator().kind() == IrTerminatorKind.SWITCH) {
                 IrValue switchValue = block.terminator().switchValue().orElse(null);
-                if (switchValue == null || !defined.contains(switchValue)) {
+                if (switchValue == null) {
                     diagnostics.add(Diagnostic.error(
                                     DiagnosticStage.VALIDATION,
                                     IrValidationDiagnostics.IR_USE_BEFORE_DEF,
@@ -148,7 +135,6 @@ public final class IrMethodValidator {
                         block.terminator().defaultTarget().orElse(null),
                         block.terminator().defaultTargetArguments(),
                         blocksByName,
-                        defined,
                         location,
                         diagnostics);
                 for (var switchCase : block.terminator().switchCases()) {
@@ -156,7 +142,6 @@ public final class IrMethodValidator {
                             switchCase.target(),
                             switchCase.arguments(),
                             blocksByName,
-                            defined,
                             location,
                             diagnostics);
                 }
@@ -183,7 +168,6 @@ public final class IrMethodValidator {
             String target,
             List<IrValue> arguments,
             Map<String, IrBlock> blocksByName,
-            Set<IrValue> defined,
             DiagnosticLocation location,
             List<Diagnostic> diagnostics) {
         if (target == null || !blocksByName.containsKey(target)) {
@@ -203,13 +187,6 @@ public final class IrMethodValidator {
         }
         for (int index = 0; index < arguments.size(); index++) {
             IrValue argument = arguments.get(index);
-            if (!defined.contains(argument)) {
-                diagnostics.add(Diagnostic.error(
-                                DiagnosticStage.VALIDATION,
-                                IrValidationDiagnostics.IR_USE_BEFORE_DEF,
-                                "IR terminator argument uses value before definition: " + argument.name())
-                        .at(location));
-            }
             IrValue parameter = targetBlock.parameters().get(index);
             if (argument.type() != parameter.type()) {
                 diagnostics.add(Diagnostic.error(
@@ -240,6 +217,7 @@ public final class IrMethodValidator {
     private void validateExceptionEdges(
             List<xyz.melodysky.ir.model.IrExceptionEdge> exceptionEdges,
             Map<String, IrBlock> blocksByName,
+            boolean validateArguments,
             DiagnosticLocation location,
             List<Diagnostic> diagnostics) {
         for (var edge : exceptionEdges) {
@@ -256,6 +234,13 @@ public final class IrMethodValidator {
                                 IrValidationDiagnostics.IR_EXCEPTION_EDGE_MISMATCH,
                                 "IR exception edge targets non-handler block: " + edge.target())
                         .at(location));
+            } else if (validateArguments) {
+                validateTargetWithArguments(
+                        edge.target(),
+                        edge.arguments(),
+                        blocksByName,
+                        location,
+                        diagnostics);
             }
         }
     }

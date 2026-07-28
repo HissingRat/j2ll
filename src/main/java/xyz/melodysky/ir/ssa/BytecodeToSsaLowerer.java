@@ -54,6 +54,8 @@ import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.pipeline.LoweringStatus;
 import xyz.melodysky.pipeline.StageResult;
 import xyz.melodysky.runtime.RuntimeHelperCatalog;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.runtime.jdk.JdkIntrinsic;
 import xyz.melodysky.runtime.jdk.JdkIntrinsicRegistry;
 import xyz.melodysky.runtime.jdk.JdkMethodPolicy;
@@ -73,6 +75,21 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private final StringConcatFactoryBootstrap stringConcatFactory = new StringConcatFactoryBootstrap();
     private final LambdaMetafactoryBootstrap lambdaMetafactory = new LambdaMetafactoryBootstrap();
     private final UnsafePolicy unsafePolicy = new UnsafePolicy();
+    private final JvmExceptionInstructionSemantics exceptionSemantics =
+            new JvmExceptionInstructionSemantics();
+    private final BytecodeExceptionSemantics bytecodeExceptionSemantics =
+            new BytecodeExceptionSemantics();
+    private final RuntimeTokenMapper runtimeTokens;
+
+    public BytecodeToSsaLowerer() {
+        this(RuntimeTokenMapper.compatibility());
+    }
+
+    public BytecodeToSsaLowerer(RuntimeTokenMapper runtimeTokens) {
+        this.runtimeTokens = java.util.Objects.requireNonNull(
+                runtimeTokens,
+                "runtimeTokens");
+    }
 
     public StageResult<SsaMethodResult> lower(MethodCfgResult cfgResult) {
         ParsedMethod method = cfgResult.method();
@@ -80,14 +97,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return skipped(method, "NO_CFG", "method has no CFG to lower");
         }
         BytecodeCfg cfg = cfgResult.cfg().orElseThrow();
-        if (hasComplexExceptionShape(cfg)
-                && !isSupportedSynchronizedExceptionCleanupShape(cfg)
-                && !isSupportedCatchAllRethrowShape(cfg)) {
-            return skipped(
-                    method,
-                    unsupportedCatchAllReasonCode(cfg),
-                    "complex catch-all/finally is outside the current native-lowering boundary");
-        }
         ValueFactory values = new ValueFactory();
         List<IrValue> parameters = createParameters(method, values);
         MethodMonitor methodMonitor = createMethodMonitor(method, values, parameters);
@@ -103,7 +112,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
 
         inputs.put(0, new BlockInput(seedEntryState(method, parameters)));
         enqueue(worklist, queued, 0);
-        seedExceptionHandlers(method, cfg, values, parameters, inputs, worklist, queued);
 
         try {
             while (!worklist.isEmpty()) {
@@ -126,6 +134,15 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         classInitialization,
                         diagnostics);
                 loweredBlocks.put(blockId, lowered);
+                for (ExceptionTransfer transfer : lowered.allExceptionTransfers()) {
+                    mergeExceptionTransfer(
+                            transfer,
+                            inputs,
+                            values,
+                            liveLocalsAtEntry,
+                            worklist,
+                            queued);
+                }
                 for (BytecodeEdge successor : normalSuccessors(cfg, block)) {
                     boolean changed = mergeInto(
                             inputs,
@@ -144,7 +161,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 return skipped(
                         method,
                         "UNSUPPORTED_EXCEPTION_STATE_MERGE",
-                        "exception handler requires throw-site local state that is not yet modeled in native IR");
+                        "exception handler state merge failed: " + failure.getMessage());
             }
             return skipped(method, failure.reasonCode, failure.getMessage());
         } catch (IllegalStateException exception) {
@@ -175,15 +192,19 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     blockName(block.id()),
                     input.parameters(),
                     block.handlerCatchTypes(),
-                    exceptionEdges(cfg, block, methodMonitor, classInitialization),
-                    lowered.instructions(),
+                    materializeThrowEdges(lowered, inputs),
+                    materializeExceptionSites(lowered, inputs),
                     withTargetArguments(lowered.terminator(), lowered.outgoingState(), inputs)));
         }
         if (classInitialization != null) {
-            blocks.add(classInitialization.failedBlock());
+            blocks.add(withUnprotectedPendingExceptionEvidence(
+                    classInitialization.failedBlock(),
+                    values));
         }
         if (methodMonitor != null) {
-            blocks.add(methodMonitor.cleanupBlock());
+            blocks.add(withUnprotectedPendingExceptionEvidence(
+                    methodMonitor.cleanupBlock(),
+                    values));
         }
 
         IrMethod irMethod = new IrMethod(
@@ -238,24 +259,44 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         StackState stack = new StackState(inputState.stack());
         LocalState locals = new LocalState(inputState.locals());
         ArrayList<IrInstruction> instructions = new ArrayList<>();
+        ArrayList<ExceptionTransfer> exceptionTransfers = new ArrayList<>();
+        java.util.Optional<ExceptionTransfer> throwTransfer = java.util.Optional.empty();
         IrTerminator terminator = null;
         List<IrExceptionEdge> exceptionEdges = exceptionEdges(cfg, block, methodMonitor, classInitialization);
         if (classInitialization != null && block.id() == 0) {
+            Set<IrInstruction> existingInstructions = identitySnapshot(instructions);
             instructions.addAll(classInitialization.classObjectInstructions());
             instructions.add(IrInstruction.operation(
                     java.util.Optional.empty(),
                     IrOpcode.CLASS_INIT_BEGIN,
                     List.of(classInitialization.classObject()),
                     classInitialization.classSymbol()));
+            captureExceptionTransfers(
+                    instructions,
+                    existingInstructions,
+                    exceptionEdges,
+                    locals.snapshot(),
+                    values,
+                    exceptionTransfers);
         }
         if (methodMonitor != null && block.id() == 0) {
+            Set<IrInstruction> existingInstructions = identitySnapshot(instructions);
             instructions.addAll(methodMonitor.lockInstructions());
             appendMonitorHelper(IrOpcode.MONITOR_ENTER, methodMonitor.lock(), List.of(), instructions, "monitorEnter");
+            captureExceptionTransfers(
+                    instructions,
+                    existingInstructions,
+                    exceptionEdges,
+                    locals.snapshot(),
+                    values,
+                    exceptionTransfers);
         }
         List<AbstractInsnNode> bytecode = cfg.instructions().subList(
                 block.startInstructionIndex(),
                 block.endInstructionIndexExclusive());
         for (AbstractInsnNode instruction : bytecode) {
+            Set<IrInstruction> existingInstructions = identitySnapshot(instructions);
+            Map<Integer, IrValue> localsAtThrowSite = locals.snapshot();
             int opcode = instruction.getOpcode();
             if (SsaOpcodeSemantics.isConditionalBranch(opcode)) {
                 terminator = lowerConditionalBranch(cfg, block, opcode, stack, values, instructions);
@@ -270,9 +311,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 terminator = IrTerminator.returnValue(value);
             } else if (opcode == ATHROW) {
                 IrValue value = stack.pop();
-                appendClassInitializerFailed(classInitialization, value, instructions);
-                appendMethodMonitorExceptionalExit(methodMonitor, instructions);
                 terminator = IrTerminator.throwValue(value);
+                if (!exceptionEdges.isEmpty()) {
+                    throwTransfer = java.util.Optional.of(new ExceptionTransfer(
+                            value,
+                            new FrameState(List.of(value), localsAtThrowSite),
+                            exceptionEdges));
+                }
             } else if (opcode == RETURN) {
                 appendClassInitializerEnd(classInitialization, instructions);
                 appendMethodMonitorExit(methodMonitor, instructions);
@@ -290,6 +335,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         block.isExceptionHandler()
                                 && block.handlerCatchTypes().contains(ExceptionRegion.CATCH_ALL));
             }
+            captureExceptionTransfers(
+                    instructions,
+                    existingInstructions,
+                    exceptionEdges,
+                    localsAtThrowSite,
+                    values,
+                    exceptionTransfers);
         }
         if (terminator == null) {
             BytecodeEdge fallthrough = edge(cfg, block, BytecodeEdgeKind.FALLTHROUGH);
@@ -301,7 +353,71 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return new BlockLowering(
                 instructions,
                 terminator,
-                new FrameState(stack.snapshotBottomToTop(), locals.snapshot()));
+                new FrameState(stack.snapshotBottomToTop(), locals.snapshot()),
+                exceptionTransfers,
+                throwTransfer);
+    }
+
+    private void captureExceptionTransfers(
+            List<IrInstruction> instructions,
+            Set<IrInstruction> existingInstructions,
+            List<IrExceptionEdge> handlers,
+            Map<Integer, IrValue> localsAtThrowSite,
+            ValueFactory values,
+            List<ExceptionTransfer> transfers) {
+        for (int index = 0; index < instructions.size(); index++) {
+            IrInstruction instruction = instructions.get(index);
+            if (existingInstructions.contains(instruction)
+                    || !exceptionSemantics.canRaiseJvmException(instruction)) {
+                continue;
+            }
+            IrValue exception = values.next(IrType.REFERENCE);
+            List<IrExceptionSite> sites = instruction.exceptionSites().isEmpty()
+                    ? List.of(new IrExceptionSite(
+                            IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                            handlers,
+                            java.util.Optional.of(exception)))
+                    : instruction.exceptionSites().stream()
+                            .map(site -> new IrExceptionSite(
+                                    site.kind(),
+                                    handlers,
+                                    java.util.Optional.of(exception)))
+                            .toList();
+            instructions.set(index, instruction.withExceptionSites(sites));
+            if (!handlers.isEmpty()) {
+                transfers.add(new ExceptionTransfer(
+                        exception,
+                        new FrameState(List.of(exception), localsAtThrowSite),
+                        handlers));
+            }
+        }
+    }
+
+    private Set<IrInstruction> identitySnapshot(List<IrInstruction> instructions) {
+        Set<IrInstruction> snapshot =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        snapshot.addAll(instructions);
+        return snapshot;
+    }
+
+    private IrBlock withUnprotectedPendingExceptionEvidence(
+            IrBlock block,
+            ValueFactory values) {
+        ArrayList<IrInstruction> instructions = new ArrayList<>(block.instructions());
+        captureExceptionTransfers(
+                instructions,
+                Set.of(),
+                List.of(),
+                Map.of(),
+                values,
+                new ArrayList<>());
+        return new IrBlock(
+                block.name(),
+                block.parameters(),
+                block.exceptionCatchTypes(),
+                block.exceptionEdges(),
+                instructions,
+                block.terminator());
     }
 
     private void lowerStackInstruction(
@@ -1080,20 +1196,20 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         if (methodInsn.owner.equals("java/lang/Class")
                 && methodInsn.name.equals("forName")
                 && methodInsn.desc.equals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;")) {
-            java.util.Optional<String> className = stringLiteral(operands.get(0), instructions);
-            if (className.isEmpty()) {
-                appendOrdinaryCall(
-                        SsaOpcodeSemantics.callOpcode(opcode),
-                        operands,
-                        returnType,
-                        values,
-                        stack,
-                        instructions,
-                        methodKey);
-                return true;
-            }
-            lowerClassForNameStatic(className.orElseThrow(), operands.get(1), values, stack, instructions);
-            removeDefinition(operands.get(0), instructions, IrOpcode.CONST_STRING);
+            /*
+             * The explicit ClassLoader argument is semantically observable.
+             * Keep it in the ordinary call path; replacing it with TCCL or a
+             * generated helper's loader would be incorrect for child-first
+             * and plugin class loaders.
+             */
+            appendOrdinaryCall(
+                    SsaOpcodeSemantics.callOpcode(opcode),
+                    operands,
+                    returnType,
+                    values,
+                    stack,
+                    instructions,
+                    methodKey);
             return true;
         }
         if (methodInsn.owner.equals("java/lang/Class")
@@ -1357,7 +1473,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             List<IrInstruction> instructions) {
         String descriptor = classDescriptor(binaryName.replace('.', '/'));
         IrValue classId = values.next(IrType.I64);
-        instructions.add(IrInstruction.constLong(classId, stableClassId(descriptor)));
+        instructions.add(IrInstruction.constLong(
+                classId,
+                runtimeTokens.token(
+                        RuntimeTokenDomain.CLASS_OBJECT,
+                        descriptor)));
         IrValue result = values.next(IrType.REFERENCE);
         instructions.add(IrInstruction.call(
                 java.util.Optional.of(result),
@@ -1375,7 +1495,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             StackState stack,
             List<IrInstruction> instructions) {
         IrValue metadataId = values.next(IrType.I64);
-        instructions.add(IrInstruction.constLong(metadataId, stableClassId(metadataKey)));
+        RuntimeTokenDomain domain = metadataKey.startsWith("field:")
+                ? RuntimeTokenDomain.REFLECTION_FIELD
+                : RuntimeTokenDomain.REFLECTION_METHOD;
+        instructions.add(IrInstruction.constLong(
+                metadataId,
+                runtimeTokens.token(domain, metadataKey)));
         IrValue result = values.next(IrType.REFERENCE);
         instructions.add(IrInstruction.call(
                 java.util.Optional.of(result),
@@ -1691,7 +1816,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         instructions);
             } else {
                 IrValue constantId = values.next(IrType.I64);
-                instructions.add(IrInstruction.constLong(constantId, stableClassId("string:" + token.constant())));
+                instructions.add(IrInstruction.constLong(
+                        constantId,
+                        runtimeTokens.token(
+                                RuntimeTokenDomain.BUSINESS_STRING_CARRIER,
+                                "string:" + token.constant())));
                 IrValue constant = values.next(IrType.REFERENCE);
                 instructions.add(IrInstruction.call(
                         java.util.Optional.of(constant),
@@ -1770,7 +1899,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         IrValue targetId = values.next(IrType.I64);
         instructions.add(IrInstruction.constLong(
                 targetId,
-                stableClassId("lambda:" + lambdaSpec)));
+                runtimeTokens.token(
+                        RuntimeTokenDomain.LAMBDA,
+                        "lambda:" + lambdaSpec)));
         IrValue capture = operands.isEmpty() ? values.next(IrType.REFERENCE) : boxedLambdaCapture(operands.get(0), values, instructions);
         if (operands.isEmpty()) {
             instructions.add(IrInstruction.constNull(capture));
@@ -1906,129 +2037,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return new FrameState(List.of(), locals.snapshot());
     }
 
-    private void seedExceptionHandlers(
-            ParsedMethod method,
-            BytecodeCfg cfg,
-            ValueFactory values,
-            List<IrValue> parameters,
-            Map<Integer, BlockInput> inputs,
-            ArrayDeque<Integer> worklist,
-            Set<Integer> queued) {
-        for (BytecodeBasicBlock block : cfg.blocks()) {
-            if (!block.isExceptionHandler()) {
-                continue;
-            }
-            IrValue exception = values.next(IrType.REFERENCE);
-            LocalState locals = new LocalState();
-            seedParameterLocals(method, parameters, locals);
-            BlockInput handlerInput = new BlockInput(new FrameState(List.of(exception), locals.snapshot()));
-            MergeSlot exceptionSlot = new MergeSlot(MergeSlotKind.STACK, 0);
-            handlerInput.parametersBySlot.put(exceptionSlot, new MergeParameter(exceptionSlot, exception));
-            if (!inputs.containsKey(block.id())) {
-                inputs.put(block.id(), handlerInput);
-                enqueue(worklist, queued, block.id());
-            }
-        }
-    }
-
-    private boolean hasComplexExceptionShape(BytecodeCfg cfg) {
-        return cfg.exceptionRegions().stream()
-                .anyMatch(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()));
-    }
-
     private boolean isExceptionStateMergeBoundary(BytecodeCfg cfg, MergeFailure failure) {
         return !cfg.exceptionRegions().isEmpty()
                 && (failure.reasonCode.equals("SSA_MERGE_LOCAL_SLOT_MISMATCH")
                         || failure.reasonCode.equals("SSA_MERGE_TYPE_MISMATCH"));
-    }
-
-    private boolean isSupportedSynchronizedExceptionCleanupShape(BytecodeCfg cfg) {
-        if (!containsMonitorInstruction(cfg)) {
-            return false;
-        }
-        List<ExceptionRegion> catchAllRegions = cfg.exceptionRegions().stream()
-                .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
-                .toList();
-        if (catchAllRegions.isEmpty()) {
-            return false;
-        }
-        return catchAllRegions.stream()
-                .map(region -> blockContainingInstruction(cfg, region.handlerInstructionIndex()))
-                .allMatch(block -> block != null && handlerHasMonitorExitAndRethrow(cfg, block));
-    }
-
-    private boolean isSupportedCatchAllRethrowShape(BytecodeCfg cfg) {
-        List<ExceptionRegion> catchAllRegions = cfg.exceptionRegions().stream()
-                .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
-                .toList();
-        if (catchAllRegions.isEmpty()) {
-            return false;
-        }
-        return catchAllRegions.stream()
-                .map(region -> blockContainingInstruction(cfg, region.handlerInstructionIndex()))
-                .allMatch(block -> block != null && handlerHasRethrow(cfg, block));
-    }
-
-    private String unsupportedCatchAllReasonCode(BytecodeCfg cfg) {
-        if (containsMonitorInstruction(cfg)) {
-            return "UNSUPPORTED_MONITOR_FINALLY_INTERACTION";
-        }
-        if (hasNestedCatchAllRegion(cfg)) {
-            return "UNSUPPORTED_NESTED_FINALLY";
-        }
-        boolean hasRethrow = cfg.exceptionRegions().stream()
-                .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
-                .map(region -> blockContainingInstruction(cfg, region.handlerInstructionIndex()))
-                .anyMatch(block -> block != null && handlerHasRethrow(cfg, block));
-        return hasRethrow ? "UNSUPPORTED_EXCEPTION_STATE_MERGE" : "UNSUPPORTED_MULTI_EXIT_FINALLY";
-    }
-
-    private boolean hasNestedCatchAllRegion(BytecodeCfg cfg) {
-        List<ExceptionRegion> catchAllRegions = cfg.exceptionRegions().stream()
-                .filter(region -> ExceptionRegion.CATCH_ALL.equals(region.catchType()))
-                .toList();
-        for (ExceptionRegion outer : catchAllRegions) {
-            for (ExceptionRegion inner : catchAllRegions) {
-                if (outer == inner) {
-                    continue;
-                }
-                if (outer.startInstructionIndex() <= inner.handlerInstructionIndex()
-                        && inner.handlerInstructionIndex() < outer.endInstructionIndexExclusive()) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean containsMonitorInstruction(BytecodeCfg cfg) {
-        return cfg.instructions().stream()
-                .mapToInt(AbstractInsnNode::getOpcode)
-                .anyMatch(opcode -> opcode == MONITORENTER || opcode == MONITOREXIT);
-    }
-
-    private BytecodeBasicBlock blockContainingInstruction(BytecodeCfg cfg, int instructionIndex) {
-        return cfg.blocks().stream()
-                .filter(block -> block.startInstructionIndex() <= instructionIndex
-                        && instructionIndex < block.endInstructionIndexExclusive())
-                .findFirst()
-                .orElse(null);
-    }
-
-    private boolean handlerHasMonitorExitAndRethrow(BytecodeCfg cfg, BytecodeBasicBlock block) {
-        List<AbstractInsnNode> instructions = cfg.instructions().subList(
-                block.startInstructionIndex(),
-                block.endInstructionIndexExclusive());
-        boolean hasMonitorExit = instructions.stream().anyMatch(instruction -> instruction.getOpcode() == MONITOREXIT);
-        boolean hasRethrow = instructions.stream().anyMatch(instruction -> instruction.getOpcode() == ATHROW);
-        return hasMonitorExit && hasRethrow;
-    }
-
-    private boolean handlerHasRethrow(BytecodeCfg cfg, BytecodeBasicBlock block) {
-        List<AbstractInsnNode> instructions = cfg.instructions().subList(
-                block.startInstructionIndex(),
-                block.endInstructionIndexExclusive());
-        return instructions.stream().anyMatch(instruction -> instruction.getOpcode() == ATHROW);
     }
 
     private Map<Integer, BytecodeBasicBlock> blocksById(BytecodeCfg cfg) {
@@ -2055,38 +2067,9 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     }
 
     private Map<Integer, Set<Integer>> liveLocalsAtEntry(BytecodeCfg cfg) {
-        HashMap<Integer, Set<Integer>> usesBeforeDefinition = new HashMap<>();
-        HashMap<Integer, Set<Integer>> definitions = new HashMap<>();
         HashMap<Integer, Set<Integer>> liveIn = new HashMap<>();
-        HashMap<Integer, Set<Integer>> liveOut = new HashMap<>();
         for (BytecodeBasicBlock block : cfg.blocks()) {
-            TreeSet<Integer> uses = new TreeSet<>();
-            TreeSet<Integer> defined = new TreeSet<>();
-            for (AbstractInsnNode instruction : cfg.instructions().subList(
-                    block.startInstructionIndex(),
-                    block.endInstructionIndexExclusive())) {
-                if (instruction instanceof IincInsnNode iincInsn) {
-                    if (!defined.contains(iincInsn.var)) {
-                        uses.add(iincInsn.var);
-                    }
-                    defined.add(iincInsn.var);
-                    continue;
-                }
-                if (!(instruction instanceof VarInsnNode varInsn)) {
-                    continue;
-                }
-                if (SsaOpcodeSemantics.isLoad(varInsn.getOpcode())) {
-                    if (!defined.contains(varInsn.var)) {
-                        uses.add(varInsn.var);
-                    }
-                } else if (SsaOpcodeSemantics.isStore(varInsn.getOpcode())) {
-                    defined.add(varInsn.var);
-                }
-            }
-            usesBeforeDefinition.put(block.id(), Set.copyOf(uses));
-            definitions.put(block.id(), Set.copyOf(defined));
             liveIn.put(block.id(), Set.of());
-            liveOut.put(block.id(), Set.of());
         }
 
         boolean changed;
@@ -2094,18 +2077,43 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             changed = false;
             for (int index = cfg.blocks().size() - 1; index >= 0; index--) {
                 BytecodeBasicBlock block = cfg.blocks().get(index);
-                TreeSet<Integer> nextLiveOut = new TreeSet<>();
-                for (BytecodeEdge edge : normalSuccessors(cfg, block)) {
-                    nextLiveOut.addAll(liveIn.getOrDefault(edge.toBlockId(), Set.of()));
+                TreeSet<Integer> normalLiveOut = new TreeSet<>();
+                TreeSet<Integer> exceptionLiveOut = new TreeSet<>();
+                for (BytecodeEdge edge : cfg.edges()) {
+                    if (edge.fromBlockId() != block.id()) {
+                        continue;
+                    }
+                    Set<Integer> successorLiveIn =
+                            liveIn.getOrDefault(edge.toBlockId(), Set.of());
+                    if (edge.kind() == BytecodeEdgeKind.EXCEPTION) {
+                        exceptionLiveOut.addAll(successorLiveIn);
+                    } else {
+                        normalLiveOut.addAll(successorLiveIn);
+                    }
                 }
-                TreeSet<Integer> nextLiveIn = new TreeSet<>(nextLiveOut);
-                nextLiveIn.removeAll(definitions.getOrDefault(block.id(), Set.of()));
-                nextLiveIn.addAll(usesBeforeDefinition.getOrDefault(block.id(), Set.of()));
-                Set<Integer> immutableLiveOut = Set.copyOf(nextLiveOut);
+
+                TreeSet<Integer> nextLiveIn = new TreeSet<>(normalLiveOut);
+                List<AbstractInsnNode> instructions = cfg.instructions().subList(
+                        block.startInstructionIndex(),
+                        block.endInstructionIndexExclusive());
+                for (int instructionIndex = instructions.size() - 1;
+                        instructionIndex >= 0;
+                        instructionIndex--) {
+                    AbstractInsnNode instruction = instructions.get(instructionIndex);
+                    if (bytecodeExceptionSemantics.canRaiseJvmException(instruction)) {
+                        nextLiveIn.addAll(exceptionLiveOut);
+                    }
+                    if (instruction instanceof IincInsnNode iincInsn) {
+                        nextLiveIn.add(iincInsn.var);
+                    } else if (instruction instanceof VarInsnNode varInsn) {
+                        if (SsaOpcodeSemantics.isStore(varInsn.getOpcode())) {
+                            nextLiveIn.remove(varInsn.var);
+                        } else if (SsaOpcodeSemantics.isLoad(varInsn.getOpcode())) {
+                            nextLiveIn.add(varInsn.var);
+                        }
+                    }
+                }
                 Set<Integer> immutableLiveIn = Set.copyOf(nextLiveIn);
-                if (!immutableLiveOut.equals(liveOut.put(block.id(), immutableLiveOut))) {
-                    changed = true;
-                }
                 if (!immutableLiveIn.equals(liveIn.put(block.id(), immutableLiveIn))) {
                     changed = true;
                 }
@@ -2144,6 +2152,51 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         }
     }
 
+    private void mergeExceptionTransfer(
+            ExceptionTransfer transfer,
+            Map<Integer, BlockInput> inputs,
+            ValueFactory values,
+            Map<Integer, Set<Integer>> liveLocalsAtEntry,
+            ArrayDeque<Integer> worklist,
+            Set<Integer> queued) {
+        TreeSet<String> handlerTargets = transfer.handlers().stream()
+                .map(IrExceptionEdge::target)
+                .filter(target -> target.startsWith("b"))
+                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        for (String target : handlerTargets) {
+            int handlerBlockId = blockId(target);
+            boolean changed = mergeExceptionInto(
+                    inputs,
+                    handlerBlockId,
+                    transfer.handlerState(),
+                    values,
+                    liveLocalsAtEntry.getOrDefault(handlerBlockId, Set.of()));
+            if (changed) {
+                enqueue(worklist, queued, handlerBlockId);
+            }
+        }
+    }
+
+    private boolean mergeExceptionInto(
+            Map<Integer, BlockInput> inputs,
+            int blockId,
+            FrameState incoming,
+            ValueFactory values,
+            Set<Integer> liveLocalSlots) {
+        FrameState projectedIncoming = incoming.projectLocals(liveLocalSlots, blockId);
+        BlockInput current = inputs.get(blockId);
+        if (current == null) {
+            BlockInput handler = new BlockInput(projectedIncoming);
+            handler.forceParameter(new MergeSlot(MergeSlotKind.STACK, 0), values);
+            for (int localSlot : new TreeSet<>(liveLocalSlots)) {
+                handler.forceParameter(new MergeSlot(MergeSlotKind.LOCAL, localSlot), values);
+            }
+            inputs.put(blockId, handler);
+            return true;
+        }
+        return current.merge(projectedIncoming, values, true, liveLocalSlots);
+    }
+
     private boolean mergeInto(
             Map<Integer, BlockInput> inputs,
             int blockId,
@@ -2158,6 +2211,65 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return true;
         }
         return current.merge(projectedIncoming, values, mergeBlock, liveLocalSlots);
+    }
+
+    private List<IrInstruction> materializeExceptionSites(
+            BlockLowering lowered,
+            Map<Integer, BlockInput> inputs) {
+        HashMap<IrValue, ExceptionTransfer> transfersByExceptionValue = new HashMap<>();
+        for (ExceptionTransfer transfer : lowered.exceptionTransfers()) {
+            transfersByExceptionValue.put(transfer.exceptionValue(), transfer);
+        }
+        ArrayList<IrInstruction> instructions = new ArrayList<>(lowered.instructions().size());
+        for (IrInstruction instruction : lowered.instructions()) {
+            ExceptionTransfer transfer = instruction.exceptionSites().stream()
+                    .map(IrExceptionSite::exceptionValue)
+                    .flatMap(java.util.Optional::stream)
+                    .map(transfersByExceptionValue::get)
+                    .filter(java.util.Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+            if (transfer == null) {
+                instructions.add(instruction);
+                continue;
+            }
+            List<IrExceptionSite> sites = instruction.exceptionSites().stream()
+                    .map(site -> new IrExceptionSite(
+                            site.kind(),
+                            materializeExceptionEdges(
+                                    site.handlers(),
+                                    transfer.handlerState(),
+                                    inputs),
+                            site.exceptionValue()))
+                    .toList();
+            instructions.add(instruction.withExceptionSites(sites));
+        }
+        return List.copyOf(instructions);
+    }
+
+    private List<IrExceptionEdge> materializeThrowEdges(
+            BlockLowering lowered,
+            Map<Integer, BlockInput> inputs) {
+        return lowered.throwTransfer()
+                .map(transfer -> materializeExceptionEdges(
+                        transfer.handlers(),
+                        transfer.handlerState(),
+                        inputs))
+                .orElse(List.of());
+    }
+
+    private List<IrExceptionEdge> materializeExceptionEdges(
+            List<IrExceptionEdge> handlers,
+            FrameState handlerState,
+            Map<Integer, BlockInput> inputs) {
+        return handlers.stream()
+                .map(edge -> new IrExceptionEdge(
+                        edge.target(),
+                        edge.catchType(),
+                        edge.target().startsWith("b")
+                                ? targetArguments(edge.target(), handlerState, inputs)
+                                : List.of(handlerState.stack().get(0))))
+                .toList();
     }
 
     private IrTerminator withTargetArguments(
@@ -2318,7 +2430,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 + ":bsm:" + handleKey(constantDynamic.getBootstrapMethod());
         if (isSupportedConstantDynamic(constantDynamic)) {
             IrValue constantId = values.next(IrType.I64);
-            instructions.add(IrInstruction.constLong(constantId, stableClassId(key)));
+            instructions.add(IrInstruction.constLong(
+                    constantId,
+                    runtimeTokens.token(
+                            RuntimeTokenDomain.CONSTANT_DYNAMIC,
+                            key)));
             IrValue result = values.next(JvmToIrTypes.fieldType(constantDynamic.getDescriptor()));
             instructions.add(IrInstruction.call(
                     java.util.Optional.of(result),
@@ -2430,7 +2546,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         return new ClassObjectReference(
                 classObject,
                 List.of(
-                        IrInstruction.constLong(classId, stableClassId(classDescriptor)),
+                        IrInstruction.constLong(
+                                classId,
+                                runtimeTokens.token(
+                                        RuntimeTokenDomain.CLASS_OBJECT,
+                                        classDescriptor)),
                         IrInstruction.operation(
                                 java.util.Optional.of(classObject),
                                 IrOpcode.CLASS_OBJECT,
@@ -2456,46 +2576,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 "classInitEnd"));
     }
 
-    private void appendClassInitializerFailed(
-            ClassInitializationContext classInitialization,
-            IrValue exception,
-            List<IrInstruction> instructions) {
-        if (classInitialization == null) {
-            return;
-        }
-        instructions.add(IrInstruction.operation(
-                java.util.Optional.empty(),
-                IrOpcode.CLASS_INIT_FAILED,
-                List.of(classInitialization.classObject(), exception),
-                classInitialization.classSymbol()));
-        instructions.add(memoryMarker(
-                IrOpcode.CLASS_INIT_HAPPENS_BEFORE,
-                List.of(classInitialization.classObject()),
-                "classInitFailed"));
-    }
-
     private String classDescriptor(String internalName) {
         return "L" + internalName + ";";
-    }
-
-    private long stableClassId(String classDescriptor) {
-        return Integer.toUnsignedLong(classDescriptor.hashCode());
     }
 
     private void appendMethodMonitorExit(MethodMonitor methodMonitor, List<IrInstruction> instructions) {
         if (methodMonitor != null) {
             appendMonitorHelper(IrOpcode.MONITOR_EXIT, methodMonitor.lock(), List.of(), instructions, "monitorExit");
-        }
-    }
-
-    private void appendMethodMonitorExceptionalExit(MethodMonitor methodMonitor, List<IrInstruction> instructions) {
-        if (methodMonitor != null) {
-            appendMonitorHelper(
-                    IrOpcode.MONITOR_EXIT_ON_EXCEPTION,
-                    methodMonitor.lock(),
-                    List.of(),
-                    instructions,
-                    "monitorExitOnException");
         }
     }
 
@@ -2641,9 +2728,37 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             boolean interfaceOwner) {
     }
 
-    private record BlockLowering(List<IrInstruction> instructions, IrTerminator terminator, FrameState outgoingState) {
+    private record ExceptionTransfer(
+            IrValue exceptionValue,
+            FrameState handlerState,
+            List<IrExceptionEdge> handlers) {
+        private ExceptionTransfer {
+            handlers = List.copyOf(handlers);
+        }
+    }
+
+    private record BlockLowering(
+            List<IrInstruction> instructions,
+            IrTerminator terminator,
+            FrameState outgoingState,
+            List<ExceptionTransfer> exceptionTransfers,
+            java.util.Optional<ExceptionTransfer> throwTransfer) {
         private BlockLowering {
             instructions = List.copyOf(instructions);
+            Set<IrValue> activeExceptionValues = instructions.stream()
+                    .flatMap(instruction -> instruction.exceptionSites().stream())
+                    .map(IrExceptionSite::exceptionValue)
+                    .flatMap(java.util.Optional::stream)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            exceptionTransfers = exceptionTransfers.stream()
+                    .filter(transfer -> activeExceptionValues.contains(transfer.exceptionValue()))
+                    .toList();
+        }
+
+        private List<ExceptionTransfer> allExceptionTransfers() {
+            ArrayList<ExceptionTransfer> transfers = new ArrayList<>(exceptionTransfers);
+            throwTransfer.ifPresent(transfers::add);
+            return List.copyOf(transfers);
         }
     }
 
@@ -2799,6 +2914,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
 
         private List<IrValue> parameters() {
             return parametersBySlot.values().stream().map(MergeParameter::value).toList();
+        }
+
+        private void forceParameter(MergeSlot slot, ValueFactory values) {
+            IrValue current = state.value(slot);
+            IrValue parameter = values.next(current.type());
+            parametersBySlot.put(slot, new MergeParameter(slot, parameter));
+            state.set(slot, parameter);
         }
 
         private boolean merge(

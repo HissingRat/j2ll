@@ -3,11 +3,11 @@ package xyz.melodysky.packaging;
 import java.util.Objects;
 
 /**
- * One runtime registration binding addressed by an opaque, seed-derived token.
+ * One registration binding in a build-diverse physical owner layout.
  *
- * <p>The Java identity remains available only to the registration source
- * emitter. Native lookup joins the metadata and function-pointer tables by
- * {@link #token()} instead of relying on their physical order.</p>
+ * <p>The token is hash-only report evidence. It is deliberately not emitted
+ * into generated C or the final native binary and is never used as a runtime
+ * join key.</p>
  */
 public record MethodTableHidingEntry(
         NativeRegistrationEntry registration,

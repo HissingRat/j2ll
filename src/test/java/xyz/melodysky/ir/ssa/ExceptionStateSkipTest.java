@@ -11,11 +11,13 @@ import org.objectweb.asm.Opcodes;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
+import xyz.melodysky.ir.model.IrType;
+import xyz.melodysky.ir.validate.IrMethodValidator;
 import xyz.melodysky.pipeline.LoweringStatus;
 
 class ExceptionStateSkipTest implements Opcodes {
     @Test
-    void handlerLiveLocalStateIsSkippedWithoutPartialIr() {
+    void handlerLiveLocalStateIsCarriedByExceptionEdgeArguments() {
         String owner = "pkg/HandlerLocalState";
         var parsedClass = new AsmClassParser()
                 .parse(new ClassFileEntry(owner + ".class", fixture(owner), "fixture"))
@@ -30,12 +32,20 @@ class ExceptionStateSkipTest implements Opcodes {
         var result = new BytecodeToSsaLowerer().lower(cfg);
         var artifact = result.artifact().orElseThrow();
 
-        assertEquals(LoweringStatus.SKIPPED, artifact.status());
-        assertEquals("UNSUPPORTED_EXCEPTION_STATE_MERGE", artifact.reasonCode());
-        assertTrue(artifact.irMethod().isEmpty());
-        assertEquals(
-                LoweringDiagnostics.UNSUPPORTED_EXCEPTION_STATE_MERGE,
-                result.diagnostics().get(0).code());
+        assertEquals(LoweringStatus.NATIVE_LOWERED, artifact.status());
+        var irMethod = artifact.irMethod().orElseThrow();
+        assertTrue(new IrMethodValidator().validate(irMethod).isEmpty());
+        assertTrue(result.diagnostics().isEmpty());
+        assertTrue(irMethod.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction -> instruction.exceptionSites().stream())
+                .anyMatch(site -> site.exceptionValue().isPresent()
+                        && site.handlers().stream().anyMatch(edge ->
+                                edge.arguments().size() >= 2
+                                        && edge.arguments().get(0)
+                                                .equals(site.exceptionValue().orElseThrow())
+                                        && edge.arguments().get(1).type()
+                                                == IrType.REFERENCE)));
     }
 
     private byte[] fixture(String owner) {

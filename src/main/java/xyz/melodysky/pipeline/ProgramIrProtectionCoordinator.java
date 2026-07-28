@@ -42,6 +42,8 @@ import xyz.melodysky.ir.pass.protection.MethodSplittingPass;
 import xyz.melodysky.ir.pass.protection.MethodSplittingResult;
 import xyz.melodysky.ir.pass.protection.MethodSplittingStatus;
 import xyz.melodysky.ir.pass.protection.OutlinedMethodHelper;
+import xyz.melodysky.protection.audit.ProtectionApplicability;
+import xyz.melodysky.protection.audit.ProtectionPassCoverageFact;
 import xyz.melodysky.report.ProtectionPassReport;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
@@ -89,17 +91,22 @@ public final class ProgramIrProtectionCoordinator {
                 config.enabled() && config.methodInlining(),
                 inliningResult.decisions(),
                 inliningPlan,
+                methods.keySet(),
                 seed));
 
         IrProgram callInput = program(methods);
-        Set<String> nativeMethodKeys = preliminaryImplementationPlan.llvmImplementations().stream()
-                .map(implementation -> implementation.methodKey())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Map<String, IrNativeDirectTargets.FunctionAbi> nativeFunctionAbis =
+                preliminaryImplementationPlan.llvmImplementations().stream()
+                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                implementation -> implementation.methodKey(),
+                                implementation -> new IrNativeDirectTargets.FunctionAbi(
+                                        implementation.passesJniEnv(),
+                                        implementation.passesOwnerClass())));
         boolean callIndirectionEnabled = config.enabled() && config.callIndirection();
         IrCallIndirectionResult callIndirection = new IrCallIndirectionPass().run(
                 callInput,
                 directCallFacts(callInput, callGraph),
-                new IrNativeDirectTargets(nativeMethodKeys),
+                new IrNativeDirectTargets(nativeFunctionAbis),
                 IrCallIndirectionMode.TABLE,
                 seed,
                 callIndirectionEnabled);
@@ -107,6 +114,10 @@ public final class ProgramIrProtectionCoordinator {
         reports.add(callIndirectionReport(
                 callIndirectionEnabled,
                 callIndirection,
+                callInput.classes().stream()
+                        .flatMap(irClass -> irClass.methods().stream())
+                        .map(IrMethod::methodKey)
+                        .toList(),
                 seed));
 
         SplitRun split = split(
@@ -191,7 +202,10 @@ public final class ProgramIrProtectionCoordinator {
     private ProtectionPassReport callIndirectionReport(
             boolean enabled,
             IrCallIndirectionResult result,
+            List<String> subjectMethods,
             long seed) {
+        List<ProtectionPassCoverageFact> facts =
+                callIndirectionFacts(enabled, result, subjectMethods);
         if (!enabled) {
             return report(
                     "IR_CALL_INDIRECTION",
@@ -199,7 +213,8 @@ public final class ProgramIrProtectionCoordinator {
                     "PROTECTION_PASS_DISABLED",
                     List.of(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         if (!result.diagnostics().isEmpty()) {
             return report(
@@ -211,7 +226,8 @@ public final class ProgramIrProtectionCoordinator {
                             .map(site -> site.siteId().callerMethodKey())
                             .toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         if (!result.changed()) {
             String reason = result.skippedSites().stream()
@@ -227,7 +243,8 @@ public final class ProgramIrProtectionCoordinator {
                             .map(skip -> skip.siteId().callerMethodKey())
                             .toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         IrCallIndirectionPlan plan = result.plan().orElseThrow();
         return report(
@@ -241,7 +258,8 @@ public final class ProgramIrProtectionCoordinator {
                                         .flatMap(group -> group.targets().stream())
                                         .map(target -> target.entryId()))
                         .toList(),
-                seed);
+                seed,
+                facts);
     }
 
     private MethodInliningPlan inliningPlan(
@@ -341,7 +359,10 @@ public final class ProgramIrProtectionCoordinator {
             boolean enabled,
             List<MethodInliningDecision> decisions,
             MethodInliningPlan plan,
+            Set<String> subjectMethods,
             long seed) {
+        List<ProtectionPassCoverageFact> facts =
+                inliningFacts(enabled, decisions, subjectMethods);
         if (!enabled) {
             return report(
                     "METHOD_INLINING",
@@ -349,7 +370,8 @@ public final class ProgramIrProtectionCoordinator {
                     "PROTECTION_PASS_DISABLED",
                     plan.candidates().stream().map(MethodInliningCandidate::callerMethodKey).toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         List<MethodInliningDecision> inlined = decisions.stream()
                 .filter(decision -> decision.status() == MethodInliningDecision.Status.INLINED)
@@ -364,7 +386,8 @@ public final class ProgramIrProtectionCoordinator {
                     MethodInliningReason.VALIDATION_FAILED,
                     failed.stream().map(MethodInliningDecision::callerMethodKey).toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         if (!inlined.isEmpty()) {
             return report(
@@ -373,7 +396,8 @@ public final class ProgramIrProtectionCoordinator {
                     MethodInliningReason.INLINED,
                     inlined.stream().map(MethodInliningDecision::callerMethodKey).toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         String reason = decisions.stream()
                 .map(MethodInliningDecision::reasonCode)
@@ -386,13 +410,16 @@ public final class ProgramIrProtectionCoordinator {
                 reason,
                 plan.candidates().stream().map(MethodInliningCandidate::callerMethodKey).toList(),
                 List.of(),
-                seed);
+                seed,
+                facts);
     }
 
     private ProtectionPassReport splittingReport(
             boolean enabled,
             List<MethodSplittingResult> decisions,
             long seed) {
+        List<ProtectionPassCoverageFact> facts =
+                splittingFacts(enabled, decisions);
         if (!enabled) {
             return report(
                     "METHOD_SPLITTING",
@@ -400,7 +427,8 @@ public final class ProgramIrProtectionCoordinator {
                     "PROTECTION_PASS_DISABLED",
                     decisions.stream().map(result -> result.caller().methodKey()).toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         List<MethodSplittingResult> failed = decisions.stream()
                 .filter(result -> result.status() == MethodSplittingStatus.FAILED)
@@ -412,7 +440,8 @@ public final class ProgramIrProtectionCoordinator {
                     "METHOD_SPLITTING_VALIDATION_FAILED",
                     failed.stream().map(result -> result.caller().methodKey()).toList(),
                     List.of(),
-                    seed);
+                    seed,
+                    facts);
         }
         List<MethodSplittingResult> ran = decisions.stream()
                 .filter(result -> result.status() == MethodSplittingStatus.RAN)
@@ -427,7 +456,8 @@ public final class ProgramIrProtectionCoordinator {
                             .flatMap(result -> result.helpers().stream())
                             .map(helper -> helper.emittedFunctionSymbol(llvmFunctionName))
                             .toList(),
-                    seed);
+                    seed,
+                    facts);
         }
         String reason = decisions.stream()
                 .map(MethodSplittingResult::reasonCode)
@@ -440,7 +470,169 @@ public final class ProgramIrProtectionCoordinator {
                 reason,
                 decisions.stream().map(result -> result.caller().methodKey()).toList(),
                 List.of(),
-                seed);
+                seed,
+                facts);
+    }
+
+    private List<ProtectionPassCoverageFact> inliningFacts(
+            boolean enabled,
+            List<MethodInliningDecision> decisions,
+            Set<String> subjectMethods) {
+        if (!enabled) {
+            return ProtectionCoverageFacts.uniformMethods(
+                    "IR",
+                    "METHOD_INLINING",
+                    subjectMethods,
+                    false,
+                    ProtectionApplicability.UNKNOWN,
+                    false,
+                    "SKIPPED",
+                    "PROTECTION_PASS_DISABLED");
+        }
+        Map<String, List<MethodInliningDecision>> byCaller =
+                decisions.stream().collect(
+                        java.util.stream.Collectors.groupingBy(
+                                MethodInliningDecision::callerMethodKey,
+                                LinkedHashMap::new,
+                                java.util.stream.Collectors.toList()));
+        return subjectMethods.stream().sorted().map(methodKey -> {
+            List<MethodInliningDecision> methodDecisions =
+                    byCaller.getOrDefault(methodKey, List.of());
+            if (methodDecisions.stream().anyMatch(decision ->
+                    decision.status()
+                            == MethodInliningDecision.Status.FAILED)) {
+                return ProtectionCoverageFacts.method(
+                        "IR",
+                        "METHOD_INLINING",
+                        methodKey,
+                        true,
+                        ProtectionApplicability.APPLICABLE,
+                        false,
+                        "FAILED",
+                        MethodInliningReason.VALIDATION_FAILED);
+            }
+            if (methodDecisions.stream().anyMatch(decision ->
+                    decision.status()
+                            == MethodInliningDecision.Status.INLINED)) {
+                return ProtectionCoverageFacts.method(
+                        "IR",
+                        "METHOD_INLINING",
+                        methodKey,
+                        true,
+                        ProtectionApplicability.APPLICABLE,
+                        true,
+                        "RAN",
+                        MethodInliningReason.INLINED);
+            }
+            String reason = methodDecisions.stream()
+                    .map(MethodInliningDecision::reasonCode)
+                    .sorted()
+                    .findFirst()
+                    .orElse(MethodInliningReason.NO_CANDIDATE);
+            return ProtectionCoverageFacts.method(
+                    "IR",
+                    "METHOD_INLINING",
+                    methodKey,
+                    true,
+                    ProtectionApplicability.NOT_APPLICABLE,
+                    false,
+                    "SKIPPED",
+                    reason);
+        }).toList();
+    }
+
+    private List<ProtectionPassCoverageFact> splittingFacts(
+            boolean enabled,
+            List<MethodSplittingResult> decisions) {
+        return decisions.stream()
+                .sorted(Comparator.comparing(
+                        result -> result.caller().methodKey()))
+                .map(result -> {
+                    if (!enabled) {
+                        return ProtectionCoverageFacts.method(
+                                "IR",
+                                "METHOD_SPLITTING",
+                                result.caller().methodKey(),
+                                false,
+                                ProtectionApplicability.UNKNOWN,
+                                false,
+                                "SKIPPED",
+                                "PROTECTION_PASS_DISABLED");
+                    }
+                    boolean affected =
+                            result.status() == MethodSplittingStatus.RAN;
+                    return ProtectionCoverageFacts.method(
+                            "IR",
+                            "METHOD_SPLITTING",
+                            result.caller().methodKey(),
+                            true,
+                            affected || result.status()
+                                            == MethodSplittingStatus.FAILED
+                                    ? ProtectionApplicability.APPLICABLE
+                                    : ProtectionApplicability.NOT_APPLICABLE,
+                            affected,
+                            result.status().name(),
+                            result.reasonCode());
+                })
+                .toList();
+    }
+
+    private List<ProtectionPassCoverageFact> callIndirectionFacts(
+            boolean enabled,
+            IrCallIndirectionResult result,
+            List<String> subjectMethods) {
+        if (!enabled) {
+            return ProtectionCoverageFacts.uniformMethods(
+                    "IR",
+                    "IR_CALL_INDIRECTION",
+                    subjectMethods,
+                    false,
+                    ProtectionApplicability.UNKNOWN,
+                    false,
+                    "SKIPPED",
+                    "PROTECTION_PASS_DISABLED");
+        }
+        if (!result.diagnostics().isEmpty()) {
+            return ProtectionCoverageFacts.uniformMethods(
+                    "IR",
+                    "IR_CALL_INDIRECTION",
+                    subjectMethods,
+                    true,
+                    ProtectionApplicability.UNKNOWN,
+                    false,
+                    "FAILED",
+                    IrCallIndirectionReasons.VALIDATION_FAILED);
+        }
+        Set<String> affectedCallers = result.plan().stream()
+                .flatMap(plan -> plan.sites().stream())
+                .map(site -> site.siteId().callerMethodKey())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Map<String, String> skippedReasons = new LinkedHashMap<>();
+        result.skippedSites().forEach(skip ->
+                skippedReasons.merge(
+                        skip.siteId().callerMethodKey(),
+                        skip.reasonCode(),
+                        (left, right) -> left.compareTo(right) <= 0
+                                ? left
+                                : right));
+        return subjectMethods.stream().distinct().sorted().map(methodKey -> {
+            boolean affected = affectedCallers.contains(methodKey);
+            return ProtectionCoverageFacts.method(
+                    "IR",
+                    "IR_CALL_INDIRECTION",
+                    methodKey,
+                    true,
+                    affected
+                            ? ProtectionApplicability.APPLICABLE
+                            : ProtectionApplicability.NOT_APPLICABLE,
+                    affected,
+                    affected ? "RAN" : "SKIPPED",
+                    affected
+                            ? result.reasonCode()
+                            : skippedReasons.getOrDefault(
+                                    methodKey,
+                                    IrCallIndirectionReasons.NO_CANDIDATE));
+        }).toList();
     }
 
     private ProtectionPassReport report(
@@ -449,7 +641,8 @@ public final class ProgramIrProtectionCoordinator {
             String reason,
             List<String> methods,
             List<String> symbols,
-            long seed) {
+            long seed,
+            List<ProtectionPassCoverageFact> coverageFacts) {
         return new ProtectionPassReport(
                 pass,
                 "IR",
@@ -457,7 +650,9 @@ public final class ProgramIrProtectionCoordinator {
                 reason,
                 methods,
                 symbols,
-                Long.toString(seed));
+                Long.toString(seed),
+                List.of(),
+                coverageFacts);
     }
 
     private IrProgram program(Map<String, IrMethod> methods) {

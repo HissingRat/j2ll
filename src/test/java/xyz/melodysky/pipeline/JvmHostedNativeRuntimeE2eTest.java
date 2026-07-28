@@ -17,6 +17,8 @@ import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -272,14 +274,15 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"DIRECT_LLVM_CALL\""));
         assertTrue(report.contains("\"helper\": \"direct:pkg/FieldCallOps#callee!(I)I\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_field_table"));
+        assertFalse(source.contains("j2ll_field_table"));
         assertTrue(source.contains("GetStaticIntField"));
         assertTrue(source.contains("SetStaticIntField"));
         assertTrue(source.contains("GetIntField"));
         assertTrue(source.contains("SetIntField"));
         assertFalse(source.contains("self->"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_FieldCallOps.ll"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_field_get_static_i32"));
+        assertTrue(llvm.matches(
+                "(?s).*call i32 @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr %j2ll_owner\\).*"));
         assertTrue(llvm.contains("call void @j2ll_rt_field_put_field_i32"));
         assertTrue(llvm.matches("(?s).*@j2ll_cit_[0-9a-f]{32} = internal constant \\[[0-9]+ x ptr] \\[.*"));
         assertTrue(llvm.matches("(?s).*getelementptr inbounds \\[[0-9]+ x ptr], ptr @j2ll_cit_[0-9a-f]{32}, i32 0, i32 [0-9]+.*"));
@@ -601,12 +604,12 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(report.contains("\"reasonCode\": \"REFLECTION_ACCESSIBLE_HELPER\""));
         assertTrue(report.contains("\"reasonCode\": \"TYPE_HELPER\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_reflection_method_table"));
-        assertTrue(source.contains("j2ll_reflection_field_table"));
-        assertTrue(source.contains("j2ll_rt_class_for_name_static"));
-        assertTrue(source.contains("j2ll_rt_get_declared_method"));
-        assertTrue(source.contains("j2ll_rt_get_declared_field"));
-        assertTrue(source.contains("j2ll_rt_get_declared_constructor"));
+        assertFalse(source.contains("j2ll_reflection_method_table"));
+        assertFalse(source.contains("j2ll_reflection_field_table"));
+        assertFalse(source.contains("j2ll_find_reflection"));
+        assertFalse(source.contains("j2ll_rt_get_declared_method"));
+        assertFalse(source.contains("j2ll_rt_get_declared_field"));
+        assertFalse(source.contains("j2ll_rt_get_declared_constructor"));
         assertTrue(source.contains("j2ll_rt_reflect_invoke"));
         assertTrue(source.contains("j2ll_rt_reflect_new_instance"));
         assertTrue(source.contains("j2ll_rt_reflect_set_accessible"));
@@ -623,10 +626,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(source.contains("j2ll_rt_reflect_field_get"));
         assertTrue(source.contains("j2ll_rt_reflect_field_set"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ReflectionOps.ll"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_class_for_name_static(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_get_declared_method(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_get_declared_field(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_get_declared_constructor(ptr %j2ll_env"));
+        assertTrue(java.util.regex.Pattern.compile(
+                        "call ptr @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env")
+                .matcher(llvm)
+                .find());
+        assertFalse(llvm.contains("@j2ll_rt_class_for_name_static"));
+        assertFalse(llvm.contains("@j2ll_rt_get_declared_method"));
+        assertFalse(llvm.contains("@j2ll_rt_get_declared_field"));
+        assertFalse(llvm.contains("@j2ll_rt_get_declared_constructor"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_reflect_invoke(ptr %j2ll_env"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_reflect_new_instance(ptr %j2ll_env"));
         assertTrue(llvm.contains("call void @j2ll_rt_reflect_set_accessible(ptr %j2ll_env"));
@@ -790,7 +797,9 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_rt_div_i32"));
         assertFalse(source.contains("java/lang/ArithmeticException"));
-        assertTrue(source.contains("j2ll_decode_metadata_strings();"));
+        assertTrue(source.contains("j2ll_gcf_decode_"));
+        assertFalse(source.contains("j2ll_decode_metadata_strings"));
+        assertFalse(source.contains("j2ll_encoded_metadata_strings"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DivRemOps.ll"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_div_i32(ptr %j2ll_env"));
         assertTrue(llvm.contains("call i32 @j2ll_rt_rem_i32(ptr %j2ll_env"));
@@ -1296,12 +1305,18 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(1, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"STRING_CONCAT_CONSTANTS_HELPER\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_rt_string_constant"));
-        assertTrue(source.contains("j2ll_encrypted_string_constant_table"), source);
-        assertFalse(source.contains("static const struct j2ll_string_constant_entry j2ll_string_constant_table"));
+        assertTrue(source.contains("jobject j2ll_rt_string_constant_"));
+        assertTrue(source.contains("j2ll_business_text_"), source);
+        assertTrue(source.contains("volatile unsigned char* clear_cursor"), source);
+        assertFalse(source.contains(
+                "jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token)"));
+        assertFalse(source.contains("j2ll_encrypted_string_constant_table"));
+        assertFalse(source.contains("j2ll_string_constant_table"));
         assertTrue(source.contains("NewStringUTF"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_StringConcatRecipe.ll"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_string_constant(ptr %j2ll_env"));
+        String localizedHelper = localizedBusinessStringHelper(llvm);
+        assertTrue(source.contains(
+                "jobject " + localizedHelper + "(JNIEnv* env)"));
         assertTrue(llvm.contains("call ptr @j2ll_rt_string_builder_to_string(ptr %j2ll_env"));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
         assertFalse(symbolAudit.contains("value="));
@@ -1328,21 +1343,26 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
-        assertEquals("""
-                ordinary-secret
-                ctor-secret
-                """, differential.outputRun().stdout());
+        assertEquals(
+                "ordinary-\0-\uD83D\uDE00-secret\nctor-secret\n",
+                differential.outputRun().stdout());
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_encrypted_string_constant_table"));
-        assertTrue(source.contains("j2ll_rt_string_constant(env"));
-        assertFalse(source.contains("ordinary-secret"));
+        assertTrue(source.contains("j2ll_business_text_"));
+        assertTrue(source.contains("volatile unsigned char* clear_cursor"));
+        assertFalse(source.contains("j2ll_encrypted_string_constant_table"));
+        assertFalse(source.contains("j2ll_string_constant_table"));
+        assertFalse(source.contains(
+                "jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token)"));
+        assertFalse(source.contains("ordinary-\0-\uD83D\uDE00-secret"));
         assertFalse(source.contains("ctor-secret"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_ProtectedStrings.ll"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_string_constant(ptr %j2ll_env"));
-        assertFalse(llvm.contains("ordinary-secret"));
+        String localizedHelper = localizedBusinessStringHelper(llvm);
+        assertTrue(source.contains(
+                "jobject " + localizedHelper + "(JNIEnv* env)"));
+        assertFalse(llvm.contains("ordinary-\0-\uD83D\uDE00-secret"));
         assertFalse(llvm.contains("ctor-secret"));
         String symbolAudit = Files.readString(workspace.resolve("reports/symbol-audit.json"));
-        assertFalse(symbolAudit.contains("ordinary-secret"));
+        assertFalse(symbolAudit.contains("ordinary-\0-\uD83D\uDE00-secret"));
         assertFalse(symbolAudit.contains("ctor-secret"));
         String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
         assertTrue(protectionReport.contains("\"passName\": \"STRING_ENCRYPTION\""));
@@ -1354,6 +1374,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertTrue(artifactAudit.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT\""));
         assertTrue(artifactAudit.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR\""));
         assertFalse(artifactAudit.contains("ctor-secret"));
+        assertFalse(artifactAudit.contains("ordinary-"));
     }
 
     @Test
@@ -1390,12 +1411,18 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertEquals(5, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         assertTrue(report.contains("\"reasonCode\": \"LAMBDA_METAFACTORY_HELPER\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_rt_lambda_new"));
+        assertTrue(source.contains("j2ll_lambda_new_from_entry"));
+        assertFalse(source.contains("j2ll_lambda_table"));
+        assertFalse(source.contains("j2ll_find_lambda_entry"));
         assertTrue(source.contains("LambdaMetafactory"));
         assertTrue(source.contains("privateLookupIn"));
         assertTrue(source.contains("invokeWithArguments"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_LambdaShapes.ll"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_lambda_new(ptr %j2ll_env"));
+        assertTrue(java.util.regex.Pattern.compile(
+                        "call ptr @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr")
+                .matcher(llvm)
+                .find());
+        assertFalse(llvm.contains("@j2ll_rt_lambda_new"));
         assertFalse(llvm.contains("call ptr @j2ll_call_dynamic"));
     }
 
@@ -1527,13 +1554,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         assertFalse(defaultSuperValue.accessFlags().isNative());
         assertTrue(defaultSuperValue.hasCode());
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("j2ll_method_table"));
+        assertFalse(source.contains("j2ll_method_table"));
         assertTrue(source.contains("CallIntMethod"));
         assertFalse(source.contains("vtable"));
         String llvm = Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_DispatchOps.ll"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_call_virtual_i32_a(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call i32 @j2ll_rt_call_interface_i32_a(ptr %j2ll_env"));
-        assertTrue(llvm.contains("call ptr @j2ll_rt_call_interface_ref_a(ptr %j2ll_env"));
+        assertTrue(llvm.matches(
+                "(?s).*call i32 @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr .*"));
+        assertTrue(llvm.matches(
+                "(?s).*call ptr @j2ll_h_[0-9a-f]{16}\\(ptr %j2ll_env, ptr .*"));
     }
 
     @Test
@@ -1565,14 +1593,44 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
         assertTrue(report.contains("\"rewriteStrategy\": \"constructorStub\""));
         assertTrue(report.contains("\"rewriteStrategy\": \"classInitializerStub\""));
-        assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
-        assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
-        assertTrue(report.contains("\"nativeImplementationPath\": \"TEMPLATE_JNI_PATH\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CONSTRUCTOR_SPLIT_BODY_IR\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CLASS_INITIALIZER_BODY_IR\""));
+        assertEquals(2, countOccurrences(report, "\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
         assertTrue(source.contains("\"x\", \"I\""));
         assertTrue(source.contains("\"y\", \"I\""));
         assertTrue(source.contains("SetIntField"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_Point.ll"))
+                .contains("define external hidden void"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_StaticInitOps.ll"))
+                .contains("define external hidden void"));
+    }
+
+    @Test
+    void constructorStubPreservesParameterizedSuperInvocationInChildJvm() throws Exception {
+        Path inputJar = temp.resolve("parameterized-super-constructor.jar");
+        writeJar(inputJar, Map.of(
+                "pkg/ConstructorBase.class", parameterizedConstructorBaseClass(),
+                "pkg/ConstructorChild.class", parameterizedConstructorChildClass(),
+                "pkg/ParameterizedConstructorMain.class", parameterizedConstructorMainClass()));
+        ResolvedConfig config = config(
+                inputJar,
+                List.of("pkg/ConstructorChild#<init>!(Ljava/lang/String;I)V"));
+        Path workspace = temp.resolve("out/parameterized-super-constructor");
+
+        MainlinePipelineResult pipeline = runPipeline(config, workspace);
+        DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
+                inputJar,
+                pipeline.outputJar(),
+                "pkg.ParameterizedConstructorMain");
+
+        assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
+        assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
+        assertEquals("base:7:14\n1\n", differential.outputRun().stdout());
+        String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CONSTRUCTOR_SPLIT_BODY_IR\""));
+        assertTrue(report.contains("\"nativeImplementationPath\": \"LLVM_NATIVE_PATH\""));
     }
 
     @Test
@@ -1605,14 +1663,17 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 generic
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
-        assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CONSTRUCTOR_SPLIT_BODY_IR\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CLASS_INITIALIZER_BODY_IR\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
         assertTrue(source.contains("\"total\", \"I\""));
         assertTrue(source.contains("\"label\", \"Ljava/lang/String;\""));
         assertTrue(source.contains("\"values\", \"[I\""));
         assertTrue(source.contains("NewIntArray"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_GenericBox.ll"))
+                .contains("define external hidden void"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_GenericStaticInit.ll"))
+                .contains("define external hidden void"));
     }
 
     @Test
@@ -1643,13 +1704,14 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 branched
                 """, differential.outputRun().stdout());
         String report = Files.readString(workspace.resolve("reports/lowering-report.json"));
-        assertTrue(report.contains("\"reasonCode\": \"CONSTRUCTOR_BODY_HELPER\""));
-        assertTrue(report.contains("\"reasonCode\": \"CLASS_INITIALIZER_BODY_HELPER\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CONSTRUCTOR_SPLIT_BODY_IR\""));
+        assertTrue(report.contains("\"reasonCode\": \"LLVM_CLASS_INITIALIZER_BODY_IR\""));
         String source = generatedJniSource(workspace);
-        assertTrue(source.contains("generic JVM-hosted body helper lowered from SSA IR"));
-        assertTrue(source.contains("goto j2ll_block_"));
-        assertTrue(source.contains("if (j2ll_v_"));
         assertTrue(source.contains("SetIntField"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_BranchingBox.ll"))
+                .contains("br i1"));
+        assertTrue(Files.readString(workspace.resolve("native/zig-workspace/llvm/pkg_BranchingStaticInit.ll"))
+                .contains("br i1"));
     }
 
     @Test
@@ -6785,6 +6847,138 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         return writer.toByteArray();
     }
 
+    private byte[] parameterizedConstructorBaseClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/ConstructorBase", null, "java/lang/Object", null);
+        writer.visitField(ACC_PUBLIC | ACC_STATIC, "calls", "I", null, null).visitEnd();
+        writer.visitField(ACC_PROTECTED | ACC_FINAL, "label", "Ljava/lang/String;", null, null).visitEnd();
+        writer.visitField(ACC_PROTECTED | ACC_FINAL, "seed", "I", null, null).visitEnd();
+        MethodVisitor constructor = writer.visitMethod(
+                ACC_PUBLIC,
+                "<init>",
+                "(Ljava/lang/String;I)V",
+                null,
+                null);
+        constructor.visitCode();
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        constructor.visitFieldInsn(GETSTATIC, "pkg/ConstructorBase", "calls", "I");
+        constructor.visitInsn(ICONST_1);
+        constructor.visitInsn(IADD);
+        constructor.visitFieldInsn(PUTSTATIC, "pkg/ConstructorBase", "calls", "I");
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitVarInsn(ALOAD, 1);
+        constructor.visitFieldInsn(PUTFIELD, "pkg/ConstructorBase", "label", "Ljava/lang/String;");
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitVarInsn(ILOAD, 2);
+        constructor.visitFieldInsn(PUTFIELD, "pkg/ConstructorBase", "seed", "I");
+        constructor.visitInsn(RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] parameterizedConstructorChildClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(
+                V17,
+                ACC_PUBLIC | ACC_SUPER,
+                "pkg/ConstructorChild",
+                null,
+                "pkg/ConstructorBase",
+                null);
+        writer.visitField(ACC_PRIVATE, "doubled", "I", null, null).visitEnd();
+        MethodVisitor constructor = writer.visitMethod(
+                ACC_PUBLIC,
+                "<init>",
+                "(Ljava/lang/String;I)V",
+                null,
+                null);
+        constructor.visitCode();
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitVarInsn(ALOAD, 1);
+        constructor.visitVarInsn(ILOAD, 2);
+        constructor.visitMethodInsn(
+                INVOKESPECIAL,
+                "pkg/ConstructorBase",
+                "<init>",
+                "(Ljava/lang/String;I)V",
+                false);
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitVarInsn(ILOAD, 2);
+        constructor.visitInsn(ICONST_2);
+        constructor.visitInsn(IMUL);
+        constructor.visitFieldInsn(PUTFIELD, "pkg/ConstructorChild", "doubled", "I");
+        constructor.visitInsn(RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+        MethodVisitor summary = writer.visitMethod(
+                ACC_PUBLIC,
+                "summary",
+                "()Ljava/lang/String;",
+                null,
+                null);
+        summary.visitCode();
+        summary.visitVarInsn(ALOAD, 0);
+        summary.visitFieldInsn(GETFIELD, "pkg/ConstructorChild", "label", "Ljava/lang/String;");
+        summary.visitVarInsn(ALOAD, 0);
+        summary.visitFieldInsn(GETFIELD, "pkg/ConstructorChild", "seed", "I");
+        summary.visitVarInsn(ALOAD, 0);
+        summary.visitFieldInsn(GETFIELD, "pkg/ConstructorChild", "doubled", "I");
+        summary.visitInvokeDynamicInsn(
+                "makeConcatWithConstants",
+                "(Ljava/lang/String;II)Ljava/lang/String;",
+                new org.objectweb.asm.Handle(
+                        H_INVOKESTATIC,
+                        "java/lang/invoke/StringConcatFactory",
+                        "makeConcatWithConstants",
+                        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                                + "Ljava/lang/invoke/MethodType;Ljava/lang/String;"
+                                + "[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+                        false),
+                "\u0001:\u0001:\u0001");
+        summary.visitInsn(ARETURN);
+        summary.visitMaxs(0, 0);
+        summary.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] parameterizedConstructorMainClass() {
+        ClassWriter writer = mainClass("pkg/ParameterizedConstructorMain");
+        MethodVisitor main = beginMain(writer);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitTypeInsn(NEW, "pkg/ConstructorChild");
+        main.visitInsn(DUP);
+        main.visitLdcInsn("base");
+        main.visitIntInsn(BIPUSH, 7);
+        main.visitMethodInsn(
+                INVOKESPECIAL,
+                "pkg/ConstructorChild",
+                "<init>",
+                "(Ljava/lang/String;I)V",
+                false);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "pkg/ConstructorChild",
+                "summary",
+                "()Ljava/lang/String;",
+                false);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/io/PrintStream",
+                "println",
+                "(Ljava/lang/String;)V",
+                false);
+        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        main.visitFieldInsn(GETSTATIC, "pkg/ConstructorBase", "calls", "I");
+        main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(I)V", false);
+        endMain(main);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     private byte[] staticInitOpsClass() {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/StaticInitOps", null, "java/lang/Object", null);
@@ -6815,7 +7009,7 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 null,
                 null);
         literal.visitCode();
-        literal.visitLdcInsn("ordinary-secret");
+        literal.visitLdcInsn("ordinary-\0-\uD83D\uDE00-secret");
         literal.visitInsn(ARETURN);
         literal.visitMaxs(0, 0);
         literal.visitEnd();
@@ -9775,6 +9969,15 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         main.visitLdcInsn("AIOOBE");
         main.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         main.visitLabel(done);
+    }
+
+    private String localizedBusinessStringHelper(String llvm) {
+        Matcher matcher = Pattern.compile(
+                        "call ptr @(j2ll_rt_string_constant_[0-9a-f]{32})"
+                                + "\\(ptr %j2ll_env\\)")
+                .matcher(llvm);
+        assertTrue(matcher.find(), llvm);
+        return matcher.group(1);
     }
 
     private String generatedJniSource(Path workspace) throws IOException {

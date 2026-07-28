@@ -5,15 +5,6 @@ final class HostJniJvmSemanticsSources {
 
     static String classInitHelperSource() {
         return """
-                jclass j2ll_rt_class_object(JNIEnv* env, int64_t class_token) {
-                    const char* class_name = j2ll_find_class_object_name(class_token);
-                    if (class_name == NULL) {
-                        j2ll_throw_new(env, "java/lang/NoClassDefFoundError", "unknown j2ll class-init token");
-                        return NULL;
-                    }
-                    return (*env)->FindClass(env, class_name);
-                }
-
                 void j2ll_rt_class_init_guard(JNIEnv* env, jclass class_object) {
                     (void)env;
                     (void)class_object;
@@ -46,6 +37,25 @@ final class HostJniJvmSemanticsSources {
                         return;
                     }
                     (*env)->Throw(env, (jthrowable)throwable);
+                }
+
+                jthrowable j2ll_rt_pending_exception(JNIEnv* env) {
+                    return (*env)->ExceptionOccurred(env);
+                }
+
+                void j2ll_rt_clear_exception(JNIEnv* env) {
+                    (*env)->ExceptionClear(env);
+                }
+
+                void j2ll_rt_rethrow(JNIEnv* env, jthrowable throwable) {
+                    if ((*env)->ExceptionCheck(env)) {
+                        return;
+                    }
+                    if (throwable == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "throwable is null");
+                        return;
+                    }
+                    (*env)->Throw(env, throwable);
                 }
 
                 """;

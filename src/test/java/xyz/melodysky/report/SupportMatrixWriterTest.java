@@ -1,6 +1,7 @@
 package xyz.melodysky.report;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -47,10 +48,10 @@ class SupportMatrixWriterTest {
 
         for (String reasonCode : List.of(
                 "UNSUPPORTED_EXCEPTION_STATE_MERGE",
+                "UNSUPPORTED_JVM_EXCEPTION_FLOW",
                 "UNSUPPORTED_FINALLY_SUBROUTINE",
                 "UNSUPPORTED_MONITOR_FINALLY_INTERACTION",
-                "UNSUPPORTED_MULTI_EXIT_FINALLY",
-                "UNSUPPORTED_NESTED_FINALLY",
+                "NATIVE_IMPLEMENTATION_UNAVAILABLE",
                 "UNSAFE_RAW_MEMORY_UNSUPPORTED",
                 "VAR_HANDLE_DYNAMIC_UNSUPPORTED",
                 "METHOD_HANDLE_CHAIN_UNSUPPORTED",
@@ -61,6 +62,26 @@ class SupportMatrixWriterTest {
                 "WAIT_NOTIFY_UNSUPPORTED")) {
             assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);
         }
+        for (String reasonCode : List.of(
+                "JVM_PENDING_EXCEPTION_ORDERED_DISPATCH",
+                "JVM_PENDING_EXCEPTION_PROPAGATION",
+                "LLVM_CONSTRUCTOR_SPLIT_BODY_IR",
+                "LLVM_CLASS_INITIALIZER_BODY_IR",
+                "JDK_INTRINSIC_HELPER",
+                "THREAD_HELPER")) {
+            assertTrue(json.contains("\"reasonCode\": \"" + reasonCode + "\""), reasonCode);
+        }
+        for (String feature : List.of(
+                "exception.protected-jni-pending-ordered-handlers",
+                "exception.unprotected-jni-pending-return",
+                "initializer.constructor-linear-verifier-prefix",
+                "initializer.class-initializer-body",
+                "jdk.object-get-class",
+                "thread.sleep-long")) {
+            assertTrue(json.contains("\"feature\": \"" + feature + "\""), feature);
+        }
+        assertFalse(json.contains("\"reasonCode\": \"UNSUPPORTED_MULTI_EXIT_FINALLY\""), json);
+        assertFalse(json.contains("\"reasonCode\": \"UNSUPPORTED_NESTED_FINALLY\""), json);
         assertTrue(json.contains("\"testCoverage\": \"JvmHostedNativeRuntimeE2eTest\""));
         assertTrue(json.contains("\"coverageLevel\": \"childJvmE2e\""));
         assertTrue(json.contains("\"evidenceCount\": 1"));
@@ -103,7 +124,7 @@ class SupportMatrixWriterTest {
         for (String boundary : List.of(
                 "support-matrix.json",
                 "UNSAFE_RAW_MEMORY_UNSUPPORTED",
-                "UNSUPPORTED_MULTI_EXIT_FINALLY",
+                "UNSUPPORTED_EXCEPTION_STATE_MERGE",
                 "SIGNATURE_RESIGNED")) {
             assertTrue(docs.contains(boundary), boundary);
         }

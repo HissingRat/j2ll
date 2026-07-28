@@ -377,7 +377,7 @@ All selected targets are compiled and linked by one generated `build.zig` and on
 
 Java support tiers are compiler-development and release-evidence categories, not a user-selectable config gate. j2ll inspects each selected Code-bearing method and records either `nativeLowered` or `skipped`; build failures remain separate diagnostics.
 
-j2ll also derives its logical Zig/native build name internally as a deterministic `j2ll_<hash>` token. It is not configurable and does not affect the fixed per-target library filenames below.
+j2ll also derives its logical Zig/native build name internally as a `j2ll_<hash>` token. It is not configurable and does not affect the fixed per-target library filenames below. The token varies between default randomized builds and remains stable in explicit-seed reproducible mode.
 
 `embeddedLibraryDirectory`
 
@@ -482,7 +482,7 @@ Controls SSA IR protection, LLVM module model protection and binary hardening. R
 Fields:
 
 - `enabled`: master switch for all protection layers.
-- `seed`: optional fixed seed. If `null`, j2ll derives a deterministic seed. Reports and final JAR metadata record only SHA-256 seed hashes, never the raw configured or derived seed.
+- `seed`: optional fixed seed. If `null`, each default build creates a fresh 256-bit randomized build root shared by every target in that matrix. A non-null value selects reproducible mode. Reports and final JAR metadata record only the seed mode and a hash-only identity, never the raw configured seed or randomized root. `--validate` does not persist a build identity; `--dry-run` does not promise the same native physical layout as a later default build.
 - `ir`: SSA IR protection settings.
 - `llvm`: LLVM module model protection settings.
 - `binary`: binary visibility/strip settings.
@@ -512,7 +512,7 @@ Pass fields:
 - `methodSplitting`: outline a bounded pure-scalar single-block suffix with explicit scalar live-in and one scalar live-out into a compiler-internal LLVM helper. It does not add a Java method.
 - `callIndirection`: attach a typed IR table/dispatcher plan to proven same-owner static/private-special calls, then lower that explicit plan to hidden LLVM pointer tables. The current per-owner backend rejects virtual/interface (including devirtualized single-target) and cross-owner direct calls with `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE`; it does not reinterpret their JVM bridge semantics.
 - `fieldInternalization`: migrate strictly eligible `private static` primitive/reference state out of the Java field declaration and remove the field from the output class. Primitive values use descriptor-aware native raw-bit slots; references/arrays use a JVM-managed per-defining-Class `ClassValue<Object[]>` sidecar. Default is `false`; `CLOSED_WORLD` runs directly, while another world requires build-time Y approval for current-JAR-only analysis. See the dedicated contract below.
-- `methodTableHiding`: split native registration metadata and function-pointer tables, join them by deterministic masked tokens, and keep the mapping/decoder internal. JVM `RegisterNatives` still receives the real owner/name/descriptor at runtime.
+- `methodTableHiding`: derive a build-diverse owner-local physical registration order and construct a transient `JNINativeMethod[]` with straight-line assignments inside each owner registration window. Opaque binding tokens remain report-only evidence; generated C/native emits no persistent token/function-pointer table or runtime join. JVM `RegisterNatives` still receives the real owner/name/descriptor at runtime.
 - `blockNameObfuscation`: deterministically replace IR basic-block names and remap all terminator, exception-edge and exception-site handler references.
 
 Each pass field is a required boolean: `true` enables the pass and `false` disables it. `fieldInternalization` defaults to `false`; the other examples may enable the implemented bounded subsets. `fakeBranches`, `basicBlockSplitting` and `blockNameObfuscation` are separate fields, passes and protection-report rows.
@@ -617,6 +617,7 @@ build_yyyy-MM-dd_HH-mm-ss[-n]/
     x64-macos.dylib
     arm64-macos.dylib
     zig-workspace/
+    zig-cache/
   intermediates/
     classes/
     runtime/
@@ -643,6 +644,14 @@ These metadata entries must not contain sensitive plaintext or a raw protection 
 
 `logs/zig-build.log` is written when the managed Zig build is invoked and retains its command plus compiler/linker output for failure diagnosis. `logs/zig-progress/` is not an output artifact: it contains short-lived build-graph markers only while the matrix invocation is running and the whole directory is deleted after success, failure or interruption.
 
+`native/zig-cache/**` is Zig-owned duplicate build cache, not a canonical
+delivery or audit surface and is never packaged. Canonical native plaintext
+surfaces are generated C/LLVM/build files under `native/zig-workspace/**`,
+per-class generated C/LLVM under `intermediates/classes/**`, and every flat
+final library under `native/*.{dll,so,dylib}`. Artifact audit excludes the
+cache copy to avoid reporting the same linked image twice; it never excludes
+the flat final library.
+
 `reports/diagnostics.json`
 
 All diagnostics with stable ordering. Each entry includes a short user-facing `hint` when the reason code has a stable remediation path, for example selector grammar, missing `schemaVersion`, Zig target preflight, signed input policy or artifact-audit plaintext leak.
@@ -653,7 +662,7 @@ Written for failed config or pipeline runs. It summarizes error diagnostics with
 
 `reports/artifact-audit.json`
 
-Artifact audit result. Successful pipeline runs audit the output JAR and embedded native resources for legacy/fallback generated `.class` entries, legacy output paths, exactly one correctly named Java 17 `<embeddedLibraryDirectory>/Loader.class`, absence of `defineHiddenFallback`, the retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `j2ll_ircit_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts. It also verifies that every `nativeLowered` method has a native body/registration and every `skipped` method retains its original bytecode with no native registration or embedded bytecode copy. When field internalization approves a field, audit blocks on any residual output-class declaration, `FieldInsn`, LDC field handle, invokedynamic/ConstantDynamic bootstrap field reference, or accessor whose final status is not `nativeLowered`. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH_STABLE_SURFACE`, StringConcat constant carrier, and `NATIVE_METADATA_STRING` facts are blocking on their connected surfaces. `NATIVE_METADATA_STRING` covers registration owners, sufficiently distinctive member names, referenced internal class names and native runtime error text; generated C stores those JNI-required bytes as build-specific encoded writable arrays and decodes them only as needed by registration/runtime helpers, while generated wrapper/LLVM/bootstrap identifiers are hash-only. This is an at-rest static-string boundary, not a claim that runtime memory or JNI arguments are secret. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names remain hash-only observed evidence. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`. The checks array records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, native library resources, output JAR entries, symbol audit output, packaging report paths and final JAR metadata. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
+Artifact audit result. Successful pipeline runs audit the output JAR and embedded native resources for legacy/fallback generated `.class` entries, legacy output paths, exactly one correctly named Java 17 `<embeddedLibraryDirectory>/Loader.class`, absence of `defineHiddenFallback`, the retired `J2llFallbackSupport.class`, `J2llNativeLoaderSupport.class`, and `j2ll/generated/**/NativeLoader.class` entries, native library resource placement under `embeddedLibraryDirectory`, embedded native SHA-256 consistency with `packaging-report.json`, final JAR metadata consistency with packaging target artifacts, hidden/protection/internal symbol export leaks (`j2ll_f_`, `j2ll_cit_`, `j2ll_cid_`, `j2ll_ircit_`, `Java_`), Windows PDB exclusion and sensitive-plaintext facts in generated C/LLVM/native workspace artifacts and `lowering-report.json`. It also verifies that every `nativeLowered` method has a native body/registration and every `skipped` method retains its original bytecode with no native registration or embedded bytecode copy. When field internalization approves a field, audit blocks on any residual output-class declaration, `FieldInsn`, LDC field handle, invokedynamic/ConstantDynamic bootstrap field reference, or accessor whose final status is not `nativeLowered`. The report includes `checkedSensitiveFacts`, `observedOnlySensitiveFacts` and `skippedSensitiveFacts`; each entry is hash-only and includes `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason` and `promotionReason`. `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH_STABLE_SURFACE`, StringConcat constant carrier, and `NATIVE_METADATA_STRING` facts are blocking on their connected surfaces. Output `.class` plaintext auditing is semantic rather than a raw constant-pool byte search: it checks executable String LDCs, invokedynamic/ConstantDynamic bootstrap String arguments, String `ConstantValue` data and annotation String values, while required class/member/field names and descriptors in structural UTF8 metadata are not treated as business-string carriers. If a class cannot be parsed, audit falls back to the conservative raw-byte scan; non-class JAR resources continue to use raw scanning. `NATIVE_METADATA_STRING` covers registration owners, sufficiently distinctive member names, referenced internal class names and native runtime error text; generated C stores those JNI-required bytes as build-specific encoded arrays and performs every ciphertext read through a volatile-qualified runtime boundary so an optimizing compiler cannot reconstruct plaintext constants in the final image. Registration rollback/exception-restore diagnostics use the registration text domain and are decoded only in their `FatalError` path; the generated-C hardening gate reports `STABLE_REGISTRATION_DIAGNOSTIC` if a historical stable anchor or any direct/adjacent `FatalError` C string literal reappears. Owner-name scratch is cleared immediately after class lookup, and the generated runtime checks both `Throw` status and pending-exception evidence when restoring the original registration failure. Generated wrapper/LLVM/bootstrap identifiers are hash-only, including emitted-LLVM string-token SSA value names. This is an at-rest static-string boundary, not a claim that runtime memory or JNI arguments are secret. Short/common literals that can naturally collide with report field names, JVM metadata or runtime support names remain hash-only observed evidence. Reflection/lambda/MethodHandle metadata facts remain `observedOnly`. The checks array records surface coverage for generated C, per-class LLVM `.ll`, `build.zig`, flat final native libraries, native library resources, output JAR entries, lowering/symbol/packaging reports and final JAR metadata. `native/zig-cache/**` is excluded only because it is byte-identical duplicate toolchain cache; final native libraries remain mandatory. Artifact audit is a finalization gate: if it fails after output packaging, j2ll must delete or avoid retaining the final JAR, write `reports/failure-report.json` with `stage=ARTIFACT_AUDIT`, `reasonCode=ARTIFACT_AUDIT_FAILED`, and leave readiness `finalArtifactWritten=false`.
 
 `reports/skipped-method-report.json`
 
@@ -673,15 +682,15 @@ Deterministic opcode/category/status/reason/test coverage matrix used by release
 
 `reports/packaging-report.json`
 
-Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. When method-table hiding is enabled, it also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and binding tokens. It does not write raw owner/member mapping in that object.
+Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. When method-table hiding is enabled, it also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and report-only binding tokens, plus `physicalStrategy=ownerLocalTransientStraightLine`, `runtimeTokenTableEmitted=false`, `runtimeFunctionTableEmitted=false` and temporary-table zeroization evidence. It does not write raw owner/member mapping in that object.
 
 `reports/protection-report.json`
 
-Protection passes that ran, hash-only seed identity and per-method skipped-pass reasons. Reports may include root and per-pass `sensitivePlaintextFacts`; each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason`, `promotionReason` and `artifactSurfaces`, never the original plaintext. The pipeline may keep plaintext in memory long enough to feed artifact audit, but report JSON remains hash-only.
+Protection passes that ran, hash-only seed identity and per-method skipped-pass reasons. Root `coverage` records stable hash-only per-subject facts and aggregates for `requested`, `applicability` (`applicable`, `notApplicable`, or `unknown`), `affected`, `status` and `reasonCode`. IR per-method passes provide explicit applicability; producer paths that have not persisted it must write `unknown`, never infer it from `SKIPPED`. Such unknown facts use `affected=false` until the producer supplies direct evidence. Reports may include root and per-pass `sensitivePlaintextFacts`; each fact records `literalHash`, `sourceMethod`, `passName`, `pathKind`, `gateMode`, `sourceSurface`, `reason`, `promotionReason` and `artifactSurfaces`, never the original plaintext. The pipeline may keep plaintext in memory long enough to feed artifact audit, but report JSON remains hash-only.
 
 `reports/support-matrix.json`
 
-Deterministic feature/status/reason/test coverage matrix for Java/JVM support tiers, native/runtime-helper support, skipped boundaries, signing, managed Zig build and packaging behavior. Each row includes `testCoverage`, machine-readable `coverageLevel` and `evidenceCount`.
+Deterministic feature/status/reason/test coverage matrix for Java/JVM support tiers, native/runtime-helper support, skipped boundaries, signing, managed Zig build and packaging behavior. Each row includes `testCoverage`, machine-readable `coverageLevel` and `evidenceCount`. Supported exception evidence distinguishes unprotected pending-exception propagation and protected ordered JNI dispatch from remaining exception-state/frame boundaries; initializer evidence distinguishes constructor verifier-prefix/post-init splitting from unsupported pre-init shapes; `Object.getClass()` and `Thread.sleep(J)V` have explicit env/JVM-backed helper rows rather than generic unresolved JDK dispatch.
 
 `reports/known-blockers.json`
 
@@ -759,7 +768,7 @@ Every primary report JSON object writes `schemaVersion` and `reportVersion`. Unk
       "descriptor": "()V",
       "instructionOffset": 12,
       "artifactId": "pkg/Foo#run!()V",
-      "message": "exception state merge is outside the current native-lowering boundary",
+      "message": "throw-site local state cannot be merged into the handler block arguments",
       "decision": "skipped"
     }
   ]
@@ -831,15 +840,18 @@ The method list and confirmation decision form one invocation-scoped evidence re
       "nativeImplementationPath": "LLVM_NATIVE_PATH",
       "helperBackedSites": [
         {
-          "helper": "j2ll_rt_string_builder_append_ref",
+          "helperKind": "j2ll_rt_string_builder_append_ref",
+          "helperIdentityHash": "70a8c742dd9a6a6a548c10d6e092e1e8e44f84367d59d4a08e1b8edff57d25d1",
           "reasonCode": "HELPER_BACKED_LOWERING"
         },
         {
-          "helper": "field:pkg/Foo#counter!I",
+          "helperKind": "field",
+          "helperIdentityHash": "696c917c9a08646f81f6890f1f8b257ac4940b0b657c6bc69f5996f3555028a2",
           "reasonCode": "FIELD_HELPER"
         },
         {
-          "helper": "direct:pkg/Foo#callee!(I)I",
+          "helperKind": "direct",
+          "helperIdentityHash": "3d4edb6f8043c09715c842f0dcb20f7965a06ba855da81873aa8b6eb604f4c50",
           "reasonCode": "DIRECT_LLVM_CALL"
         }
       ]
@@ -865,9 +877,17 @@ The method list and confirmation decision form one invocation-scoped evidence re
 
 `accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip.
 `nativeImplementationPath` records whether the registered native body is `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH`, or `null` when no executable native body was produced for that requested method.
-`helperBackedSites` records metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic sites whose semantics are executed from a native implementation through a runtime helper or ordinary JVM/JNI dispatch rather than direct LLVM instructions. This remains true native lowering and does not imply an embedded copy of the original method body. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions such as `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects. Dynamic reflection strings, dynamic parameter arrays, scan-style reflection and MethodHandle adapter chains may use ordinary JVM/JNI dispatch when the descriptor fits the validated bridge matrix. A native call into a Java/JDK target is helper-backed execution, not an embedded bytecode copy of the caller. If an operation cannot be represented by direct LLVM or an approved helper/dispatch bridge, the whole selected caller is `skipped` with a stable reason such as `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_UNSUPPORTED`, `ALT_METAFACTORY_UNSUPPORTED`, `UNSUPPORTED_NESTED_FINALLY`, `UNSUPPORTED_EXCEPTION_STATE_MERGE` or `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`; the evidence belongs in `reports/skipped-method-report.json`, and no embedded class blob is allowed.
+`helperBackedSites` records metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic sites whose semantics are executed from a native implementation through a runtime helper or ordinary JVM/JNI dispatch rather than direct LLVM instructions. `helperKind` is a non-sensitive category/base symbol and `helperIdentityHash` is a domain-separated SHA-256 of the complete compiler-private helper identity. The full helper string is never serialized because it may contain owner/member descriptors or a `string:<business literal>` carrier. This remains true native lowering and does not imply an embedded copy of the original method body. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions such as `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects. Dynamic reflection strings, dynamic parameter arrays, scan-style reflection and MethodHandle adapter chains may use ordinary JVM/JNI dispatch when the descriptor fits the validated bridge matrix. A native call into a Java/JDK target is helper-backed execution, not an embedded bytecode copy of the caller. If an operation cannot be represented by direct LLVM or an approved helper/dispatch bridge, the whole selected caller is `skipped` with a stable reason such as `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_UNSUPPORTED`, `ALT_METAFACTORY_UNSUPPORTED`, `UNSUPPORTED_JVM_EXCEPTION_FLOW`, `UNSUPPORTED_EXCEPTION_STATE_MERGE` or `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`; the evidence belongs in `reports/skipped-method-report.json`, and no embedded class blob is allowed.
 
-Runtime metadata dumps are stable sidecars when enabled by intermediates/debug dumps. They may include a `reflectionReachability` section with resolved class/method/field targets and unsupported/skipped reflection sites. The dump is an observability artifact; lowering status remains governed by `reports/lowering-report.json`.
+Runtime metadata and raw/optimized SSA dumps are diagnostic sidecars when
+explicitly enabled by intermediates/`--debug`. They may contain source-level
+class/member identities and pre-string-protection business literals required to
+debug compiler semantics. They are not publication artifacts and are not
+embedded in the output JAR. Generated C, LLVM, final native libraries and all
+primary reports remain subject to the release plaintext contract. Runtime
+metadata dumps may include a `reflectionReachability` section with resolved
+class/method/field targets and unsupported/skipped reflection sites; lowering
+status remains governed by `reports/lowering-report.json`.
 
 `reports/packaging-report.json` minimum shape:
 
@@ -952,7 +972,8 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
 {
   "schemaVersion": 1,
   "reportVersion": 1,
-  "seedHash": "sha256-of-derived-or-configured-seed",
+  "seedMode": "randomized",
+  "seedHash": "context-bound-build-identity-hash",
   "passes": [
     {
       "passName": "STRING_ENCRYPTION",
@@ -1001,7 +1022,7 @@ Runtime metadata dumps are stable sidecars when enabled by intermediates/debug d
 }
 ```
 
-Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result records a stable `reasonCode`; examples include `OK`, `METHOD_INLINING`, `METHOD_INLINING_NO_CANDIDATE`, `METHOD_SPLITTING`, `METHOD_SPLITTING_NO_SAFE_REGION`, `IR_CALL_INDIRECTION_TABLE`, `IR_CALL_INDIRECTION_BACKEND_NO_CANDIDATE`, `FIELD_INTERNALIZATION`, `FIELD_INTERNALIZATION_NO_CANDIDATE`, `METHOD_TABLE_HIDING_SPLIT_TOKEN_TABLE`, `LLVM_OPAQUE_PREDICATES`, `LLVM_OPAQUE_PREDICATES_NO_CANDIDATE`, `LLVM_BLOCK_LAYOUT_PERTURBATION`, `LLVM_BLOCK_LAYOUT_NO_CANDIDATE`, `LLVM_GLOBAL_LAYOUT`, `LLVM_GLOBAL_LAYOUT_NO_CANDIDATE`, `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`, `CALL_INDIRECTION_TABLE`, `CALL_INDIRECTION_DISPATCHER`, `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `PROTECTION_STUB_BACKED_METHOD` and `PROTECTION_MONITOR_SENSITIVE_SKIP`. Disabled pass and method/module inapplicability both use `SKIPPED`; neither changes method lowering status. Validator/final-plan failure uses `FAILED` and prevents an invalid transformed artifact from continuing.
+Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result records a stable `reasonCode`; examples include `OK`, `METHOD_INLINING`, `METHOD_INLINING_NO_CANDIDATE`, `METHOD_SPLITTING`, `METHOD_SPLITTING_NO_SAFE_REGION`, `IR_CALL_INDIRECTION_TABLE`, `IR_CALL_INDIRECTION_BACKEND_NO_CANDIDATE`, `FIELD_INTERNALIZATION`, `FIELD_INTERNALIZATION_NO_CANDIDATE`, `METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT`, `LLVM_OPAQUE_PREDICATES`, `LLVM_OPAQUE_PREDICATES_NO_CANDIDATE`, `LLVM_BLOCK_LAYOUT_PERTURBATION`, `LLVM_BLOCK_LAYOUT_NO_CANDIDATE`, `LLVM_GLOBAL_LAYOUT`, `LLVM_GLOBAL_LAYOUT_NO_CANDIDATE`, `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`, `CALL_INDIRECTION_TABLE`, `CALL_INDIRECTION_DISPATCHER`, `PROTECTION_PASS_DISABLED`, `NO_STRING_CONSTANT_CARRIER`, `PROTECTION_STUB_BACKED_METHOD` and `PROTECTION_MONITOR_SENSITIVE_SKIP`. Disabled pass and method/module inapplicability both use `SKIPPED`; neither changes method lowering status. Validator/final-plan failure uses `FAILED` and prevents an invalid transformed artifact from continuing.
 
 `reports/symbol-audit.json` minimum shape:
 
@@ -1012,8 +1033,8 @@ Pass `status` values are `RAN`, `SKIPPED` and `FAILED`. Every pass result record
     {
       "target": "linux-x64",
       "path": "native/x64-linux.so",
-      "allowedExports": ["JNI_OnLoad", "j2ll_register"],
-      "actualExports": ["JNI_OnLoad", "j2ll_register"],
+      "allowedExports": ["JNI_OnLoad"],
+      "actualExports": ["JNI_OnLoad"],
       "unexpectedExports": [],
       "missingExports": [],
       "status": "passed"
@@ -1067,10 +1088,11 @@ Packaging rewrites methods according to their JVM method kind. The strategy is r
 Java `<init>` cannot become an ordinary native method. j2ll must keep a legal constructor stub.
 
 - The original `<init>` remains a non-native constructor with Code.
-- The stub preserves the verifier-required constructor delegation path to `this(...)` or `super(...)`.
+- The stub preserves the exact verifier-required prefix from method entry through the unique invocation that initializes `uninitializedThis`: `this(...)` or `super(...)`, with its original owner, descriptor and argument-computation bytecode.
 - After the object is initialized, the stub calls a private generated native body helper, for example `__j2ll_init_body$<method-id>(this, originalArgs...)`.
-- If the pre-initialization prefix contains only verifier-required stack/local setup and all user semantics are implemented by the native body helper, the method is `nativeLowered`.
-- If meaningful pre-initialization user bytecode would remain outside the native body, or the constructor shape cannot be split while preserving verifier semantics, the entire constructor is `skipped` and retains its original Code.
+- The supported split requires a unique, linear prefix, and the current implementation requires the whole constructor to have no exception table; branches before initialization or ambiguous initializing calls fail closed. The post-init IR must independently pass the complete LLVM/helper support matrix.
+- The immutable initializer plan is shared by native compilation, rewrite, registration and audit. Packaging must not reconstruct a different split.
+- If the constructor cannot be split while preserving verifier semantics, or the post-init native body is incomplete, the entire constructor is `skipped` and retains its original Code.
 
 `classInitializerStub`
 
@@ -1078,7 +1100,7 @@ Java `<clinit>` is invoked implicitly by the JVM and is not a normal native meth
 
 - If a class has native-lowered methods and no `<clinit>`, j2ll may generate one.
 - The stub first calls the generated loader to load the native library and register owner-class native methods.
-- If the original `<clinit>` has Code, its body is lowered into a private generated static native helper, for example `__j2ll_clinit_body$<method-id>()`.
+- If the original `<clinit>` has Code and its complete IR passes the final LLVM/helper support matrix, its body is lowered into a private generated static native helper, for example `__j2ll_clinit_body$<method-id>()`.
 - The stub calls the native helper after loader initialization.
 - The loader and registration path must handle recursive class initialization and classloader concurrency.
 
@@ -1154,8 +1176,9 @@ Runtime helper 是随 native library 一起编译进去的 j2ll 小运行时。�
 
 - null check、array bounds check、checkcast、instanceof。
 - object/array allocation、class initialization、static field access guard。
+- `Object.getClass()`：null receiver通过JVM exception helper产生`NullPointerException`，非null receiver通过JNI `GetObjectClass`返回JVM-managed `Class` reference。
 - tokenized field get/put helper, allocation helper, String helper and helper-backed call dispatch. Current dispatch helper subset uses JNI `GetObjectClass` / `GetMethodID` / `Call<Type>Method` for no-arg int, int-arg int, reference return and single-reference-argument/reference-return virtual/interface calls; it is not a native vtable/object-layout mechanism.
-- exception create/throw/catch bridge。
+- exception create/throw/catch bridge。受保护helper site使用pending-exception读取、clear、ordered typed/catch-all dispatch和unmatched rethrow helpers；exception edge同时携带throwable与throw-site live locals。
 - monitor enter/exit 和 synchronized 相关状态维护。
 - string/constant decrypt helper、protection dispatch helper、method table helper。
 - JNI local/global reference lifetime helper。
@@ -1169,6 +1192,8 @@ Runtime helper 是随 native library 一起编译进去的 j2ll 小运行时。�
 - lowering report 的 `helperBackedSites` 记录这些 helper-backed native call/operation。
 
 Ordinary JVM/JNI dispatch from a native implementation is also a supported helper-backed path. For example, a native-lowered caller may invoke an external JDK method or a `skipped` Java method through a validated JNI dispatch helper. This does not copy or embed the caller's original bytecode and therefore remains `nativeLowered`.
+
+Protected exception dispatch and initializer splitting currently have focused evidence plus Windows real-Zig host child-JVM differential. `Object.getClass()` and `Thread.sleep(J)V` currently have focused planner/LLVM/C ABI evidence. The six-target matrix verifies structural cross-build artifacts; it is not non-host JVM runtime evidence.
 
 ### Unsupported-Method Boundary
 
@@ -1214,7 +1239,7 @@ loader/native registration 需要解决三件事：
 - `<init>` and `<clinit>` body helpers are registered as generated private static native helper methods on the owner class, not as native constructors or native class initializers.
 - Loader state is per classloader and thread-safe. It must avoid duplicate extraction/load/registration and must handle concurrent first use.
 - Extraction paths must not be user-controlled relative paths; temp files should use restrictive permissions where the platform supports them.
-- Only loader/bootstrap JNI wrapper symbols and optional `JNI_OnLoad` are exported. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
+- The generated libraries export only the JVM-required `JNI_OnLoad` root, apart from platform-inherent runtime symbols explicitly tolerated by the target audit. The aggregate registration root and per-owner registration helpers are static/internal and are reached only from `JNI_OnLoad`. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
 - Loader, extraction and `RegisterNatives` failures throw `UnsatisfiedLinkError` with a clear message.
 
 The reserved base/MR loader-entry collision checks run before Zig. A base collision reports `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION`; a multi-release shadow reports `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Because the loader binary name is directory-derived rather than artifact-derived, multiple different artifacts using the same `embeddedLibraryDirectory` in one defining `ClassLoader` remain an explicit known boundary. Applications that load such artifacts together should assign application-unique directories.

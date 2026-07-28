@@ -38,6 +38,9 @@ class ZigBuildWriterTest {
         assertTrue(buildZig.contains(".pic = true"));
         assertTrue(buildZig.contains(".implib_dir = .disabled"));
         assertTrue(buildZig.contains("lib_macos_x64.discard_local_symbols = true"));
+        assertTrue(buildZig.contains("lib_windows_x64.link_gc_sections = true"));
+        assertTrue(buildZig.contains("\"-ffunction-sections\""));
+        assertTrue(buildZig.contains("\"-fdata-sections\""));
         for (TargetTriple target : List.of(
                 TargetTriple.LINUX_ARM64,
                 TargetTriple.MACOS_X64,
@@ -249,9 +252,8 @@ class ZigBuildWriterTest {
         assertTrue(buildZig.contains(
                 "lib_" + symbol + ".forceUndefinedSymbol(\""
                         + prefix + "JNI_OnLoad\")"));
-        assertTrue(buildZig.contains(
-                "lib_" + symbol + ".forceUndefinedSymbol(\""
-                        + prefix + "j2ll_register\")"));
+        assertFalse(buildZig.contains("forceUndefinedSymbol(\""
+                + prefix + "j2ll_register\")"));
     }
 
     private int countOccurrences(String value, String needle) {

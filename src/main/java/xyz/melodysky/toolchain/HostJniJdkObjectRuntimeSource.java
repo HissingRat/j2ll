@@ -5,6 +5,35 @@ final class HostJniJdkObjectRuntimeSource {
 
     static String jdkObjectHelperSource() {
         return """
+                jobject j2ll_rt_object_get_class(JNIEnv* env, jobject value) {
+                    if (value == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Object.getClass receiver is null");
+                        return NULL;
+                    }
+                    return (*env)->GetObjectClass(env, value);
+                }
+
+                jobject j2ll_rt_class_get_class_loader(JNIEnv* env, jobject value) {
+                    if (value == NULL) {
+                        j2ll_throw_new(env, "java/lang/NullPointerException", "Class.getClassLoader receiver is null");
+                        return NULL;
+                    }
+                    jclass class_class = (*env)->GetObjectClass(env, value);
+                    if (class_class == NULL) {
+                        return NULL;
+                    }
+                    jmethodID method = (*env)->GetMethodID(
+                            env,
+                            class_class,
+                            "getClassLoader",
+                            "()Ljava/lang/ClassLoader;");
+                    (*env)->DeleteLocalRef(env, class_class);
+                    if (method == NULL) {
+                        return NULL;
+                    }
+                    return (*env)->CallObjectMethod(env, value, method);
+                }
+
                 static jobject j2ll_call_static_box(JNIEnv* env, const char* class_name, const char* descriptor, ...) {
                     jclass cls = (*env)->FindClass(env, class_name);
                     if (cls == NULL) {

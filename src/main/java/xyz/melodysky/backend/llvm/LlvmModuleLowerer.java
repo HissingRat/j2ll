@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import xyz.melodysky.backend.llvm.model.LlvmBasicBlock;
 import xyz.melodysky.backend.llvm.model.LlvmDeclaration;
 import xyz.melodysky.backend.llvm.model.LlvmFunction;
@@ -21,30 +22,65 @@ import xyz.melodysky.backend.llvm.model.LlvmSwitchCase;
 import xyz.melodysky.backend.llvm.model.LlvmTerminator;
 import xyz.melodysky.backend.llvm.model.LlvmType;
 import xyz.melodysky.backend.llvm.model.LlvmVisibility;
+import xyz.melodysky.ir.model.BusinessStringConstantRef;
+import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrValue;
-import xyz.melodysky.runtime.ClassIdentityToken;
-import xyz.melodysky.runtime.FieldIdentityToken;
-import xyz.melodysky.runtime.MethodIdentityToken;
 import xyz.melodysky.runtime.RuntimeHelperCatalog;
 import xyz.melodysky.runtime.RuntimeHelperKind;
+import xyz.melodysky.runtime.RuntimeTokenDomain;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiDomain;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlan;
+import xyz.melodysky.runtime.jni.RuntimeLocalAbiPlanner;
 
 public final class LlvmModuleLowerer {
     private final LlvmNameMangler nameMangler;
     private final LlvmTypeLowerer typeLowerer = new LlvmTypeLowerer();
     private final RuntimeHelperCatalog runtimeHelpers = RuntimeHelperCatalog.defaultCatalog();
-    private final NativeFieldLlvmLowering nativeFields = new NativeFieldLlvmLowering();
+    private final NativeFieldLlvmLowering nativeFields;
+    private final BusinessStringSymbolMapper businessStringSymbols;
+    private final RuntimeTokenMapper runtimeTokens;
+    private final RuntimeLocalAbiPlanner runtimeLocalAbi =
+            new RuntimeLocalAbiPlanner();
 
     public LlvmModuleLowerer() {
-        this(new LlvmNameMangler());
+        this(
+                new LlvmNameMangler(),
+                BusinessStringSymbolMapper.compatibility());
     }
 
     public LlvmModuleLowerer(LlvmNameMangler nameMangler) {
-        this.nameMangler = nameMangler;
+        this(nameMangler, BusinessStringSymbolMapper.compatibility());
+    }
+
+    public LlvmModuleLowerer(
+            LlvmNameMangler nameMangler,
+            BusinessStringSymbolMapper businessStringSymbols) {
+        this(
+                nameMangler,
+                businessStringSymbols,
+                RuntimeTokenMapper.compatibility());
+    }
+
+    public LlvmModuleLowerer(
+            LlvmNameMangler nameMangler,
+            BusinessStringSymbolMapper businessStringSymbols,
+            RuntimeTokenMapper runtimeTokens) {
+        this.nameMangler = java.util.Objects.requireNonNull(
+                nameMangler,
+                "nameMangler");
+        this.businessStringSymbols = java.util.Objects.requireNonNull(
+                businessStringSymbols,
+                "businessStringSymbols");
+        this.runtimeTokens = java.util.Objects.requireNonNull(
+                runtimeTokens,
+                "runtimeTokens");
+        this.nativeFields = new NativeFieldLlvmLowering(runtimeTokens);
     }
 
     public LlvmModule lowerClass(IrClass irClass) {
@@ -112,13 +148,30 @@ public final class LlvmModuleLowerer {
             LlvmVisibility visibility,
             Map<String, Set<String>> directCallsByMethod,
             Map<String, Set<String>> staticCallsByMethod) {
+        return lowerClass(
+                irClass,
+                linkage,
+                visibility,
+                directCallsByMethod,
+                staticCallsByMethod,
+                Map.of());
+    }
+
+    public LlvmModule lowerClass(
+            IrClass irClass,
+            LlvmLinkage linkage,
+            LlvmVisibility visibility,
+            Map<String, Set<String>> directCallsByMethod,
+            Map<String, Set<String>> staticCallsByMethod,
+            Map<String, LlvmFunctionAbi> plannedFunctionAbis) {
         Map<String, LlvmFunctionAbi> functionAbis = functionAbis(
                 irClass,
                 directCallsByMethod,
-                staticCallsByMethod);
+                staticCallsByMethod,
+                plannedFunctionAbis);
         return new LlvmModule(
                 irClass.internalName(),
-                runtimeHelperDeclarations(),
+                runtimeHelperDeclarations(irClass),
                 irClass.methods().stream()
                         .map(method -> lowerMethod(
                                 method,
@@ -133,30 +186,316 @@ public final class LlvmModuleLowerer {
     private Map<String, LlvmFunctionAbi> functionAbis(
             IrClass irClass,
             Map<String, Set<String>> directCallsByMethod,
-            Map<String, Set<String>> staticCallsByMethod) {
+            Map<String, Set<String>> staticCallsByMethod,
+            Map<String, LlvmFunctionAbi> plannedFunctionAbis) {
+        java.util.Objects.requireNonNull(
+                plannedFunctionAbis,
+                "plannedFunctionAbis");
         Map<String, LlvmFunctionAbi> result = new HashMap<>();
         for (IrMethod method : irClass.methods()) {
             Set<String> directCalls = directCallsByMethod.getOrDefault(method.methodKey(), Set.of());
             Set<String> staticCalls = staticCallsByMethod.getOrDefault(method.methodKey(), Set.of());
+            LlvmFunctionAbi inferred = new LlvmFunctionAbi(
+                    methodNeedsJniEnv(method, directCalls, staticCalls),
+                    methodNeedsOwnerClass(method, directCalls));
+            LlvmFunctionAbi planned =
+                    plannedFunctionAbis.get(method.methodKey());
+            if (planned != null && !planned.equals(inferred)) {
+                throw new IllegalArgumentException(
+                        "planned LLVM function ABI does not match lowering "
+                                + "requirements for "
+                                + method.methodKey()
+                                + ": planned="
+                                + planned
+                                + ", inferred="
+                                + inferred);
+            }
             result.put(
                     method.methodKey(),
-                    new LlvmFunctionAbi(
-                            methodNeedsJniEnv(method, directCalls, staticCalls),
-                            methodNeedsOwnerClass(method, directCalls)));
+                    planned == null ? inferred : planned);
         }
         return Map.copyOf(result);
     }
 
-    private List<LlvmDeclaration> runtimeHelperDeclarations() {
+    private List<LlvmDeclaration> runtimeHelperDeclarations(IrClass irClass) {
         ArrayList<LlvmDeclaration> declarations = new ArrayList<>(runtimeHelpers.helpers().stream()
+                .filter(helper -> helper.kind() != RuntimeHelperKind.STRING_CONSTANT)
                 .map(helper -> new LlvmDeclaration(
                         helper.llvmSymbol(),
                         helper.llvmReturnType(),
                         helper.llvmParameterTypes(),
                         helper.name()))
                 .toList());
+        TreeMap<String, BusinessStringConstantRef> businessStrings = new TreeMap<>();
+        irClass.methods().stream()
+                .flatMap(method -> method.blocks().stream())
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction ->
+                        BusinessStringConstantRef.fromInstruction(instruction).stream())
+                .forEach(constant -> {
+                    BusinessStringConstantRef existing =
+                            businessStrings.putIfAbsent(
+                                    constant.helperSymbol(businessStringSymbols),
+                                    constant);
+                    if (existing != null && !existing.value().equals(constant.value())) {
+                        throw new IllegalArgumentException(
+                                "business string helper symbol collision");
+                    }
+                });
+        businessStrings.values().forEach(constant -> declarations.add(
+                new LlvmDeclaration(
+                        constant.helperSymbol(businessStringSymbols),
+                        "ptr",
+                        List.of("ptr"),
+                        "businessStringConstantLocal")));
+        addLocalizedRuntimeBindingDeclarations(irClass, declarations);
         declarations.addAll(nativeFields.declarations());
         return List.copyOf(declarations);
+    }
+
+    private void addLocalizedRuntimeBindingDeclarations(
+            IrClass irClass,
+            List<LlvmDeclaration> declarations) {
+        TreeMap<String, LlvmDeclaration> localized = new TreeMap<>();
+        irClass.methods().stream()
+                .flatMap(method -> method.blocks().stream())
+                .flatMap(block -> block.instructions().stream())
+                .forEach(instruction -> localizedRuntimeDeclaration(instruction)
+                        .ifPresent(declaration -> localized.putIfAbsent(
+                                declaration.name(),
+                                declaration)));
+        irClass.methods().stream()
+                .flatMap(method -> method.blocks().stream())
+                .forEach(block -> {
+                    block.instructions().stream()
+                            .flatMap(instruction ->
+                                    instruction.exceptionSites().stream())
+                            .flatMap(site -> site.handlers().stream())
+                            .forEach(edge -> addCatchDeclaration(
+                                    localized,
+                                    edge.catchType()));
+                    block.exceptionEdges().forEach(edge -> addCatchDeclaration(
+                            localized,
+                            edge.catchType()));
+                });
+        declarations.addAll(localized.values());
+    }
+
+    private Optional<LlvmDeclaration> localizedRuntimeDeclaration(
+            xyz.melodysky.ir.model.IrInstruction instruction) {
+        if (instruction.opcode() == IrOpcode.NEW_OBJECT) {
+            String key = instruction.symbol().orElseThrow();
+            if (key.startsWith("object:")) {
+                return Optional.of(new LlvmDeclaration(
+                        runtimeTokens.helperSymbol(
+                                RuntimeTokenDomain.CLASS_RUNTIME,
+                                "alloc_object",
+                                key),
+                        "ptr",
+                        List.of("ptr"),
+                        "localizedObjectAllocation"));
+            }
+        }
+        if (instruction.opcode() == IrOpcode.NEW_ARRAY
+                && instruction.symbol().orElse("").startsWith(
+                        "referenceArray:")) {
+            String key = instruction.symbol().orElseThrow();
+            return Optional.of(new LlvmDeclaration(
+                    runtimeTokens.helperSymbol(
+                            RuntimeTokenDomain.CLASS_RUNTIME,
+                            "new_object_array",
+                            key),
+                    "ptr",
+                    List.of("ptr", "i32"),
+                    "localizedReferenceArrayAllocation"));
+        }
+        if (instruction.opcode() == IrOpcode.CHECKCAST
+                || instruction.opcode() == IrOpcode.INSTANCEOF) {
+            String key = instruction.symbol().orElseThrow();
+            String operation = instruction.opcode() == IrOpcode.CHECKCAST
+                    ? "checkcast"
+                    : "instanceof";
+            return Optional.of(new LlvmDeclaration(
+                    runtimeTokens.helperSymbol(
+                            RuntimeTokenDomain.CLASS_RUNTIME,
+                            operation,
+                            key),
+                    instruction.opcode() == IrOpcode.CHECKCAST ? "ptr" : "i32",
+                    List.of("ptr", "ptr"),
+                    "localizedTypeCheck"));
+        }
+        if (instruction.opcode() == IrOpcode.CLASS_OBJECT
+                || instruction.opcode() == IrOpcode.CONST_CLASS) {
+            String identity = classIdentityFromConstSymbol(
+                    instruction.symbol().orElseThrow());
+            return Optional.of(new LlvmDeclaration(
+                    runtimeTokens.helperSymbol(
+                            RuntimeTokenDomain.CLASS_OBJECT,
+                            "class_object",
+                            identity),
+                    "ptr",
+                    List.of("ptr"),
+                    "localizedClassObject"));
+        }
+        if (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                && instruction.symbol().orElse("").startsWith(
+                        "j2ll_rt_class_for_name_static|class:")) {
+            String identity = instruction.symbol().orElseThrow()
+                    .substring("j2ll_rt_class_for_name_static|class:".length());
+            return Optional.of(new LlvmDeclaration(
+                    runtimeTokens.helperSymbol(
+                            RuntimeTokenDomain.CLASS_OBJECT,
+                            "class_for_name",
+                            identity),
+                    "ptr",
+                    List.of("ptr", "i32"),
+                    "localizedClassForName"));
+        }
+        if (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                && runtimeMetadataKey(instruction).isPresent()) {
+            String key = runtimeMetadataKey(instruction).orElseThrow();
+            String base = runtimeHelperBaseSymbol(
+                    instruction.symbol().orElseThrow());
+            String operation;
+            RuntimeTokenDomain domain;
+            if (base.equals("j2ll_rt_get_declared_method")
+                    && key.startsWith("method:")) {
+                operation = "reflection_lookup_method";
+                domain = RuntimeTokenDomain.REFLECTION_METHOD;
+            } else if (base.equals("j2ll_rt_get_declared_constructor")
+                    && key.startsWith("constructor:")) {
+                operation = "reflection_lookup_constructor";
+                domain = RuntimeTokenDomain.REFLECTION_METHOD;
+            } else if (base.equals("j2ll_rt_get_declared_field")
+                    && key.startsWith("field:")) {
+                operation = "reflection_lookup_field";
+                domain = RuntimeTokenDomain.REFLECTION_FIELD;
+            } else {
+                operation = null;
+                domain = null;
+            }
+            if (operation != null) {
+                return Optional.of(new LlvmDeclaration(
+                        runtimeTokens.helperSymbol(domain, operation, key),
+                        "ptr",
+                        localAbiParameterTypes(
+                                RuntimeLocalAbiDomain.REFLECTION,
+                                operation,
+                                key,
+                                List.of("ptr")),
+                        "localizedReflectionLookup"));
+            }
+        }
+        if (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                && instruction.symbol().orElse("").startsWith(
+                        "j2ll_rt_lambda_new|lambda:")) {
+            String identity = runtimeMetadataKey(instruction)
+                    .orElseThrow();
+            return Optional.of(new LlvmDeclaration(
+                    runtimeTokens.helperSymbol(
+                            RuntimeTokenDomain.LAMBDA,
+                            "lambda_new",
+                            identity),
+                    "ptr",
+                    List.of("ptr", "ptr"),
+                    "localizedLambdaFactory"));
+        }
+        if (instruction.opcode() == IrOpcode.GET_STATIC
+                || instruction.opcode() == IrOpcode.PUT_STATIC
+                || instruction.opcode() == IrOpcode.GET_FIELD
+                || instruction.opcode() == IrOpcode.PUT_FIELD) {
+            String symbol = localizedFieldHelper(instruction);
+            String operation = localizedFieldOperation(instruction);
+            String fieldKey = instruction.symbol().orElseThrow();
+            boolean write = instruction.opcode() == IrOpcode.PUT_STATIC
+                    || instruction.opcode() == IrOpcode.PUT_FIELD;
+            String valueType = fieldLlvmType(
+                    fieldKey);
+            List<String> logicalParameters = write
+                    ? List.of("ptr", "ptr", valueType)
+                    : List.of("ptr", "ptr");
+            return Optional.of(new LlvmDeclaration(
+                    symbol,
+                    write ? "void" : valueType,
+                    localAbiParameterTypes(
+                            RuntimeLocalAbiDomain.FIELD,
+                            operation,
+                            fieldKey,
+                            logicalParameters),
+                    "localizedFieldBinding"));
+        }
+        if (isConstructorCallHelperInstruction(instruction)) {
+            String methodKey = instruction.symbol().orElseThrow();
+            String operation = "constructor_call";
+            return Optional.of(new LlvmDeclaration(
+                    localizedDispatchHelper(
+                            operation,
+                            methodKey),
+                    "void",
+                    localAbiParameterTypes(
+                            RuntimeLocalAbiDomain.DISPATCH,
+                            operation,
+                            methodKey,
+                            List.of("ptr", "ptr", "ptr")),
+                    "localizedConstructorDispatch"));
+        }
+        if (instruction.opcode() == IrOpcode.CALL_STATIC) {
+            String methodKey = instruction.symbol().orElseThrow();
+            String descriptor = methodDescriptor(methodKey).orElseThrow();
+            String returnType = staticCallBridgeReturnType(descriptor);
+            String operation = "static_call_"
+                    + dispatchDescriptorSuffix(descriptor);
+            return Optional.of(new LlvmDeclaration(
+                    localizedDispatchHelper(
+                            operation,
+                            methodKey),
+                    returnType,
+                    localAbiParameterTypes(
+                            RuntimeLocalAbiDomain.DISPATCH,
+                            operation,
+                            methodKey,
+                            List.of("ptr", "ptr")),
+                    "localizedStaticDispatch"));
+        }
+        if (isDispatchHelperInstruction(instruction)) {
+            String methodKey = instruction.symbol().orElseThrow();
+            String descriptor = methodDescriptor(methodKey).orElseThrow();
+            String returnType = staticCallBridgeReturnType(descriptor);
+            String operation = dispatchOperationPrefix(instruction)
+                    + dispatchDescriptorSuffix(descriptor);
+            return Optional.of(new LlvmDeclaration(
+                    localizedDispatchHelper(
+                            operation,
+                            methodKey),
+                    returnType,
+                    localAbiParameterTypes(
+                            RuntimeLocalAbiDomain.DISPATCH,
+                            operation,
+                            methodKey,
+                            List.of("ptr", "ptr", "ptr")),
+                    "localizedVirtualDispatch"));
+        }
+        return Optional.empty();
+    }
+
+    private void addCatchDeclaration(
+            Map<String, LlvmDeclaration> declarations,
+            String catchType) {
+        if (catchType.equals("<any>")) {
+            return;
+        }
+        String key = "instanceof:" + catchType;
+        String symbol = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                "instanceof",
+                key);
+        declarations.putIfAbsent(
+                symbol,
+                new LlvmDeclaration(
+                        symbol,
+                        "i32",
+                        List.of("ptr", "ptr"),
+                        "localizedCatchTypeCheck"));
     }
 
     private LlvmFunction lowerMethod(
@@ -177,26 +516,67 @@ public final class LlvmModuleLowerer {
         method.parameters().stream()
                 .map(parameter -> new LlvmParameter(typeLowerer.lower(parameter.type()), parameter.name()))
                 .forEach(parameters::add);
-        Map<String, List<PhiIncoming>> phiIncoming = phiIncoming(method);
         boolean cacheReferenceSidecar = nativeFields.usesReferenceSidecar(method);
+        LlvmType functionReturnType = typeLowerer.lower(method.returnType());
+        LlvmExceptionFlowLowerer exceptionFlowLowerer = new LlvmExceptionFlowLowerer(
+                method.blocks().stream()
+                        .map(IrBlock::name)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet()),
+                runtimeTokens);
+        ArrayList<LlvmExceptionFlowLowerer.BlockResult> loweredBlocks = new ArrayList<>();
+        HashMap<String, String> normalExitBlocks = new HashMap<>();
+        ArrayList<LlvmExceptionFlowLowerer.ExceptionalIncoming> exceptionalIncoming =
+                new ArrayList<>();
+        List<LlvmInstruction> exceptionalExitCleanup = cacheReferenceSidecar
+                ? List.of(nativeFields.referenceSidecarCleanup())
+                : List.of();
+        for (IrBlock block : method.blocks()) {
+            ArrayList<LlvmExceptionFlowLowerer.InstructionChunk> chunks = new ArrayList<>();
+            for (int instructionIndex = 0;
+                    instructionIndex < block.instructions().size();
+                    instructionIndex++) {
+                xyz.melodysky.ir.model.IrInstruction instruction =
+                        block.instructions().get(instructionIndex);
+                chunks.add(new LlvmExceptionFlowLowerer.InstructionChunk(
+                        instruction,
+                        lowerInstructions(
+                                instruction,
+                                directCallMethodKeys,
+                                staticCallMethodKeys,
+                                functionAbis,
+                                block.name(),
+                                instructionIndex)));
+            }
+            LlvmExceptionFlowLowerer.BlockResult lowered = exceptionFlowLowerer.lower(
+                    block,
+                    chunks,
+                    lowerTerminator(block),
+                    functionReturnType,
+                    exceptionalExitCleanup);
+            loweredBlocks.add(lowered);
+            normalExitBlocks.put(block.name(), lowered.normalExitBlock());
+            exceptionalIncoming.addAll(lowered.exceptionalIncoming());
+        }
+
+        Map<String, List<PhiIncoming>> phiIncoming =
+                phiIncoming(method, normalExitBlocks, exceptionalIncoming);
         ArrayList<LlvmBasicBlock> blocks = new ArrayList<>();
         if (cacheReferenceSidecar) {
             blocks.add(referenceSidecarPrologue(method));
         }
-        for (IrBlock block : method.blocks()) {
-            blocks.add(lowerBlock(
-                    block,
-                    phiIncoming.getOrDefault(block.name(), List.of()),
-                    directCallMethodKeys,
-                    staticCallMethodKeys,
-                    functionAbis,
-                    cacheReferenceSidecar));
+        for (LlvmExceptionFlowLowerer.BlockResult lowered : loweredBlocks) {
+            for (LlvmBasicBlock block : lowered.blocks()) {
+                blocks.add(withPhiInstructions(
+                        block,
+                        method,
+                        phiIncoming.getOrDefault(block.name(), List.of())));
+            }
         }
         return new LlvmFunction(
                 nameMangler.functionName(method),
                 linkage,
                 visibility,
-                typeLowerer.lower(method.returnType()),
+                functionReturnType,
                 parameters,
                 blocks);
     }
@@ -225,18 +605,26 @@ public final class LlvmModuleLowerer {
                 LlvmTerminator.gotoBlock(method.blocks().get(0).name()));
     }
 
-    private LlvmBasicBlock lowerBlock(
-            IrBlock block,
-            List<PhiIncoming> phiIncoming,
-            Set<String> directCallMethodKeys,
-            Set<String> staticCallMethodKeys,
-            Map<String, LlvmFunctionAbi> functionAbis,
-            boolean usesReferenceSidecar) {
+    private LlvmBasicBlock withPhiInstructions(
+            LlvmBasicBlock block,
+            IrMethod method,
+            List<PhiIncoming> phiIncoming) {
+        IrBlock source = method.blocks().stream()
+                .filter(candidate -> candidate.name().equals(block.name()))
+                .findFirst()
+                .orElse(null);
+        if (source == null || source.parameters().isEmpty()) {
+            return block;
+        }
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
-        for (int index = 0; index < block.parameters().size(); index++) {
-            IrValue parameter = block.parameters().get(index);
+        for (int index = 0; index < source.parameters().size(); index++) {
+            IrValue parameter = source.parameters().get(index);
             ArrayList<String> incoming = new ArrayList<>();
             for (PhiIncoming predecessor : phiIncoming) {
+                if (predecessor.arguments().size() != source.parameters().size()) {
+                    throw new IllegalArgumentException(
+                            "LLVM phi incoming argument count does not match target block parameters");
+                }
                 incoming.add("[ " + predecessor.arguments().get(index).name()
                         + ", %" + predecessor.predecessorBlock() + " ]");
             }
@@ -245,75 +633,57 @@ public final class LlvmModuleLowerer {
                     "phi " + typeLowerer.lower(parameter.type()).text() + " "
                             + String.join(", ", incoming)));
         }
-        for (int instructionIndex = 0; instructionIndex < block.instructions().size(); instructionIndex++) {
-            xyz.melodysky.ir.model.IrInstruction instruction = block.instructions().get(instructionIndex);
-            instructions.addAll(lowerInstructions(
-                    instruction,
-                    directCallMethodKeys,
-                    staticCallMethodKeys,
-                    functionAbis,
-                    block.name(),
-                    instructionIndex));
-        }
-        if (usesReferenceSidecar && exitsFunction(block)) {
-            instructions.add(nativeFields.referenceSidecarCleanup());
-        }
-        LlvmTerminator terminator = lowerTerminator(block);
-        return new LlvmBasicBlock(
-                block.name(),
-                instructions,
-                terminator);
+        instructions.addAll(block.instructions());
+        return new LlvmBasicBlock(block.name(), instructions, block.terminator());
     }
 
-    private boolean exitsFunction(IrBlock block) {
-        return block.terminator().kind() == IrTerminatorKind.RETURN
-                || (block.terminator().kind() == IrTerminatorKind.THROW
-                        && block.exceptionEdges().size() != 1);
-    }
-
-    private Map<String, List<PhiIncoming>> phiIncoming(IrMethod method) {
+    private Map<String, List<PhiIncoming>> phiIncoming(
+            IrMethod method,
+            Map<String, String> normalExitBlocks,
+            List<LlvmExceptionFlowLowerer.ExceptionalIncoming> exceptionalIncoming) {
         HashMap<String, ArrayList<PhiIncoming>> incoming = new HashMap<>();
         for (IrBlock block : method.blocks()) {
+            String predecessor = normalExitBlocks.getOrDefault(block.name(), block.name());
             switch (block.terminator().kind()) {
                 case GOTO -> addPhiIncoming(
                         incoming,
                         block.terminator().target().orElseThrow(),
-                        block.name(),
+                        predecessor,
                         block.terminator().targetArguments());
                 case THROW -> {
-                    if (block.exceptionEdges().size() == 1 && block.terminator().value().isPresent()) {
-                        addPhiIncoming(
-                                incoming,
-                                block.exceptionEdges().get(0).target(),
-                                block.name(),
-                                List.of(block.terminator().value().orElseThrow()));
-                    }
                 }
                 case BRANCH -> {
                     addPhiIncoming(
                             incoming,
                             block.terminator().trueTarget().orElseThrow(),
-                            block.name(),
+                            predecessor,
                             block.terminator().trueTargetArguments());
                     addPhiIncoming(
                             incoming,
                             block.terminator().falseTarget().orElseThrow(),
-                            block.name(),
+                            predecessor,
                             block.terminator().falseTargetArguments());
                 }
                 case SWITCH -> {
                     addPhiIncoming(
                             incoming,
                             block.terminator().defaultTarget().orElseThrow(),
-                            block.name(),
+                            predecessor,
                             block.terminator().defaultTargetArguments());
                     for (var switchCase : block.terminator().switchCases()) {
-                        addPhiIncoming(incoming, switchCase.target(), block.name(), switchCase.arguments());
+                        addPhiIncoming(incoming, switchCase.target(), predecessor, switchCase.arguments());
                     }
                 }
                 case RETURN -> {
                 }
             }
+        }
+        for (LlvmExceptionFlowLowerer.ExceptionalIncoming exceptional : exceptionalIncoming) {
+            addPhiIncoming(
+                    incoming,
+                    exceptional.target(),
+                    exceptional.predecessorBlock(),
+                    exceptional.arguments());
         }
         return incoming.entrySet().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
@@ -351,9 +721,6 @@ public final class LlvmModuleLowerer {
                             .toList());
         }
         if (block.terminator().kind() == IrTerminatorKind.THROW) {
-            if (block.exceptionEdges().size() == 1) {
-                return LlvmTerminator.gotoBlock(block.exceptionEdges().get(0).target());
-            }
             return LlvmTerminator.throwValue(block.terminator().value().orElseThrow().name());
         }
         LlvmType returnType = block.terminator().value()
@@ -369,6 +736,13 @@ public final class LlvmModuleLowerer {
             Map<String, LlvmFunctionAbi> functionAbis,
             String blockName,
             int instructionIndex) {
+        Optional<BusinessStringConstantRef> businessString =
+                BusinessStringConstantRef.fromInstruction(instruction);
+        if (businessString.isPresent()) {
+            return List.of(lowerBusinessStringConstant(
+                    instruction,
+                    businessString.orElseThrow()));
+        }
         if (isCall(instruction.opcode())) {
             return lowerCallInstructions(
                     instruction,
@@ -691,34 +1065,118 @@ public final class LlvmModuleLowerer {
     }
 
     private LlvmInstruction lowerFieldAccess(xyz.melodysky.ir.model.IrInstruction instruction) {
-        String helper = fieldHelper(instruction);
-        String tokenOperand = "i64 " + FieldIdentityToken.token(instruction.symbol().orElseThrow());
+        String helper = localizedFieldHelper(instruction);
+        String operation = localizedFieldOperation(instruction);
+        String fieldKey = instruction.symbol().orElseThrow();
         if (instruction.opcode() == IrOpcode.GET_STATIC) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call " + type + " @" + helper + "(ptr %j2ll_env, ptr %j2ll_owner, " + tokenOperand + ")");
+                    "call " + type + " @" + helper
+                            + "("
+                            + localAbiArguments(
+                                    RuntimeLocalAbiDomain.FIELD,
+                                    operation,
+                                    fieldKey,
+                                    List.of(
+                                            "ptr %j2ll_env",
+                                            "ptr %j2ll_owner"))
+                            + ")");
         }
         if (instruction.opcode() == IrOpcode.PUT_STATIC) {
             IrValue value = instruction.operands().get(0);
             return LlvmInstruction.raw(
                     Optional.empty(),
-                    "call void @" + helper + "(ptr %j2ll_env, ptr %j2ll_owner, " + tokenOperand
-                            + ", " + typedOperand(value) + ")");
+                    "call void @" + helper
+                            + "("
+                            + localAbiArguments(
+                                    RuntimeLocalAbiDomain.FIELD,
+                                    operation,
+                                    fieldKey,
+                                    List.of(
+                                            "ptr %j2ll_env",
+                                            "ptr %j2ll_owner",
+                                            typedOperand(value)))
+                            + ")");
         }
         if (instruction.opcode() == IrOpcode.GET_FIELD) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call " + type + " @" + helper + "(ptr %j2ll_env, "
-                            + typedOperand(instruction.operands().get(0)) + ", " + tokenOperand + ")");
+                    "call " + type + " @" + helper + "("
+                            + localAbiArguments(
+                                    RuntimeLocalAbiDomain.FIELD,
+                                    operation,
+                                    fieldKey,
+                                    List.of(
+                                            "ptr %j2ll_env",
+                                            typedOperand(
+                                                    instruction.operands()
+                                                            .get(0))))
+                            + ")");
         }
         IrValue receiver = instruction.operands().get(0);
         IrValue value = instruction.operands().get(1);
         return LlvmInstruction.raw(
                 Optional.empty(),
-                "call void @" + helper + "(ptr %j2ll_env, "
-                        + typedOperand(receiver) + ", " + tokenOperand + ", " + typedOperand(value) + ")");
+                "call void @" + helper + "("
+                        + localAbiArguments(
+                                RuntimeLocalAbiDomain.FIELD,
+                                operation,
+                                fieldKey,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        typedOperand(receiver),
+                                        typedOperand(value)))
+                        + ")");
+    }
+
+    private String localizedFieldHelper(
+            xyz.melodysky.ir.model.IrInstruction instruction) {
+        String fieldKey = instruction.symbol().orElseThrow();
+        return runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.FIELD_RUNTIME,
+                localizedFieldOperation(instruction),
+                fieldKey);
+    }
+
+    private String localizedFieldOperation(
+            xyz.melodysky.ir.model.IrInstruction instruction) {
+        String fieldKey = instruction.symbol().orElseThrow();
+        int descriptor = fieldKey.indexOf('!');
+        if (descriptor < 0 || descriptor == fieldKey.length() - 1) {
+            throw new IllegalArgumentException("invalid field key: " + fieldKey);
+        }
+        String suffix = switch (fieldKey.charAt(descriptor + 1)) {
+            case 'J' -> "i64";
+            case 'F' -> "f32";
+            case 'D' -> "f64";
+            case 'L', '[' -> "ref";
+            default -> "i32";
+        };
+        String operation = switch (instruction.opcode()) {
+            case GET_STATIC -> "field_get_static_" + suffix;
+            case PUT_STATIC -> "field_put_static_" + suffix;
+            case GET_FIELD -> "field_get_instance_" + suffix;
+            case PUT_FIELD -> "field_put_instance_" + suffix;
+            default -> throw new IllegalArgumentException(
+                    "not a JVM field access: " + instruction.opcode());
+        };
+        return operation;
+    }
+
+    private String fieldLlvmType(String fieldKey) {
+        int descriptor = fieldKey.indexOf('!');
+        if (descriptor < 0 || descriptor == fieldKey.length() - 1) {
+            throw new IllegalArgumentException("invalid field key: " + fieldKey);
+        }
+        return switch (fieldKey.charAt(descriptor + 1)) {
+            case 'J' -> "i64";
+            case 'F' -> "float";
+            case 'D' -> "double";
+            case 'L', '[' -> "ptr";
+            default -> "i32";
+        };
     }
 
     private LlvmInstruction lowerCall(
@@ -744,7 +1202,7 @@ public final class LlvmModuleLowerer {
                     LlvmInstruction.raw(Optional.empty(), "call void @" + target + "(" + args + ")"));
         }
         if (isConstructorCallHelperInstruction(instruction)) {
-            String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+            String token = dispatchToken(instruction.symbol().orElseThrow());
             if (instruction.symbol().orElseThrow().endsWith("!()V")) {
                 return LlvmInstruction.raw(
                         Optional.empty(),
@@ -761,7 +1219,7 @@ public final class LlvmModuleLowerer {
         if (isDispatchHelperInstruction(instruction)) {
             String helper = dispatchHelperName(instruction);
             String receiver = typedOperand(instruction.operands().get(0));
-            String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+            String token = dispatchToken(instruction.symbol().orElseThrow());
             String arguments = dispatchHelperArguments(instruction, receiver, token);
             String resultType = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
             return LlvmInstruction.raw(
@@ -833,31 +1291,29 @@ public final class LlvmModuleLowerer {
     private List<LlvmInstruction> lowerConstructorCallBridge(
             xyz.melodysky.ir.model.IrInstruction instruction,
             String scratchSuffix) {
-        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
-        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
-        if (descriptor.equals("()V")) {
-            return List.of(LlvmInstruction.raw(
-                    Optional.empty(),
-                    "call void @j2ll_rt_call_constructor_void(ptr %j2ll_env, "
-                            + typedOperand(instruction.operands().get(0)) + ", " + token + ")"));
-        }
-        if (descriptor.equals("(II)V")) {
-            return List.of(LlvmInstruction.raw(
-                    Optional.empty(),
-                    "call void @j2ll_rt_call_constructor_void_i32_i32(ptr %j2ll_env, "
-                            + typedOperand(instruction.operands().get(0)) + ", " + token + ", "
-                            + typedOperand(instruction.operands().get(1)) + ", "
-                            + typedOperand(instruction.operands().get(2)) + ")"));
-        }
         ArrayList<LlvmInstruction> lowered = new ArrayList<>();
         String argsPointer = appendJvalueScratch(
                 lowered,
                 instruction.operands().subList(1, instruction.operands().size()),
                 scratchSuffix);
+        String methodKey = instruction.symbol().orElseThrow();
+        String operation = "constructor_call";
+        String helper = localizedDispatchHelper(
+                operation,
+                methodKey);
         lowered.add(LlvmInstruction.raw(
                 Optional.empty(),
-                "call void @j2ll_rt_call_constructor_void_a(ptr %j2ll_env, "
-                        + typedOperand(instruction.operands().get(0)) + ", " + token + ", " + argsPointer + ")"));
+                "call void @" + helper + "("
+                        + localAbiArguments(
+                                RuntimeLocalAbiDomain.DISPATCH,
+                                operation,
+                                methodKey,
+                                List.of(
+                                        "ptr %j2ll_env",
+                                        typedOperand(
+                                                instruction.operands().get(0)),
+                                        argsPointer))
+                        + ")"));
         return List.copyOf(lowered);
     }
 
@@ -866,11 +1322,22 @@ public final class LlvmModuleLowerer {
             String scratchSuffix) {
         ArrayList<LlvmInstruction> lowered = new ArrayList<>();
         String argsPointer = appendJvalueScratch(lowered, instruction.operands(), scratchSuffix);
-        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
-        String helper = staticCallBridgeHelper(descriptor);
+        String methodKey = instruction.symbol().orElseThrow();
+        String descriptor = methodDescriptor(methodKey).orElseThrow();
         String returnType = staticCallBridgeReturnType(descriptor);
-        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
-        String call = "call " + returnType + " @" + helper + "(ptr %j2ll_env, " + token + ", " + argsPointer + ")";
+        String operation = "static_call_"
+                + dispatchDescriptorSuffix(descriptor);
+        String helper = localizedDispatchHelper(
+                operation,
+                methodKey);
+        String call = "call " + returnType + " @" + helper
+                + "("
+                + localAbiArguments(
+                        RuntimeLocalAbiDomain.DISPATCH,
+                        operation,
+                        methodKey,
+                        List.of("ptr %j2ll_env", argsPointer))
+                + ")";
         lowered.add(LlvmInstruction.raw(
                 instruction.result().map(IrValue::name),
                 call));
@@ -885,13 +1352,25 @@ public final class LlvmModuleLowerer {
                 lowered,
                 instruction.operands().subList(1, instruction.operands().size()),
                 scratchSuffix);
-        String descriptor = methodDescriptor(instruction.symbol().orElseThrow()).orElseThrow();
-        String helper = dispatchHelperName(instruction);
+        String methodKey = instruction.symbol().orElseThrow();
+        String descriptor = methodDescriptor(methodKey).orElseThrow();
         String returnType = staticCallBridgeReturnType(descriptor);
-        String token = "i64 " + MethodIdentityToken.token(instruction.symbol().orElseThrow());
+        String operation = dispatchOperationPrefix(instruction)
+                + dispatchDescriptorSuffix(descriptor);
+        String helper = localizedDispatchHelper(
+                operation,
+                methodKey);
         String receiver = typedOperand(instruction.operands().get(0));
-        String call = "call " + returnType + " @" + helper + "(ptr %j2ll_env, "
-                + receiver + ", " + token + ", " + argsPointer + ")";
+        String call = "call " + returnType + " @" + helper + "("
+                + localAbiArguments(
+                        RuntimeLocalAbiDomain.DISPATCH,
+                        operation,
+                        methodKey,
+                        List.of(
+                                "ptr %j2ll_env",
+                                receiver,
+                                argsPointer))
+                + ")";
         lowered.add(LlvmInstruction.raw(instruction.result().map(IrValue::name), call));
         return List.copyOf(lowered);
     }
@@ -937,10 +1416,13 @@ public final class LlvmModuleLowerer {
     private LlvmInstruction lowerAllocationHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
         String symbol = instruction.symbol().orElseThrow();
         if (instruction.opcode() == IrOpcode.NEW_OBJECT) {
-            long token = ClassIdentityToken.token(allocationClassIdentity(symbol));
+            String helper = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.CLASS_RUNTIME,
+                    "alloc_object",
+                    symbol);
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call ptr @j2ll_rt_alloc_object(ptr %j2ll_env, i64 " + token + ")");
+                    "call ptr @" + helper + "(ptr %j2ll_env)");
         }
         if (symbol.equals("primitiveArray:byte") || symbol.equals("primitiveArray:boolean")) {
             return LlvmInstruction.raw(
@@ -977,30 +1459,108 @@ public final class LlvmModuleLowerer {
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_double_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
-        long token = ClassIdentityToken.token(allocationClassIdentity(symbol));
+        String helper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                "new_object_array",
+                symbol);
         return LlvmInstruction.raw(
                 Optional.of(instruction.result().orElseThrow().name()),
-                "call ptr @j2ll_rt_new_object_array(ptr %j2ll_env, i64 " + token + ", "
+                "call ptr @" + helper + "(ptr %j2ll_env, "
                         + typedOperand(instruction.operands().get(0)) + ")");
     }
 
     private LlvmInstruction lowerTypeHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
-        long token = ClassIdentityToken.token(typeClassIdentity(instruction.symbol().orElseThrow()));
+        String key = instruction.symbol().orElseThrow();
+        String operation = instruction.opcode() == IrOpcode.CHECKCAST
+                ? "checkcast"
+                : "instanceof";
+        String helper = runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.CLASS_RUNTIME,
+                operation,
+                key);
         if (instruction.opcode() == IrOpcode.CHECKCAST) {
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call ptr @j2ll_rt_checkcast(ptr %j2ll_env, "
-                            + typedOperand(instruction.operands().get(0)) + ", i64 " + token + ")");
+                    "call ptr @" + helper + "(ptr %j2ll_env, "
+                            + typedOperand(instruction.operands().get(0)) + ")");
         }
         return LlvmInstruction.raw(
                 Optional.of(instruction.result().orElseThrow().name()),
-                "call i32 @j2ll_rt_instanceof(ptr %j2ll_env, "
-                        + typedOperand(instruction.operands().get(0)) + ", i64 " + token + ")");
+                "call i32 @" + helper + "(ptr %j2ll_env, "
+                        + typedOperand(instruction.operands().get(0)) + ")");
     }
 
     private LlvmInstruction lowerEnvBackedRuntimeCall(
             xyz.melodysky.ir.model.IrInstruction instruction,
             String symbol) {
+        if (instruction.symbol().orElse("").startsWith(
+                "j2ll_rt_class_for_name_static|class:")) {
+            String identity = instruction.symbol().orElseThrow()
+                    .substring("j2ll_rt_class_for_name_static|class:".length());
+            String helper = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.CLASS_OBJECT,
+                    "class_for_name",
+                    identity);
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "call ptr @" + helper + "(ptr %j2ll_env, "
+                            + typedOperand(instruction.operands().get(1))
+                            + ")");
+        }
+        Optional<String> metadataKey = runtimeMetadataKey(instruction);
+        if (metadataKey.isPresent()) {
+            String key = metadataKey.orElseThrow();
+            String base = runtimeHelperBaseSymbol(
+                    instruction.symbol().orElseThrow());
+            String operation;
+            RuntimeTokenDomain domain;
+            if (base.equals("j2ll_rt_get_declared_method")
+                    && key.startsWith("method:")) {
+                operation = "reflection_lookup_method";
+                domain = RuntimeTokenDomain.REFLECTION_METHOD;
+            } else if (base.equals("j2ll_rt_get_declared_constructor")
+                    && key.startsWith("constructor:")) {
+                operation = "reflection_lookup_constructor";
+                domain = RuntimeTokenDomain.REFLECTION_METHOD;
+            } else if (base.equals("j2ll_rt_get_declared_field")
+                    && key.startsWith("field:")) {
+                operation = "reflection_lookup_field";
+                domain = RuntimeTokenDomain.REFLECTION_FIELD;
+            } else {
+                operation = null;
+                domain = null;
+            }
+            if (operation != null) {
+                String helper = runtimeTokens.helperSymbol(
+                        domain,
+                        operation,
+                        key);
+                return LlvmInstruction.raw(
+                        Optional.of(instruction.result().orElseThrow().name()),
+                        "call ptr @" + helper + "("
+                                + localAbiArguments(
+                                        RuntimeLocalAbiDomain.REFLECTION,
+                                        operation,
+                                        key,
+                                        List.of("ptr %j2ll_env"))
+                                + ")");
+            }
+        }
+        if (instruction.symbol().orElse("").startsWith(
+                "j2ll_rt_lambda_new|lambda:")) {
+            String identity = runtimeMetadataKey(instruction)
+                    .orElseThrow();
+            String helper = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.LAMBDA,
+                    "lambda_new",
+                    identity);
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "call ptr @" + helper + "(ptr %j2ll_env, "
+                            + typedOperand(
+                                    instruction.operands().get(1))
+                            + ")");
+        }
         String args = typedOperands(instruction.operands());
         String arguments = args.isEmpty() ? "ptr %j2ll_env" : "ptr %j2ll_env, " + args;
         if (instruction.result().isPresent()) {
@@ -1035,19 +1595,20 @@ public final class LlvmModuleLowerer {
 
     private LlvmInstruction lowerSymbolicConstant(xyz.melodysky.ir.model.IrInstruction instruction) {
         if (instruction.opcode() == IrOpcode.CONST_STRING) {
-            String symbol = instruction.symbol().orElseThrow();
-            String value = symbol.startsWith("string:") ? symbol.substring("string:".length()) : symbol;
-            long token = Integer.toUnsignedLong(("string:" + value).hashCode());
-            return LlvmInstruction.raw(
-                    Optional.of(instruction.result().orElseThrow().name()),
-                    "call ptr @j2ll_rt_string_constant(ptr %j2ll_env, i64 " + token + ")");
+            return lowerBusinessStringConstant(
+                    instruction,
+                    BusinessStringConstantRef.fromInstruction(instruction)
+                            .orElseThrow());
         }
         if (instruction.opcode() == IrOpcode.CONST_CLASS) {
             String identity = classIdentityFromConstSymbol(instruction.symbol().orElseThrow());
-            long token = stableClassObjectToken(identity);
+            String helper = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.CLASS_OBJECT,
+                    "class_object",
+                    identity);
             return LlvmInstruction.raw(
                     Optional.of(instruction.result().orElseThrow().name()),
-                    "call ptr @j2ll_rt_class_object(ptr %j2ll_env, i64 " + token + ")");
+                    "call ptr @" + helper + "(ptr %j2ll_env)");
         }
         String helper = "j2ll_const_" + constantKind(instruction.opcode()) + "_" + stableHash(instruction.symbol().orElseThrow());
         return LlvmInstruction.raw(
@@ -1055,7 +1616,28 @@ public final class LlvmModuleLowerer {
                 "call ptr @" + helper + "()");
     }
 
+    private LlvmInstruction lowerBusinessStringConstant(
+            xyz.melodysky.ir.model.IrInstruction instruction,
+            BusinessStringConstantRef constant) {
+        return LlvmInstruction.raw(
+                Optional.of(instruction.result().orElseThrow().name()),
+                "call ptr @"
+                        + constant.helperSymbol(businessStringSymbols)
+                        + "(ptr %j2ll_env)");
+    }
+
     private LlvmInstruction lowerRuntimeModelHelper(xyz.melodysky.ir.model.IrInstruction instruction) {
+        if (instruction.opcode() == IrOpcode.CLASS_OBJECT) {
+            String identity = classIdentityFromConstSymbol(
+                    instruction.symbol().orElseThrow());
+            String helper = runtimeTokens.helperSymbol(
+                    RuntimeTokenDomain.CLASS_OBJECT,
+                    "class_object",
+                    identity);
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "call ptr @" + helper + "(ptr %j2ll_env)");
+        }
         String helper = runtimeModelHelperName(instruction);
         String args = typedOperands(instruction.operands());
         if (isEnvBackedRuntimeModelHelper(instruction.opcode())) {
@@ -1297,6 +1879,9 @@ public final class LlvmModuleLowerer {
                 || base.startsWith("j2ll_rt_long_")
                 || base.startsWith("j2ll_rt_boolean_")
                 || base.startsWith("j2ll_rt_double_")
+                || base.equals("j2ll_rt_object_get_class")
+                || base.equals("j2ll_rt_class_get_class_loader")
+                || base.equals("j2ll_rt_thread_sleep")
                 || base.startsWith("j2ll_rt_objects_")
                 || base.equals("j2ll_rt_lambda_new")
                 || base.equals("j2ll_rt_class_for_name_static")
@@ -1314,6 +1899,17 @@ public final class LlvmModuleLowerer {
     private String runtimeHelperBaseSymbol(String symbol) {
         int separator = symbol.indexOf('|');
         return separator < 0 ? symbol : symbol.substring(0, separator);
+    }
+
+    private Optional<String> runtimeMetadataKey(
+            xyz.melodysky.ir.model.IrInstruction instruction) {
+        return instruction.symbol().flatMap(symbol -> {
+            int separator = symbol.indexOf('|');
+            if (separator < 0 || separator == symbol.length() - 1) {
+                return Optional.empty();
+            }
+            return Optional.of(symbol.substring(separator + 1));
+        });
     }
 
     private boolean isDispatchHelperInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1542,8 +2138,79 @@ public final class LlvmModuleLowerer {
         return classIdentity(identity);
     }
 
-    private long stableClassObjectToken(String classDescriptor) {
-        return Integer.toUnsignedLong(classDescriptor.hashCode());
+    private String dispatchToken(String methodKey) {
+        return "i64 " + runtimeTokens.token(
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                methodKey);
+    }
+
+    private String localizedDispatchHelper(
+            String operation,
+            String methodKey) {
+        return runtimeTokens.helperSymbol(
+                RuntimeTokenDomain.DISPATCH_METHOD,
+                operation,
+                methodKey);
+    }
+
+    private List<String> localAbiParameterTypes(
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalTypes) {
+        RuntimeLocalAbiPlan plan = runtimeLocalAbi.plan(
+                runtimeTokens,
+                domain,
+                operation,
+                identity,
+                logicalTypes.size());
+        return plan.arrange(logicalTypes);
+    }
+
+    private String localAbiArguments(
+            RuntimeLocalAbiDomain domain,
+            String operation,
+            String identity,
+            List<String> logicalArguments) {
+        RuntimeLocalAbiPlan plan = runtimeLocalAbi.plan(
+                runtimeTokens,
+                domain,
+                operation,
+                identity,
+                logicalArguments.size());
+        return String.join(
+                ", ",
+                plan.arrange(logicalArguments));
+    }
+
+    private String dispatchDescriptorSuffix(String descriptor) {
+        int close = descriptor.indexOf(')');
+        if (close < 0 || close == descriptor.length() - 1) {
+            throw new IllegalArgumentException(
+                    "invalid method descriptor: " + descriptor);
+        }
+        return switch (descriptor.charAt(close + 1)) {
+            case 'V' -> "void";
+            case 'Z' -> "boolean";
+            case 'B' -> "byte";
+            case 'C' -> "char";
+            case 'S' -> "short";
+            case 'I' -> "i32";
+            case 'J' -> "i64";
+            case 'F' -> "f32";
+            case 'D' -> "f64";
+            case 'L', '[' -> "ref";
+            default -> throw new IllegalArgumentException(
+                    "unsupported dispatch return descriptor "
+                            + descriptor);
+        };
+    }
+
+    private String dispatchOperationPrefix(
+            xyz.melodysky.ir.model.IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.CALL_INTERFACE
+                ? "interface_dispatch_"
+                : "virtual_dispatch_";
     }
 
     private String constantKind(IrOpcode opcode) {
@@ -1575,6 +2242,9 @@ public final class LlvmModuleLowerer {
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys) {
         return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> !instruction.exceptionSites().isEmpty())
+                || method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
                 || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
@@ -1585,7 +2255,9 @@ public final class LlvmModuleLowerer {
                         || isTypeHelper(instruction)
                         || isMonitorHelper(instruction.opcode())
                         || isClassInitHelper(instruction.opcode())
-                        || isSymbolicConstant(instruction.opcode())
+                        || LlvmFunctionAbiPolicy
+                                .literalOrClassObjectRequiresJniEnv(
+                                        instruction.opcode())
                         || isConstructorCallHelperInstruction(instruction)
                         || isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)
                         || isDispatchHelperInstruction(instruction)

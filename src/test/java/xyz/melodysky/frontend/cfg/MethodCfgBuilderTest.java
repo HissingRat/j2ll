@@ -12,6 +12,7 @@ import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.pipeline.StageValidation;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.ExceptionFlowAsmFixtures;
 
 class MethodCfgBuilderTest {
     private final MethodCfgBuilder builder = new MethodCfgBuilder();
@@ -80,6 +81,31 @@ class MethodCfgBuilderTest {
         assertEquals("java/lang/RuntimeException", cfg.exceptionRegions().get(0).catchType());
         assertTrue(cfg.blocks().stream().anyMatch(BytecodeBasicBlock::isExceptionHandler));
         assertEquals(1, countEdges(cfg, BytecodeEdgeKind.EXCEPTION));
+        assertValidatorPasses(result);
+    }
+
+    @Test
+    void preservesExceptionTableOrderWhenHandlerLayoutHasTheOppositeOrder() {
+        MethodCfgResult result = build(
+                ExceptionFlowAsmFixtures.classWithHandlerTableOrderOppositeToLayout(
+                        "pkg/OrderedHandlers"),
+                "ordered");
+
+        BytecodeCfg cfg = result.cfg().orElseThrow();
+        List<BytecodeEdge> exceptionEdges = cfg.edges().stream()
+                .filter(edge -> edge.kind() == BytecodeEdgeKind.EXCEPTION)
+                .toList();
+        List<String> orderedCatchTypes = exceptionEdges.stream()
+                .map(BytecodeEdge::detail)
+                .distinct()
+                .toList();
+
+        assertTrue(exceptionEdges.get(0).toBlockId() > exceptionEdges.get(1).toBlockId());
+        assertEquals(
+                List.of(
+                        "java/lang/IllegalArgumentException",
+                        "java/lang/RuntimeException"),
+                orderedCatchTypes);
         assertValidatorPasses(result);
     }
 

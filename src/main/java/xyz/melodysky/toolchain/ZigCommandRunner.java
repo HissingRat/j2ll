@@ -23,8 +23,12 @@ public interface ZigCommandRunner {
                 builder.environment().putAll(environment);
             }
             Process process = builder.start();
-            try (ExecutorService drains = Executors.newThreadPerTaskExecutor(
-                    Thread.ofVirtual().name("j2ll-zig-output-", 0).factory())) {
+            ExecutorService drains = Executors.newFixedThreadPool(2, runnable -> {
+                Thread thread = new Thread(runnable, "j2ll-zig-output");
+                thread.setDaemon(true);
+                return thread;
+            });
+            try {
                 Future<byte[]> stdoutBytes = drains.submit(() -> process.getInputStream().readAllBytes());
                 Future<byte[]> stderrBytes = drains.submit(() -> process.getErrorStream().readAllBytes());
                 int exitCode = process.waitFor();
@@ -40,6 +44,8 @@ public interface ZigCommandRunner {
                 throw new IOException(
                         "failed to read managed Zig command output: " + String.join(" ", command),
                         exception.getCause());
+            } finally {
+                drains.shutdownNow();
             }
         };
     }

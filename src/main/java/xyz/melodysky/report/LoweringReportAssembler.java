@@ -23,6 +23,8 @@ import xyz.melodysky.toolchain.NativeImplementationPlan;
 public final class LoweringReportAssembler {
     private final DefaultInterfaceAnalyzer defaultInterfaceAnalyzer = new DefaultInterfaceAnalyzer();
     private final RuntimeHelperSiteAnalyzer helperSiteAnalyzer = new RuntimeHelperSiteAnalyzer();
+    private final HelperBackedSiteReportFactory helperReportFactory =
+            new HelperBackedSiteReportFactory();
 
     public List<LoweringReportMethod> assemble(
             ParsedProgram program,
@@ -54,7 +56,7 @@ public final class LoweringReportAssembler {
                     registration.map(NativeRegistrationEntry::registrationOwner).orElse(null),
                     implementation.map(item -> item.path().wireName()).orElse(null),
                     helperSiteAnalyzer.analyze(result, registration, implementation, defaultInterfaces).stream()
-                            .map(site -> new HelperBackedSiteReport(site.helper(), site.reasonCode()))
+                            .map(helperReportFactory::create)
                             .toList(),
                     result.reasonCode(),
                     result.reason()));

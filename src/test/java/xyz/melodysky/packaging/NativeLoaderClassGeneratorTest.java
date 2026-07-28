@@ -114,7 +114,7 @@ class NativeLoaderClassGeneratorTest {
                 Path.of("loader.c"),
                 jarPath,
                 "0".repeat(64),
-                List.of("JNI_OnLoad", "j2ll_register"));
+                List.of("JNI_OnLoad"));
     }
 
     private String extension(TargetTriple target) {

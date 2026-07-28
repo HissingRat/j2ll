@@ -2,6 +2,7 @@ package xyz.melodysky.packaging;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -16,15 +17,26 @@ import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticLocation;
 import xyz.melodysky.diagnostic.DiagnosticStage;
 import xyz.melodysky.frontend.classfile.ParsedClass;
+import xyz.melodysky.toolchain.initializer.ConstructorPrefixPlan;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationKind;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 
 public final class NativeOriginalClassRewriter implements Opcodes {
     public ClassRewriteResult rewrite(ParsedClass parsedClass, List<MethodRewriteDecision> decisions) {
-        return rewrite(parsedClass, decisions, null);
+        return rewrite(parsedClass, decisions, Map.of(), null);
     }
 
     public ClassRewriteResult rewrite(
             ParsedClass parsedClass,
             List<MethodRewriteDecision> decisions,
+            String loaderInternalName) {
+        return rewrite(parsedClass, decisions, Map.of(), loaderInternalName);
+    }
+
+    public ClassRewriteResult rewrite(
+            ParsedClass parsedClass,
+            List<MethodRewriteDecision> decisions,
+            Map<String, InitializerImplementationPlan> initializerPlans,
             String loaderInternalName) {
         ClassNode copy = cloneClass(parsedClass.classNode());
         ArrayList<Diagnostic> diagnostics = new ArrayList<>();
@@ -67,7 +79,24 @@ public final class NativeOriginalClassRewriter implements Opcodes {
                             .at(location(decision)));
                     continue;
                 }
-                rewriteStub(copy, method, decision);
+                InitializerImplementationPlan initializerPlan =
+                        initializerPlans.get(decision.method().methodKey());
+                if (initializerPlan == null) {
+                    diagnostics.add(Diagnostic.error(
+                                    DiagnosticStage.PACKAGING,
+                                    PackagingDiagnostics.INITIALIZER_IMPLEMENTATION_PLAN_MISSING,
+                                    "stub rewrite requires the final initializer implementation plan")
+                            .at(location(decision)));
+                    continue;
+                }
+                if (!rewriteStub(copy, method, decision, initializerPlan)) {
+                    diagnostics.add(Diagnostic.error(
+                                    DiagnosticStage.PACKAGING,
+                                    PackagingDiagnostics.CONSTRUCTOR_PREFIX_REWRITE_FAILED,
+                                    "constructor bytecode no longer matches its validated initialization prefix")
+                            .at(location(decision)));
+                    continue;
+                }
                 applied.add(decision);
             }
         }
@@ -108,24 +137,36 @@ public final class NativeOriginalClassRewriter implements Opcodes {
         method.maxLocals = 0;
     }
 
-    private void rewriteStub(ClassNode classNode, MethodNode method, MethodRewriteDecision decision) {
+    private boolean rewriteStub(
+            ClassNode classNode,
+            MethodNode method,
+            MethodRewriteDecision decision,
+            InitializerImplementationPlan initializerPlan) {
         if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            rewriteConstructorStub(classNode, method, decision);
-            return;
+            if (initializerPlan.kind() != InitializerImplementationKind.CONSTRUCTOR) {
+                return false;
+            }
+            return rewriteConstructorStub(classNode, method, decision, initializerPlan);
+        }
+        if (initializerPlan.kind() != InitializerImplementationKind.CLASS_INITIALIZER) {
+            return false;
         }
         rewriteClassInitializerStub(classNode, method, decision);
+        return true;
     }
 
-    private void rewriteConstructorStub(ClassNode classNode, MethodNode method, MethodRewriteDecision decision) {
+    private boolean rewriteConstructorStub(
+            ClassNode classNode,
+            MethodNode method,
+            MethodRewriteDecision decision,
+            InitializerImplementationPlan initializerPlan) {
+        ConstructorPrefixPlan prefix = initializerPlan.constructorPrefix().orElseThrow();
+        MethodInsnNode initialization = constructorInitialization(method, prefix);
+        if (initialization == null) {
+            return false;
+        }
         String helperDescriptor = constructorHelperDescriptor(decision);
-        method.instructions = new InsnList();
-        method.instructions.add(new VarInsnNode(ALOAD, 0));
-        method.instructions.add(new MethodInsnNode(
-                INVOKESPECIAL,
-                classNode.superName == null ? "java/lang/Object" : classNode.superName,
-                "<init>",
-                "()V",
-                false));
+        removeAfter(method.instructions, initialization);
         method.instructions.add(new VarInsnNode(ALOAD, 0));
         addOriginalArguments(method.instructions, decision.method().descriptor(), 1);
         method.instructions.add(new MethodInsnNode(
@@ -140,6 +181,43 @@ public final class NativeOriginalClassRewriter implements Opcodes {
         method.visibleLocalVariableAnnotations = null;
         method.invisibleLocalVariableAnnotations = null;
         addNativeHelper(classNode, decision.generatedHelperName().orElseThrow(), helperDescriptor);
+        return true;
+    }
+
+    private MethodInsnNode constructorInitialization(
+            MethodNode method,
+            ConstructorPrefixPlan prefix) {
+        int opcodeIndex = -1;
+        for (var instruction = method.instructions.getFirst();
+                instruction != null;
+                instruction = instruction.getNext()) {
+            if (instruction.getOpcode() < 0) {
+                continue;
+            }
+            opcodeIndex++;
+            if (opcodeIndex != prefix.initializationOpcodeIndex()) {
+                continue;
+            }
+            if (instruction instanceof MethodInsnNode call
+                    && call.getOpcode() == INVOKESPECIAL
+                    && call.name.equals("<init>")
+                    && call.owner.equals(prefix.targetOwner())
+                    && call.desc.equals(prefix.targetDescriptor())
+                    && call.itf == prefix.interfaceTarget()) {
+                return call;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private void removeAfter(InsnList instructions, MethodInsnNode boundary) {
+        var instruction = boundary.getNext();
+        while (instruction != null) {
+            var next = instruction.getNext();
+            instructions.remove(instruction);
+            instruction = next;
+        }
     }
 
     private void rewriteClassInitializerStub(ClassNode classNode, MethodNode method, MethodRewriteDecision decision) {

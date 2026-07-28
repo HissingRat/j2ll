@@ -7,7 +7,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbiPolicy;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
+import xyz.melodysky.ir.model.BusinessStringConstantRef;
+import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -16,26 +19,47 @@ import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
+import xyz.melodysky.ir.ssa.JvmExceptionInstructionSemantics;
 import xyz.melodysky.analysis.field.NativeFieldStorageKind;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 
 public final class NativeImplementationPlanner {
     private static final Set<String> LLVM_SCALAR_DESCRIPTORS = Set.of("Z", "B", "C", "S", "I", "J", "F", "D");
 
     private final LlvmNameMangler llvmNameMangler;
+    private final BusinessStringSymbolMapper businessStringSymbols;
     private final JniTypeMapper typeMapper = new JniTypeMapper();
     private final NativeExceptionFlowSupport exceptionFlowSupport = new NativeExceptionFlowSupport();
+    private final NativeLocalReferenceSafety localReferenceSafety =
+            new NativeLocalReferenceSafety();
+    private final NativeLocalReferenceCallGraphSafety localReferenceCallGraphSafety =
+            new NativeLocalReferenceCallGraphSafety();
+    private final JvmExceptionInstructionSemantics exceptionSemantics =
+            new JvmExceptionInstructionSemantics();
+    private final InitializerImplementationPlanner initializerPlanner =
+            new InitializerImplementationPlanner();
 
     public NativeImplementationPlanner() {
-        this(new LlvmNameMangler());
+        this(
+                new LlvmNameMangler(),
+                BusinessStringSymbolMapper.compatibility());
     }
 
     public NativeImplementationPlanner(LlvmNameMangler llvmNameMangler) {
+        this(llvmNameMangler, BusinessStringSymbolMapper.compatibility());
+    }
+
+    public NativeImplementationPlanner(
+            LlvmNameMangler llvmNameMangler,
+            BusinessStringSymbolMapper businessStringSymbols) {
         this.llvmNameMangler = llvmNameMangler;
+        this.businessStringSymbols = businessStringSymbols;
     }
 
     public NativeImplementationPlan plan(
@@ -69,6 +93,22 @@ public final class NativeImplementationPlanner {
             Map<String, IrMethod> irMethods,
             Set<String> availableProgramMethodKeys,
             Set<String> compilerInternalMethodKeys) {
+        return plan(
+                registrationPlan,
+                decisions,
+                irMethods,
+                availableProgramMethodKeys,
+                compilerInternalMethodKeys,
+                Map.of());
+    }
+
+    public NativeImplementationPlan plan(
+            NativeRegistrationPlan registrationPlan,
+            List<MethodRewriteDecision> decisions,
+            Map<String, IrMethod> irMethods,
+            Set<String> availableProgramMethodKeys,
+            Set<String> compilerInternalMethodKeys,
+            Map<String, InitializerImplementationPlan> preparedInitializerPlans) {
         ArrayList<NativeMethodImplementation> implementations = new ArrayList<>();
         Map<String, NativeRegistrationEntry> entriesByMethod = new LinkedHashMap<>();
         Map<String, MethodRewriteDecision> decisionsByMethod = new LinkedHashMap<>();
@@ -85,29 +125,46 @@ public final class NativeImplementationPlanner {
             entriesByMethod.put(decision.method().methodKey(), entry);
             decisionsByMethod.put(decision.method().methodKey(), decision);
         }
-        LinkedHashSet<String> supportedLlvmMethods = new LinkedHashSet<>(compilerInternalMethodKeys);
-        boolean changed;
-        do {
-            changed = false;
-            for (Map.Entry<String, MethodRewriteDecision> entry : decisionsByMethod.entrySet()) {
-                if (supportedLlvmMethods.contains(entry.getKey())) {
-                    continue;
-                }
-                IrMethod irMethod = irMethods.get(entry.getKey());
-                if (irMethod != null && supportsLlvmNativePath(
-                        entry.getValue(),
-                        irMethod,
-                        sameOwnerDirectCallTargets(irMethod, supportedLlvmMethods),
-                        availableProgramMethodKeys)) {
-                    supportedLlvmMethods.add(entry.getKey());
-                    changed = true;
-                }
-            }
-        } while (changed);
+        Map<String, InitializerImplementationPlan> initializerPlans = new LinkedHashMap<>();
+        Map<String, IrMethod> nativeBodies = nativeBodies(
+                decisionsByMethod,
+                irMethods,
+                initializerPlans,
+                preparedInitializerPlans);
+        LinkedHashSet<String> initiallySupportedLlvmMethods =
+                supportedLlvmMethods(
+                        decisionsByMethod,
+                        nativeBodies,
+                        availableProgramMethodKeys,
+                        compilerInternalMethodKeys,
+                        Set.of());
+        LinkedHashMap<String, IrMethod> callGraphMethods =
+                new LinkedHashMap<>(irMethods);
+        callGraphMethods.putAll(nativeBodies);
+        NativeLocalReferenceCallGraphAnalysis localReferenceAnalysis =
+                localReferenceCallGraphSafety.analyze(
+                        callGraphMethods,
+                        initiallySupportedLlvmMethods);
+        LinkedHashSet<String> unsafeMethodKeys = new LinkedHashSet<>(
+                localReferenceAnalysis.unboundedMethodKeys());
+        LinkedHashSet<String> supportedLlvmMethods =
+                supportedLlvmMethods(
+                        decisionsByMethod,
+                        nativeBodies,
+                        availableProgramMethodKeys,
+                        compilerInternalMethodKeys,
+                        unsafeMethodKeys);
+        LinkedHashMap<String, String> unavailableReasonCodes =
+                new LinkedHashMap<>();
+        decisionsByMethod.keySet().stream()
+                .filter(unsafeMethodKeys::contains)
+                .forEach(methodKey -> unavailableReasonCodes.put(
+                        methodKey,
+                        NativeLocalReferenceSafety.UNBOUNDED_REASON_CODE));
         for (Map.Entry<String, MethodRewriteDecision> planned : decisionsByMethod.entrySet()) {
             NativeRegistrationEntry entry = entriesByMethod.get(planned.getKey());
             MethodRewriteDecision decision = planned.getValue();
-            Optional<IrMethod> maybeIr = Optional.ofNullable(irMethods.get(decision.method().methodKey()));
+            Optional<IrMethod> maybeIr = Optional.ofNullable(nativeBodies.get(decision.method().methodKey()));
             if (maybeIr.isPresent() && supportedLlvmMethods.contains(decision.method().methodKey())) {
                 IrMethod irMethod = maybeIr.orElseThrow();
                 List<String> fieldKeys = fieldKeys(irMethod);
@@ -145,7 +202,7 @@ public final class NativeImplementationPlanner {
                         decision,
                         NativeImplementationPath.LLVM_NATIVE_PATH,
                         Optional.of(llvmNameMangler.functionName(irMethod)),
-                        reasonCode(
+                        initializerReasonCode(decision).orElseGet(() -> reasonCode(
                                 fieldKeys,
                                 directCallTargets,
                                 allocationKeys,
@@ -168,7 +225,7 @@ public final class NativeImplementationPlanner {
                                 monitorHelper,
                                 exceptionHelper,
                                 runtimeMetadataHelper,
-                                decision.method().accessFlags().isSynchronized()),
+                                decision.method().accessFlags().isSynchronized())),
                         passesJniEnv,
                         passesOwnerClass,
                         fieldKeys,
@@ -181,131 +238,117 @@ public final class NativeImplementationPlanner {
                         staticCallKeys,
                         dispatchKeys,
                         stringHelperSymbols,
-                        Optional.of(irMethod)));
-            } else if (maybeIr.isPresent() && supportsGenericBodyHelper(decision, maybeIr.orElseThrow())) {
-                implementations.add(new NativeMethodImplementation(
-                        entry,
-                        decision,
-                        NativeImplementationPath.TEMPLATE_JNI_PATH,
-                        Optional.empty(),
-                        decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
-                                ? "GENERIC_CONSTRUCTOR_BODY_HELPER"
-                                : "GENERIC_CLASS_INITIALIZER_BODY_HELPER",
-                        false,
-                        false,
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        List.of(),
-                        maybeIr));
+                        Optional.of(irMethod),
+                        Optional.ofNullable(initializerPlans.get(decision.method().methodKey()))));
             }
         }
-        return new NativeImplementationPlan(implementations);
+        return new NativeImplementationPlan(
+                implementations,
+                unavailableReasonCodes);
     }
 
-    private boolean supportsGenericBodyHelper(MethodRewriteDecision decision, IrMethod method) {
-        if (decision.strategy() != MethodRewriteStrategy.CONSTRUCTOR_STUB
-                && decision.strategy() != MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return false;
-        }
-        var bodyBlocks = method.blocks();
-        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            bodyBlocks = method.blocks().stream()
-                    .filter(block -> !block.name().equals("$class_init_failed"))
-                    .toList();
-        }
-        for (var block : bodyBlocks) {
-            if (block.parameters().size() > 0 || !supportsGenericBodyTerminator(block.terminator())) {
-                return false;
-            }
-            for (IrInstruction instruction : block.instructions()) {
-                if (!supportsGenericBodyInstruction(instruction)) {
-                    return false;
+    private LinkedHashSet<String> supportedLlvmMethods(
+            Map<String, MethodRewriteDecision> decisionsByMethod,
+            Map<String, IrMethod> nativeBodies,
+            Set<String> availableProgramMethodKeys,
+            Set<String> compilerInternalMethodKeys,
+            Set<String> excludedMethodKeys) {
+        LinkedHashSet<String> supportedLlvmMethods =
+                new LinkedHashSet<>();
+        compilerInternalMethodKeys.stream()
+                .filter(methodKey ->
+                        !excludedMethodKeys.contains(methodKey))
+                .forEach(supportedLlvmMethods::add);
+        boolean changed;
+        do {
+            changed = false;
+            for (Map.Entry<String, MethodRewriteDecision> entry :
+                    decisionsByMethod.entrySet()) {
+                if (supportedLlvmMethods.contains(entry.getKey())
+                        || excludedMethodKeys.contains(entry.getKey())) {
+                    continue;
+                }
+                IrMethod irMethod = nativeBodies.get(entry.getKey());
+                if (irMethod != null && supportsLlvmNativeBody(
+                        entry.getValue(),
+                        irMethod,
+                        sameOwnerDirectCallTargets(
+                                irMethod,
+                                supportedLlvmMethods),
+                        availableProgramMethodKeys)) {
+                    supportedLlvmMethods.add(entry.getKey());
+                    changed = true;
                 }
             }
-        }
-        return true;
+        } while (changed);
+        return supportedLlvmMethods;
     }
 
-    private boolean supportsGenericBodyTerminator(IrTerminator terminator) {
-        if (terminator.kind() == IrTerminatorKind.RETURN) {
-            return terminator.value().isEmpty();
-        }
-        if (terminator.kind() == IrTerminatorKind.GOTO) {
-            return terminator.target().isPresent() && terminator.targetArguments().isEmpty();
-        }
-        if (terminator.kind() == IrTerminatorKind.BRANCH) {
-            return terminator.condition().map(IrValue::type).filter(type -> type == IrType.I1).isPresent()
-                    && terminator.trueTarget().isPresent()
-                    && terminator.falseTarget().isPresent()
-                    && terminator.trueTargetArguments().isEmpty()
-                    && terminator.falseTargetArguments().isEmpty();
-        }
-        return false;
+    private Map<String, IrMethod> nativeBodies(
+            Map<String, MethodRewriteDecision> decisions,
+            Map<String, IrMethod> irMethods,
+            Map<String, InitializerImplementationPlan> initializerPlans,
+            Map<String, InitializerImplementationPlan> preparedInitializerPlans) {
+        LinkedHashMap<String, IrMethod> bodies = new LinkedHashMap<>();
+        decisions.forEach((methodKey, decision) -> {
+            IrMethod source = irMethods.get(methodKey);
+            if (source == null) {
+                return;
+            }
+            if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
+                    || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
+                InitializerImplementationPlan prepared = preparedInitializerPlans.get(methodKey);
+                if (prepared != null) {
+                    InitializerImplementationPlan current = prepared.withNativeBody(source);
+                    initializerPlans.put(methodKey, current);
+                    bodies.put(methodKey, source);
+                    return;
+                }
+                initializerPlanner.plan(decision, source).ifPresent(plan -> {
+                    initializerPlans.put(methodKey, plan);
+                    bodies.put(methodKey, plan.nativeBody());
+                });
+                return;
+            }
+            bodies.put(methodKey, source);
+        });
+        return java.util.Collections.unmodifiableMap(bodies);
     }
 
-    private boolean supportsGenericBodyInstruction(IrInstruction instruction) {
-        if (instruction.opcode() == IrOpcode.CALL_SPECIAL) {
-            return instruction.symbol().map(symbol -> symbol.equals("java/lang/Object#<init>!()V")).orElse(false);
+    private Optional<String> initializerReasonCode(MethodRewriteDecision decision) {
+        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
+            return Optional.of("LLVM_CONSTRUCTOR_SPLIT_BODY_IR");
         }
-        if (instruction.opcode() == IrOpcode.CLASS_INIT_BEGIN
-                || instruction.opcode() == IrOpcode.CLASS_INIT_END
-                || instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
-                || instruction.opcode() == IrOpcode.CLASS_OBJECT
-                || instruction.opcode() == IrOpcode.FINAL_FIELD_PUBLICATION) {
-            return true;
+        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
+            return Optional.of("LLVM_CLASS_INITIALIZER_BODY_IR");
         }
-        if (instruction.opcode() == IrOpcode.CONST_STRING || instruction.opcode() == IrOpcode.CONST_NULL) {
-            return true;
-        }
-        if (isStringHelperInstruction(instruction)) {
-            return supportsStringHelperInstruction(instruction);
-        }
-        if (instruction.opcode() == IrOpcode.NEW_ARRAY) {
-            return instruction.symbol().map(symbol -> symbol.equals("primitiveArray:int")).orElse(false);
-        }
-        if (instruction.opcode() == IrOpcode.PUT_FIELD || instruction.opcode() == IrOpcode.PUT_STATIC) {
-            return true;
-        }
-        if (instruction.result().map(IrValue::type).filter(type -> !isSupportedValueType(type)).isPresent()) {
-            return false;
-        }
-        if (instruction.operands().stream().map(IrValue::type).anyMatch(type -> !isSupportedValueType(type))) {
-            return false;
-        }
-        return switch (instruction.opcode()) {
-            case CONST_INT, CONST_LONG, ADD_I32, SUB_I32, MUL_I32, ADD_I64, SUB_I64, MUL_I64 -> true;
-            case CMP_EQ_I32, CMP_NE_I32, CMP_LT_I32, CMP_LE_I32, CMP_GT_I32, CMP_GE_I32,
-                    CMP_EQ_REF, CMP_NE_REF -> true;
-            default -> false;
-        };
+        return Optional.empty();
     }
 
     public boolean supportsLlvmNativePath(MethodRewriteDecision decision, IrMethod method) {
-        return supportsLlvmNativePath(decision, method, Set.of(), Set.of());
+        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
+                || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
+            return initializerPlanner.plan(decision, method)
+                    .map(InitializerImplementationPlan::nativeBody)
+                    .map(body -> supportsLlvmNativeBody(decision, body, Set.of(), Set.of()))
+                    .orElse(false);
+        }
+        return supportsLlvmNativeBody(decision, method, Set.of(), Set.of());
     }
 
-    private boolean supportsLlvmNativePath(
+    private boolean supportsLlvmNativeBody(
             MethodRewriteDecision decision,
             IrMethod method,
             Set<String> directCallTargets,
             Set<String> availableProgramMethods) {
-        if (decision.method().name().equals("<init>")
-                || decision.method().name().equals("<clinit>")
-                || decision.method().accessFlags().isInterface()) {
+        if (decision.method().accessFlags().isInterface()) {
             return false;
         }
         if (decision.method().accessFlags().isSynchronized()
                 && !containsMonitorHelper(method)) {
             return false;
         }
-        if (exceptionFlowSupport.hasUnsupportedProtectedJvmFlow(method)) {
+        if (exceptionFlowSupport.hasUnsupportedJvmFlow(method)) {
             return false;
         }
         if (!supportsJvmHostedDescriptor(decision.method().descriptor())) {
@@ -320,13 +363,16 @@ public final class NativeImplementationPlanner {
         if (method.blocks().isEmpty()) {
             return false;
         }
+        if (localReferenceSafety.hasUnboundedLocalReferenceRisk(method)) {
+            return false;
+        }
         for (var block : method.blocks()) {
             if (block.parameters().stream().map(IrValue::type).anyMatch(type -> !isSupportedValueType(type))) {
                 return false;
             }
             for (IrInstruction instruction : block.instructions()) {
                 if (!instruction.exceptionSites().isEmpty()
-                        && !isExceptionAwareHelperInstruction(instruction)) {
+                        && !exceptionSemantics.canRaiseJvmException(instruction)) {
                     return false;
                 }
                 if (!supportsLlvmInstruction(instruction, directCallTargets, availableProgramMethods)) {
@@ -839,6 +885,9 @@ public final class NativeImplementationPlanner {
     private boolean isClassInitGuardInstruction(IrInstruction instruction) {
         return instruction.opcode() == IrOpcode.CLASS_OBJECT
                 || instruction.opcode() == IrOpcode.CLASS_INIT_GUARD
+                || instruction.opcode() == IrOpcode.CLASS_INIT_BEGIN
+                || instruction.opcode() == IrOpcode.CLASS_INIT_END
+                || instruction.opcode() == IrOpcode.CLASS_INIT_FAILED
                 || instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
     }
 
@@ -851,6 +900,19 @@ public final class NativeImplementationPlanner {
         if (instruction.opcode() == IrOpcode.CLASS_INIT_GUARD) {
             return instruction.operands().size() == 1
                     && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.result().isEmpty();
+        }
+        if (instruction.opcode() == IrOpcode.CLASS_INIT_BEGIN
+                || instruction.opcode() == IrOpcode.CLASS_INIT_END) {
+            return instruction.operands().size() == 1
+                    && instruction.operands().get(0).type() == IrType.REFERENCE
+                    && instruction.result().isEmpty();
+        }
+        if (instruction.opcode() == IrOpcode.CLASS_INIT_FAILED) {
+            return instruction.operands().size() == 2
+                    && instruction.operands().stream()
+                            .map(IrValue::type)
+                            .allMatch(type -> type == IrType.REFERENCE)
                     && instruction.result().isEmpty();
         }
         return instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
@@ -1088,6 +1150,9 @@ public final class NativeImplementationPlanner {
                                 || runtimeHelperBaseSymbol(symbol).startsWith("j2ll_rt_long_")
                                 || runtimeHelperBaseSymbol(symbol).startsWith("j2ll_rt_boolean_")
                                 || runtimeHelperBaseSymbol(symbol).startsWith("j2ll_rt_double_")
+                                || runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_object_get_class")
+                                || runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_class_get_class_loader")
+                                || runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_thread_sleep")
                                 || runtimeHelperBaseSymbol(symbol).startsWith("j2ll_rt_objects_"))
                         .orElse(false);
     }
@@ -1193,6 +1258,11 @@ public final class NativeImplementationPlanner {
 
     private boolean supportsJdkScalarHelperInstruction(IrInstruction instruction) {
         String symbol = runtimeHelperBaseSymbol(instruction.symbol().orElseThrow());
+        if (symbol.equals("j2ll_rt_thread_sleep")) {
+            return instruction.result().isEmpty()
+                    && instruction.operands().size() == 1
+                    && instruction.operands().get(0).type() == IrType.I64;
+        }
         if (symbol.endsWith("_i32")) {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.I32).isPresent()
                     && !instruction.operands().isEmpty()
@@ -1250,6 +1320,16 @@ public final class NativeImplementationPlanner {
         }
         if (symbol.equals("j2ll_rt_double_double_value")) {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.F64).isPresent()
+                    && instruction.operands().size() == 1
+                    && instruction.operands().get(0).type() == IrType.REFERENCE;
+        }
+        if (symbol.equals("j2ll_rt_object_get_class")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
+                    && instruction.operands().size() == 1
+                    && instruction.operands().get(0).type() == IrType.REFERENCE;
+        }
+        if (symbol.equals("j2ll_rt_class_get_class_loader")) {
+            return instruction.result().map(IrValue::type).filter(type -> type == IrType.REFERENCE).isPresent()
                     && instruction.operands().size() == 1
                     && instruction.operands().get(0).type() == IrType.REFERENCE;
         }
@@ -1486,10 +1566,27 @@ public final class NativeImplementationPlanner {
     }
 
     private List<String> typeCheckKeys(IrMethod method) {
-        return method.blocks().stream()
+        var instructionTypeChecks = method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(this::supportsTypeInstruction)
-                .map(instruction -> instruction.symbol().orElseThrow())
+                .map(instruction -> instruction.symbol().orElseThrow());
+        var protectedCatchTypeChecks = method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .flatMap(instruction -> instruction.exceptionSites().stream())
+                .flatMap(site -> site.handlers().stream())
+                .map(edge -> edge.catchType())
+                .filter(catchType -> !catchType.equals("<any>"))
+                .map(catchType -> "instanceof:" + catchType);
+        var explicitThrowCatchTypeChecks = method.blocks().stream()
+                .flatMap(block -> block.exceptionEdges().stream())
+                .map(edge -> edge.catchType())
+                .filter(catchType -> !catchType.equals("<any>"))
+                .map(catchType -> "instanceof:" + catchType);
+        return java.util.stream.Stream.concat(
+                        instructionTypeChecks,
+                        java.util.stream.Stream.concat(
+                                protectedCatchTypeChecks,
+                                explicitThrowCatchTypeChecks))
                 .distinct()
                 .sorted()
                 .toList();
@@ -1554,8 +1651,14 @@ public final class NativeImplementationPlanner {
     private List<String> stringHelperSymbols(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
-                .filter(instruction -> isStringHelperInstruction(instruction) || isStringBuilderHelperInstruction(instruction))
-                .map(instruction -> runtimeHelperBaseSymbol(instruction.symbol().orElseThrow()))
+                .filter(instruction -> instruction.opcode() == IrOpcode.CONST_STRING
+                        || isStringHelperInstruction(instruction)
+                        || isStringBuilderHelperInstruction(instruction))
+                .map(instruction -> BusinessStringConstantRef.fromInstruction(instruction)
+                        .map(constant -> constant.helperSymbol(
+                                businessStringSymbols))
+                        .orElseGet(() -> runtimeHelperBaseSymbol(
+                                instruction.symbol().orElseThrow())))
                 .distinct()
                 .sorted()
                 .toList();
@@ -1647,11 +1750,16 @@ public final class NativeImplementationPlanner {
 
     private boolean needsJniEnv(IrMethod method, List<String> directCallTargets, List<String> staticCallKeys) {
         return method.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .anyMatch(instruction -> !instruction.exceptionSites().isEmpty())
+                || method.blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == IrTerminatorKind.THROW)
                 || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> isFieldAccess(instruction.opcode())
-                        || instruction.opcode() == IrOpcode.CONST_STRING
+                        || LlvmFunctionAbiPolicy
+                                .literalOrClassObjectRequiresJniEnv(
+                                        instruction.opcode())
                         || isArithmeticExceptionHelperInstruction(instruction)
                         || isArrayHelperInstruction(instruction)
                         || isAllocationHelperInstruction(instruction)
@@ -1696,6 +1804,9 @@ public final class NativeImplementationPlanner {
                 || base.startsWith("j2ll_rt_long_")
                 || base.startsWith("j2ll_rt_boolean_")
                 || base.startsWith("j2ll_rt_double_")
+                || base.equals("j2ll_rt_object_get_class")
+                || base.equals("j2ll_rt_class_get_class_loader")
+                || base.equals("j2ll_rt_thread_sleep")
                 || base.startsWith("j2ll_rt_objects_")
                 || base.equals("j2ll_rt_lambda_new")
                 || base.equals("j2ll_rt_class_for_name_static")
@@ -1773,7 +1884,8 @@ public final class NativeImplementationPlanner {
             return "LLVM_DISPATCH_HELPER_IR";
         }
         if (!stringHelperSymbols.isEmpty()) {
-            if (stringHelperSymbols.contains("j2ll_rt_string_constant")) {
+            if (stringHelperSymbols.stream().anyMatch(
+                    symbol -> symbol.startsWith("j2ll_rt_string_constant_"))) {
                 return "LLVM_STRING_CONCAT_CONSTANTS_HELPER_IR";
             }
             if (stringHelperSymbols.stream().allMatch(symbol -> symbol.startsWith("j2ll_rt_string_builder_"))) {

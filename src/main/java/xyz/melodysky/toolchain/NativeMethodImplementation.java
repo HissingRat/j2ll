@@ -3,9 +3,11 @@ package xyz.melodysky.toolchain;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.List;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 
 public record NativeMethodImplementation(
         NativeRegistrationEntry entry,
@@ -25,7 +27,8 @@ public record NativeMethodImplementation(
         List<String> staticCallKeys,
         List<String> dispatchKeys,
         List<String> stringHelperSymbols,
-        Optional<IrMethod> templateIrMethod) implements Comparable<NativeMethodImplementation> {
+        Optional<IrMethod> templateIrMethod,
+        Optional<InitializerImplementationPlan> initializerPlan) implements Comparable<NativeMethodImplementation> {
     public NativeMethodImplementation {
         Objects.requireNonNull(entry, "entry");
         Objects.requireNonNull(decision, "decision");
@@ -43,6 +46,53 @@ public record NativeMethodImplementation(
         dispatchKeys = List.copyOf(Objects.requireNonNull(dispatchKeys, "dispatchKeys"));
         stringHelperSymbols = List.copyOf(Objects.requireNonNull(stringHelperSymbols, "stringHelperSymbols"));
         Objects.requireNonNull(templateIrMethod, "templateIrMethod");
+        Objects.requireNonNull(initializerPlan, "initializerPlan");
+        if (initializerPlan.isPresent()
+                && path != NativeImplementationPath.LLVM_NATIVE_PATH) {
+            throw new IllegalArgumentException(
+                    "initializer implementation plans require the LLVM native path");
+        }
+    }
+
+    public NativeMethodImplementation(
+            NativeRegistrationEntry entry,
+            MethodRewriteDecision decision,
+            NativeImplementationPath path,
+            Optional<String> llvmFunctionSymbol,
+            String reasonCode,
+            boolean passesJniEnv,
+            boolean passesOwnerClass,
+            List<String> fieldKeys,
+            List<String> directCallTargets,
+            List<String> allocationKeys,
+            List<String> typeCheckKeys,
+            List<String> classObjectKeys,
+            List<String> runtimeMetadataKeys,
+            List<String> constructorCallKeys,
+            List<String> staticCallKeys,
+            List<String> dispatchKeys,
+            List<String> stringHelperSymbols,
+            Optional<IrMethod> templateIrMethod) {
+        this(
+                entry,
+                decision,
+                path,
+                llvmFunctionSymbol,
+                reasonCode,
+                passesJniEnv,
+                passesOwnerClass,
+                fieldKeys,
+                directCallTargets,
+                allocationKeys,
+                typeCheckKeys,
+                classObjectKeys,
+                runtimeMetadataKeys,
+                constructorCallKeys,
+                staticCallKeys,
+                dispatchKeys,
+                stringHelperSymbols,
+                templateIrMethod,
+                Optional.empty());
     }
 
     public NativeMethodImplementation(
@@ -69,11 +119,16 @@ public record NativeMethodImplementation(
                 List.of(),
                 List.of(),
                 List.of(),
+                Optional.empty(),
                 Optional.empty());
     }
 
     public String methodKey() {
         return decision.method().methodKey();
+    }
+
+    public LlvmFunctionAbi llvmFunctionAbi() {
+        return new LlvmFunctionAbi(passesJniEnv, passesOwnerClass);
     }
 
     @Override

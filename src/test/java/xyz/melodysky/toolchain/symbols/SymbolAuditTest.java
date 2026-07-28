@@ -19,18 +19,18 @@ class SymbolAuditTest {
         ExportList allowlist = new SymbolVisibilityPlanner().loaderExports(TargetTriple.MACOS_ARM64);
 
         assertEquals(
-                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header", "j2ll_register"),
+                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header"),
                 allowlist.symbols().stream().map(ExportedSymbol::name).toList());
         assertTrue(new SymbolAudit().audit(
                 allowlist,
-                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header", "j2ll_register")).passed());
+                List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header")).passed());
     }
 
     @Test
     void passesWhenActualExportsMatchAllowlist() {
         ExportList allowlist = new SymbolVisibilityPlanner().defaultLoaderExports();
 
-        SymbolAuditResult result = new SymbolAudit().audit(allowlist, List.of("j2ll_register", "JNI_OnLoad"));
+        SymbolAuditResult result = new SymbolAudit().audit(allowlist, List.of("JNI_OnLoad"));
 
         assertTrue(result.passed());
         assertEquals(List.of(), result.unexpectedExports());
@@ -45,26 +45,22 @@ class SymbolAuditTest {
 
         assertFalse(result.passed());
         assertEquals(List.of("Java_pkg_Foo_run"), result.unexpectedExports());
-        assertEquals(List.of("j2ll_register"), result.missingExports());
+        assertEquals(List.of(), result.missingExports());
     }
 
     @Test
-    void jniAllowlistIncludesBootstrapWrappersButRejectsJavaMethodExports() {
+    void jniAllowlistExportsOnlyOnLoadAndRejectsInternalRegistrationRoots() {
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlan(List.of(
                 new NativeRegistrationEntry("pkg/Foo", "run", "()V", "j2ll_pkg_Foo_run")));
         JniOnLoadPlan onLoadPlan = new JniOnLoadPlanner().plan(registrationPlan);
         ExportList allowlist = new SymbolVisibilityPlanner().jniExports(onLoadPlan);
-        var bootstrapWrapper = onLoadPlan.bootstrapWrappers().get(0);
-
         SymbolAuditResult result = new SymbolAudit().audit(allowlist, List.of(
                 "JNI_OnLoad",
                 "j2ll_register",
-                bootstrapWrapper.wrapperSymbol(),
-                bootstrapWrapper.registerSymbol(),
                 "Java_pkg_Foo_run"));
 
         assertFalse(result.passed());
-        assertEquals(List.of("Java_pkg_Foo_run"), result.unexpectedExports());
+        assertEquals(List.of("Java_pkg_Foo_run", "j2ll_register"), result.unexpectedExports());
         assertEquals(List.of(), result.missingExports());
     }
 

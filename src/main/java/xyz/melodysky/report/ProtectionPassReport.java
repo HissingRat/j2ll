@@ -2,6 +2,7 @@ package xyz.melodysky.report;
 
 import java.util.List;
 import java.util.Objects;
+import xyz.melodysky.protection.audit.ProtectionPassCoverageFact;
 
 public record ProtectionPassReport(
         String passName,
@@ -11,7 +12,8 @@ public record ProtectionPassReport(
         List<String> affectedMethods,
         List<String> affectedSymbols,
         String seed,
-        List<SensitivePlaintextFact> sensitivePlaintextFacts) {
+        List<SensitivePlaintextFact> sensitivePlaintextFacts,
+        List<ProtectionPassCoverageFact> coverageFacts) {
     public ProtectionPassReport(
             String passName,
             String layer,
@@ -20,7 +22,37 @@ public record ProtectionPassReport(
             List<String> affectedMethods,
             List<String> affectedSymbols,
             String seed) {
-        this(passName, layer, status, reasonCode, affectedMethods, affectedSymbols, seed, List.of());
+        this(
+                passName,
+                layer,
+                status,
+                reasonCode,
+                affectedMethods,
+                affectedSymbols,
+                seed,
+                List.of(),
+                List.of());
+    }
+
+    public ProtectionPassReport(
+            String passName,
+            String layer,
+            String status,
+            String reasonCode,
+            List<String> affectedMethods,
+            List<String> affectedSymbols,
+            String seed,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts) {
+        this(
+                passName,
+                layer,
+                status,
+                reasonCode,
+                affectedMethods,
+                affectedSymbols,
+                seed,
+                sensitivePlaintextFacts,
+                List.of());
     }
 
     public ProtectionPassReport {
@@ -40,6 +72,11 @@ public record ProtectionPassReport(
                         .thenComparing(SensitivePlaintextFact::pathKind)
                         .thenComparing(SensitivePlaintextFact::gateMode)
                         .thenComparing(SensitivePlaintextFact::promotionReason))
+                .toList();
+        coverageFacts = coverageFacts.stream()
+                .filter(Objects::nonNull)
+                .sorted()
+                .distinct()
                 .toList();
     }
 }

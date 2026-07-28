@@ -4,12 +4,16 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import xyz.melodysky.config.ProtectionSeedMode;
+import xyz.melodysky.protection.audit.ProtectionCoverageReportWriter;
+import xyz.melodysky.protection.audit.ProtectionPassCoverageAggregator;
 
 public final class ProtectionReportWriter {
     private static final Gson GSON = new GsonBuilder()
@@ -19,11 +23,22 @@ public final class ProtectionReportWriter {
             .create();
 
     public String json(String seed, List<ProtectionPassReport> reports) {
+        return json(null, sha256(seed), reports);
+    }
+
+    public String json(
+            ProtectionSeedMode seedMode,
+            String buildIdentityHash,
+            List<ProtectionPassReport> reports) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
         root.addProperty("reportVersion", 1);
-        root.addProperty("seedHash", sha256(seed));
+        if (seedMode != null) {
+            root.addProperty("seedMode", seedMode.wireName());
+        }
+        root.addProperty("seedHash", buildIdentityHash);
         root.add("sensitivePlaintextFacts", sensitivePlaintextFacts(reports));
+        root.add("coverage", coverage(reports));
         JsonArray passes = new JsonArray();
         reports.stream()
                 .sorted(Comparator
@@ -34,6 +49,17 @@ public final class ProtectionReportWriter {
                 .forEach(report -> passes.add(passJson(report)));
         root.add("passes", passes);
         return GSON.toJson(root) + "\n";
+    }
+
+    private JsonObject coverage(List<ProtectionPassReport> reports) {
+        var facts = new ProtectionReportCoverageCollector().collect(reports);
+        var snapshot = new ProtectionPassCoverageAggregator().aggregate(facts);
+        JsonObject coverage = JsonParser.parseString(
+                        new ProtectionCoverageReportWriter().json(snapshot))
+                .getAsJsonObject();
+        coverage.remove("schemaVersion");
+        coverage.remove("reportVersion");
+        return coverage;
     }
 
     private JsonObject passJson(ProtectionPassReport report) {

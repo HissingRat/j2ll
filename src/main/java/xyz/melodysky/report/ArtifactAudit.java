@@ -76,6 +76,7 @@ public class ArtifactAudit {
         checkExportedSymbols(checks, exportedSymbols, !embeddedLibraries.isEmpty());
         checkNoWorkspacePdb(checks, workspaceRoot, embeddedLibraries);
         checkPlaintexts(workspaceRoot, checks, checkedSensitiveFacts);
+        checkLoweringReportHelperPrivacy(checks, workspaceRoot);
         checks.add(ArtifactAuditCheck.passed(
                 "plaintext.observedOnlyFacts",
                 observedOnlySensitiveFacts.isEmpty() ? "NO_OBSERVED_ONLY_SENSITIVE_FACTS" : "OBSERVED_ONLY_SENSITIVE_FACTS_REPORTED",
@@ -636,13 +637,13 @@ public class ArtifactAudit {
             List<ArtifactAuditCheck> checks,
             List<String> exportedSymbols,
             boolean nativeLibrariesPresent) {
-        List<String> allowed = List.of("JNI_OnLoad", "j2ll_register", "__dso_handle", "_mh_dylib_header");
+        List<String> allowed = List.of("JNI_OnLoad", "__dso_handle", "_mh_dylib_header");
         List<String> unexpected = exportedSymbols.stream()
                 .filter(symbol -> !allowed.contains(symbol))
                 .sorted()
                 .toList();
         List<String> missing = nativeLibrariesPresent
-                ? List.of("JNI_OnLoad", "j2ll_register").stream()
+                ? java.util.stream.Stream.of("JNI_OnLoad")
                         .filter(symbol -> !exportedSymbols.contains(symbol))
                         .toList()
                 : List.of();
@@ -708,6 +709,100 @@ public class ArtifactAudit {
                         "forbidden plaintext hits: " + hits));
     }
 
+    private void checkLoweringReportHelperPrivacy(
+            List<ArtifactAuditCheck> checks,
+            Path workspaceRoot) {
+        Path report = workspaceRoot.resolve(
+                "reports/lowering-report.json");
+        if (!Files.isRegularFile(report)) {
+            checks.add(ArtifactAuditCheck.skipped(
+                    "reports.loweringHelperPrivacy",
+                    "LOWERING_REPORT_NOT_AVAILABLE",
+                    "lowering report was not available during audit"));
+            return;
+        }
+        ArrayList<String> violations = new ArrayList<>();
+        try {
+            JsonObject root = JsonParser.parseString(
+                            Files.readString(
+                                    report,
+                                    StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            var methods = root.getAsJsonArray("requestedMethods");
+            if (methods == null) {
+                violations.add("requestedMethodsMissing");
+            } else {
+                for (int methodIndex = 0;
+                        methodIndex < methods.size();
+                        methodIndex++) {
+                    JsonObject method = methods.get(methodIndex)
+                            .getAsJsonObject();
+                    var sites = method.getAsJsonArray(
+                            "helperBackedSites");
+                    if (sites == null) {
+                        continue;
+                    }
+                    for (int siteIndex = 0;
+                            siteIndex < sites.size();
+                            siteIndex++) {
+                        JsonObject site = sites.get(siteIndex)
+                                .getAsJsonObject();
+                        String location = "method["
+                                + methodIndex
+                                + "].site["
+                                + siteIndex
+                                + "]";
+                        if (site.has("helper")) {
+                            violations.add(location
+                                    + ":legacyHelperField");
+                        }
+                        if (!hasNonBlankString(
+                                site,
+                                "helperKind")) {
+                            violations.add(location
+                                    + ":helperKind");
+                        }
+                        if (!hasSha256(
+                                site,
+                                "helperIdentityHash")) {
+                            violations.add(location
+                                    + ":helperIdentityHash");
+                        }
+                    }
+                }
+            }
+        } catch (IOException | RuntimeException exception) {
+            violations.add("parseFailure:"
+                    + exception.getClass().getSimpleName());
+        }
+        checks.add(violations.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "reports.loweringHelperPrivacy",
+                        "LOWERING_HELPER_EVIDENCE_HASH_ONLY",
+                        "lowering helper evidence contains only non-sensitive kind and identity hash")
+                : ArtifactAuditCheck.failed(
+                        "reports.loweringHelperPrivacy",
+                        "LOWERING_HELPER_EVIDENCE_PLAINTEXT_SURFACE",
+                        "lowering helper evidence privacy violations: "
+                                + violations));
+    }
+
+    private boolean hasNonBlankString(
+            JsonObject object,
+            String name) {
+        return object.has(name)
+                && object.get(name).isJsonPrimitive()
+                && object.get(name).getAsJsonPrimitive().isString()
+                && !object.get(name).getAsString().isBlank();
+    }
+
+    private boolean hasSha256(JsonObject object, String name) {
+        return hasNonBlankString(object, name)
+                && object.get(name)
+                        .getAsString()
+                        .matches("[0-9a-f]{64}");
+    }
+
     private void checkPlaintextsInJar(
             Path workspaceRoot,
             JarFile jar,
@@ -723,32 +818,100 @@ public class ArtifactAudit {
                     "no blocking plaintext facts were provided for JAR entry audit"));
             return;
         }
-        List<String> forbiddenPlaintexts = jarFacts.stream()
-                .map(SensitivePlaintextFact::plaintext)
-                .filter(value -> !value.isBlank())
-                .sorted()
-                .distinct()
-                .toList();
         ArrayList<String> hits = new ArrayList<>();
+        ArrayList<String> classParseFailures = new ArrayList<>();
+        ClassPlaintextSurfaceScanner classScanner = new ClassPlaintextSurfaceScanner();
         for (var entry : jar.stream()
                 .filter(entry -> !entry.isDirectory())
                 .filter(entry -> isJarPlaintextAuditSurface(entry.getName()))
                 .sorted(java.util.Comparator.comparing(java.util.jar.JarEntry::getName))
                 .toList()) {
+            List<String> entryForbiddenPlaintexts = jarFacts.stream()
+                    .filter(fact -> appliesToJarEntry(fact, entry.getName()))
+                    .map(SensitivePlaintextFact::plaintext)
+                    .filter(value -> !value.isBlank())
+                    .sorted()
+                    .distinct()
+                    .toList();
+            if (entryForbiddenPlaintexts.isEmpty()) {
+                continue;
+            }
+            byte[] outputBytes;
             try (InputStream input = jar.getInputStream(entry)) {
-                String text = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
-                collectPlaintextHits(workspaceRoot, Path.of("jar").resolve(entry.getName()), text, forbiddenPlaintexts, hits);
+                outputBytes = input.readAllBytes();
+            }
+            Path displayPath = Path.of("jar").resolve(entry.getName());
+            if (entry.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".class")) {
+                ClassPlaintextSurfaceScanner.ScanResult scanResult =
+                        classScanner.scan(outputBytes, entryForbiddenPlaintexts);
+                if (scanResult.rawFallback()) {
+                    classParseFailures.add(displayPath(workspaceRoot, displayPath));
+                }
+                collectPlaintextHits(
+                        workspaceRoot,
+                        displayPath,
+                        scanResult.matches(),
+                        hits);
+            } else {
+                String text = new String(outputBytes, StandardCharsets.ISO_8859_1);
+                collectPlaintextHits(
+                        workspaceRoot,
+                        displayPath,
+                        text,
+                        entryForbiddenPlaintexts,
+                        hits);
             }
         }
         checks.add(hits.isEmpty()
                 ? ArtifactAuditCheck.passed(
                         "plaintext.jarEntries",
                         "FORBIDDEN_PLAINTEXT_ABSENT_FROM_JAR",
-                        "blocking plaintext literals are absent from audited output JAR entries")
+                        "blocking plaintext literals are absent from applicable executable, constant-value, annotation, and non-class-resource JAR surfaces")
                 : ArtifactAuditCheck.failed(
                         "plaintext.jarEntries",
                         "FORBIDDEN_PLAINTEXT_JAR_ENTRY",
                         "forbidden plaintext JAR hits: " + hits));
+        checks.add(classParseFailures.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "plaintext.jarClassSemanticSurfaces",
+                        "PLAINTEXT_CLASS_SEMANTIC_SCAN_PASSED",
+                        "applicable class entries were parsed for semantic plaintext carriers")
+                : ArtifactAuditCheck.failed(
+                        "plaintext.jarClassSemanticSurfaces",
+                        "PLAINTEXT_CLASS_PARSE_FAILED",
+                        "class semantic plaintext scan failed closed; raw fallback was used for: "
+                                + classParseFailures.stream().sorted().toList()));
+    }
+
+    private boolean appliesToJarEntry(
+            SensitivePlaintextFact fact,
+            String entryName) {
+        if (fact.artifactSurfaces().stream()
+                .anyMatch(surface -> surface.equalsIgnoreCase("jar-entry"))) {
+            return true;
+        }
+        if (!entryName.toLowerCase(java.util.Locale.ROOT).endsWith(".class")) {
+            return false;
+        }
+        int memberSeparator = fact.sourceMethod().indexOf('#');
+        if (memberSeparator <= 0) {
+            return false;
+        }
+        String sourceOwnerEntry =
+                fact.sourceMethod().substring(0, memberSeparator) + ".class";
+        return entryName.equals(sourceOwnerEntry);
+    }
+
+    private void collectPlaintextHits(
+            Path workspaceRoot,
+            Path path,
+            Set<String> matchedPlaintexts,
+            List<String> hits) {
+        for (String plaintext : matchedPlaintexts.stream().sorted().toList()) {
+            hits.add(displayPath(workspaceRoot, path)
+                    + ":sha256="
+                    + sha256(plaintext.getBytes(StandardCharsets.UTF_8)));
+        }
     }
 
     private void collectPlaintextHits(
@@ -847,6 +1010,9 @@ public class ArtifactAudit {
             return (relative.contains("/c/") && relative.endsWith(".c"))
                     || (relative.contains("/llvm/") && relative.endsWith(".ll"));
         }
+        if (relative.startsWith("native/zig-cache/")) {
+            return false;
+        }
         if (relative.startsWith("native/")) {
             return relative.endsWith(".c")
                     || relative.endsWith(".ll")
@@ -855,7 +1021,9 @@ public class ArtifactAudit {
                     || relative.endsWith(".so")
                     || relative.endsWith(".dll");
         }
-        if (relative.equals("reports/packaging-report.json") || relative.equals("reports/symbol-audit.json")) {
+        if (relative.equals("reports/lowering-report.json")
+                || relative.equals("reports/packaging-report.json")
+                || relative.equals("reports/symbol-audit.json")) {
             return true;
         }
         return false;

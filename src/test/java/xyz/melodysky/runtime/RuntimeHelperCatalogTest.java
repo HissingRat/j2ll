@@ -37,6 +37,7 @@ class RuntimeHelperCatalogTest {
         assertTrue(catalog.helper(RuntimeHelperKind.MONITOR_EXIT_ON_EXCEPTION).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.THREAD_START_HAPPENS_BEFORE).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.THREAD_JOIN_HAPPENS_BEFORE).isPresent());
+        assertTrue(catalog.helper(RuntimeHelperKind.THREAD_SLEEP).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.FIELD_GET_STATIC_I32).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.FIELD_PUT_FIELD_I64).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.FIELD_GET_FIELD_REF).isPresent());
@@ -124,6 +125,7 @@ class RuntimeHelperCatalogTest {
         assertTrue(declarations.contains("declare void @j2ll_rt_rethrow(ptr, ptr) ; rethrowException"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_pending_exception(ptr) ; pendingException"));
         assertTrue(declarations.contains("declare void @j2ll_rt_clear_exception(ptr) ; clearException"));
+        assertTrue(declarations.contains("declare void @j2ll_rt_thread_sleep(ptr, i64) ; threadSleep"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_catch_dispatch(ptr, ptr) ; catchDispatch"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_create_null_pointer_exception(ptr) ; createNullPointerException"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_create_array_index_out_of_bounds_exception(ptr, i32) ; createArrayIndexOutOfBoundsException"));
@@ -153,7 +155,7 @@ class RuntimeHelperCatalogTest {
         assertTrue(declarations.contains("declare i32 @j2ll_rt_i2b(i32) ; i2b"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_fcmpl(float, float) ; fcmpl"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_dcmpg(double, double) ; dcmpg"));
-        assertTrue(declarations.contains("declare ptr @j2ll_rt_object_get_class(ptr) ; objectGetClass"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_object_get_class(ptr, ptr) ; objectGetClass"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_string_length(ptr, ptr) ; stringLength"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_string_equals(ptr, ptr, ptr) ; stringEquals"));
         assertTrue(declarations.contains("declare i32 @j2ll_rt_string_starts_with(ptr, ptr, ptr) ; stringStartsWith"));
@@ -335,35 +337,6 @@ class RuntimeHelperCatalogTest {
         assertEquals("jclass", classObject.signature().returnType());
         assertEquals(java.util.List.of("jarray", "i32", "jarray", "i32", "i32"), arraycopy.signature().parameterTypes());
         assertEquals("jthrowable", pendingException.signature().returnType());
-    }
-
-    @Test
-    void fieldIdentityTokenIsDeterministicAndDoesNotExposeFieldName() {
-        String fieldKey = "pkg/Fields#value!I";
-
-        assertEquals(FieldIdentityToken.token(fieldKey), FieldIdentityToken.token(fieldKey));
-        assertTrue(FieldIdentityToken.token(fieldKey) != FieldIdentityToken.token("pkg/Fields#other!I"));
-        assertTrue(FieldIdentityToken.symbolSuffix(fieldKey).startsWith("f"));
-        assertTrue(!FieldIdentityToken.symbolSuffix(fieldKey).contains("value"));
-        assertEquals(17, FieldIdentityToken.symbolSuffix(fieldKey).length());
-    }
-
-    @Test
-    void classAndMethodIdentityTokensAreDeterministicAndOpaque() {
-        String classIdentity = "Ljava/lang/String;";
-        String methodKey = "pkg/Base#value!()I";
-
-        assertEquals(ClassIdentityToken.token(classIdentity), ClassIdentityToken.token(classIdentity));
-        assertTrue(ClassIdentityToken.token(classIdentity) != ClassIdentityToken.token("Lpkg/Other;"));
-        assertTrue(ClassIdentityToken.symbolSuffix(classIdentity).startsWith("c"));
-        assertTrue(!ClassIdentityToken.symbolSuffix(classIdentity).contains("String"));
-        assertEquals(17, ClassIdentityToken.symbolSuffix(classIdentity).length());
-
-        assertEquals(MethodIdentityToken.token(methodKey), MethodIdentityToken.token(methodKey));
-        assertTrue(MethodIdentityToken.token(methodKey) != MethodIdentityToken.token("pkg/Base#other!()I"));
-        assertTrue(MethodIdentityToken.symbolSuffix(methodKey).startsWith("m"));
-        assertTrue(!MethodIdentityToken.symbolSuffix(methodKey).contains("value"));
-        assertEquals(17, MethodIdentityToken.symbolSuffix(methodKey).length());
     }
 
     @Test

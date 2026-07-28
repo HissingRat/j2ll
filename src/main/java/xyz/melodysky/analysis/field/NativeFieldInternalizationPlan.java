@@ -1,36 +1,51 @@
 package xyz.melodysky.analysis.field;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
-public record NativeFieldInternalizationPlan(List<NativeFieldInternalizationDecision> decisions) {
-    public NativeFieldInternalizationPlan {
-        decisions = decisions.stream().filter(Objects::nonNull).sorted().toList();
-        long distinctFields = decisions.stream().map(NativeFieldInternalizationDecision::field).distinct().count();
-        if (distinctFields != decisions.size()) {
-            throw new IllegalArgumentException("field internalization plan contains duplicate decisions");
-        }
-        long distinctSlots = decisions.stream()
-                .flatMap(decision -> decision.nativeSlotId().stream())
-                .distinct()
-                .count();
-        long slotCount = decisions.stream().filter(NativeFieldInternalizationDecision::internalized).count();
-        if (distinctSlots != slotCount) {
-            throw new IllegalArgumentException("field internalization plan contains duplicate native slots");
-        }
+public record NativeFieldInternalizationPlan(
+        List<NativeFieldInternalizationDecision> decisions,
+        Map<String, Map<FieldId, Integer>> referenceIndicesByOwner) {
+    /**
+     * Compatibility constructor for focused fixtures.
+     *
+     * <p>Production planning supplies an explicit diversified mapping through
+     * the canonical constructor.</p>
+     */
+    public NativeFieldInternalizationPlan(
+            List<NativeFieldInternalizationDecision> decisions) {
+        this(decisions, canonicalReferenceIndices(decisions));
     }
 
-    public Optional<NativeFieldInternalizationDecision> decisionFor(FieldId field) {
-        return decisions.stream().filter(decision -> decision.field().equals(field)).findFirst();
+    public NativeFieldInternalizationPlan {
+        decisions = decisions.stream()
+                .filter(Objects::nonNull)
+                .sorted()
+                .toList();
+        validateDecisions(decisions);
+        referenceIndicesByOwner = immutableReferenceIndices(referenceIndicesByOwner);
+        validateReferenceIndices(decisions, referenceIndicesByOwner);
+    }
+
+    public java.util.Optional<NativeFieldInternalizationDecision> decisionFor(
+            FieldId field) {
+        return decisions.stream()
+                .filter(decision -> decision.field().equals(field))
+                .findFirst();
     }
 
     public List<NativeFieldInternalizationDecision> internalizedFields() {
-        return decisions.stream().filter(NativeFieldInternalizationDecision::internalized).toList();
+        return decisions.stream()
+                .filter(NativeFieldInternalizationDecision::internalized)
+                .toList();
     }
 
     public Set<FieldId> approvedFieldIds() {
@@ -39,10 +54,12 @@ public record NativeFieldInternalizationPlan(List<NativeFieldInternalizationDeci
         return Collections.unmodifiableSet(new LinkedHashSet<>(fields));
     }
 
-    public NativeFieldStorageKind storageKind(NativeFieldInternalizationDecision decision) {
+    public NativeFieldStorageKind storageKind(
+            NativeFieldInternalizationDecision decision) {
         Objects.requireNonNull(decision, "decision");
         if (!decision.internalized() || !decisions.contains(decision)) {
-            throw new IllegalArgumentException("field decision is not internalized by this plan");
+            throw new IllegalArgumentException(
+                    "field decision is not internalized by this plan");
         }
         return NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
                 .orElseThrow(() -> new IllegalStateException(
@@ -51,22 +68,10 @@ public record NativeFieldInternalizationPlan(List<NativeFieldInternalizationDeci
 
     /**
      * Number of reference cells needed by the largest defining-class sidecar.
-     *
-     * <p>Reference indices are dense per defining class. A single generated
-     * Loader shape can therefore serve every input class without embedding
-     * class or field identities in the Loader.</p>
      */
     public int referenceSidecarSize() {
-        return internalizedFields().stream()
-                .filter(decision -> NativeFieldStorageKind.fromDescriptor(
-                                decision.field().descriptor())
-                        .filter(NativeFieldStorageKind::reference)
-                        .isPresent())
-                .collect(java.util.stream.Collectors.groupingBy(
-                        decision -> decision.field().owner(),
-                        java.util.stream.Collectors.counting()))
-                .values().stream()
-                .mapToInt(Math::toIntExact)
+        return referenceIndicesByOwner.values().stream()
+                .mapToInt(Map::size)
                 .max()
                 .orElse(0);
     }
@@ -77,23 +82,142 @@ public record NativeFieldInternalizationPlan(List<NativeFieldInternalizationDeci
             return -1;
         }
         FieldId field = decision.field();
-        int index = 0;
-        for (NativeFieldInternalizationDecision candidate : internalizedFields()) {
-            if (!candidate.field().owner().equals(field.owner())) {
-                continue;
-            }
-            boolean reference = NativeFieldStorageKind.fromDescriptor(
-                            candidate.field().descriptor())
-                    .filter(NativeFieldStorageKind::reference)
-                    .isPresent();
-            if (!reference) {
-                continue;
-            }
-            if (candidate.field().equals(field)) {
-                return index;
-            }
-            index++;
+        Integer index = referenceIndicesByOwner
+                .getOrDefault(field.owner(), Map.of())
+                .get(field);
+        if (index == null) {
+            throw new IllegalArgumentException(
+                    "field is not an internalized reference slot: " + field);
         }
-        throw new IllegalArgumentException("field is not an internalized reference slot: " + field);
+        return index;
+    }
+
+    private static void validateDecisions(
+            List<NativeFieldInternalizationDecision> decisions) {
+        long distinctFields = decisions.stream()
+                .map(NativeFieldInternalizationDecision::field)
+                .distinct()
+                .count();
+        if (distinctFields != decisions.size()) {
+            throw new IllegalArgumentException(
+                    "field internalization plan contains duplicate decisions");
+        }
+        long distinctSlots = decisions.stream()
+                .flatMap(decision -> decision.nativeSlotId().stream())
+                .distinct()
+                .count();
+        long slotCount = decisions.stream()
+                .filter(NativeFieldInternalizationDecision::internalized)
+                .count();
+        if (distinctSlots != slotCount) {
+            throw new IllegalArgumentException(
+                    "field internalization plan contains duplicate native slots");
+        }
+    }
+
+    private static Map<String, Map<FieldId, Integer>> canonicalReferenceIndices(
+            List<NativeFieldInternalizationDecision> decisions) {
+        Objects.requireNonNull(decisions, "decisions");
+        TreeMap<String, ArrayList<FieldId>> fieldsByOwner = new TreeMap<>();
+        decisions.stream()
+                .filter(Objects::nonNull)
+                .filter(NativeFieldInternalizationDecision::internalized)
+                .map(NativeFieldInternalizationDecision::field)
+                .filter(NativeFieldInternalizationPlan::isReference)
+                .sorted()
+                .forEach(field -> fieldsByOwner
+                        .computeIfAbsent(field.owner(), ignored -> new ArrayList<>())
+                        .add(field));
+        LinkedHashMap<String, Map<FieldId, Integer>> result = new LinkedHashMap<>();
+        fieldsByOwner.forEach((owner, fields) -> {
+            LinkedHashMap<FieldId, Integer> indices = new LinkedHashMap<>();
+            for (int index = 0; index < fields.size(); index++) {
+                indices.put(fields.get(index), index);
+            }
+            result.put(owner, indices);
+        });
+        return result;
+    }
+
+    private static Map<String, Map<FieldId, Integer>> immutableReferenceIndices(
+            Map<String, Map<FieldId, Integer>> source) {
+        Objects.requireNonNull(source, "referenceIndicesByOwner");
+        TreeMap<String, Map<FieldId, Integer>> sortedOwners = new TreeMap<>();
+        source.forEach((owner, indices) -> {
+            Objects.requireNonNull(owner, "reference sidecar owner");
+            Objects.requireNonNull(indices, "reference sidecar indices");
+            TreeMap<FieldId, Integer> sortedFields = new TreeMap<>();
+            indices.forEach((field, index) -> sortedFields.put(
+                    Objects.requireNonNull(field, "reference sidecar field"),
+                    Objects.requireNonNull(index, "reference sidecar index")));
+            sortedOwners.put(
+                    owner,
+                    Collections.unmodifiableMap(new LinkedHashMap<>(sortedFields)));
+        });
+        return Collections.unmodifiableMap(new LinkedHashMap<>(sortedOwners));
+    }
+
+    private static void validateReferenceIndices(
+            List<NativeFieldInternalizationDecision> decisions,
+            Map<String, Map<FieldId, Integer>> indicesByOwner) {
+        TreeMap<FieldId, NativeFieldInternalizationDecision> internalized =
+                new TreeMap<>();
+        for (NativeFieldInternalizationDecision decision : decisions) {
+            if (decision.internalized()) {
+                internalized.put(decision.field(), decision);
+            }
+        }
+        TreeMap<String, Set<FieldId>> expectedByOwner = new TreeMap<>();
+        internalized.keySet().stream()
+                .filter(NativeFieldInternalizationPlan::isReference)
+                .forEach(field -> expectedByOwner
+                        .computeIfAbsent(field.owner(), ignored -> new TreeSet<>())
+                        .add(field));
+
+        if (!indicesByOwner.keySet().equals(expectedByOwner.keySet())) {
+            throw new IllegalArgumentException(
+                    "reference sidecar owners do not match internalized reference fields");
+        }
+        for (Map.Entry<String, Map<FieldId, Integer>> ownerEntry
+                : indicesByOwner.entrySet()) {
+            String owner = ownerEntry.getKey();
+            Map<FieldId, Integer> indices = ownerEntry.getValue();
+            for (FieldId field : indices.keySet()) {
+                if (!owner.equals(field.owner())) {
+                    throw new IllegalArgumentException(
+                            "reference sidecar field is assigned to the wrong owner: " + field);
+                }
+                NativeFieldInternalizationDecision decision = internalized.get(field);
+                if (decision == null || !isReference(field)) {
+                    throw new IllegalArgumentException(
+                            "primitive, kept, or unknown field has a reference sidecar index: "
+                                    + field);
+                }
+            }
+            if (!indices.keySet().equals(expectedByOwner.get(owner))) {
+                throw new IllegalArgumentException(
+                        "reference sidecar fields do not match owner plan: " + owner);
+            }
+            TreeSet<Integer> actualIndices = new TreeSet<>(indices.values());
+            if (actualIndices.size() != indices.size()) {
+                throw new IllegalArgumentException(
+                        "reference sidecar indices contain duplicates for owner: " + owner);
+            }
+            int expectedIndex = 0;
+            for (int actualIndex : actualIndices) {
+                if (actualIndex != expectedIndex) {
+                    throw new IllegalArgumentException(
+                            "reference sidecar indices must be dense from zero for owner: "
+                                    + owner);
+                }
+                expectedIndex++;
+            }
+        }
+    }
+
+    private static boolean isReference(FieldId field) {
+        return NativeFieldStorageKind.fromDescriptor(field.descriptor())
+                .filter(NativeFieldStorageKind::reference)
+                .isPresent();
     }
 }
