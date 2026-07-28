@@ -1,7 +1,9 @@
 package xyz.melodysky.toolchain.nativetext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -33,19 +35,32 @@ final class GeneratedCLazyRuntimeTextObfuscator {
                     "generated C fragment contains text but has no local function decode boundary");
         }
 
-        ArrayList<NativeTextEncoding> encodings = new ArrayList<>();
+        Map<String, NativeTextEncoding> encodingsByValue =
+                new LinkedHashMap<>();
+        ArrayList<NativeTextEncoding> literalEncodings = new ArrayList<>();
         ArrayList<GeneratedCTextEdits.Edit> edits = new ArrayList<>();
         for (int literalIndex = 0;
                 literalIndex < scan.stringLiterals().size();
                 literalIndex++) {
             GeneratedCFragmentLexer.StringLiteral literal =
                     scan.stringLiterals().get(literalIndex);
-            NativeTextEncoding encoding = encoder.encode(
-                    buildKey,
-                    NativeTextPurpose.RUNTIME_ERROR,
-                    scope + ":literal:" + literalIndex,
+            GeneratedCFragmentLexer.FunctionBody function =
+                    containingFunction(scan.functionBodies(), literal);
+            if (function == null) {
+                throw new IllegalArgumentException(
+                        "low-sensitivity generated C text must be inside a function body");
+            }
+            NativeTextEncoding encoding = encodingsByValue.get(
                     literal.value());
-            encodings.add(encoding);
+            if (encoding == null) {
+                encoding = encoder.encode(
+                        buildKey,
+                        NativeTextPurpose.RUNTIME_ERROR,
+                        scope + ":value:" + encodingsByValue.size(),
+                        literal.value());
+                encodingsByValue.put(literal.value(), encoding);
+            }
+            literalEncodings.add(encoding);
             edits.add(GeneratedCTextEdits.Edit.replace(
                     literal.start(),
                     literal.end(),
@@ -61,8 +76,16 @@ final class GeneratedCLazyRuntimeTextObfuscator {
                 .substring("j2ll_nt_".length());
         for (GeneratedCFragmentLexer.FunctionBody function
                 : scan.functionBodies()) {
+            List<NativeTextEncoding> functionEncodings =
+                    encodingsInFunction(
+                            scan.stringLiterals(),
+                            literalEncodings,
+                            function);
+            if (functionEncodings.isEmpty()) {
+                continue;
+            }
             StringBuilder calls = new StringBuilder("\n");
-            for (NativeTextEncoding encoding : encodings) {
+            for (NativeTextEncoding encoding : functionEncodings) {
                 calls.append("    ")
                         .append(decoder(scopeToken, encoding))
                         .append("();\n");
@@ -71,8 +94,34 @@ final class GeneratedCLazyRuntimeTextObfuscator {
                     function.start(),
                     calls.toString()));
         }
-        return preamble(scopeToken, encodings)
+        return preamble(
+                        scopeToken,
+                        List.copyOf(encodingsByValue.values()))
                 + GeneratedCTextEdits.apply(fragment, edits);
+    }
+
+    private GeneratedCFragmentLexer.FunctionBody containingFunction(
+            List<GeneratedCFragmentLexer.FunctionBody> functions,
+            GeneratedCFragmentLexer.StringLiteral literal) {
+        return functions.stream()
+                .filter(function -> function.contains(literal))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private List<NativeTextEncoding> encodingsInFunction(
+            List<GeneratedCFragmentLexer.StringLiteral> literals,
+            List<NativeTextEncoding> literalEncodings,
+            GeneratedCFragmentLexer.FunctionBody function) {
+        LinkedHashMap<String, NativeTextEncoding> distinct =
+                new LinkedHashMap<>();
+        for (int index = 0; index < literals.size(); index++) {
+            if (function.contains(literals.get(index))) {
+                NativeTextEncoding encoding = literalEncodings.get(index);
+                distinct.putIfAbsent(encoding.symbol(), encoding);
+            }
+        }
+        return List.copyOf(distinct.values());
     }
 
     private String preamble(

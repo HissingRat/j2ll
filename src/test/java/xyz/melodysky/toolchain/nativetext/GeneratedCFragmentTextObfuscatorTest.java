@@ -114,6 +114,38 @@ final class GeneratedCFragmentTextObfuscatorTest {
     }
 
     @Test
+    void lazyOnceDeduplicatesEqualValuesAndDecodesOnlyFunctionUses() {
+        String fragment = """
+                static int consume(const char*);
+                static int first(void) {
+                    return consume("shared") + consume("first-only");
+                }
+                static int second(void) {
+                    return consume("shared") + consume("second-only");
+                }
+                static int untouched(void) {
+                    return 7;
+                }
+                """;
+
+        String output = obfuscator.obfuscate(
+                NativeTextBuildKey.fromUtf8("fixed-build"),
+                "runtime:error",
+                fragment,
+                GeneratedCTextPolicy.lowSensitivityRuntimeError());
+
+        assertEquals(3, occurrences(output, "_cipher[] = {"));
+        assertEquals(
+                3,
+                occurrences(
+                        output,
+                        "static void j2ll_gcf_low_decode_"));
+        String untouched = output.substring(
+                output.indexOf("static int untouched"));
+        assertFalse(untouched.contains("j2ll_gcf_low_decode_"));
+    }
+
+    @Test
     void lexerPreservesCommentsPreprocessorAndCharacterLiterals() {
         String fragment = """
                 #include "generated-header.h"

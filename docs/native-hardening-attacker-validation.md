@@ -552,6 +552,26 @@ token resolver。
   wall-clock 只作为方向性证据，不宣称跨机器/平台稳定比例。两边 method outcome
   均为 57 `nativeLowered` / 14 `skipped`，artifact/readiness audit 均通过。
 
+已完成的低敏感错误冷路径共享切片：
+
+- `HostJniGeneratedCFragmentEmitter`在fragment text protection前应用显式
+  low-sensitivity allowlist；只有固定异常类型/固定错误文案pair会被outline，
+  owner/member/descriptor、reflection target、metadata token和业务字符串不会
+  进入共享leaf。
+- 每个leaf使用build-scoped hash-only symbol、`noinline,cold`属性并且只接收
+  `JNIEnv*`。低敏感lazy-once emitter按相同明文去重，且一个function只调用自己
+  实际使用的decoder；高敏感或未allowlist文本继续保持activation-local scratch。
+- v2五目标随机build `build_2026-07-28_19-12-20` 对上一份同输入随机build
+  `build_2026-07-28_18-23-55`，generated C从6,596,235 B降到4,807,332 B
+  （-27.12%）；五个flat native分别下降14.80%至17.25%，最终JAR从
+  4,402,475 B降到3,969,147 B（-9.84%）。x64 Linux `.text`从725,188 B降到
+  608,177 B（-16.14%）。
+- 对应x64 Linux链接前C object中，446个localized helper由493,738 B降到
+  379,670 B；新增20个共享低敏感leaf合计9,911 B，全部generated-C hardening、
+  五目标artifact audit、71 `nativeLowered` / 0 `skipped`保持通过。由于两边使用
+  默认随机identity，该结果是当前样本的实测窗口，不作为显式seed严格A/B或全局
+  size保证。
+
 固定的通用 JDK runtime helper 仍使用 canonical ABI；高收益 fused JDK helper
 与更广泛 JNI helper 形态也尚未实现，因此 H6 继续保持 `IN_PROGRESS`。
 第三轮双构建中 57/57 wrapper 的 coarse shape 分类仍相同：地址/RVA 提取器

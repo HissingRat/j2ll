@@ -6,7 +6,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Consumer;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.ir.model.BusinessStringConstantRef;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
@@ -199,10 +198,15 @@ public final class HostJniCSourceGenerator implements Opcodes {
 
                 """);
         builder.append(new NativeTextCEmitter().runtimeSource());
-        appendGeneratedFragment(
-                builder,
-                fragmentTextObfuscator,
-                buildKey,
+        HostJniLowSensitivityThrowLeafPool lowSensitivityLeaves =
+                new HostJniLowSensitivityThrowLeafPool(runtimeTokens);
+        HostJniGeneratedCFragmentEmitter fragments =
+                new HostJniGeneratedCFragmentEmitter(
+                        builder,
+                        fragmentTextObfuscator,
+                        buildKey,
+                        lowSensitivityLeaves);
+        fragments.append(
                 "registration-runtime",
                 HostJniRegistrationRuntimeSource.helperSource());
         boolean hasLlvmBindings = bindings.stream()
@@ -210,45 +214,31 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH);
         if (hasLlvmBindings) {
             new HostJniReachableRuntimeSourceEmitter().append(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
+                    fragments,
                     bindings,
                     runtimeTokens,
                     runtimeReachability);
         }
         if (HostJniStringConstantRuntimeSource.isNeeded(bindings)) {
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
+            fragments.append(
                     "business",
                     fragment -> HostJniStringConstantRuntimeSource.append(
                             fragment,
                             bindings,
                             businessBuildKey));
         }
-        appendGeneratedFragment(
-                builder,
-                fragmentTextObfuscator,
-                buildKey,
+        fragments.append(
                 "field-storage",
                 fragment -> HostNativeFieldStorageSource.append(
                         fragment,
                         bindings));
-        appendGeneratedFragment(
-                builder,
-                fragmentTextObfuscator,
-                buildKey,
+        fragments.append(
                 "field-reference-storage",
                 fragment -> HostNativeReferenceFieldStorageSource.append(
                         fragment,
                         bindings,
                         runtimeLoaderPlan));
-        appendGeneratedFragment(
-                builder,
-                fragmentTextObfuscator,
-                buildKey,
+        fragments.append(
                 "field-runtime",
                 fragment -> HostJniLocalizedFieldRuntimeSource.append(
                         fragment,
@@ -263,10 +253,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             builder.append('\n');
         }
         for (Binding binding : physicalBindingOrder(bindings, buildKey)) {
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
+            fragments.append(
                     "binding-wrapper:"
                             + binding.decision().method().methodKey(),
                     fragment -> appendFunction(
@@ -275,6 +262,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                             buildKey,
                             businessStringSymbols));
         }
+        fragments.appendLowSensitivityLeaves();
         // Registration text already uses call-site-local NativeText scratch
         // buffers. Keeping it as an independent fragment also ensures
         // JNI_OnLoad never becomes a decode-all entry point.
@@ -298,31 +286,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                                 "")
                         .symbol()))
                 .toList();
-    }
-
-    private void appendGeneratedFragment(
-            StringBuilder builder,
-            GeneratedCFragmentTextObfuscator obfuscator,
-            NativeTextBuildKey buildKey,
-            String scope,
-            String fragment) {
-        builder.append(obfuscator.obfuscate(buildKey, scope, fragment));
-    }
-
-    private void appendGeneratedFragment(
-            StringBuilder builder,
-            GeneratedCFragmentTextObfuscator obfuscator,
-            NativeTextBuildKey buildKey,
-            String scope,
-            Consumer<StringBuilder> emitter) {
-        StringBuilder fragment = new StringBuilder();
-        emitter.accept(fragment);
-        appendGeneratedFragment(
-                builder,
-                obfuscator,
-                buildKey,
-                scope,
-                fragment.toString());
     }
 
     static String requireHardenedGeneratedSource(String source) {

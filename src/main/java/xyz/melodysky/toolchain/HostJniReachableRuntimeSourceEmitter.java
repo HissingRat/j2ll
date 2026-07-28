@@ -3,26 +3,19 @@ package xyz.melodysky.toolchain;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Consumer;
 import xyz.melodysky.runtime.RuntimeTokenMapper;
-import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
-import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 
 /** Emits only runtime source families required by the final LLVM model. */
 final class HostJniReachableRuntimeSourceEmitter {
     void append(
-            StringBuilder builder,
-            GeneratedCFragmentTextObfuscator textObfuscator,
-            NativeTextBuildKey buildKey,
+            HostJniGeneratedCFragmentEmitter fragments,
             List<HostJniCSourceGenerator.Binding> bindings,
             RuntimeTokenMapper runtimeTokens,
             RuntimeHelperReachabilityPlan reachability) {
         Set<HostJniRuntimeSourceFamily> emissionFamilies =
                 emissionFamilies(bindings, reachability);
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.ALLOCATION,
                 "allocation",
@@ -31,9 +24,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         bindings,
                         runtimeTokens));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.CLASS_INIT,
                 "jvm-class-init",
@@ -41,9 +32,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniJvmSemanticsSources
                                 .classInitHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.ARITHMETIC,
                 "jvm-arithmetic",
@@ -51,9 +40,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniJvmSemanticsSources
                                 .arithmeticExceptionHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.NUMERIC,
                 "jvm-numeric",
@@ -61,9 +48,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniJvmSemanticsSources
                                 .jvmNumericHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.EXCEPTION,
                 "jvm-exception",
@@ -71,18 +56,14 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniJvmSemanticsSources
                                 .exceptionHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.MATH,
                 "jvm-math",
                 fragment -> fragment.append(
                         HostJniJvmSemanticsSources.mathHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.JDK_OBJECT,
                 "jdk-object",
@@ -90,36 +71,28 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniJdkObjectRuntimeSource
                                 .jdkObjectHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.THREAD,
                 "jvm-thread",
                 fragment -> fragment.append(
                         HostJniThreadRuntimeSource.threadHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.MONITOR,
                 "jvm-monitor",
                 fragment -> fragment.append(
                         HostJniJvmSemanticsSources.monitorHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.ARRAY,
                 "jvm-array",
                 fragment -> fragment.append(
                         HostJniArrayRuntimeSource.arrayHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.TYPE,
                 "jvm-type",
@@ -127,9 +100,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniTypeAndStringRuntimeSources
                                 .typeHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.STRING,
                 "jvm-string",
@@ -137,9 +108,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniTypeAndStringRuntimeSources
                                 .stringHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.LAMBDA,
                 "lambda",
@@ -148,9 +117,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         bindings,
                         runtimeTokens));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.VAR_HANDLE,
                 "varhandle",
@@ -158,9 +125,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         HostJniVarHandleRuntimeSource
                                 .varHandleHelperSource()));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.REFLECTION,
                 "reflection",
@@ -169,9 +134,7 @@ final class HostJniReachableRuntimeSourceEmitter {
                         bindings,
                         runtimeTokens));
         append(
-                builder,
-                textObfuscator,
-                buildKey,
+                fragments,
                 emissionFamilies,
                 HostJniRuntimeSourceFamily.DISPATCH,
                 "dispatch",
@@ -206,21 +169,14 @@ final class HostJniReachableRuntimeSourceEmitter {
     }
 
     private void append(
-            StringBuilder builder,
-            GeneratedCFragmentTextObfuscator textObfuscator,
-            NativeTextBuildKey buildKey,
+            HostJniGeneratedCFragmentEmitter fragments,
             Set<HostJniRuntimeSourceFamily> emissionFamilies,
             HostJniRuntimeSourceFamily family,
             String scope,
-            Consumer<StringBuilder> emitter) {
+            java.util.function.Consumer<StringBuilder> emitter) {
         if (!emissionFamilies.contains(family)) {
             return;
         }
-        StringBuilder fragment = new StringBuilder();
-        emitter.accept(fragment);
-        builder.append(textObfuscator.obfuscate(
-                buildKey,
-                scope,
-                fragment.toString()));
+        fragments.append(scope, emitter);
     }
 }

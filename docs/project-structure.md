@@ -929,6 +929,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `LlvmModelSymbolReferenceCollector`
 - `HostJniRuntimeSourceClassifier`
 - `HostJniReachableRuntimeSourceEmitter`
+- `HostJniGeneratedCFragmentEmitter`
+- `HostJniLowSensitivityThrowLeafPool`
 - `HostNativeFieldStorageSource`
 - `NativeLocalReferenceSafety`
 - `toolchain.localref.NativeLocalReferencePlanner`
@@ -959,6 +961,13 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。
 - registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextStorageLayout` only reuses equal method-name/descriptor text inside one owner and its purpose domain, never across owners. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB decoded text; larger owners retain heap allocation. Both paths zero the text scratch and `JNINativeMethod[]`, and the heap path then frees them.
 - runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
+- generated-C fragment policy：`HostJniGeneratedCFragmentEmitter`统一执行
+  fragment-local sensitive text rewrite，并让
+  `HostJniLowSensitivityThrowLeafPool`只对closed allowlist中的固定异常类型/
+  错误文案生成build-scoped hash-only `noinline,cold` leaf。leaf只接收
+  `JNIEnv*`，不形成owner/member/descriptor/token join；低敏感lazy-once编码按
+  明文去重且每个function只调用自身实际引用的decoder。未allowlist文本仍留在
+  原activation-local fragment。
 - JNI local-reference lifetime：`NativeLocalReferenceSafety`识别需要精确规划的reachable cyclic CFG；`toolchain.localref`下的classifier、site-sensitive CFG facts、release scheduler、transfer safety与validator形成per-method immutable plan，覆盖normal/parallel/handler/explicit-throw edge。handler需求只回传到block live-in，不进入normal live-out。`NativeImplementationPlan`保存plan或精确unavailable reason，LLVM backend只消费已验证plan；registered native的ref-producing callee改走JVM/JNI nested activation，不能安全桥接的compiler-internal callee fail closed。
 - native text：`toolchain.nativetext.NativeTextEncoder` 生成 build/purpose/use-scoped
   ciphertext、codec plan与`NativeTextStoragePermutation`。多字节ciphertext由

@@ -157,6 +157,11 @@
   metadata继续优先显式decode/use/zero。只有低敏感普通runtime error文本可显式选择
   lazy-once；generic/global decoder、集中text-pointer目录和单decoder批量覆盖必须被
   source audit阻断。
+- 固定异常类型/错误文案只有进入显式closed allowlist后，才可outline到
+  build-scoped hash-only `noinline,cold` leaf。该leaf只能接收`JNIEnv*`，不得接收
+  owner/member/descriptor、业务字符串、metadata token或Java value；相同低敏感文本
+  可在leaf fragment内复用一个lazy-once encoding，各function只触发自身实际引用的
+  decoder。高敏感文本和未列入allowlist的错误仍保持activation-local lifetime。
 - Registration rollback/exception-restore diagnostics必须使用registration text domain，
   只在对应`FatalError`路径解码；generated-C gate以
   `STABLE_REGISTRATION_DIAGNOSTIC`阻断稳定明文xref锚点与任意direct/adjacent
