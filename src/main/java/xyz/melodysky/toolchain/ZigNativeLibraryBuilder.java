@@ -437,7 +437,9 @@ public final class ZigNativeLibraryBuilder {
                 methodTablePlan,
                 nativeTextBuildKey,
                 businessTextBuildKey,
-                registrationBuildKey);
+                registrationBuildKey,
+                RuntimeHelperReachabilityPlan.from(
+                        llvmCompilation));
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(runtime, "/* runtime helper C inputs are helper-backed skeletons in this slice */\n", StandardCharsets.UTF_8);
         List<Path> llvmSources = writeLlvmSources(workspace, llvmCompilation);
@@ -534,6 +536,29 @@ public final class ZigNativeLibraryBuilder {
             NativeTextBuildKey nativeTextBuildKey,
             NativeTextBuildKey businessTextBuildKey,
             NativeTextBuildKey registrationBuildKey) throws IOException {
+        return writeJniWrapper(
+                workspace,
+                libraryName,
+                runtimeLoaderPlan,
+                implementationPlan,
+                methodTablePlan,
+                nativeTextBuildKey,
+                businessTextBuildKey,
+                registrationBuildKey,
+                RuntimeHelperReachabilityPlan.conservative());
+    }
+
+    private Path writeJniWrapper(
+            ZigBuildWorkspace workspace,
+            String libraryName,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeImplementationPlan implementationPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey nativeTextBuildKey,
+            NativeTextBuildKey businessTextBuildKey,
+            NativeTextBuildKey registrationBuildKey,
+            RuntimeHelperReachabilityPlan runtimeReachability)
+            throws IOException {
         Objects.requireNonNull(workspace, "workspace");
         Objects.requireNonNull(runtimeLoaderPlan, "runtimeLoaderPlan");
         Objects.requireNonNull(implementationPlan, "implementationPlan");
@@ -545,6 +570,9 @@ public final class ZigNativeLibraryBuilder {
         Objects.requireNonNull(
                 registrationBuildKey,
                 "registrationBuildKey");
+        Objects.requireNonNull(
+                runtimeReachability,
+                "runtimeReachability");
         if (!NativeLibraryName.isSafe(libraryName)) {
             throw new IOException("unsafe native library name in build plan: " + libraryName);
         }
@@ -562,7 +590,8 @@ public final class ZigNativeLibraryBuilder {
                         methodTablePlan,
                         nativeTextBuildKey,
                         businessTextBuildKey,
-                        registrationBuildKey),
+                        registrationBuildKey,
+                        runtimeReachability),
                 StandardCharsets.UTF_8);
         return wrapper;
     }

@@ -623,6 +623,10 @@ SSA IR 级保护/混淆 pass。完整策略见 `docs/protection-obfuscation.md`�
 边界：
 
 - `FakeBranchesPass` 与 `BasicBlockSplittingPass` 是独立 pass；前者插入 predicate gate/detour，后者只拆分 eligible block。`BlockNameObfuscationPass` 使用独立、必填的 `blockNameObfuscation` boolean，并同步重映射 terminator、exception edge 和 exception-site handler。
+- `ControlFlowFlatteningPass` 只用 `ProtectionRandom` 对原 block 集生成
+  per-build/per-method dense state permutation，并独立派生 dispatcher default
+  target；`StateVariableAllocator` 不得用 sparse state、额外 table 或扩大状态空间
+  来制造多样性。
 - `FakeBranchesPass` 的无动态参数 constant form 在 protected IR 中有效，但 managed Zig `ReleaseSafe` 可能把它从 native artifact 中优化掉；包结构或报告不得把该形态扩大宣称为稳定 binary opaque branch。
 - 不直接生成 LLVM 文本。
 - 不处理最终 binary symbol strip。
@@ -919,6 +923,12 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `ZigTargetMatrix`
 - `ZigBuildArtifact`
 - `HostNativeRegistrationSource`
+- `NativeRegistrationTextStorageLayout`
+- `NativeRegistrationStoragePlan`
+- `RuntimeHelperReachabilityPlan`
+- `LlvmModelSymbolReferenceCollector`
+- `HostJniRuntimeSourceClassifier`
+- `HostJniReachableRuntimeSourceEmitter`
 - `HostNativeFieldStorageSource`
 - `NativeLocalReferenceSafety`
 - `NativeLocalReferenceCallGraphSafety`
@@ -946,7 +956,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；`ZigArchiveVerifier` 必须在解压前校验 local/downloaded archive SHA-256，失败作为 native/toolchain error；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
 - Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected/required target。当前 preflight 无法构建的 required target 进入 `failedTargets`，reason 使用 `ZIG_TARGET_UNBUILDABLE`，并使 pipeline failed。
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。
-- registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter.
+- registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextStorageLayout` only reuses equal method-name/descriptor text inside one owner and its purpose domain, never across owners. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB decoded text; larger owners retain heap allocation. Both paths zero the text scratch and `JNINativeMethod[]`, and the heap path then frees them.
+- runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
 - JNI local-reference lifetime：`NativeLocalReferenceSafety`只负责单方法reachable CFG facts；`NativeLocalReferenceCallGraphSafety`在planner冻结的same-owner direct-call closure上传播owned-ref production并检查caller loop/direct-call SCC。`NativeImplementationPlan`保存精确unavailable reason，供`FinalNativeCoverageResolver`决定整方法`skipped`；不要把program-level摘要塞回LLVM emitter。
 - native text：`toolchain.nativetext.NativeTextEncoder` 生成 build/purpose/use-scoped
   ciphertext、codec plan与`NativeTextStoragePermutation`。多字节ciphertext由
@@ -954,8 +965,12 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
   bijection并按physical order存放；`NativeTextStoragePermutationCEmitter`只生成
   activation-local constant-size cursor，不生成permutation table、额外cipher byte
   或副本。`NativeTextCodecCEmitter`只把site-bound family/schedule内联到owning
-  activation，不提供全局decoder；`NativeTextSourceScanner`供generated-C gate与
-  attacker audit共同识别reusable decoder fanout、固定shape和相邻seed/cipher，
+  activation，不提供全局decoder。`GeneratedCSensitiveTextObfuscator`将普通
+  sensitive literal按C function和明文分组，在真实use-site首次解码到一个聚合
+  activation-local scratch slot；同一activation复用该slot，不跨function共享
+  encoding/plaintext cache，并通过统一cleanup hook清零所有exit。
+  `NativeTextSourceScanner`供generated-C gate与attacker audit共同识别reusable
+  decoder fanout、固定shape和相邻seed/cipher，
   `GeneratedNativeAffineStorageAudit`另以`AFFINE_CIPHERTEXT_STORAGE` /
   `INVALID_AFFINE_CIPHERTEXT_STORAGE`验证多字节physical storage。空/单字节
   identity是明确窄例外。

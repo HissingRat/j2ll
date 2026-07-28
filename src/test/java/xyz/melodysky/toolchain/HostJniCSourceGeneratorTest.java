@@ -297,7 +297,7 @@ class HostJniCSourceGeneratorTest {
                 NativeTextBuildKey.fromUtf8("host-jni-build-two"));
 
         long scratchDefinitions = Pattern.compile(
-                        "j2ll_nt_scratch_[A-Za-z0-9_]+")
+                        "j2ll_nt_local_[A-Za-z0-9_]+")
                 .matcher(first)
                 .results()
                 .count();

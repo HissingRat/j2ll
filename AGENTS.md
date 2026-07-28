@@ -125,6 +125,9 @@
   mainline通过集中derived-material plan消费IR method/program、field、business string、
   method table、wrapper、LLVM symbol/pass、native text与registration独立域。
 - `fakeBranches`、`basicBlockSplitting`、`blockNameObfuscation`是独立 pass。LLVM visibility/configurable hardening与 mandatory hidden linkage/export audit分开。
+- `ControlFlowFlatteningPass` 的 dispatcher state 使用 per-build、per-method 派生的
+  dense permutation，状态集合始终为 `[0, blockCount)`；不得为了多样性扩张状态空间、
+  引入查表或增加运行时 transition work。
 - Final `LLVM_NATIVE_PATH`与 compiler-internal helper只由 `NativeLlvmCompiler`编译一次；reports、intermediates和 Zig writer共用同一 validated module/pass result。
 - Protection pass对单 method不适用只记录 pass `SKIPPED` reason，不自动改变 method outcome；compiler/runtime implementation无法保持语义才产生 method `skipped`。
 - Protection coverage必须由producer逐method或真实module subject显式写`requested/applicability/affected/status/reasonCode`；function pass只按`affectedFunctions`映射，module/global pass不得把一个global变化扩写成所有method affected，validation failure无法确定逐method applicability时写`unknown`。collector不得从汇总`SKIPPED`或旧`affectedMethods`推断。
@@ -143,15 +146,22 @@
   `AFFINE_CIPHERTEXT_STORAGE`验证该结构，并以
   `INVALID_AFFINE_CIPHERTEXT_STORAGE`阻断identity/direct-index回归；空/单字节
   identity是不可避免的窄例外。
-- Sensitive generated-C text默认使用activation-local scratch，并在normal/early/failure
-  function exit清零；能明确use window的owner/table metadata优先显式
-  decode/use/zero。只有低敏感普通runtime error文本可显式选择lazy-once；
-  generic lazy decoder、集中text-pointer目录和单decoder批量覆盖必须被source audit阻断。
+- Sensitive generated-C text只在真实use-site首次到达时解码；同一C function内的同
+  明文共享一个activation-local slot并在该activation内最多解码一次，不得跨function
+  共享slot、plaintext cache或encoding identity。函数内slot使用聚合scratch与统一
+  cleanup hook覆盖normal/early/failure exit；能明确更短use window的owner/table
+  metadata继续优先显式decode/use/zero。只有低敏感普通runtime error文本可显式选择
+  lazy-once；generic/global decoder、集中text-pointer目录和单decoder批量覆盖必须被
+  source audit阻断。
 - Registration rollback/exception-restore diagnostics必须使用registration text domain，
   只在对应`FatalError`路径解码；generated-C gate以
   `STABLE_REGISTRATION_DIAGNOSTIC`阻断稳定明文xref锚点与任意direct/adjacent
   `FatalError` C string literal。Emitted LLVM中的
   string-token SSA value name也必须是build-scoped hash-only identifier。
+- Registration method name/descriptor只允许在同一owner、同一purpose domain内复用
+  decoded scratch；禁止跨owner复用。owner不超过64个bindings且去重后的text scratch
+  不超过16KiB时使用有界栈storage，任一上限超出时使用heap；两条路径都必须清零
+  text scratch与`JNINativeMethod[]`，heap路径随后释放。
 - `LLVM_NATIVE_PATH` JNI wrapper 与规范 LLVM body 之间使用 build-scoped local ABI topology：每个 binding 从 direct canonical、单层参数重排 bridge、双层参数重排 bridge、bounded branched参数重排 bridge 中派生一种形态。branched形态只在wrapper activation内从两条最多双层的local route中选择，并用最多三个static bridge控制代码膨胀；只允许重排真实原生参数，不得添加 cookie、持久 function-pointer data slot，bridge 不得执行 JNI、改变 reference lifetime 或观察/清除 pending exception。该变换只提高静态分类成本，不是安全边界。
 - 静态分析难度优先于产物大小，但每个加固必须有明确size budget：优先选择
   table-free、bounded topology和同值组内复用；攻击者回归记录final native与
@@ -166,6 +176,13 @@
 - Schema v1固定 managed Zig `0.15.2`，位置为可执行 `j2ll.jar`同级 `zig/zig(.exe)`。
 - 缺失/版本不对时先复用同目录 official archive，否则从 Zig 0.15.2 official URL下载；local/downloaded archive必须先按内置官方 SHA-256验证再解压。Signature状态明确为 `notVerifiedBoundary`。
 - 一个 generated `build.zig`和一次 matrix-wide invocation编排 per-class `.ll`、Zig-managed `.o`、JNI wrapper C和 runtime helper C。Source set不得含 selected method bytecode carrier。
+- Production Zig source generation从final validated LLVM module model的真实symbol
+  references计算runtime-helper family reachability，只发出闭包所需family；仅有
+  declaration不能成为reachability root。classifier只接受精确已知stable symbol或
+  有严格declaration evidence的build-local symbol；任何未知`j2ll_rt_*`/`j2ll_h_*`
+  引用或不完整model evidence都fail closed到保守全量runtime source。选中binding-
+  driven family后还必须对该emitter实际会写出的stale binding entries补齐跨family
+  closure；直接generator/兼容API默认同样使用保守全量计划。
 - 固定六目标：Windows GNU x64/arm64、Linux GNU x64/arm64、macOS x64/arm64。Selected targets默认 required；真实 capability/preflight/compile/link failure用 `ZIG_TARGET_UNBUILDABLE`阻止 final JAR。Cross-link evidence不等于 non-host OS/JVM runtime E2E。
 - Final workspace libraries扁平写入 `native/<library-file-name>`，Zig workspace为 `native/zig-workspace/`；JAR path为 `<embeddedLibraryDirectory>/<library-file-name>`。
 - `native/zig-cache/**`是非权威的Zig duplicate cache，不进入plaintext hit枚举；flat final library与`native/zig-workspace/**` generated source仍必须逐target审计，不能借cache exclusion放宽。

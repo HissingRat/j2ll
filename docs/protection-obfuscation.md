@@ -74,7 +74,7 @@ canonicalize
 - exception path parity。
 - validator 检查 CFG 和 SSA 合法。
 
-当前 v1 已实现保守 IR 子集：`ControlFlowFlatteningPass` 对无 exception edge、无 block parameter、无 monitor/JMM/call/field/helper-sensitive opcode、无 target arguments 的 primitive LLVM-native 多 block method 生成 dispatcher block + state switch + transition blocks。该 pass 保持 JVM-visible helper 语义不变；不支持 shape 记录 `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`，成功运行记录 `CONTROL_FLOW_FLATTENING`。child JVM E2E 覆盖 protected if/else / nested branch path。
+当前 v1 已实现保守 IR 子集：`ControlFlowFlatteningPass` 对无 exception edge、无 block parameter、无 monitor/JMM/call/field/helper-sensitive opcode、无 target arguments 的 primitive LLVM-native 多 block method 生成 dispatcher block + state switch + transition blocks。dispatcher 的 block-to-state 映射和 default target 都由 build/method 材料独立派生；state 仍是 `[0, blockCount)` 的 dense permutation，不增加状态空间、不生成 permutation table，也不增加每次 transition 的运行时工作。相同显式 seed 保持相同映射，不同 build 可改变映射。该 pass 保持 JVM-visible helper 语义不变；不支持 shape 记录 `CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE`，成功运行记录 `CONTROL_FLOW_FLATTENING`。child JVM E2E 覆盖 protected if/else / nested branch path。
 
 ### 虚假分支
 
@@ -187,9 +187,20 @@ canonicalize
 
 native-text emitter 不再生成统一固定 decoder 或相邻 XOR seed shares；每个 use identity 从四种 codec family（Weyl ARX、dual-lane ARX、32-bit Feistel、fold/rotate）中选择，并派生独立 schedule、遍历方向、rotate/shift 与常量，解码形状直接内联到拥有 scratch 的调用点。多字节 ciphertext 还通过 build/purpose/use-scoped affine bijection 按 `(offset + logicalIndex * stride) mod length` 物理存放；stride 与 length 互质。解码只维护 activation-local physical cursor，不生成 permutation table、额外 ciphertext byte、padding 或第二份副本。空/单字节输入只能使用 identity layout。`GeneratedNativeHardeningAudit` 要求生产 source 提供 `AFFINE_CIPHERTEXT_STORAGE` evidence，并以 `INVALID_AFFINE_CIPHERTEXT_STORAGE` 阻断多字节 identity/direct-index 回归。
 
+通用 generated-C sensitive-literal rewrite 进一步把 decode 从 function prologue 推迟到
+真实 use-site：同一 C function 内的同明文只对应一个 activation-local slot，首次到达
+该 use 时解码，同一 activation 后续复用；不同 function 不共享 slot、明文 cache 或
+encoding identity。每个 function 使用一个聚合 scratch，生成片段内由统一 cleanup
+hook 在 normal/early/failure exit 清零全部 slot。use-site codec 仍是 site-bound
+inline shape，不因此引入跨 function/global decoder、plaintext cache 或集中 pointer
+directory。
+
 每次 ciphertext indexed read 都通过 `const volatile unsigned char` lvalue 形成跨平台 runtime boundary，防止 Zig/Clang 在 `ReleaseSafe` 中把常量 ciphertext + key 解码循环折叠回最终 binary 明文；generated-C audit 对缺失或混用 direct read 的 source fail closed，`-O2` object test 扫描全部 12-byte UTF-8/UTF-16LE sliding windows。helper 在栈上恢复 JNI modified UTF-8，调用 `NewStringUTF` 后立即清零，包括 JNI 返回 `NULL` 且保留 pending exception 的路径。相同值允许在单次构建内共享一个小 helper group。通用 runtime metadata、business string、registration text 分别使用独立 build material；registration/runtime metadata 也保持不同 purpose/lifetime/lookup。generated-C audit 会阻断 reusable decoder fanout、固定 SplitMix shape、相邻 seed/cipher、optimizer-foldable read与非法affine storage。artifact audit 中 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和 StringConcat constant carrier stable generated-C surface 是 blocking sensitive fact，并分别记录 `promotionReason=llvmNativeSurface`、`templateStableSurface`、`stableGeneratedCSurface`；report 只写 literal hash，lowering helper evidence只写 kind + identity hash。class name / descriptor / reflection metadata token / lambda 或 MethodHandle bootstrap metadata 仍不加密；reflection-sensitive method 的普通 `CONST_STRING` 记录 `STRING_ENCRYPTION_REFLECTION_SENSITIVE` skip，相关 metadata fact 只按 `metadataSensitiveObservedOnly` 进入 observed-only evidence，避免破坏静态 metadata 解析。
 
-上述新carrier/storage结构的focused/full tests与真实六目标均已通过。
+原有 carrier/storage contract 的 focused/full 与六目标证据继续保留；本轮
+use-site lazy rewrite 另有 Clang/MinGW GCC 的 generated-C compile/run parity，
+以及固定 Windows x64 实际构建的 artifact/readiness evidence。不能据此替代
+non-host JVM runtime E2E。
 `build_2026-07-28_09-53-53`和`build_2026-07-28_09-56-32`各有39个carrier，
 跨构建name/token overlap均为0，且两次artifact/readiness audit通过。Windows
 Ghidra动态probe均以exit 0捕获10 owners / 57 bindings并确认没有
@@ -282,6 +293,13 @@ IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 
 `methodTableHiding` 当前已实现为 packaging/native-registration 协作 plan，不伪装成单 method IR rewrite。`MethodTableHidingPlanner` 按 registration owner 生成 build-diverse 的物理 registration order；opaque binding token 只作为 hash-only report evidence，不进入 generated C 或 final native。每个 owner 在自己的注册窗口内以 straight-line assignment 构造唯一临时 `JNINativeMethod[]`，不生成 persistent token/function table，也不执行 nested runtime join。生成器只接受与 final registration plan 精确一致的 plan，mismatch fail closed。
 
 owner/name/descriptor 是 JVM registration 必需信息，运行时仍会短暂形成明文；最终 generated C/native 不再使用全局 metadata 目录或 aggregate decode-all。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，在该 owner 的注册窗口内解码到临时 scratch；owner name 在 defining-loader lookup 返回后立即清零，method/descriptor scratch 和 `JNINativeMethod[]` 则在 `RegisterNatives` 成功或失败后以 volatile zeroizer 清理再释放。aggregate root、per-owner helper 和 implementation symbol 均为 internal/hidden，动态导出仅保留 `JNI_OnLoad`。multi-owner rollback 会同时检查每次 `UnregisterNatives` 的 status 与 pending exception；rollback 不完整时通过 `FatalError` fail closed，完整时恢复原始 pending exception，并检查 `Throw` status 与 pending-exception evidence，恢复失败同样 fail closed。rollback/exception-restore 的低敏感错误文案也使用 registration 专用 text domain，按 aggregate/owner identity 独立编码，只在对应 `FatalError` 路径的 local scratch 中恢复；`GeneratedNativeHardeningAudit` 以 `STABLE_REGISTRATION_DIAGNOSTIC` 阻断历史稳定明文及任意 direct/adjacent `FatalError` C string literal 重新成为跨构建 xref 锚点。这仍是 at-rest obfuscation，不是运行时内存保密。`protection-report.json` 使用 `METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT`，`packaging-report.json` 明确写入 transient strategy、未生成 runtime token/function table，以及 hash/token-only report evidence。当前 gated real-Zig host E2E 已覆盖多 method 注册和双 ClassLoader；六目标专项已覆盖 two-owner generated-C/build-graph/privacy/export。多 owner + virtual/interface 的真实 runtime 与 non-host JVM runtime 仍待补。
+
+method name 与 descriptor 的同值复用严格限制在同一 owner 和各自 purpose domain；
+不同 owner 即使文本相同也会获得独立 encoding/scratch。去重后的 owner-local layout
+不超过 64 个 bindings 且 text scratch 不超过 16 KiB 时，registration helper 使用
+有界栈上的 `JNINativeMethod[]` 与字符 scratch，省去常规 owner 的两次 heap
+allocation；任一上限超出时保留 heap 路径。两条路径都在成功、失败和 rollback
+出口清零临时表与明文 scratch，heap 路径随后释放。
 
 ### JNI wrapper local ABI topology
 
@@ -541,6 +559,20 @@ delta。默认随机的非空 carrier 集要求两类交集都为零；显式 se
 0.00015%。该实测给出当前样本的成本窗口：“native约+6%至+7%、generated C约
 +9%”；它不是所有输入/平台的全局上限。后续跨平台/样本回归继续跟踪，但不得
 为了压回体积而放宽安全gate。
+
+生产 native builder 还从 final validated LLVM module model 收集真实 referenced
+helper symbols，并按 dependency closure 只发出需要的 host-JNI runtime source
+families；LLVM declaration 本身不作为 root，stable symbol 必须精确命中已知集合，
+build-local symbol 必须有严格 declaration evidence。选中 binding-driven emitter
+后还会按其实际写出的 entries 补齐跨 family dependency。若 model evidence 不完整，
+或出现未知 `j2ll_rt_*` / `j2ll_h_*` reference，则 fail closed 到保守全量 source。直接调用
+`HostJniCSourceGenerator` 的兼容/fixture API 也默认保守全量，只有生产 builder
+显式传入 final-model reachability plan 才能裁剪。该项减少未使用 source 的编译工作
+与产物体积。2026-07-28 同输入、同显式 seed、Windows x64 单次 A/B 中，
+generated C 减少 18.665%，DLL 减少 28.121%（`.text` raw 减少 30.745%），
+output JAR 减少 2.191%；LLVM 总字节不变，57 `nativeLowered` / 14 `skipped`
+与 artifact/readiness 结果也不变。wall time 减少 9.383%，但单次 wall-clock
+只作为方向性证据，不外推为跨机器或跨平台保证。
 
 All-on protection release suite至少覆盖一个 LLVM-native method、一个 JNI/runtime helper-backed native method、一个明确 `skipped` boundary、dynamic reflection/MethodHandle/lambda/Unsafe/VarHandle/wait-notify boundary、confirmation Y/N/EOF和 artifact-audit expected failure。Artifact audit同时验证每个 `nativeLowered` method的 implementation/registration closure、每个 `skipped` method的原 body保留且无 registration，并拒绝任何 selected method bytecode副本、hidden symbol export、legacy output path、metadata/native SHA mismatch和 packaged PDB。
 

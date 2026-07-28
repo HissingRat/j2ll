@@ -5,7 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.pass.PassDiagnostics;
 import xyz.melodysky.ir.model.IrBlock;
@@ -297,6 +302,30 @@ class ProtectionPipelineTest {
                 && report.status().equals("RAN")
                 && report.reasonCode().equals("CONTROL_FLOW_FLATTENING")));
         assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
+    void controlFlowFlatteningPermutesDenseDispatcherStatesPerBuild() {
+        IrMethod method = branchingMethod(false);
+        ControlFlowFlatteningPass pass = new ControlFlowFlatteningPass();
+
+        IrMethod first = pass.run(method, ProtectionConfig.enabled(19));
+        IrMethod repeated = pass.run(method, ProtectionConfig.enabled(19));
+        Map<String, Integer> firstStates = flattenedStates(first);
+
+        assertEquals(first, repeated);
+        assertEquals(
+                IntStream.range(0, method.blocks().size())
+                        .boxed()
+                        .collect(java.util.stream.Collectors.toSet()),
+                new HashSet<>(firstStates.values()));
+        assertTrue(IntStream.range(20, 32)
+                .mapToObj(seed -> pass.run(
+                        method,
+                        ProtectionConfig.enabled(seed)))
+                .map(this::flattenedStates)
+                .anyMatch(states -> !states.equals(firstStates)));
+        assertTrue(new IrMethodValidator().validate(first).isEmpty());
     }
 
     @Test
@@ -1400,5 +1429,34 @@ class ProtectionPipelineTest {
                                 "right",
                                 List.of(IrInstruction.constInt(right, -1)),
                                 IrTerminator.returnValue(right))));
+    }
+
+    private Map<String, Integer> flattenedStates(IrMethod method) {
+        IrBlock dispatcher = method.blocks().stream()
+                .filter(block -> block.terminator().kind()
+                        == IrTerminatorKind.SWITCH)
+                .findFirst()
+                .orElseThrow();
+        String token = dispatcher.name().substring(
+                "cff_dispatch_".length());
+        String bodyPrefix = "cff_body_" + token + "_";
+        LinkedHashMap<String, Integer> states = new LinkedHashMap<>();
+        dispatcher.terminator().switchCases().forEach(switchCase ->
+                states.put(
+                        switchCase.target().substring(bodyPrefix.length()),
+                        switchCase.key()));
+        Set<Integer> assigned = new HashSet<>(states.values());
+        int defaultState = IntStream.range(
+                        0,
+                        dispatcher.terminator().switchCases().size() + 1)
+                .filter(state -> !assigned.contains(state))
+                .findFirst()
+                .orElseThrow();
+        String defaultTarget =
+                dispatcher.terminator().defaultTarget().orElseThrow();
+        states.put(
+                defaultTarget.substring(bodyPrefix.length()),
+                defaultState);
+        return Map.copyOf(states);
     }
 }

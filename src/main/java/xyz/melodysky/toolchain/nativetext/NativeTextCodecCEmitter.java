@@ -19,23 +19,28 @@ final class NativeTextCodecCEmitter {
         String token = encoding.symbol().substring("j2ll_nt_".length());
         String inner = indent + "    ";
         String loop = inner + "    ";
+        String destination = "j2ll_nt_out_" + token;
         StringBuilder source = new StringBuilder()
                 .append(indent)
                 .append("{\n")
-                .append(constant(inner, "k0", token, plan.key0()))
-                .append(constant(inner, "step", token, plan.step()));
+                .append(inner)
+                .append("unsigned char* const ")
+                .append(destination)
+                .append(" = (unsigned char*)(")
+                .append(destinationExpression)
+                .append(");\n")
+                .append(constant(inner, "k0", plan.key0()))
+                .append(constant(inner, "step", plan.step()));
         if (plan.family() != NativeTextCodecFamily.FEISTEL_32) {
-            source.append(constant(inner, "k1", token, plan.key1()))
-                    .append(constant(inner, "k2", token, plan.key2()))
+            source.append(constant(inner, "k1", plan.key1()))
+                    .append(constant(inner, "k2", plan.key2()))
                     .append(constant(
                             inner,
                             "m0",
-                            token,
                             plan.multiplier0()))
                     .append(constant(
                             inner,
                             "m1",
-                            token,
                             plan.multiplier1()));
         }
         source.append(storageEmitter.cursorDeclaration(
@@ -43,35 +48,24 @@ final class NativeTextCodecCEmitter {
                         token,
                         inner))
                 .append(inner)
-                .append("for (size_t j2ll_nt_i_")
-                .append(token)
-                .append(" = 0u; j2ll_nt_i_")
-                .append(token)
+                .append("for (size_t i = 0u; i")
                 .append(" < ")
                 .append(lengthExpression)
-                .append("; j2ll_nt_i_")
-                .append(token)
-                .append("++) {\n")
+                .append("; i++) {\n")
                 .append(loop)
-                .append("const size_t j2ll_nt_p_")
-                .append(token)
+                .append("const size_t p")
                 .append(" = ");
         if (plan.reverseTraversal()) {
             source.append('(')
                     .append(lengthExpression)
-                    .append(" - 1u - j2ll_nt_i_")
-                    .append(token)
+                    .append(" - 1u - i")
                     .append(");\n");
         } else {
-            source.append("j2ll_nt_i_")
-                    .append(token)
-                    .append(";\n");
+            source.append("i;\n");
         }
         source.append(loop)
-                .append("const uint64_t j2ll_nt_n_")
-                .append(token)
-                .append(" = (uint64_t)(j2ll_nt_p_")
-                .append(token)
+                .append("const uint64_t n")
+                .append(" = (uint64_t)(p")
                 .append(" + 1u);\n");
         switch (plan.family()) {
             case WEYL_ARX -> emitWeyl(source, plan, token, loop);
@@ -80,10 +74,8 @@ final class NativeTextCodecCEmitter {
             case FOLD_ROTATE -> emitFoldRotate(source, plan, token, loop);
         }
         source.append(loop)
-                .append("((unsigned char*)(")
-                .append(destinationExpression)
-                .append("))[j2ll_nt_p_")
-                .append(token)
+                .append(destination)
+                .append("[p")
                 .append("] = (unsigned char)(")
                 .append("((const volatile unsigned char*)(")
                 .append(cipherExpression)
@@ -110,13 +102,10 @@ final class NativeTextCodecCEmitter {
     private String constant(
             String indent,
             String name,
-            String token,
             long value) {
         return indent
-                + "const uint64_t j2ll_nt_"
+                + "const uint64_t "
                 + name
-                + '_'
-                + token
                 + " = UINT64_C(0x"
                 + hex(value)
                 + ");\n";
@@ -128,28 +117,21 @@ final class NativeTextCodecCEmitter {
             String token,
             String indent) {
         String lane = "j2ll_nt_w_" + token;
-        String companion = "j2ll_nt_wc_" + token;
+        String companion = "wc";
         source.append(indent)
                 .append("uint64_t ")
                 .append(lane)
-                .append(" = j2ll_nt_k0_")
-                .append(token)
-                .append(" + j2ll_nt_step_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
+                .append(" = k0")
+                .append(" + step")
+                .append(" * n")
                 .append(";\n")
                 .append(indent)
                 .append("uint64_t ")
                 .append(companion)
-                .append(" = j2ll_nt_k1_")
-                .append(token)
-                .append(" ^ (j2ll_nt_k2_")
-                .append(token)
-                .append(" + j2ll_nt_m0_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
+                .append(" = k1")
+                .append(" ^ (k2")
+                .append(" + m0")
+                .append(" * n")
                 .append(");\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
@@ -165,8 +147,7 @@ final class NativeTextCodecCEmitter {
                     .append(lane)
                     .append(" >> ")
                     .append(plan.shift0())
-                    .append("u)) * j2ll_nt_m1_")
-                    .append(token)
+                    .append("u)) * m1")
                     .append(";\n")
                     .append(indent)
                     .append(lane)
@@ -189,28 +170,27 @@ final class NativeTextCodecCEmitter {
                     .append("u;\n")
                     .append(indent)
                     .append(lane)
-                    .append(" *= j2ll_nt_m1_")
-                    .append(token)
+                    .append(" *= m1")
                     .append(";\n")
                     .append(indent)
                     .append(lane)
                     .append(" ^= ")
                     .append(rotl64(
-                            "(" + lane + " + j2ll_nt_k2_" + token + ")",
+                            "(" + lane + " + k2)",
                             plan.rotation1()))
                     .append(";\n");
             case 2 -> source.append(indent)
                     .append(lane)
                     .append(" ^= ")
                     .append(rotl64(
-                            "(" + companion + " + j2ll_nt_k2_" + token + ")",
+                            "(" + companion + " + k2)",
                             plan.rotation1()))
                     .append(";\n")
                     .append(indent)
                     .append(lane)
                     .append(" += ")
                     .append(rotr64(
-                            "(" + lane + " ^ j2ll_nt_k1_" + token + ")",
+                            "(" + lane + " ^ k1)",
                             plan.rotation0()))
                     .append(";\n")
                     .append(indent)
@@ -221,8 +201,7 @@ final class NativeTextCodecCEmitter {
                     .append(lane)
                     .append(" >> ")
                     .append(plan.shift0())
-                    .append("u)) * j2ll_nt_m1_")
-                    .append(token)
+                    .append("u)) * m1")
                     .append(";\n")
                     .append(indent)
                     .append(lane)
@@ -249,28 +228,21 @@ final class NativeTextCodecCEmitter {
             String token,
             String indent) {
         String first = "j2ll_nt_d0_" + token;
-        String second = "j2ll_nt_d1_" + token;
+        String second = "d1";
         source.append(indent)
                 .append("uint64_t ")
                 .append(first)
-                .append(" = j2ll_nt_k0_")
-                .append(token)
-                .append(" + j2ll_nt_step_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
+                .append(" = k0")
+                .append(" + step")
+                .append(" * n")
                 .append(";\n")
                 .append(indent)
                 .append("uint64_t ")
                 .append(second)
-                .append(" = j2ll_nt_k1_")
-                .append(token)
-                .append(" ^ (j2ll_nt_m0_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
-                .append(" + j2ll_nt_k2_")
-                .append(token)
+                .append(" = k1")
+                .append(" ^ (m0")
+                .append(" * n")
+                .append(" + k2")
                 .append(");\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
@@ -287,8 +259,7 @@ final class NativeTextCodecCEmitter {
                     .append(first)
                     .append(" ^= ")
                     .append(second)
-                    .append(" + j2ll_nt_m1_")
-                    .append(token)
+                    .append(" + m1")
                     .append(";\n");
             case 1 -> source.append(indent)
                     .append(second)
@@ -304,14 +275,13 @@ final class NativeTextCodecCEmitter {
                     .append(second)
                     .append(" += ")
                     .append(first)
-                    .append(" ^ j2ll_nt_m1_")
-                    .append(token)
+                    .append(" ^ m1")
                     .append(";\n");
             case 2 -> source.append(indent)
                     .append(first)
                     .append(" ^= ")
                     .append(rotr64(
-                            "(" + second + " + j2ll_nt_k2_" + token + ")",
+                            "(" + second + " + k2)",
                             plan.rotation0()))
                     .append(";\n")
                     .append(indent)
@@ -323,8 +293,7 @@ final class NativeTextCodecCEmitter {
                     .append(first)
                     .append(" += ")
                     .append(second)
-                    .append(" ^ j2ll_nt_m1_")
-                    .append(token)
+                    .append(" ^ m1")
                     .append(";\n");
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
@@ -357,20 +326,17 @@ final class NativeTextCodecCEmitter {
             NativeTextCodecPlan plan,
             String token,
             String indent) {
-        String base = "j2ll_nt_fb_" + token;
+        String base = "fb";
         String left = "j2ll_nt_fl_" + token;
-        String right = "j2ll_nt_fr_" + token;
-        String mixed = "j2ll_nt_fm_" + token;
-        String next = "j2ll_nt_fn_" + token;
+        String right = "fr";
+        String mixed = "fm";
+        String next = "fn";
         source.append(indent)
                 .append("const uint64_t ")
                 .append(base)
-                .append(" = j2ll_nt_k0_")
-                .append(token)
-                .append(" + j2ll_nt_step_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
+                .append(" = k0")
+                .append(" + step")
+                .append(" * n")
                 .append(";\n")
                 .append(indent)
                 .append("uint32_t ")
@@ -444,71 +410,62 @@ final class NativeTextCodecCEmitter {
         source.append(indent)
                 .append("uint64_t ")
                 .append(value)
-                .append(" = j2ll_nt_k0_")
-                .append(token)
-                .append(" ^ (j2ll_nt_step_")
-                .append(token)
-                .append(" * j2ll_nt_n_")
-                .append(token)
+                .append(" = k0")
+                .append(" ^ (step")
+                .append(" * n")
                 .append(");\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
                     .append(value)
                     .append(" = ")
                     .append(rotl64(
-                            "(" + value + " + j2ll_nt_k1_" + token + ")",
+                            "(" + value + " + k1)",
                             plan.rotation0()))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" *= j2ll_nt_m0_")
-                    .append(token)
+                    .append(" *= m0")
                     .append(";\n")
                     .append(indent)
                     .append(value)
                     .append(" ^= ")
                     .append(rotr64(
-                            "(" + value + " + j2ll_nt_k2_" + token + ")",
+                            "(" + value + " + k2)",
                             plan.rotation1()))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" += j2ll_nt_m1_")
-                    .append(token)
-                    .append(" * j2ll_nt_n_")
-                    .append(token)
+                    .append(" += m1")
+                    .append(" * n")
                     .append(";\n");
             case 1 -> source.append(indent)
                     .append(value)
                     .append(" ^= ")
                     .append(rotr64(
-                            "(" + value + " + j2ll_nt_k2_" + token + ")",
+                            "(" + value + " + k2)",
                             plan.rotation1()))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" *= j2ll_nt_m1_")
-                    .append(token)
+                    .append(" *= m1")
                     .append(";\n")
                     .append(indent)
                     .append(value)
                     .append(" = ")
                     .append(rotl64(
-                            "(" + value + " + j2ll_nt_k1_" + token + ")",
+                            "(" + value + " + k1)",
                             plan.rotation0()))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" ^= j2ll_nt_m0_")
-                    .append(token)
-                    .append(" * j2ll_nt_n_")
-                    .append(token)
+                    .append(" ^= m0")
+                    .append(" * n")
                     .append(";\n");
             case 2 -> source.append(indent)
                     .append(value)
                     .append(" += ")
                     .append(rotl64(
-                            "(j2ll_nt_k1_" + token + " ^ j2ll_nt_n_" + token + ")",
+                            "(k1 ^ n)",
                             plan.rotation0()))
                     .append(";\n")
                     .append(indent)
@@ -520,20 +477,18 @@ final class NativeTextCodecCEmitter {
                     .append("u;\n")
                     .append(indent)
                     .append(value)
-                    .append(" *= j2ll_nt_m0_")
-                    .append(token)
+                    .append(" *= m0")
                     .append(";\n")
                     .append(indent)
                     .append(value)
                     .append(" = ")
                     .append(rotr64(
-                            "(" + value + " ^ j2ll_nt_k2_" + token + ")",
+                            "(" + value + " ^ k2)",
                             plan.rotation1()))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" += j2ll_nt_m1_")
-                    .append(token)
+                    .append(" += m1")
                     .append(";\n");
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }

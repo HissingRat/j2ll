@@ -39,6 +39,7 @@ final class GeneratedNativeAffineStorageAudit {
             new NativeTextCipherReferenceAudit();
 
     Inspection inspect(String source) {
+        source = NativeTextCSourceMasker.spliceLineContinuations(source);
         Matcher ciphers = CIPHER.matcher(source);
         Map<String, List<String>> readIndexes =
                 readIndexes(source);

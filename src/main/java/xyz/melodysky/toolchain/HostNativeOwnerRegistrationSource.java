@@ -9,19 +9,30 @@ final class HostNativeOwnerRegistrationSource {
     private final NativeTextCEmitter textEmitter = new NativeTextCEmitter();
 
     String emit(NativeRegistrationTextPlan.Owner owner) {
+        NativeRegistrationTextStorageLayout textLayout =
+                NativeRegistrationTextStorageLayout.plan(
+                        owner.bindings());
         StringBuilder source = new StringBuilder();
-        appendCiphertextDeclarations(source, owner);
-        appendRegistrationFunction(source, owner);
+        appendCiphertextDeclarations(
+                source,
+                owner,
+                textLayout);
+        appendRegistrationFunction(
+                source,
+                owner,
+                textLayout);
         return source.toString();
     }
 
     private void appendCiphertextDeclarations(
             StringBuilder source,
-            NativeRegistrationTextPlan.Owner owner) {
+            NativeRegistrationTextPlan.Owner owner,
+            NativeRegistrationTextStorageLayout textLayout) {
         source.append(textEmitter.ciphertextDeclaration(owner.ownerText()));
-        for (NativeRegistrationTextPlan.Binding binding : owner.bindings()) {
-            source.append(textEmitter.ciphertextDeclaration(binding.nameText()));
-            source.append(textEmitter.ciphertextDeclaration(binding.descriptorText()));
+        for (NativeRegistrationTextStorageLayout.Text text
+                : textLayout.texts()) {
+            source.append(textEmitter.ciphertextDeclaration(
+                    text.encoding()));
         }
         source.append(textEmitter.ciphertextDeclaration(owner.rollbackFailureText()));
         source.append(textEmitter.ciphertextDeclaration(owner.exceptionRestoreFailureText()));
@@ -30,13 +41,14 @@ final class HostNativeOwnerRegistrationSource {
 
     private void appendRegistrationFunction(
             StringBuilder source,
-            NativeRegistrationTextPlan.Owner owner) {
+            NativeRegistrationTextPlan.Owner owner,
+            NativeRegistrationTextStorageLayout textLayout) {
         String suffix = physicalSuffix(owner);
-        int textScratchSize = owner.bindings().stream()
-                .mapToInt(binding -> Math.addExact(
-                        binding.nameText().decodedBufferLength(),
-                        binding.descriptorText().decodedBufferLength()))
-                .reduce(0, Math::addExact);
+        int textScratchSize = textLayout.textBytes();
+        NativeRegistrationStoragePlan storage =
+                NativeRegistrationStoragePlan.plan(
+                        owner.bindings().size(),
+                        textScratchSize);
         source.append("static jint j2ll_register_")
                 .append(suffix)
                 .append("(JNIEnv* env, jclass* registered_owner) {\n")
@@ -51,9 +63,10 @@ final class HostNativeOwnerRegistrationSource {
                 .append("    jthrowable registration_exception = NULL;\n")
                 .append("    jthrowable rollback_exception = NULL;\n")
                 .append("    jboolean registration_failed = JNI_FALSE;\n")
-                .append("    jboolean rollback_failed = JNI_FALSE;\n")
-                .append("    JNINativeMethod* methods = NULL;\n")
-                .append("    unsigned char* text_scratch = NULL;\n");
+                .append("    jboolean rollback_failed = JNI_FALSE;\n");
+        appendStorageDeclarations(
+                source,
+                storage);
         source.append("    char owner_text[sizeof(")
                 .append(owner.ownerText().symbol())
                 .append("_cipher)];\n")
@@ -72,15 +85,13 @@ final class HostNativeOwnerRegistrationSource {
                 .append("    j2ll_native_text_zero(owner_text, sizeof(owner_text));\n")
                 .append("    if (owner_class == NULL) {\n")
                 .append("        goto cleanup;\n")
-                .append("    }\n")
-                .append("    methods = (JNINativeMethod*)calloc((size_t)count, sizeof(JNINativeMethod));\n")
-                .append("    text_scratch = (unsigned char*)calloc(UINT64_C(")
-                .append(textScratchSize)
-                .append("), 1u);\n");
-        source.append("    if (methods == NULL || text_scratch == NULL) {\n")
-                .append("        goto cleanup;\n")
                 .append("    }\n");
-        appendMethodTextDecode(source, owner.bindings());
+        appendStorageAllocation(
+                source,
+                storage);
+        appendMethodTextDecode(
+                source,
+                textLayout);
         appendStraightLineFunctions(source, owner.bindings());
         source.append("    register_status = (*env)->RegisterNatives(env, owner_class, methods, count);\n")
                 .append("    if (register_status != JNI_OK || (*env)->ExceptionCheck(env)) {\n")
@@ -114,13 +125,17 @@ final class HostNativeOwnerRegistrationSource {
                 .append("    if (text_scratch != NULL) {\n")
                 .append("        j2ll_native_text_zero(text_scratch, UINT64_C(")
                 .append(textScratchSize)
-                .append("));\n")
-                .append("        free(text_scratch);\n")
-                .append("    }\n")
+                .append("));\n");
+        if (!storage.usesStack()) {
+            source.append("        free(text_scratch);\n");
+        }
+        source.append("    }\n")
                 .append("    if (methods != NULL) {\n")
-                .append("        j2ll_native_text_zero(methods, (size_t)count * sizeof(JNINativeMethod));\n")
-                .append("        free(methods);\n")
-                .append("    }\n")
+                .append("        j2ll_native_text_zero(methods, (size_t)count * sizeof(JNINativeMethod));\n");
+        if (!storage.usesStack()) {
+            source.append("        free(methods);\n");
+        }
+        source.append("    }\n")
                 .append("    if (registration_failed) {\n")
                 .append("        if (rollback_failed) {\n")
                 .append("            if (registration_exception != NULL) {\n")
@@ -158,34 +173,65 @@ final class HostNativeOwnerRegistrationSource {
                 .append("}\n\n");
     }
 
+    private void appendStorageDeclarations(
+            StringBuilder source,
+            NativeRegistrationStoragePlan storage) {
+        if (storage.usesStack()) {
+            source.append("    JNINativeMethod methods_storage[")
+                    .append(storage.bindingCount())
+                    .append("] = {{0}};\n")
+                    .append("    unsigned char text_scratch_storage[")
+                    .append(storage.textBytes())
+                    .append("] = {0};\n")
+                    .append("    JNINativeMethod* methods = methods_storage;\n")
+                    .append("    unsigned char* text_scratch = text_scratch_storage;\n");
+            return;
+        }
+        source.append("    JNINativeMethod* methods = NULL;\n")
+                .append("    unsigned char* text_scratch = NULL;\n");
+    }
+
+    private void appendStorageAllocation(
+            StringBuilder source,
+            NativeRegistrationStoragePlan storage) {
+        if (storage.usesStack()) {
+            return;
+        }
+        source.append("    methods = (JNINativeMethod*)calloc((size_t)count, sizeof(JNINativeMethod));\n")
+                .append("    text_scratch = (unsigned char*)calloc(UINT64_C(")
+                .append(storage.textBytes())
+                .append("), 1u);\n")
+                .append("    if (methods == NULL || text_scratch == NULL) {\n")
+                .append("        goto cleanup;\n")
+                .append("    }\n");
+    }
+
     private void appendMethodTextDecode(
             StringBuilder source,
-            List<NativeRegistrationTextPlan.Binding> bindings) {
-        int offset = 0;
-        for (int index = 0; index < bindings.size(); index++) {
-            NativeRegistrationTextPlan.Binding binding = bindings.get(index);
+            NativeRegistrationTextStorageLayout textLayout) {
+        for (NativeRegistrationTextStorageLayout.Text text
+                : textLayout.texts()) {
             source.append(textEmitter.decodeIntoOffset(
-                    binding.nameText(),
+                    text.encoding(),
                     "text_scratch",
-                    offset,
+                    text.offset(),
                     "    "));
+        }
+        for (int index = 0;
+                index < textLayout.bindings().size();
+                index++) {
+            NativeRegistrationTextStorageLayout.Binding binding =
+                    textLayout.bindings().get(index);
             source.append("    methods[")
                     .append(index)
                     .append("].name = (char*)(text_scratch + ")
-                    .append(offset)
+                    .append(binding.nameOffset())
                     .append(");\n");
-            offset = Math.addExact(offset, binding.nameText().decodedBufferLength());
-            source.append(textEmitter.decodeIntoOffset(
-                    binding.descriptorText(),
-                    "text_scratch",
-                    offset,
-                    "    "));
             source.append("    methods[")
                     .append(index)
                     .append("].signature = (char*)(text_scratch + ")
-                    .append(offset)
+                    .append(binding.descriptorOffset())
                     .append(");\n");
-            offset = Math.addExact(offset, binding.descriptorText().decodedBufferLength());
         }
     }
 

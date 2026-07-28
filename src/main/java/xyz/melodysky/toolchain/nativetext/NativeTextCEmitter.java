@@ -204,7 +204,7 @@ public final class NativeTextCEmitter {
     private void requireCValue(String value) {
         Objects.requireNonNull(value, "value");
         if (!value.matches(
-                "[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
+                "[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*")) {
             throw new IllegalArgumentException(
                     "invalid native-text C value: " + value);
         }

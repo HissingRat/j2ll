@@ -98,6 +98,11 @@ class HostNativeLibraryBuilderTest {
         assertFalse(source.contains(" volatile j2ll_lab_"));
         assertTrue(source.contains("return result;"));
         assertFalse(source.contains("return arg0 + arg1;"));
+        assertFalse(source.contains("j2ll_rt_div_i32"));
+        assertFalse(source.contains("j2ll_rt_array_length_i32"));
+        assertFalse(source.contains("j2ll_rt_string_length"));
+        assertFalse(source.contains("j2ll_var_handle_method_handle"));
+        assertFalse(source.contains("j2ll_parameter_array_for_descriptor"));
         assertTrue(llvm.contains("define external hidden i32 @"
                 + implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow()));
         assertTrue(llvm.contains("add i32"));

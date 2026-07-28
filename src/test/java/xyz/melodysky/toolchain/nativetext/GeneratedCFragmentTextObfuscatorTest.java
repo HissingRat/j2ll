@@ -47,13 +47,45 @@ final class GeneratedCFragmentTextObfuscatorTest {
         assertFalse(output.contains("\"owner/Secret\""));
         assertFalse(output.contains("\"(Ljava/lang/String;)V\""));
         assertTrue(output.contains("static const unsigned char j2ll_nt_"));
-        assertTrue(output.contains("typedef struct { char bytes[sizeof(j2ll_nt_"));
+        assertTrue(output.contains("size_t length;"));
         assertTrue(output.contains("__attribute__((cleanup(j2ll_nt_cleanup_"));
         assertFalse(output.contains("j2ll_native_text_decode("));
         assertTrue(output.contains("j2ll_nt_word_"));
-        assertTrue(output.contains("j2ll_native_text_zero(scratch->bytes"));
+        assertTrue(output.contains(
+                "j2ll_native_text_zero((unsigned char*)memory + sizeof(size_t), length)"));
+        assertEquals(1, occurrences(output, "static void j2ll_nt_cleanup_"));
+        assertEquals(2, occurrences(output, "_cipher[] = {"));
         assertFalse(output.contains("_Atomic int"));
         assertFalse(output.contains("j2ll_gcf_low_once_"));
+    }
+
+    @Test
+    void sensitiveTextReusesEqualValuesOnlyInsideOneFunction() {
+        String fragment = """
+                static int consume(const char*);
+                static int first(void) {
+                    return consume("same-value") + consume("same-value");
+                }
+                static int second(void) {
+                    return consume("same-value");
+                }
+                """;
+
+        String output = obfuscator.obfuscate(
+                NativeTextBuildKey.fromUtf8("fixed-build"),
+                "runtime:metadata",
+                fragment,
+                GeneratedCTextPolicy.sensitive(
+                        NativeTextPurpose.RUNTIME_DESCRIPTOR));
+
+        assertEquals(2, occurrences(output, "_cipher[] = {"));
+        assertEquals(1, occurrences(output, "static void j2ll_nt_cleanup_"));
+        assertEquals(2, occurrences(output, "__attribute__((cleanup(j2ll_nt_cleanup_"));
+        assertEquals(3, occurrences(output, "(const char*)j2ll_nt_use_"));
+        assertEquals(2, occurrences(output, "#define j2ll_nt_use_"));
+        assertTrue(output.contains(".ready == 0u"));
+        assertFalse(output.substring(output.indexOf("static int first"))
+                .contains("j2ll_nt_word_"));
     }
 
     @Test
@@ -105,7 +137,7 @@ final class GeneratedCFragmentTextObfuscatorTest {
         assertTrue(output.contains("/* block \"comment-only-too\" */"));
         assertTrue(output.contains("static const char quote = '\"';"));
         assertFalse(output.contains("\"line\\nquote="));
-        assertTrue(output.contains("(const char*)j2ll_nt_local_"));
+        assertTrue(output.contains("(const char*)j2ll_nt_use_"));
     }
 
     @Test
@@ -265,6 +297,16 @@ final class GeneratedCFragmentTextObfuscatorTest {
                 .matcher(source);
         assertTrue(matcher.find(), source);
         return matcher.group(1);
+    }
+
+    private int occurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private Optional<Path> findClang() {

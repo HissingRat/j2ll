@@ -68,7 +68,12 @@ final class NativeTextCodecCParityTest {
                 """).append(emitter.runtimeSource());
         int functionIndex = 0;
         for (NativeTextEncoding encoding : encodings) {
-            String scratch = "decoded_" + functionIndex;
+            // The first case intentionally collides with the codec's compact
+            // loop-local position name. The emitter must capture the caller's
+            // destination before declaring any compact locals.
+            String scratch = functionIndex == 0
+                    ? "p"
+                    : "decoded_" + functionIndex;
             source.append(emitter.ciphertextDeclaration(encoding))
                     .append("static int check_")
                     .append(functionIndex)
@@ -475,7 +480,7 @@ final class NativeTextCodecCParityTest {
             }
             direct.append(line.replace(
                     storageIndex,
-                    "j2ll_nt_p_" + token));
+                    "p"));
             firstLine = false;
         }
         if (!declarationFound) {

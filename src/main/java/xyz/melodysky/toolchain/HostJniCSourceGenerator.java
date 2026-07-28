@@ -139,6 +139,24 @@ public final class HostJniCSourceGenerator implements Opcodes {
             NativeTextBuildKey buildKey,
             NativeTextBuildKey businessBuildKey,
             NativeTextBuildKey registrationBuildKey) {
+        return generate(
+                implementationPlan,
+                runtimeLoaderPlan,
+                methodTablePlan,
+                buildKey,
+                businessBuildKey,
+                registrationBuildKey,
+                RuntimeHelperReachabilityPlan.conservative());
+    }
+
+    String generate(
+            NativeImplementationPlan implementationPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey buildKey,
+            NativeTextBuildKey businessBuildKey,
+            NativeTextBuildKey registrationBuildKey,
+            RuntimeHelperReachabilityPlan runtimeReachability) {
         List<Binding> bindings = bindings(implementationPlan);
         java.util.Objects.requireNonNull(buildKey, "buildKey");
         java.util.Objects.requireNonNull(
@@ -147,6 +165,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
         java.util.Objects.requireNonNull(
                 registrationBuildKey,
                 "registrationBuildKey");
+        java.util.Objects.requireNonNull(
+                runtimeReachability,
+                "runtimeReachability");
         BusinessStringSymbolMapper businessStringSymbols =
                 BusinessStringSymbolMapper.fromBytes(
                         businessBuildKey.bytes());
@@ -188,114 +209,13 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .anyMatch(binding ->
                         binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH);
         if (hasLlvmBindings) {
-            appendGeneratedFragment(
+            new HostJniReachableRuntimeSourceEmitter().append(
                     builder,
                     fragmentTextObfuscator,
                     buildKey,
-                    "allocation",
-                    fragment -> HostJniAllocationRuntimeSource.append(
-                            fragment,
-                            bindings,
-                            runtimeTokens));
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-class-init",
-                    HostJniJvmSemanticsSources.classInitHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-arithmetic",
-                    HostJniJvmSemanticsSources.arithmeticExceptionHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-numeric",
-                    HostJniJvmSemanticsSources.jvmNumericHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-exception",
-                    HostJniJvmSemanticsSources.exceptionHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-math",
-                    HostJniJvmSemanticsSources.mathHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jdk-object",
-                    HostJniJdkObjectRuntimeSource.jdkObjectHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-thread",
-                    HostJniThreadRuntimeSource.threadHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-monitor",
-                    HostJniJvmSemanticsSources.monitorHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-array",
-                    HostJniArrayRuntimeSource.arrayHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-type",
-                    HostJniTypeAndStringRuntimeSources.typeHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "jvm-string",
-                    HostJniTypeAndStringRuntimeSources.stringHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "lambda",
-                    fragment -> HostJniLambdaRuntimeSource.append(
-                            fragment,
-                            bindings,
-                            runtimeTokens));
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "varhandle",
-                    HostJniVarHandleRuntimeSource.varHandleHelperSource());
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "reflection",
-                    fragment -> HostJniReflectionRuntimeSource.append(
-                            fragment,
-                            bindings,
-                            runtimeTokens));
-            appendGeneratedFragment(
-                    builder,
-                    fragmentTextObfuscator,
-                    buildKey,
-                    "dispatch",
-                    fragment -> HostJniDispatchRuntimeSource.append(
-                            fragment,
-                            bindings,
-                            runtimeTokens));
+                    bindings,
+                    runtimeTokens,
+                    runtimeReachability);
         }
         if (HostJniStringConstantRuntimeSource.isNeeded(bindings)) {
             appendGeneratedFragment(

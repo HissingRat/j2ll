@@ -20,6 +20,13 @@ import xyz.melodysky.runtime.jni.RuntimeLocalAbiDomain;
 final class HostJniReflectionRuntimeSource {
     private HostJniReflectionRuntimeSource() {}
 
+    static boolean emitsVarHandleDependentSupport(
+            List<HostJniCSourceGenerator.Binding> bindings) {
+        Set<String> helpers = runtimeHelpers(bindings);
+        return helpers.contains("j2ll_rt_unsafe_get")
+                || helpers.contains("j2ll_rt_unsafe_get_volatile");
+    }
+
     static void append(
             StringBuilder builder,
             List<HostJniCSourceGenerator.Binding> bindings,

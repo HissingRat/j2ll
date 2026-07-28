@@ -1,6 +1,7 @@
 package xyz.melodysky.toolchain;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -67,8 +68,14 @@ final class NativeRegistrationTextPlan {
                 NativeTextPurpose.REGISTRATION_OWNER,
                 "registration-owner:" + owner,
                 owner);
+        Map<TextKey, NativeTextEncoding> sharedOwnerText =
+                new LinkedHashMap<>();
         List<Binding> encodedBindings = registrations.stream()
-                .map(entry -> binding(entry, buildKey, encoder))
+                .map(entry -> binding(
+                        entry,
+                        buildKey,
+                        encoder,
+                        sharedOwnerText))
                 .toList();
         List<Binding> bindings = diversifyBindingOrder
                 ? encodedBindings.stream()
@@ -100,24 +107,34 @@ final class NativeRegistrationTextPlan {
     private static Binding binding(
             NativeRegistrationEntry entry,
             NativeTextBuildKey buildKey,
-            NativeTextEncoder encoder) {
-        String identity = entry.registrationOwner()
-                + "#"
-                + entry.methodName()
-                + "!"
-                + entry.descriptor();
+            NativeTextEncoder encoder,
+            Map<TextKey, NativeTextEncoding> sharedOwnerText) {
         return new Binding(
                 entry,
-                encoder.encode(
-                        buildKey,
-                        NativeTextPurpose.REGISTRATION_METHOD_NAME,
-                        identity + ":method-name",
-                        entry.methodName()),
-                encoder.encode(
-                        buildKey,
-                        NativeTextPurpose.REGISTRATION_DESCRIPTOR,
-                        identity + ":descriptor",
-                        entry.descriptor()));
+                sharedOwnerText.computeIfAbsent(
+                        new TextKey(
+                                NativeTextPurpose.REGISTRATION_METHOD_NAME,
+                                entry.methodName()),
+                        ignored -> encoder.encode(
+                                buildKey,
+                                NativeTextPurpose.REGISTRATION_METHOD_NAME,
+                                "registration-owner:"
+                                        + entry.registrationOwner()
+                                        + ":method-name:"
+                                        + entry.methodName(),
+                                entry.methodName())),
+                sharedOwnerText.computeIfAbsent(
+                        new TextKey(
+                                NativeTextPurpose.REGISTRATION_DESCRIPTOR,
+                                entry.descriptor()),
+                        ignored -> encoder.encode(
+                                buildKey,
+                                NativeTextPurpose.REGISTRATION_DESCRIPTOR,
+                                "registration-owner:"
+                                        + entry.registrationOwner()
+                                        + ":descriptor:"
+                                        + entry.descriptor(),
+                                entry.descriptor())));
     }
 
     record Owner(
@@ -131,4 +148,8 @@ final class NativeRegistrationTextPlan {
             NativeRegistrationEntry registration,
             NativeTextEncoding nameText,
             NativeTextEncoding descriptorText) {}
+
+    private record TextKey(
+            NativeTextPurpose purpose,
+            String value) {}
 }

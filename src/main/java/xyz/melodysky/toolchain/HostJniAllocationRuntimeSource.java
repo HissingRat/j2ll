@@ -7,6 +7,17 @@ import xyz.melodysky.runtime.RuntimeTokenMapper;
 final class HostJniAllocationRuntimeSource {
     private HostJniAllocationRuntimeSource() {}
 
+    static boolean emitsClassForNameSupport(
+            List<HostJniCSourceGenerator.Binding> bindings) {
+        return bindings.stream()
+                .filter(binding ->
+                        binding.path()
+                                == NativeImplementationPath.LLVM_NATIVE_PATH)
+                .flatMap(binding ->
+                        binding.runtimeMetadataKeys().stream())
+                .anyMatch(key -> key.startsWith("class:"));
+    }
+
     static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
         append(builder, bindings, RuntimeTokenMapper.compatibility());
     }

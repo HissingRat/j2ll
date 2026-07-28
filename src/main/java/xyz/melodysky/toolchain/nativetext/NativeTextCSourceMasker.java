@@ -67,6 +67,27 @@ final class NativeTextCSourceMasker {
         return masked.toString();
     }
 
+    /**
+     * Applies C translation-phase line splicing while preserving source
+     * length and line offsets for findings.
+     */
+    static String spliceLineContinuations(String source) {
+        StringBuilder spliced = new StringBuilder(source);
+        for (int index = 0; index + 1 < source.length(); index++) {
+            if (source.charAt(index) != '\\') {
+                continue;
+            }
+            char next = source.charAt(index + 1);
+            if (next == '\n'
+                    || (next == '\r'
+                            && index + 2 < source.length()
+                            && source.charAt(index + 2) == '\n')) {
+                spliced.setCharAt(index, ' ');
+            }
+        }
+        return spliced.toString();
+    }
+
     private static void blank(StringBuilder source, int index) {
         char value = source.charAt(index);
         if (value != '\n' && value != '\r') {

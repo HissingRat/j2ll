@@ -238,10 +238,13 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - registration、runtime metadata 和 business string 使用不同 codec domain。
 - 不允许 `JNI_OnLoad` 或 aggregate registration 一次性解码所有 domain。
 - registration metadata 至少按 owner 临时解码；business string 按实际 token/call site 解码。
-- generated-C 高敏感 metadata 的普通 literal 只能进入 activation-local scratch，
-  并在 normal/early/failure return 时清零；owner/table 等可明确界定 use window
-  的路径继续使用显式 decode/use/zero。只有低敏感普通 runtime error 文案可
-  显式选择 lazy-once lifetime。
+- generated-C 高敏感 metadata 的普通 literal 只在真实 use-site 首次到达时解码；
+  同一 C function 内的同明文共享一个 activation-local slot，并在该 activation
+  内最多解码一次。不同 function 不得共享 slot、明文 cache 或 encoding identity。
+- 每个 function 使用聚合 scratch 与统一 cleanup hook，在 normal/early/failure
+  return 时清零全部 slot；owner/table 等可明确界定更短 use window 的路径继续
+  使用显式 decode/use/zero。只有低敏感普通 runtime error 文案可显式选择
+  lazy-once lifetime。
 
 验收：
 
@@ -315,6 +318,11 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
   明文/xref 锚点；aggregate/owner 各自使用 registration-domain、
   build-scoped encoding，只在对应 `FatalError` 路径的 local scratch 中恢复。
   generated-C hardening gate 对旧稳定文案 fail closed。
+- method name/descriptor 同值只在同一 owner 与各自 purpose domain 内复用；
+  不跨 owner 共享 encoding 或 decoded scratch。去重后的 owner-local layout
+  在 `bindings <= 64` 且 `textScratch <= 16 KiB` 时使用有界栈 storage，
+  任一上限超出时使用 heap；两条路径都清零 `JNINativeMethod[]` 与明文 scratch，
+  heap 路径随后释放。
 
 验收：
 
@@ -329,6 +337,9 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - `seed: null` 使用 `SecureRandom` 生成 build root。
 - 显式 seed 保留 reproducible 模式。
 - build identity 参与 metadata bytes/symbol、owner order、method-table order、wrapper/internal ordering以及适用的 IR/LLVM pass。
+- CFF 的 block-to-state 与 default target 使用 per-build/per-method 派生的 dense
+  permutation；状态集合始终为 `[0, blockCount)`，不增加 table、状态空间或
+  transition work。
 - 同一次 multi-target build 共享语义 plan，不能为每个平台生成不同 Java/native binding 语义。
 
 验收：
@@ -391,10 +402,12 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - JNI 创建 `String` 后立即清零临时明文。
 - registration metadata 与业务字符串不共用 codec 或 lookup。
 - 高敏感 metadata（class/member/descriptor/reflection target）优先按调用点/owner 拆分；普通日志文本不以牺牲稳定性为代价做过度变换。
-- 通用 generated-C literal rewriter 默认采用 activation-local scratch，使用
-  compiler-supported cleanup hook覆盖所有函数退出；它不宣称达到单次 JNI
-  call 的 per-use lifetime。需要更短窗口的 owner/member/table generator
-  必须直接使用 per-use native-text emitter。
+- 通用 generated-C literal rewriter 默认采用 function-local 聚合 scratch，并把
+  decode 推迟到真实 use-site；同一 function 的同明文复用一个 slot、每个
+  activation 最多解码一次。compiler-supported 统一 cleanup hook 覆盖所有函数
+  退出。该 lifetime 仍宽于单次 JNI call；需要更短窗口的 owner/member/table
+  generator 必须直接使用 per-use native-text emitter。不同 function 之间不共享
+  slot、明文 cache 或 encoding identity。
 
 验收：
 
@@ -519,6 +532,26 @@ token resolver。
   validator 对 forged mixed-ABI group fail closed，backend 的真实类型检查没有
   放宽。
 
+已完成的 source-size / compile-cost 切片：
+
+- production builder 从 final validated LLVM module model 收集真实 referenced
+  helper symbols，再按已声明 dependency closure 发出所需 host-JNI runtime
+  source families；仅有 declaration 不会把 helper family 标记为 reachable。
+  stable helper必须精确命中known-symbol集合，build-local helper必须有严格
+  declaration evidence；binding-driven emitter还对其实际写出的entries补齐跨
+  family dependency。
+- 未知 `j2ll_rt_*` / `j2ll_h_*` reference 或不完整 model evidence 都 fail
+  closed 到保守全量 source。直接 generator/fixture API 不具有 final-model
+  evidence，默认同样发出全量 family。
+- 该裁剪不改变 helper ABI、JNI 语义或 export allowlist；它只删除最终模型证明
+  不可达的生成源码。2026-07-28 的同输入、同显式 seed、Windows x64 单次 A/B
+  中，generated C 从 5,065,230 B 降到 4,119,787 B（-18.665%），DLL `.text`
+  raw 从 652,800 B 降到 452,096 B（-30.745%），完整 DLL 从 713,728 B 降到
+  513,024 B（-28.121%），output JAR 从 2,796,558 B 降到 2,735,286 B
+  （-2.191%）。wall time 从 117.885 s 降到 106.824 s（-9.383%），但单次
+  wall-clock 只作为方向性证据，不宣称跨机器/平台稳定比例。两边 method outcome
+  均为 57 `nativeLowered` / 14 `skipped`，artifact/readiness audit 均通过。
+
 固定的通用 JDK runtime helper 仍使用 canonical ABI；高收益 fused JDK helper
 与更广泛 JNI helper 形态也尚未实现，因此 H6 继续保持 `IN_PROGRESS`。
 第三轮双构建中 57/57 wrapper 的 coarse shape 分类仍相同：地址/RVA 提取器
@@ -573,6 +606,9 @@ Windows上的 child-JVM parity fixture因现有
 
 - Fake branch gate 不再因原 body 含普通 helper/call/field/reference 或 exception metadata 整体跳过；原 body 与 exception evidence 原对象保留。
 - Basic-block splitting 已支持普通 helper/call/field/reference 和 instruction-level exception site；原 block terminator/exception edge 只归 suffix。
+- CFF 对支持 shape 的 dispatcher state 使用 build/method-scoped dense
+  permutation，并独立派生 default target；状态数量与原实现一致，不以 sparse
+  state、查表或额外 transition 换取多样性。
 - handler、monitor、volatile/final publication、monitor happens-before、initializer 与危险 class-init 邻接继续保守跳过。
 - focused IR validator/backend tests 覆盖 protected body preservation、显式 throw edge、parameterized prefix/LLVM phi 与各保守边界。
 - method inlining 不再被 frontend 为所有 direct call 添加的无 handler

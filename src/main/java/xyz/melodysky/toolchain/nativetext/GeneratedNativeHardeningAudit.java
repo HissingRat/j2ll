@@ -273,7 +273,10 @@ public final class GeneratedNativeHardeningAudit {
         NativeTextSourceMetrics nativeTextMetrics =
                 new NativeTextSourceScanner().scan(structural);
         if (structural.contains("__attribute__((cleanup(j2ll_nt_cleanup_")
-                && containsIdentifierPrefix(structural, "j2ll_nt_scratch_")
+                && (containsIdentifierPrefix(structural, "j2ll_nt_scratch_")
+                        || containsIdentifierPrefix(
+                                structural,
+                                "j2ll_nt_local_"))
                 && nativeTextMetrics.siteBoundCodecCount() > 0) {
             evidence.add(EVIDENCE_CALL_LOCAL_TEXT_SCRATCH);
             evidence.add(EVIDENCE_CALL_LOCAL_TEXT_CLEANUP);

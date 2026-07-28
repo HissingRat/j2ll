@@ -1,6 +1,7 @@
 package xyz.melodysky.ir.pass.protection;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,16 +53,21 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
         }
         ProtectionRandom random = new ProtectionRandom(config.seed());
         String token = random.token(name(), method.methodKey(), 10);
-        Map<String, Integer> states = new LinkedHashMap<>();
-        for (int index = 0; index < method.blocks().size(); index++) {
-            states.put(method.blocks().get(index).name(), index);
-        }
+        Map<String, Integer> states = statePermutation(
+                method,
+                random);
 
         String dispatcherName = "cff_dispatch_" + token;
         IrValue dispatcherState = new IrValue("%j2ll_cff_" + token + "_state", IrType.I32);
         ArrayList<IrBlock> flattened = new ArrayList<>();
         flattened.add(entryBlock(method.blocks().get(0).name(), dispatcherName, token, states.get(method.blocks().get(0).name())));
-        flattened.add(dispatcherBlock(dispatcherName, dispatcherState, states, token));
+        flattened.add(dispatcherBlock(
+                dispatcherName,
+                dispatcherState,
+                states,
+                token,
+                method.methodKey(),
+                random));
         for (IrBlock block : method.blocks()) {
             flattened.add(bodyBlock(block, dispatcherName, token, states));
             if (block.terminator().kind() == IrTerminatorKind.BRANCH) {
@@ -86,6 +92,23 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
                 flattened);
     }
 
+    private Map<String, Integer> statePermutation(
+            IrMethod method,
+            ProtectionRandom random) {
+        ArrayList<IrBlock> ranked = new ArrayList<>(method.blocks());
+        ranked.sort(Comparator
+                .comparing((IrBlock block) -> random.token(
+                        name() + ":STATE_RANK",
+                        method.methodKey() + ":" + block.name(),
+                        64))
+                .thenComparing(IrBlock::name));
+        LinkedHashMap<String, Integer> states = new LinkedHashMap<>();
+        for (int state = 0; state < ranked.size(); state++) {
+            states.put(ranked.get(state).name(), state);
+        }
+        return states;
+    }
+
     private IrBlock entryBlock(String originalEntryName, String dispatcherName, String token, int state) {
         IrValue initialState = new IrValue("%j2ll_cff_" + token + "_initial", IrType.I32);
         return new IrBlock(
@@ -98,10 +121,20 @@ public final class ControlFlowFlatteningPass implements ProtectionPass {
             String dispatcherName,
             IrValue dispatcherState,
             Map<String, Integer> states,
-            String token) {
-        String defaultTarget = bodyName(states.keySet().iterator().next(), token);
+            String token,
+            String methodKey,
+            ProtectionRandom random) {
+        String defaultBlock = states.keySet().stream()
+                .min(Comparator
+                        .comparing((String block) -> random.token(
+                                name() + ":DEFAULT_TARGET",
+                                methodKey + ":" + block,
+                                64))
+                        .thenComparing(block -> block))
+                .orElseThrow();
+        String defaultTarget = bodyName(defaultBlock, token);
         List<IrSwitchCase> cases = states.entrySet().stream()
-                .skip(1)
+                .filter(entry -> !entry.getKey().equals(defaultBlock))
                 .map(entry -> new IrSwitchCase(entry.getValue(), bodyName(entry.getKey(), token)))
                 .toList();
         return new IrBlock(

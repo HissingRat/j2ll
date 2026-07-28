@@ -59,7 +59,8 @@ public final class NativeTextSourceScanner {
 
     public NativeTextSourceMetrics scan(String source) {
         Objects.requireNonNull(source, "source");
-        String structural = NativeTextCSourceMasker.maskNonCode(source);
+        String structural = NativeTextCSourceMasker.spliceLineContinuations(
+                NativeTextCSourceMasker.maskNonCode(source));
         Set<String> ciphers = matches(CIPHER_DECLARATION, structural, 1);
         Set<String> productionCiphers = ciphers.stream()
                 .filter(cipher -> PRODUCTION_CIPHER.matcher(cipher).matches())
