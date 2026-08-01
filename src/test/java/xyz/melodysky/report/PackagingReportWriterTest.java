@@ -75,7 +75,9 @@ class PackagingReportWriterTest {
                           "method": "add",
                           "descriptor": "(II)I",
                           "rewriteStrategy": "nativeOriginal",
-                          "registrationOwner": "pkg/Mathy"
+                          "registrationOwner": "pkg/Mathy",
+                          "javaMethodPresent": true,
+                          "registrationPresent": true
                         }
                       ]
                     }

@@ -18,6 +18,7 @@ import xyz.melodysky.analysis.callgraph.CallGraphBuilder;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchyStage;
+import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.analysis.reflection.StaticReflectionResolver;
 import xyz.melodysky.analysis.runtime.RuntimeAnalysisPipeline;
@@ -78,6 +79,7 @@ import xyz.melodysky.packaging.JarSignatureResigner;
 import xyz.melodysky.packaging.JarSignatureResignResult;
 import xyz.melodysky.packaging.J2llMetadataEntries;
 import xyz.melodysky.packaging.InternalizedFieldClassTransform;
+import xyz.melodysky.packaging.InternalizedMethodClassTransform;
 import xyz.melodysky.packaging.SignatureResignPreflight;
 import xyz.melodysky.packaging.SignatureResignPreflightResult;
 import xyz.melodysky.progress.BuildProgressListener;
@@ -543,6 +545,35 @@ public final class MainlinePipeline {
                 protectionReports,
                 config,
                 templateStringSeed);
+        MethodInternalizationPipelineResult methodInternalization =
+                new MethodInternalizationPipeline().run(
+                        config,
+                        program,
+                        hierarchy,
+                        callGraph,
+                        reflectionPlan,
+                        versionedClassNames,
+                        implementationPlan,
+                        wholeProgramPolicy,
+                        wrapperSymbolSeed);
+        diagnostics.addAll(methodInternalization.diagnostics());
+        NativeMethodInternalizationPlan methodInternalizationPlan =
+                methodInternalization.plan();
+        MethodInternalizationFinalizer.Result internalizedMethods =
+                new MethodInternalizationFinalizer().apply(
+                        methodInternalizationPlan,
+                        rewriteDecisions,
+                        implementationPlan);
+        rewriteDecisions = internalizedMethods.rewriteDecisions();
+        implementationPlan = internalizedMethods.implementationPlan();
+        registrationPlan = implementationPlan.registrationPlan();
+        List<Diagnostic> methodFinalPlanDiagnostics =
+                new MethodInternalizationFinalPlanValidator().validate(
+                        methodInternalizationPlan,
+                        implementationPlan);
+        diagnostics.addAll(methodFinalPlanDiagnostics);
+        protectionReports.add(
+                methodInternalization.protectionReport());
         List<Diagnostic> fieldFinalPlanDiagnostics =
                 new FieldInternalizationFinalPlanValidator().validate(
                         fieldInternalizationPlan,
@@ -576,7 +607,8 @@ public final class MainlinePipeline {
                         llvmProtectionConfig,
                         buildProgress.llvmCompilationProgress());
         for (NativeLlvmModuleCompilation compiledModule : llvmCompilation.modules()) {
-            List<IrMethod> reportMethods = compiledModule.registeredMethods();
+            List<IrMethod> reportMethods =
+                    compiledModule.userMethods();
             LlvmBlockLayoutPerturbationResult blockLayoutResult =
                     compiledModule.blockLayout();
             protectionReports.add(protectionEvidenceAssembler.llvmModel(
@@ -734,6 +766,7 @@ public final class MainlinePipeline {
                     rewriteDecisions,
                     implementationPlan,
                     fieldInternalizationPlan,
+                    methodInternalizationPlan,
                     diagnostics,
                     loaderInternalName);
             Map<String, byte[]> addedEntries = addedJarEntries(config, nativeBuildResult, runtimeLoaderPlan);
@@ -792,7 +825,8 @@ public final class MainlinePipeline {
                     embeddedLibraryReports,
                     nativeBuildResult.map(ZigNativeBuildResult::exportedSymbols).orElse(List.of()),
                     sensitivePlaintextFacts(protectionReports, implementationPlan),
-                    fieldInternalizationPlan);
+                    fieldInternalizationPlan,
+                    methodInternalizationPlan);
             if (!artifactAuditResult.passed()) {
                 Files.deleteIfExists(outputJar);
                 diagnostics.add(Diagnostic.error(
@@ -995,6 +1029,7 @@ public final class MainlinePipeline {
             List<MethodRewriteDecision> decisions,
             NativeImplementationPlan implementationPlan,
             NativeFieldInternalizationPlan fieldInternalizationPlan,
+            NativeMethodInternalizationPlan methodInternalizationPlan,
             DiagnosticBag diagnostics,
             String loaderInternalName) {
         Set<String> implementedMethodKeys = implementationPlan.implementations().stream()
@@ -1016,11 +1051,23 @@ public final class MainlinePipeline {
                         .add(decision));
         Map<String, byte[]> rewritten = new LinkedHashMap<>();
         InternalizedFieldClassTransform fieldTransform = new InternalizedFieldClassTransform();
+        InternalizedMethodClassTransform methodTransform =
+                new InternalizedMethodClassTransform();
         for (ParsedClass parsedClass : program.classes()) {
             List<MethodRewriteDecision> classDecisions = byClass.getOrDefault(parsedClass.internalName(), List.of());
             boolean hasInternalizedField = fieldInternalizationPlan.approvedFieldIds().stream()
                     .anyMatch(field -> field.owner().equals(parsedClass.internalName()));
-            if (classDecisions.isEmpty() && !hasInternalizedField) {
+            boolean hasInternalizedMethod =
+                    methodInternalizationPlan.decisions().stream()
+                            .anyMatch(decision ->
+                                    decision.internalized()
+                                            && decision.method()
+                                                    .owner()
+                                                    .equals(parsedClass
+                                                            .internalName()));
+            if (classDecisions.isEmpty()
+                    && !hasInternalizedField
+                    && !hasInternalizedMethod) {
                 continue;
             }
             ClassRewriteResult result = loaderInternalName == null
@@ -1031,14 +1078,21 @@ public final class MainlinePipeline {
                             initializerPlans,
                             loaderInternalName);
             diagnostics.addAll(result.diagnostics());
-            var fieldResult = fieldTransform.apply(
+            var methodResult = methodTransform.apply(
                     result.classBytes(),
+                    parsedClass.internalName(),
+                    methodInternalizationPlan);
+            diagnostics.addAll(methodResult.diagnostics());
+            var fieldResult = fieldTransform.apply(
+                    methodResult.classBytes(),
                     parsedClass.internalName(),
                     fieldInternalizationPlan,
                     parsedClass.methods().stream()
                             .anyMatch(method -> method.name().equals("<clinit>")));
             diagnostics.addAll(fieldResult.diagnostics());
-            if (!result.applied().isEmpty() || !fieldResult.removedFieldKeys().isEmpty()) {
+            if (!result.applied().isEmpty()
+                    || !methodResult.removedMethodKeys().isEmpty()
+                    || !fieldResult.removedFieldKeys().isEmpty()) {
                 rewritten.put(parsedClass.sourceEntry(), fieldResult.classBytes());
             }
         }

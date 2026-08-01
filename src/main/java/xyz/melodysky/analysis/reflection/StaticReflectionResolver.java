@@ -168,6 +168,26 @@ public final class StaticReflectionResolver implements Opcodes {
             return handleGetDeclaredMethod(currentMethod, instructionIndex, operands, metadataIndex, builder);
         }
         if (methodInsn.owner.equals("java/lang/Class")
+                && methodInsn.name.equals("getMethod")
+                && methodInsn.desc.equals("(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;")) {
+            recordUnsupportedSite(
+                    currentMethod,
+                    instructionIndex,
+                    StaticReflectionDiagnostics.UNRESOLVED_PUBLIC_METHOD_LOOKUP,
+                    "Class.getMethod lookup is not statically enumerated",
+                    builder);
+            return Optional.empty();
+        }
+        if (isMethodHandleMethodLookup(methodInsn)) {
+            recordUnsupportedSite(
+                    currentMethod,
+                    instructionIndex,
+                    StaticReflectionDiagnostics.UNRESOLVED_METHOD_HANDLE_LOOKUP,
+                    "MethodHandles.Lookup method target is not statically resolved",
+                    builder);
+            return Optional.empty();
+        }
+        if (methodInsn.owner.equals("java/lang/Class")
                 && methodInsn.name.equals("getDeclaredField")
                 && methodInsn.desc.equals("(Ljava/lang/String;)Ljava/lang/reflect/Field;")) {
             return handleGetDeclaredField(currentMethod, instructionIndex, operands, metadataIndex, builder);
@@ -203,6 +223,18 @@ public final class StaticReflectionResolver implements Opcodes {
             return handleReflectNewInstance(currentMethod, instructionIndex, operands, builder);
         }
         return Optional.empty();
+    }
+
+    private boolean isMethodHandleMethodLookup(
+            MethodInsnNode methodInsn) {
+        if (!methodInsn.owner.equals(
+                "java/lang/invoke/MethodHandles$Lookup")) {
+            return false;
+        }
+        return methodInsn.name.equals("findStatic")
+                || methodInsn.name.equals("findVirtual")
+                || methodInsn.name.equals("findSpecial")
+                || methodInsn.name.equals("bind");
     }
 
     private Optional<ReflectionValue> handleClassForName(

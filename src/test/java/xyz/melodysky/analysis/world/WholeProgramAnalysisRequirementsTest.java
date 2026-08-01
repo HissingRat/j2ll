@@ -50,6 +50,56 @@ class WholeProgramAnalysisRequirementsTest {
     }
 
     @Test
+    void methodInternalizationRequirementDescribesCurrentJarOnlyBlindSpots() {
+        ResolvedConfig config = config(
+                AnalysisWorld.PARTIAL_WORLD,
+                true,
+                true,
+                false,
+                true);
+
+        var result = requirements.forConfig(config);
+
+        assertEquals(1, result.size());
+        assertEquals(
+                WholeProgramAnalysisFeature.METHOD_INTERNALIZATION,
+                result.get(0).feature());
+        assertEquals(
+                "methodInternalization requires CLOSED_WORLD, continue? (Y/N)",
+                result.get(0).prompt());
+        assertTrue(result.get(0).warning().contains("call sites and overrides only inside the current input JAR"));
+        assertTrue(result.get(0).warning().contains("external callers, subclasses, reflection/JNI/agent observers"));
+        assertTrue(result.get(0).warning().contains(
+                "Exact-allowlisted public static methods may use this approved scope"));
+        assertTrue(result.get(0).warning().contains(
+                "public instance methods still require declared CLOSED_WORLD"));
+        assertEquals(1, requirements.unmet(config, WholeProgramAnalysisPolicy.strict()).size());
+        assertTrue(requirements.unmet(
+                        config,
+                        WholeProgramAnalysisPolicy.currentJarOnly(
+                                List.of(WholeProgramAnalysisFeature.METHOD_INTERNALIZATION)))
+                .isEmpty());
+    }
+
+    @Test
+    void enabledWholeProgramFeaturesHaveIndependentRequirementsInStableOrder() {
+        ResolvedConfig config = config(
+                AnalysisWorld.PARTIAL_WORLD,
+                true,
+                true,
+                true,
+                true);
+
+        assertEquals(
+                List.of(
+                        WholeProgramAnalysisFeature.FIELD_INTERNALIZATION,
+                        WholeProgramAnalysisFeature.METHOD_INTERNALIZATION),
+                requirements.forConfig(config).stream()
+                        .map(WholeProgramAnalysisRequirement::feature)
+                        .toList());
+    }
+
+    @Test
     void closedWorldAndDisabledProtectionLayersNeedNoConfirmation() {
         assertTrue(requirements.forConfig(config(
                         AnalysisWorld.CLOSED_WORLD,
@@ -82,6 +132,20 @@ class WholeProgramAnalysisRequirementsTest {
             boolean protectionEnabled,
             boolean irEnabled,
             boolean fieldInternalization) {
+        return config(
+                world,
+                protectionEnabled,
+                irEnabled,
+                fieldInternalization,
+                false);
+    }
+
+    private ResolvedConfig config(
+            AnalysisWorld world,
+            boolean protectionEnabled,
+            boolean irEnabled,
+            boolean fieldInternalization,
+            boolean methodInternalization) {
         TargetConfig target = TargetConfig.single(TargetTriple.LINUX_X64);
         return new ResolvedConfig(
                 1,
@@ -113,6 +177,7 @@ class WholeProgramAnalysisRequirementsTest {
                                 false,
                                 false,
                                 fieldInternalization,
+                                methodInternalization,
                                 false,
                                 false),
                         new LlvmProtectionConfig(false, false, false, false, false, false),

@@ -17,6 +17,8 @@ public final class ConfigDiagnostics {
     public static final DiagnosticCode UNMATCHED_BLACKLIST_SELECTOR = DiagnosticCode.of("UNMATCHED_BLACKLIST_SELECTOR");
     public static final DiagnosticCode FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD =
             DiagnosticCode.of("FIELD_INTERNALIZATION_REQUIRES_CLOSED_WORLD");
+    public static final DiagnosticCode METHOD_INTERNALIZATION_REQUIRES_CLOSED_WORLD =
+            DiagnosticCode.of("METHOD_INTERNALIZATION_REQUIRES_CLOSED_WORLD");
 
     private ConfigDiagnostics() {
     }

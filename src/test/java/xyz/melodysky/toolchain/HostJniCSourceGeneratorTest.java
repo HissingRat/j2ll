@@ -131,6 +131,11 @@ class HostJniCSourceGeneratorTest {
                         + "(env, self);"));
         assertFalse(source.contains(staticSymbol + "(void)"));
         assertFalse(source.contains(instanceSymbol + "(jobject self)"));
+        assertTrue(source.contains(
+                "__attribute__((noinline, used))"));
+        assertTrue(source.contains("volatile uintptr_t"));
+        assertTrue(source.contains(" ? j2ll_lab_bridge_"));
+        assertFalse(source.contains("optnone"));
     }
 
     @Test

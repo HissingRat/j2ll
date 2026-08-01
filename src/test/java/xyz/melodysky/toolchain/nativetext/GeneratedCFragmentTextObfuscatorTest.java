@@ -48,12 +48,18 @@ final class GeneratedCFragmentTextObfuscatorTest {
         assertFalse(output.contains("\"(Ljava/lang/String;)V\""));
         assertTrue(output.contains("static const unsigned char j2ll_nt_"));
         assertTrue(output.contains("size_t length;"));
-        assertTrue(output.contains("__attribute__((cleanup(j2ll_nt_cleanup_"));
+        assertTrue(output.contains(
+                "__attribute__((cleanup("
+                        + NativeScratchZeroizerSource
+                                .CLEANUP_FUNCTION_NAME
+                        + ")))"));
         assertFalse(output.contains("j2ll_native_text_decode("));
         assertTrue(output.contains("j2ll_nt_word_"));
-        assertTrue(output.contains(
-                "j2ll_native_text_zero((unsigned char*)memory + sizeof(size_t), length)"));
-        assertEquals(1, occurrences(output, "static void j2ll_nt_cleanup_"));
+        assertFalse(output.contains("static void j2ll_nt_cleanup_"));
+        assertFalse(output.contains(
+                "static __attribute__((noinline, unused)) void "
+                        + NativeScratchZeroizerSource
+                                .CLEANUP_FUNCTION_NAME));
         assertEquals(2, occurrences(output, "_cipher[] = {"));
         assertFalse(output.contains("_Atomic int"));
         assertFalse(output.contains("j2ll_gcf_low_once_"));
@@ -79,8 +85,15 @@ final class GeneratedCFragmentTextObfuscatorTest {
                         NativeTextPurpose.RUNTIME_DESCRIPTOR));
 
         assertEquals(2, occurrences(output, "_cipher[] = {"));
-        assertEquals(1, occurrences(output, "static void j2ll_nt_cleanup_"));
-        assertEquals(2, occurrences(output, "__attribute__((cleanup(j2ll_nt_cleanup_"));
+        assertEquals(0, occurrences(output, "static void j2ll_nt_cleanup_"));
+        assertEquals(
+                2,
+                occurrences(
+                        output,
+                        "__attribute__((cleanup("
+                                + NativeScratchZeroizerSource
+                                        .CLEANUP_FUNCTION_NAME
+                                + ")))"));
         assertEquals(3, occurrences(output, "(const char*)j2ll_nt_use_"));
         assertEquals(2, occurrences(output, "#define j2ll_nt_use_"));
         assertTrue(output.contains(".ready == 0u"));

@@ -32,6 +32,7 @@ ClassFileSource
   -> LlvmProtectionPipeline
   -> LlvmTextEmitter
   -> FinalNativeImplementationPlan
+  -> MethodInternalizationPlan
   -> SkippedMethodConfirmation
   -> ZigNativeBuildAndSymbolAudit
   -> Repackager
@@ -58,7 +59,7 @@ ClassFileSource
 
 selector 命中的 Code-bearing method只有两个最终 method outcome：
 
-- `nativeLowered`：原业务语义由已验证的 LLVM、生成式 template/stub 或 JNI/runtime helper-backed native implementation 完成；Code rewrite 与 `RegisterNatives` plan 都有对应证据。
+- `nativeLowered`：原业务语义由已验证的 LLVM、生成式 template/stub 或 JNI/runtime helper-backed native implementation 完成。普通Java入口具有Code rewrite与`RegisterNatives`证据；批准为`internalNativeOnly`的方法具有LLVM body/native-caller closure，output class不再含method_info且不注册。
 - `skipped`：原 method/classfile 形态保持不变，不生成 native body，不进入 registration，也不在 native artifact 中复制 bytecode。
 
 `excluded` 只描述 selector/blacklist 之外的方法。abstract、already-native、无 Code interface declaration/annotation element 等 selector 命中只进入 eligibility evidence，无 method status且不触发 confirmation。parse、validation、toolchain、packaging 或 audit failure 是 build-level status，不是第三种 method outcome。带 Code 的 selected base method若存在 multi-release counterpart，则为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS` 并进入 gate。
@@ -80,9 +81,10 @@ Schema v1 不提供 `requiredNative`。如果 final plan 含 skipped methods，d
 - 唯一 runtime class 是 Java 17 `<embeddedLibraryDirectory>/Loader.class`。它只负责 native library 选择、SHA-256 校验、加载和注册，并在 field internalization 实际需要 reference/array slot 时按需加入 `ClassValue<Object[]>` sidecar。
 - runtime/source/package 中不再存在 bytecode-preserving helper class、embedded class blob、blob carrier/decoder 或 hidden-class define API。
 - `fieldInternalization` 只批准所有真实 accessor 最终均为 `nativeLowered` 且符合 storage ABI 的字段。任一 accessor 为 `skipped`、unselected、cross-owner 或存在动态观察边界时保留 JVM field；reference/array 状态仍由 Loader 的 JVM-managed `ClassValue<Object[]>` sidecar持有。
+- `methodInternalization`在final LLVM plan后运行，通常批准private/protected static或same-owner exact private/protected instance method。required exact `publicMethodInternalizationAllowList`可另行授权public static及same-owner exact public instance：public static可使用declared `CLOSED_WORLD`或本次Y授权的current-JAR-only scope；public instance只接受declared `CLOSED_WORLD`及parse-complete input+classPath world，不要求method/class为final，也不因可覆写slot本身拒绝，但每个调用点必须exact且caller仍须same-owner。已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer或已知external Java entry会保留入口；无法穷举的reflection/JNI/agent动态观察面作为allowlist/world授权接受的风险进入warning/report。批准项仍为`nativeLowered`，但Java declaration与`RegisterNatives` binding被移除；cross-owner static和reference-returning caller通过nested-local-frame internal dispatch bridge进入hidden native wrapper，same-owner direct scalar路径可继续使用LLVM direct ABI。
 - managed Zig `0.15.2` 通过一次 matrix-wide invocation 构建 selected targets；source set 只含 per-class LLVM、JNI wrapper C 和 runtime/helper C。六目标结构性交叉产物证据与 non-host JVM runtime E2E 继续分开。
 - 本轮新增的protected pending-exception与initializer真实运行证据当前只覆盖Windows real-Zig host child JVM；`Object.getClass()`与`Thread.sleep(J)V`当前只有focused planner/LLVM/C ABI evidence，其他目标只可引用结构性交叉构建证据。
-- artifact audit 验证每个 `nativeLowered` method 的 native body/registration closure、每个 `skipped` method 的原 body 保留且无 registration，以及 fallback bytecode复制表面在 generated C/native/JAR 中不存在。
+- artifact audit 验证每个 `nativeLowered` method 的native artifact closure：registered入口有wrapper/registration，`internalNativeOnly`入口没有Java declaration/registration且所有MethodInsn/Handle/bootstrap/EnclosingMethod residual为零；每个 `skipped` method 的原 body 保留且无 registration，fallback bytecode复制表面在 generated C/native/JAR 中不存在。
 - release-readiness/support/opcode/known-blocker reports 用 `nativeLowered`/helper-backed evidence和精确 `skipped` reason表达覆盖。长期工作按 reason code逐项扩大 native support，目标是持续减少 skipped methods。
 
 ## 维护规则

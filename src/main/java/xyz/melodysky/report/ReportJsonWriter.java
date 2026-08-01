@@ -79,6 +79,15 @@ public final class ReportJsonWriter {
         } else {
             object.addProperty("rewriteStrategy", method.rewriteStrategy().wireName());
         }
+        object.addProperty(
+                "retentionMode",
+                method.retentionMode().wireName());
+        object.addProperty(
+                "javaMethodPresent",
+                method.javaMethodPresent());
+        object.addProperty(
+                "registrationPresent",
+                method.registrationPresent());
         object.add("accessFlags", stringArray(method.accessFlags()));
         object.add("compilerFlags", stringArray(method.compilerFlags()));
         nullableString(object, "nativeSymbol", method.nativeSymbol());

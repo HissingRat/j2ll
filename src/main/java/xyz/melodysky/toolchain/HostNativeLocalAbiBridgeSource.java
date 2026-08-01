@@ -21,6 +21,22 @@ final class HostNativeLocalAbiBridgeSource {
             String returnType,
             String llvmFunctionSymbol,
             List<Parameter> parameters) {
+        return emit(
+                buildKey,
+                methodKey,
+                returnType,
+                llvmFunctionSymbol,
+                parameters,
+                NativeLocalAbiProfile.COMPACT_DIVERSE);
+    }
+
+    Emission emit(
+            NativeTextBuildKey buildKey,
+            String methodKey,
+            String returnType,
+            String llvmFunctionSymbol,
+            List<Parameter> parameters,
+            NativeLocalAbiProfile profile) {
         Objects.requireNonNull(returnType, "returnType");
         if (returnType.isBlank()) {
             throw new IllegalArgumentException(
@@ -33,7 +49,8 @@ final class HostNativeLocalAbiBridgeSource {
         NativeLocalAbiPlan plan = new NativeLocalAbiPlanner().plan(
                 buildKey,
                 methodKey,
-                parameters.size());
+                parameters.size(),
+                profile);
 
         String canonicalNames = joinCanonical(
                 parameters,
@@ -129,7 +146,7 @@ final class HostNativeLocalAbiBridgeSource {
                 .append("#if defined(__clang__)\n")
                 .append("#define ")
                 .append(attributeMacro)
-                .append(" __attribute__((noinline, optnone, used))\n")
+                .append(" __attribute__((noinline, used))\n")
                 .append("#elif defined(__GNUC__)\n")
                 .append("#define ")
                 .append(attributeMacro)

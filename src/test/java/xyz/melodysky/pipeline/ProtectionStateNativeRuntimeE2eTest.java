@@ -299,6 +299,8 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                       "methodSplitting": false,
                       "callIndirection": false,
                       "fieldInternalization": true,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": false
                     },

@@ -194,7 +194,22 @@ tasks.register('dummyTest', Test) {
     environment 'JAVA_HOME', System.getProperty('java.home')
 }
 
-['dTestBasic', 'dTestAdvanced', 'dummyTest'].each { taskName ->
+tasks.register('dTestMethodInternalization', Test) {
+    group = 'verification'
+    description = 'Runs public/protected method-internalization removal and runtime parity against Dummy fixtures.'
+    dependsOn('buildDummy', 'testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching 'xyz.melodysky.pipeline.DummyMethodInternalizationE2eTest.currentJarOnlyPublicStaticRemovalKeepsDummyParity'
+        includeTestsMatching 'xyz.melodysky.pipeline.DummyMethodInternalizationE2eTest.declaredClosedWorldRemovesNonFinalPublicAndProtectedTargetsWithParity'
+    }
+    systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
+    environment 'JAVA_HOME', System.getProperty('java.home')
+}
+
+['dTestBasic', 'dTestAdvanced', 'dummyTest', 'dTestMethodInternalization'].each { taskName ->
     tasks.named(taskName, Test) {
         testLogging {
             events = ['failed']

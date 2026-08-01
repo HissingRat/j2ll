@@ -33,6 +33,10 @@ public final class ResolvedConfigReportWriter {
         root.addProperty("outputDirectory", config.outputDirectory().toString());
         root.add("whiteList", selectors(config.whiteList()));
         root.add("blackList", selectors(config.blackList()));
+        root.add(
+                "publicMethodInternalizationAllowList",
+                selectors(config.protection().ir()
+                        .publicMethodInternalizationAllowList()));
         JsonArray targets = new JsonArray();
         for (TargetTriple target : config.targets()) {
             targets.add(target.directoryName());

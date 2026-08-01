@@ -25,7 +25,11 @@ public final class PrimitiveBasicCase implements Case {
     }
 
     public static int simpleInt(int left, int right) {
-        return ((left + right) * 3) - (7 << 2);
+        return publicStaticLeaf(((left + right) * 3) - (7 << 2));
+    }
+
+    public static int publicStaticLeaf(int value) {
+        return value;
     }
 
     public static long longMath(long value, long divisor) {

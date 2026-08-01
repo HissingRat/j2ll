@@ -77,6 +77,9 @@ class ReportJsonWriterTest {
                       "methodId": "run__8f3a21c0d4e5f607",
                       "status": "nativeLowered",
                       "rewriteStrategy": "nativeOriginal",
+                      "retentionMode": "registeredNative",
+                      "javaMethodPresent": true,
+                      "registrationPresent": true,
                       "accessFlags": [
                         "public"
                       ],
@@ -165,6 +168,9 @@ class ReportJsonWriterTest {
                       "methodId": "concat__8f3a21c0d4e5f607",
                       "status": "nativeLowered",
                       "rewriteStrategy": "nativeOriginal",
+                      "retentionMode": "registeredNative",
+                      "javaMethodPresent": true,
+                      "registrationPresent": true,
                       "accessFlags": [
                         "public",
                         "static"

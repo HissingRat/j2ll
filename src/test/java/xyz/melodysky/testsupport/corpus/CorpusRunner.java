@@ -149,6 +149,8 @@ public final class CorpusRunner {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": true
                     },

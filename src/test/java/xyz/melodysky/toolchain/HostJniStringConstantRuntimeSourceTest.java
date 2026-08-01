@@ -24,6 +24,7 @@ import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.pass.protection.ProtectionConfig;
 import xyz.melodysky.ir.pass.protection.StringEncryptionPass;
+import xyz.melodysky.toolchain.nativetext.NativeScratchZeroizerSource;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 
 final class HostJniStringConstantRuntimeSourceTest {
@@ -51,13 +52,14 @@ final class HostJniStringConstantRuntimeSourceTest {
         assertFalse(generated.contains("jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token)"));
         assertFalse(generated.contains("if (token == "));
         assertFalse(generated.contains("j2ll_native_text_decode"));
-        assertFalse(generated.contains("j2ll_native_text_zero"));
+        assertFalse(generated.contains(
+                "volatile unsigned char* clear_cursor"));
         assertEquals(2, occurrences(generated, "_cipher[] = {"));
         assertEquals(2, occurrences(generated, "jobject j2ll_rt_string_constant_"));
         assertEquals(2, occurrences(generated, "jstring result = (*env)->NewStringUTF"));
         assertEquals(2, occurrences(
                 generated,
-                "volatile unsigned char* clear_cursor"));
+                NativeScratchZeroizerSource.FUNCTION_NAME + "("));
         assertEquals(2, occurrences(generated, "return result;"));
 
         int offset = 0;
@@ -66,7 +68,7 @@ final class HostJniStringConstantRuntimeSourceTest {
                     "jstring result = (*env)->NewStringUTF",
                     offset);
             int zero = generated.indexOf(
-                    "volatile unsigned char* clear_cursor",
+                    NativeScratchZeroizerSource.FUNCTION_NAME + "(",
                     newString);
             int returned = generated.indexOf("return result;", newString);
             assertTrue(newString >= 0);

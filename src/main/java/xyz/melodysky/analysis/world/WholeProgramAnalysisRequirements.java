@@ -18,6 +18,9 @@ public final class WholeProgramAnalysisRequirements {
         if (fieldInternalizationEnabled(config)) {
             requirements.add(requirement(WholeProgramAnalysisFeature.FIELD_INTERNALIZATION));
         }
+        if (methodInternalizationEnabled(config)) {
+            requirements.add(requirement(WholeProgramAnalysisFeature.METHOD_INTERNALIZATION));
+        }
         return List.copyOf(requirements);
     }
 
@@ -45,5 +48,11 @@ public final class WholeProgramAnalysisRequirements {
         return config.protection().enabled()
                 && config.protection().ir().enabled()
                 && config.protection().ir().fieldInternalization();
+    }
+
+    private boolean methodInternalizationEnabled(ResolvedConfig config) {
+        return config.protection().enabled()
+                && config.protection().ir().enabled()
+                && config.protection().ir().methodInternalization();
     }
 }

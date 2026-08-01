@@ -18,7 +18,9 @@ import java.util.jar.JarFile;
 import java.util.stream.Stream;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
+import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
+import xyz.melodysky.packaging.InternalizedMethodArtifactVerifier;
 
 public class ArtifactAudit {
     public ArtifactAuditResult audit(
@@ -132,6 +134,58 @@ public class ArtifactAudit {
                 base.checkedSensitiveFacts(),
                 base.observedOnlySensitiveFacts(),
                 base.skippedSensitiveFacts());
+    }
+
+    public ArtifactAuditResult audit(
+            Path workspaceRoot,
+            Path outputJar,
+            String embeddedLibraryDirectory,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<String> exportedSymbols,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts,
+            NativeFieldInternalizationPlan fieldInternalizationPlan,
+            NativeMethodInternalizationPlan methodInternalizationPlan)
+            throws IOException {
+        ArtifactAuditResult fieldResult = audit(
+                workspaceRoot,
+                outputJar,
+                embeddedLibraryDirectory,
+                embeddedLibraries,
+                exportedSymbols,
+                sensitivePlaintextFacts,
+                fieldInternalizationPlan);
+        if (!fieldResult.passed()) {
+            return fieldResult;
+        }
+        List<String> residuals;
+        try (JarFile jar = new JarFile(outputJar.toFile())) {
+            residuals = new InternalizedMethodArtifactVerifier()
+                    .residuals(jar, methodInternalizationPlan);
+        }
+        boolean noInternalizedMethods =
+                methodInternalizationPlan.internalizedMethodKeys().isEmpty();
+        ArtifactAuditCheck methodCheck = residuals.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "jar.internalizedMethodResiduals",
+                        noInternalizedMethods
+                                ? "NO_INTERNALIZED_METHODS"
+                                : "INTERNALIZED_METHODS_REMOVED",
+                        noInternalizedMethods
+                                ? "no native-internalized methods were planned"
+                                : "approved method declarations and references are absent from the final JAR")
+                : ArtifactAuditCheck.failed(
+                        "jar.internalizedMethodResiduals",
+                        "INTERNALIZED_METHOD_RESIDUAL",
+                        "residual approved method surfaces: " + residuals);
+        ArrayList<ArtifactAuditCheck> checks =
+                new ArrayList<>(fieldResult.checks());
+        checks.add(methodCheck);
+        return new ArtifactAuditResult(
+                residuals.isEmpty(),
+                checks,
+                fieldResult.checkedSensitiveFacts(),
+                fieldResult.observedOnlySensitiveFacts(),
+                fieldResult.skippedSensitiveFacts());
     }
 
     public ArtifactAuditResult skipped(String reasonCode, String message) {

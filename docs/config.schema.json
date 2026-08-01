@@ -99,6 +99,8 @@
             "methodSplitting",
             "callIndirection",
             "fieldInternalization",
+            "methodInternalization",
+            "publicMethodInternalizationAllowList",
             "methodTableHiding",
             "blockNameObfuscation"
           ],
@@ -116,6 +118,21 @@
               "type": "boolean",
               "default": false,
               "description": "Requires CLOSED_WORLD, or interactive build-time approval for current-input-JAR-only analysis. The approval is per run and does not change worldModel."
+            },
+            "methodInternalization": {
+              "type": "boolean",
+              "default": false,
+              "description": "Removes eligible Java method declarations whose complete input-visible call surface is implemented natively. Requires CLOSED_WORLD, or per-run approval that limits call-site, override, and observer analysis to the current input JAR."
+            },
+            "publicMethodInternalizationAllowList": {
+              "type": "array",
+              "default": [],
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[^#*/]+(?:/[^#*/]+)*#[^!*/]+!\\([^)]*\\).+$"
+              },
+              "description": "Explicit authorization for individual public methods. Every entry must be an exact owner#name!descriptor selector; class selectors and wildcards are forbidden. Public static removal may use declared worldModel=CLOSED_WORLD or the per-run current-input-JAR-only approval. Public instance removal requires declared CLOSED_WORLD plus exact same-owner call sites; it does not require a final method or class. Resolved exact observers still reject a candidate, while unsupported or unbounded reflection/JNI/agent surfaces are reported as user-accepted risk."
             },
             "methodTableHiding": { "type": "boolean", "default": true },
             "blockNameObfuscation": { "type": "boolean", "default": true }

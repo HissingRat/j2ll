@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 
 public record NativeImplementationPlan(
@@ -68,8 +69,21 @@ public record NativeImplementationPlan(
 
     public NativeRegistrationPlan registrationPlan() {
         return new NativeRegistrationPlan(implementations.stream()
+                .filter(implementation ->
+                        implementation.decision().strategy()
+                                != MethodRewriteStrategy
+                                        .INTERNAL_NATIVE_ONLY)
                 .map(NativeMethodImplementation::entry)
                 .toList());
+    }
+
+    public List<NativeMethodImplementation> registeredImplementations() {
+        return implementations.stream()
+                .filter(implementation ->
+                        implementation.decision().strategy()
+                                != MethodRewriteStrategy
+                                        .INTERNAL_NATIVE_ONLY)
+                .toList();
     }
 
     public Optional<NativeMethodImplementation> implementationFor(String methodKey) {

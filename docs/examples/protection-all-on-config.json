@@ -40,6 +40,8 @@
       "methodSplitting": true,
       "callIndirection": true,
       "fieldInternalization": true,
+      "methodInternalization": true,
+      "publicMethodInternalizationAllowList": [],
       "methodTableHiding": true,
       "blockNameObfuscation": true
     },

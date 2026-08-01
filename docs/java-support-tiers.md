@@ -4,7 +4,7 @@
 
 Tier 是 compiler-development 与 release-evidence 分类，不是用户 Config 选项。selector 命中的 Code-bearing method最终只有：
 
-- `nativeLowered`：由 LLVM、生成式 template/stub 或经过验证的 JNI/runtime helper-backed native implementation完成。
+- `nativeLowered`：由 LLVM、生成式 template/stub 或经过验证的 JNI/runtime helper-backed native implementation完成。普通Java入口保留native declaration/stub并注册；whole-program method-internalization批准项则只保留hidden native body/native caller closure，Java method_info与registration均删除。
 - `skipped`：保留原 Java method/classfile 形态，不生成 native body，不进入 `RegisterNatives`。
 
 `excluded` 只描述 selector 外方法；pipeline/toolchain/packaging failure 是 build status。Schema v1 不增加 `requiredNative`，也不在 native artifact 中保存 selected method 的 bytecode副本。
@@ -50,6 +50,8 @@ Tier 0 尚未承诺 executable native lowering，但 selector audit仍不能丢�
 - original JVM 与 output JAR child-JVM differential。
 
 有 Code 的 method 只有在全部用户语义都由 native implementation承担时才是 `nativeLowered`；否则整个 method 为 `skipped`。
+
+`methodInternalization`不会新增第三种outcome。它只在final `LLVM_NATIVE_PATH`已经证明后，删除只由最终LLVM caller可达的private/protected static或same-owner exact instance入口。public必须额外命中required exact `publicMethodInternalizationAllowList`：public static可使用declared `CLOSED_WORLD`或本次Y授权的current-JAR-only scope，public instance只允许declared `CLOSED_WORLD`并合并input与完整classPath world。public instance不要求method/class为final，也不因可覆写slot本身拒绝，但每个调用点必须exact且caller仍须same-owner；已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry与closed exact catalog识别到的Object/Runnable/Callable/线程/定时器/序列化/常见函数式JDK callback都会保留Java入口。callback catalog要求真实hierarchy关系与exact descriptor，不是blanket override-slot veto；catalog外第三方framework callback及无法穷举的reflection/JNI/agent动态观察面仍作为用户接受风险进入warning/report。reference-returning internal call仍通过JNI nested-local-frame bridge维持GC/local-reference/pending-exception语义；任何unselected/skipped caller或non-exact virtual dispatch同样fail closed。
 
 ## Tier 2: 常见 Java 语言特性
 
@@ -156,7 +158,7 @@ Release evidence：
 
 - support/opcode matrix用 `NATIVE_LOWERED`、`HELPER_BACKED` 与 `SKIPPED` evidence；前两者都映射到 method outcome `nativeLowered`。
 - `reports/support-matrix.json` 与 `reports/opcode-support-matrix.json` 保存上述 machine-readable coverage；签名成功证据使用 `SIGNATURE_RESIGNED`。
-- artifact audit校验 native implementation/registration closure、skipped-body preservation、Loader API surface、metadata/hash/export/PDB、sensitive plaintext，以及 generated C/native/JAR没有 selected method bytecode副本。
+- artifact audit校验native implementation closure、registered入口的registration、internal-only入口的declaration/registration/reference absence、skipped-body preservation、Loader API surface、metadata/hash/export/PDB、sensitive plaintext，以及 generated C/native/JAR没有 selected method bytecode副本。
 - release suite覆盖 native/helper paths、精确 skipped reasons、skipped confirmation的 Y/N/EOF、签名/target/audit failures与 realistic samples。
 - 六目标结构性交叉产物与 non-host OS/JVM runtime E2E分开记录。
 

@@ -47,7 +47,7 @@
 ## Method Outcome 与 Unsupported Boundary
 
 - selector命中的 Code-bearing method最终只有 `nativeLowered` 或 `skipped`。
-- `nativeLowered`：原业务语义由经过验证的 LLVM、生成式 template/stub或 JNI/runtime helper-backed native implementation完成。原 Code已按合法策略替换，native body和 registration都有证据。
+- `nativeLowered`：原业务语义由经过验证的 LLVM、生成式 template/stub或 JNI/runtime helper-backed native implementation完成。Java入口保留时原 Code按合法策略替换且native body/registration都有证据；经method-internalization批准的internal-only method则必须有native body、native caller closure和无Java declaration/registration的证据。
 - `skipped`：原 method/classfile形态保留，不生成 native body/wrapper，不进入 `RegisterNatives`，native/JAR中不保存第二份 method bytecode。
 - `excluded`只描述 selector/blacklist外方法。abstract、already-native、无 Code interface declaration/annotation element等 selector命中只记录 method-eligibility evidence，不产生 method status，也不进入 skipped confirmation gate。
 - parse/validation/toolchain/packaging/audit failure是 build-level status，不是额外 method outcome。
@@ -93,6 +93,15 @@
 - Native instance wrapper向field sidecar传递method/field的declared defining `jclass`，不得用`GetObjectClass(self)`按receiver runtime subclass分裂static storage。
 - Final plan、IR slot rewrite、FieldNode removal和 residual declaration/instruction/Handle/bootstrap audit共用同一 approved plan并 fail closed。
 
+## Method Internalization
+
+- `methodInternalization`是直接boolean，默认`false`；declared `CLOSED_WORLD`可分析private/protected和exact allowlisted public候选，本次build明确Y授权的current-input-JAR-only scope可分析private/protected及exact allowlisted public static。授权是feature-scoped，不改写`worldModel`；current-JAR-only不读取configured `classPath`，并把JAR外caller/subclass/reflection/JNI/agent observer明确记为用户接受的范围外风险。
+- `publicMethodInternalizationAllowList`是required `array<string>`、示例默认`[]`；每项必须是无wildcard、无重复的exact `<owner>#<name>!<descriptor>`。public static可使用declared `CLOSED_WORLD`或本次Y授权；public instance只允许configured world为declared `CLOSED_WORLD`且input+全部configured classPath形成parse-complete hierarchy/call world时分析。combined world缺失任一superclass/interface时，该public instance候选以`METHOD_INTERNALIZATION_PUBLIC_INSTANCE_ANALYSIS_WORLD_INCOMPLETE`保留；不得因此整批禁用public static/private/protected候选。
+- V1候选仅限已有final `LLVM_NATIVE_PATH`的ordinary Code-bearing method：支持private/protected static（static caller可cross-owner）和same-owner exact private/protected instance；exact allowlist另可授权public static及same-owner exact public instance。public instance不要求method/class为final，也不因存在可覆写slot本身拒绝，但scope内每个调用点都必须exact解析到候选且caller仍须same-owner；实际导致non-exact dispatch的override会拒绝该候选。已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry，以及closed exact catalog识别到的JVM/JDK callback（包括Object虚方法、Runnable/Callable、线程/定时器、序列化和常见`java.util.function`合同）一律保留Java method；catalog只按真实hierarchy subtype/implements关系与exact descriptor匹配，不恢复blanket override-slot veto。catalog外第三方framework callback与无法穷举的reflection/JNI/agent动态观察面仍是allowlist加world授权显式接受并进入warning/report的风险。cross-owner instance、interface、constructor、class initializer、synchronized、bridge/synthetic、multi-release、零native caller或任一非LLVM caller同样保留。
+- Approved method仍是`nativeLowered`，rewrite strategy为`internalNativeOnly`；其LLVM body保留并以hidden linkage进入final link，但output class删除整个method_info，且不进入`RegisterNatives`。所有ordinary Java/Handle/bootstrap/EnclosingMethod residual必须在final JAR audit中为零。
+- same-owner direct scalar call继续使用validated LLVM direct ABI。cross-owner static和exact same-owner instance dispatch使用binding-local internal bridge；bridge不得执行`GetMethodID`/`Call*MethodA`，而是进入hash-only internal wrapper。reference/owned/pending-exception target必须使用nested JNI local frame：`PushLocalFrame`，descriptor-aware参数解包，normal reference result经`PopLocalFrame(result)`提升；pending exception需清除、跨frame提升并严格恢复，失败`FatalError`。
+- Analysis、final-plan validator、registration filter、generated-C bridge、MethodNode removal、lowering/packaging report与artifact residual audit必须消费同一immutable approved plan并fail closed。
+
 ## Runtime Loader 与 Packaging
 
 - 唯一 runtime class是 Java 17 `<embeddedLibraryDirectory>/Loader.class`。
@@ -100,7 +109,7 @@
 - 不输出旧 runtime support class、companion/nested Loader或 artifact-specific NativeLoader。
 - `embeddedLibraryDirectory`同时是 resource与 Loader package prefix，必须为规范 Java internal package path；input base/MR同名 Loader在 Zig前分别以稳定 collision reason失败。
 - 普通 Code method可用 `nativeOriginal`；`<init>`、`<clinit>`和有 Code interface method使用合法 stub + generated native body helper。无法把全部用户语义移入 native implementation时整个 method为 `skipped`。
-- Packaging只重写 `nativeLowered` methods，精确保留 `skipped` methods，并验证后者没有 registration/native bytecode copy。
+- Packaging只重写 `nativeLowered` methods：registered入口按既有native/stub策略重写，`internalNativeOnly`精确删除method_info；`skipped` methods精确保留并验证没有registration/native bytecode copy。
 - `JNI_OnLoad` registration owner lookup直接用 slash internal name调用JNI `FindClass`，利用发起`System.load`的defining-loader context；不得把TCCL作为registration resolver。owner name必须在class lookup返回后立即清零。多 owner registration必须原子；单个 owner 的 `RegisterNatives` 失败也必须先对当前 owner 执行严格回滚，再把原异常交给外层逆序`UnregisterNatives`此前成功owner并清理local refs/scratch。只有每次unregister都返回`JNI_OK`且无pending exception、恢复原异常的`Throw`返回`JNI_OK`并形成pending exception时才允许返回普通失败，否则`FatalError` fail closed。
 - 保留 manifest/resources/services/module-info/multi-release entries。Base class有 versioned counterpart时，命中 method为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS`，不 rewrite/register。
 - Signed JAR：`fail`在 rewrite前拒绝；`strip`移除 signature entries并 warning；`resign`先 preflight keystore/password/alias，再用当前 JDK `jarsigner`。失败不保留 final JAR。
@@ -156,7 +165,10 @@
   cleanup hook覆盖normal/early/failure exit；能明确更短use window的owner/table
   metadata继续优先显式decode/use/zero。只有低敏感普通runtime error文本可显式选择
   lazy-once；generic/global decoder、集中text-pointer目录和单decoder批量覆盖必须被
-  source audit阻断。
+  source audit阻断。允许translation-unit内共享一个metadata-free `noinline`
+  zeroizer/cleanup callback；它只能接收scratch地址/长度，不能接收或解析
+  ciphertext、codec、owner/member/descriptor、token，也不能成为shared decoder或
+  plaintext cache。
 - 固定异常类型/错误文案只有进入显式closed allowlist后，才可outline到
   build-scoped hash-only `noinline,cold` leaf。该leaf只能接收`JNIEnv*`，不得接收
   owner/member/descriptor、业务字符串、metadata token或Java value；相同低敏感文本
@@ -171,7 +183,7 @@
   decoded scratch；禁止跨owner复用。owner不超过64个bindings且去重后的text scratch
   不超过16KiB时使用有界栈storage，任一上限超出时使用heap；两条路径都必须清零
   text scratch与`JNINativeMethod[]`，heap路径随后释放。
-- `LLVM_NATIVE_PATH` JNI wrapper 与规范 LLVM body 之间使用 build-scoped local ABI topology：每个 binding 从 direct canonical、单层参数重排 bridge、双层参数重排 bridge、bounded branched参数重排 bridge 中派生一种形态。branched形态只在wrapper activation内从两条最多双层的local route中选择，并用最多三个static bridge控制代码膨胀；只允许重排真实原生参数，不得添加 cookie、持久 function-pointer data slot，bridge 不得执行 JNI、改变 reference lifetime 或观察/清除 pending exception。该变换只提高静态分类成本，不是安全边界。
+- `LLVM_NATIVE_PATH` JNI wrapper 与规范 LLVM body 之间使用 build-scoped local ABI topology。final native ABI传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用bounded branched参数重排；pure-native scalar binding仍从direct canonical、单层、双层与branched四种形态中派生，以保留较低成本的build diversity。branched形态只在wrapper activation内从两条最多双层的local route中选择，并用最多三个`static __attribute__((noinline, used))` bridge控制代码膨胀；不得使用`optnone`阻止正常size optimization。只允许重排真实原生参数，不得添加cookie、持久function-pointer data slot，bridge不得执行JNI、改变reference lifetime或观察/清除pending exception。该变换只提高静态分类成本，不是安全边界。
 - 静态分析难度优先于产物大小，但每个加固必须有明确size budget：优先选择
   table-free、bounded topology和同值组内复用；攻击者回归记录final native与
   generated-C字节数及dual-build delta。size evidence当前用于回归和取舍，
@@ -185,6 +197,7 @@
 - Schema v1固定 managed Zig `0.15.2`，位置为可执行 `j2ll.jar`同级 `zig/zig(.exe)`。
 - 缺失/版本不对时先复用同目录 official archive，否则从 Zig 0.15.2 official URL下载；local/downloaded archive必须先按内置官方 SHA-256验证再解压。Signature状态明确为 `notVerifiedBoundary`。
 - 一个 generated `build.zig`和一次 matrix-wide invocation编排 per-class `.ll`、Zig-managed `.o`、JNI wrapper C和 runtime helper C。Source set不得含 selected method bytecode carrier。
+- Generated C compile unit使用`ReleaseSmall`；per-class LLVM input与final link module保持`ReleaseSafe`。Observable compile unit必须按source kind同质分组，不能把C与LLVM混入同一unit后共用错误的optimization mode；总数仍以每target最多64个为界。
 - Production Zig source generation从final validated LLVM module model的真实symbol
   references计算runtime-helper family reachability，只发出闭包所需family；仅有
   declaration不能成为reachability root。classifier只接受精确已知stable symbol或
@@ -205,7 +218,7 @@
 - `--debug`只开启 intermediates/debug dumps，不宣称 native debug symbols。
 - stdout只写稳定 `key=value`结果；progress、skipped notice/prompt和 diagnostics写 stderr。
 - TUI compiler stages为 `Read bytecode`、`Lower to IR`、`Emit LLVM IR`；native期间一个 aggregate row加每 target一行；完成后折叠 target rows；finalization用 `Finalize JAR`。
-- Target百分比只等于真实 Zig build-graph completed work units/total，最多64 observable compile units/target。`BUILDING`/`LINKING`/`COMPLETED`来自 graph boundary，不解析 Zig文本或按耗时猜测。
+- Target百分比只等于真实 Zig build-graph completed work units/total，最多64个按source kind同质的observable compile units/target。`BUILDING`/`LINKING`/`COMPLETED`来自 graph boundary，不解析 Zig文本或按耗时猜测。
 - `logs/zig-progress/`仅 invocation期间存在，成功/失败/中断都删除；持久 `zig-build.log`只用于诊断。
 - CLI/config error、exit code、summary/index/failure report合同按 `docs/io-config-output-contract.md`。
 
@@ -215,7 +228,7 @@
 - `lowering-report.json` 的 helper evidence 只写 non-sensitive kind 与 domain-separated identity hash；不得序列化含 owner/member descriptor或business string carrier的完整helper字符串。
 - 必需 evidence包括 diagnostics、lowering、skipped-method、field-internalization、packaging、protection、symbol-audit、artifact-audit、support/opcode matrix、known blockers、summary/index/readiness。
 - Artifact audit验证：
-  - 每个 `nativeLowered` method有 native implementation、wrapper/registration与 selected-target artifact闭包；
+  - 每个 `nativeLowered` method有native implementation与selected-target artifact闭包；Java入口保留者有wrapper/registration，`internalNativeOnly`则有完整native-caller closure且无Java declaration/registration；
   - 每个 `skipped` method原 body保留、无 registration/native bytecode copy；
   - 唯一 Loader API/version/name正确；
   - native resource SHA、JAR metadata、report manifest、export allowlist、PDB与 sensitive plaintext policy一致。

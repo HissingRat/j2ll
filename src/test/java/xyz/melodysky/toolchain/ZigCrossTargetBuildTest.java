@@ -172,7 +172,8 @@ class ZigCrossTargetBuildTest {
         assertTrue(wrapperSource.contains(
                 "volatile uintptr_t j2ll_lab_"));
         assertTrue(wrapperSource.contains(
-                "__attribute__((noinline, optnone, used))"));
+                "__attribute__((noinline, used))"));
+        assertFalse(wrapperSource.contains("optnone"));
         Files.writeString(wrapper, wrapperSource, StandardCharsets.UTF_8);
         Path llvm = workspace.llvmDirectory().resolve("probe.ll");
         Files.writeString(llvm, """

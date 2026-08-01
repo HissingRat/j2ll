@@ -53,6 +53,7 @@ xyz.melodysky.analysis.hierarchy
 xyz.melodysky.analysis.callgraph
 xyz.melodysky.analysis.reflection
 xyz.melodysky.analysis.field
+xyz.melodysky.analysis.method
 xyz.melodysky.analysis.runtime
 xyz.melodysky.ir.model
 xyz.melodysky.ir.ssa
@@ -173,6 +174,7 @@ xyz.melodysky.toolchain.symbols
 - `NativeBuildApprovalGate`：让 CLI 注入 skipped-method confirmation；pipeline 本身不直接读取 `System.in`。
 - `ProgramIrProtectionCoordinator`：在 preliminary native plan 后调度 method inlining、IR call indirection 和 method splitting，并把 Java methods 与 compiler-internal outlined helpers 分开交付。
 - `FieldInternalizationPipeline` / `FieldInternalizationFinalPlanValidator`：连接 field-use analysis、IR slot rewrite 和 final `LLVM_NATIVE_PATH` 证据；不负责 FieldNode removal 或 C storage emission。
+- `MethodInternalizationPipeline` / `MethodInternalizationFinalizer` / `MethodInternalizationFinalPlanValidator`：在final implementation plan后形成method-use/observer决策，把批准项改成`internalNativeOnly`并验证LLVM caller/registration closure；不负责ASM removal或generated-C ABI细节。
 
 边界：
 
@@ -211,7 +213,7 @@ xyz.melodysky.toolchain.symbols
   non-sensitive kind + domain-separated hash；不得把 business string carrier
   或额外 owner/member mapping 写入 lowering report。
 - `FailureReportWriter`：失败运行 sidecar writer，记录 error diagnostics 的 stage/reason/message/affected artifact，并固定 `finalArtifactWritten=false`。
-- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、sensitive plaintext facts，以及每个 `nativeLowered` method 的 implementation/registration closure、每个 `skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；generated C只排除精确的JNI ABI结构访问`methods[n].signature`，同文件任意其他`signature`原文仍阻断；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
+- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、sensitive plaintext facts，以及registered native的implementation/registration closure、`internalNativeOnly`的hidden implementation/native-caller closure与零classfile residual、`skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；generated C只排除精确的JNI ABI结构访问`methods[n].signature`，同文件任意其他`signature`原文仍阻断；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
 - `PackagingReportWriter`：`packaging-report.json` 的稳定 JSON writer。
 - `FieldInternalizationReportWriter`：`field-internalization-report.json` writer，只写 hash-only field identity、final implementation path、hybrid storage/cache/lifecycle policy、field removal 和稳定 reason。
 - `ProtectionReportCoverageCollector`：把 protection producer 的显式 per-subject coverage 合并进 `protection-report.json`；未持久化 applicability 的旧 producer 只能降为 `UNKNOWN`，不得从 `SKIPPED` 推断。
@@ -435,10 +437,12 @@ Current classes:
 - `FieldAccessSite` / `FieldReferenceKind`：record read/write, direct/handle, method owner and code origin.
 - `FieldDynamicBoundaryDetector`：record reflection、Unsafe、VarHandle、MethodHandle、JNI/native loading、serialization、agent/instrumentation and dynamic-loading surfaces.
 - `NativeFieldInternalizationPlanner` / `NativeFieldInternalizationPlan` / `NativeFieldStorageKind`：produce immutable `INTERNALIZED` / `KEPT` decisions, exact descriptor storage kinds, deterministic per-owner reference indices, opaque slots and stable rejection reasons.
+- `analysis.method.NativeMethodUseAnalyzer` / `NativeMethodInternalizationPlanner` / `NativeMethodInternalizationPlan`：为private/protected static与same-owner exact instance method建立stable reverse-use/Handle/bootstrap/reflection evidence；对exact allowlisted public static应用declared-closed或current-JAR scope，对public instance消费完整input+classPath observer hierarchy/call facts，并输出immutable `INTERNALIZED` / `KEPT` decisions；不修改IR、registration或classfile。
 
 Boundaries:
 
-- The v1 planner accepts either an explicit `CLOSED_WORLD` assertion with a parse-complete supplied classpath, or a build-time, feature-scoped user approval for current-input-JAR-only analysis. The latter never changes `worldModel`, never parses configured classpath entries, and records that external agents/JNI/generated code are outside the accepted scope.
+- The v1 planner accepts either an explicit `CLOSED_WORLD` assertion with a parse-complete supplied classpath, or a build-time, feature-scoped user approval for current-input-JAR-only analysis. The latter never changes `worldModel`, never parses configured classpath entries, and records that JAR-external callers/subclasses/reflection/JNI/agents/generated code are outside the accepted scope.
+- public必须由required `publicMethodInternalizationAllowList`中的无wildcard exact selector显式授权。public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权；public instance只接受declared `CLOSED_WORLD`与parse-complete input+configured-classpath world。public instance不要求method/class为final，也不因可覆写slot本身产生`KEPT`，但所有调用点必须exact且caller仍须same-owner；实际non-exact dispatch会拒绝。已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer或已知external Java entry产生`KEPT`；无法穷举的reflection/JNI/agent动态观察面进入warning/report，作为exact allowlist与world授权接受的风险。
 - Current approval is narrower than a general field escape analysis: input-base `private static` primitive/reference/array fields, same-owner static access methods, and every observed accessor must finish as `nativeLowered` on an implementation path that supports the internalized storage ABI. The current direct storage implementation is LLVM-backed; any unselected or `skipped` accessor keeps the field in the JVM. Instance/final/volatile/ConstantValue/`<clinit>`/dynamic-observer shapes also remain JVM fields.
 - Any unresolved field reference or dynamic observation surface rejects candidates conservatively.
 - IR mutation belongs to `ir.pass.protection.NativeFieldIrRewriter`; final-plan validation belongs to `pipeline.FieldInternalizationFinalPlanValidator`; classfile removal and residual-reference audit belong to `packaging`.
@@ -637,6 +641,7 @@ SSA IR 级保护/混淆 pass。完整策略见 `docs/protection-obfuscation.md`�
   材料派生；`enc:v1`只保留compiler-internal兼容读取，不应成为新输出合同。
 - `MethodInliningPass`、`MethodSplittingPass` 和 `IrCallIndirectionPass` 已由 `pipeline.ProgramIrProtectionCoordinator` 在 per-method protection 后统一调度；program coordinator 负责 analysis/native-path facts 和 compiler-internal helper separation，pass 本身不回读 ASM 或 packaging state。
 - `fieldInternalization` 已进入 Config/schema 且默认关闭。完整 field-use index 位于 `analysis.field`，IR access rewrite 位于本包，final native-plan validator 位于 `pipeline`，native state source 位于 `toolchain`，FieldNode removal/residual audit 位于 `packaging`；不要把这些职责重新塞进一个 giant pass。
+- `methodInternalization`同样默认关闭；required exact `publicMethodInternalizationAllowList`默认空。use/observer analysis位于`analysis.method`，public declared/current-JAR scope policy与final-plan strategy/validation位于`pipeline`，nested-local-frame internal dispatch位于`toolchain`，MethodNode removal/residual audit位于`packaging`；各层共用同一immutable plan。
 - `MethodTableHidingPlan` 实际归属 `packaging`，因为它消费 final `NativeRegistrationPlan` 并驱动 generated registration C；它不应假装成单 method SSA rewrite。
 - 这些 pass 当前都是受限 v1 子集。Windows real-Zig host 与六目标 feature-specific structural evidence 已通过；更广的 host boundary、optimizer/linker retention 和 non-host runtime evidence 由 `docs/protection-implementation-checklist.md` 跟踪。
 
@@ -771,13 +776,14 @@ Build identity与独立的攻击者视角回归工具。这里不生成JNI/runti
 - wrapper final-binary evidence必须由Ghidra或其他结构化binary analyzer提供；C source regex只能作为source-level finding，不能升级为final-binary call graph。
 - fake-JNI capture说明攻击者动态调用/hook `JNI_OnLoad`仍能看到`RegisterNatives`映射；目标是删除稳定静态入口，不宣称运行时映射保密。
 - attacker-audit metrics当前是独立回归输入/报告合同，不修改compiler artifact，
-  也不重新推断protection pass applicability。本轮carrier reuse/size接口已用于
+  也不重新推断protection pass applicability。此前carrier reuse/size接口已用于
   两次v2默认构建，两个真实六目标fixture和两次Windows Ghidra动态registration
   probe均通过；`HostNativeLocalAbiBridgeCParityTest`另覆盖branched双route、
   零参数`void`与host optimized-object增长预算。更新topology的Windows Ghidra
   normalized-p-code mapping reuse为5/57；动态probe仍可捕获10 owners /
   57 bindings。该证据不替代业务字符串批量恢复率或non-host final-binary攻击
-  回归。
+  回归，也不覆盖当前semantic-surface强制profile、`ReleaseSmall`与shared cleanup
+  变更；后者必须另行采集dual-build和final-binary evidence。
 
 ## runtime
 
@@ -808,11 +814,13 @@ JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 stub 生
   允许重排真实原参数，不添加 cookie、marker 或隐式完整性参数，也不改变 JNI
   reference ownership、pending exception 或 JVM 语义。单参数 binding 必然保持
   canonical 顺序，不能把无实际差异伪报为 ABI 多样性。
-- `toolchain.NativeLocalAbiPlanner` / `HostNativeLocalAbiBridgeSource`：为每个
-  `LLVM_NATIVE_PATH` binding 从 direct canonical、单层参数重排 bridge、双层
-  参数重排 bridge 与 bounded branched参数重排 bridge 中派生 build-scoped call
-  topology。branched形态通过wrapper activation-local volatile predicate在一层与
-  两层route间选择，最多生成三个`static` bridge；不得生成持久
+- `toolchain.NativeLocalAbiProfile` / `NativeLocalAbiPlanner` /
+  `HostNativeLocalAbiBridgeSource`：按final native ABI选择bounded profile。
+  传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用
+  branched参数重排；pure-native scalar binding仍从direct canonical、单层、双层与
+  branched四种shape中派生build-scoped topology。branched通过wrapper
+  activation-local volatile predicate在一层与两层route间选择，最多生成三个
+  `static __attribute__((noinline, used))` bridge且不使用`optnone`；不得生成持久
   function-pointer data slot。bridge只转发/重排真实参数，不执行JNI、不解引用
   Java reference，也不观察exception state。该结构是有界静态多样性，不是安全边界。
 - `runtime.unsafe`：`UnsafePolicy` / `UnsafePlan`，声明 supported Unsafe/VarHandle subset、helper kind、volatile/CAS JMM facts 和 unsupported skipped reason。Unsafe offset values in supported JVM-hosted paths are deterministic metadata tokens resolved by JNI helpers, never raw Java object memory addresses.
@@ -882,11 +890,12 @@ JAR rewrite、loader、native registration。
 - packaging 使用唯一 Loader + `RegisterNatives`，不导出每个 Java method 的 JNI name symbol。Loader 只包含 native-loading/registration 和按需 field sidecar path；不得包含 hidden/generated class definition 或 blob decode API，也不输出旧 runtime support classes。
 - `embeddedLibraryDirectory` 同时是 native resource 和 Loader JVM package prefix，必须是规范 Java internal package path。输入 base/MR 同名 Loader 必须在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。
 - 同一 defining `ClassLoader` 中不同产物复用相同 `embeddedLibraryDirectory` 会得到同名 Loader，是明确已知边界；应用应选择唯一目录，独立 ClassLoader 的 Loader state 仍隔离。
-- packaging 只重写 final status 为 `nativeLowered` 的 method；对普通 class method 使用 `nativeOriginal`，对 `<init>`、`<clinit>` 和有 Code 的 interface method 使用合法 stub/helper strategy。
+- packaging 只重写 final status 为 `nativeLowered` 的 method；对普通Java入口使用 `nativeOriginal`，对 `<init>`、`<clinit>` 和有 Code 的 interface method 使用合法 stub/helper strategy；对final-plan批准的`internalNativeOnly`精确删除整个MethodNode且不注入额外registration。
 - constructor rewrite必须逐指令复用final initializer plan中的线性verifier prefix，在真实`this(...)`/`super(...)` invocation之后调用post-init native helper；`<clinit>` stub只保留loader/bootstrap与完整native body helper调用。无法复用同一plan时fail closed。
 - packaging 对 `skipped` Code-bearing method必须精确保留原 classfile method body/flags，并验证它没有 native body、wrapper、registration 或 embedded bytecode copy。abstract、already-native和无 Code declaration只保留 eligibility evidence，不进入 method outcome或 confirmation gate。
 - packaging 的 method-table hiding 只消费 final registration plan，生成 build-diverse owner-local physical order；generated C 必须精确匹配该 plan，只在注册窗口用 straight-line assignment 构造临时 `JNINativeMethod[]`，不得生成 persistent token/function table，并 fail closed。运行时仍通过 JVM `RegisterNatives` 完成真实绑定。
 - packaging 的 field transform 只消费 final validated field plan；删除前重查 access/descriptor/metadata facts，写 JAR 后再扫描残留 field declaration/instruction/Handle/bootstrap reference。
+- packaging 的 method transform 只消费 final validated method plan；删除必须原子，写JAR后阻断批准method的declaration、MethodInsn、LDC Handle、invokedynamic/ConstantDynamic bootstrap和EnclosingMethod residual。
 
 ## toolchain
 
@@ -957,7 +966,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - managed Zig user-flow evidence：`ManagedZigBootstrapEvent` records `FOUND_MANAGED_ZIG`、`WRONG_VERSION_REINSTALL`、`LOCAL_ARCHIVE_USED`、`DOWNLOAD_ATTEMPTED`、`ARCHIVE_CHECKSUM_VERIFIED` 和 `INSTALLED_MANAGED_ZIG`，并由 `PackagingReportWriter` 写入 `zigToolchain.bootstrapEvents`。Archive events include `archiveName`、`archiveSha256`、`checksumStatus`、`signatureStatus` and `source`。
 - Zig archive name/URL/checksum resolution：`ZigArchiveResolver`，固定 Zig `0.15.2`、`https://ziglang.org/download/0.15.2/` 和官方 archive SHA-256 metadata。
 - Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；`ZigArchiveVerifier` 必须在解压前校验 local/downloaded archive SHA-256，失败作为 native/toolchain error；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
-- Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected/required target。当前 preflight 无法构建的 required target 进入 `failedTargets`，reason 使用 `ZIG_TARGET_UNBUILDABLE`，并使 pipeline failed。
+- Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；generated C compile unit使用`ReleaseSmall`，per-class LLVM input与final link module保持`ReleaseSafe`。`ZigBuildProgressPlan`将最多64个observable compile unit按source kind同质分组，避免C与LLVM混用optimization mode。`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected/required target。当前 preflight 无法构建的 required target 进入 `failedTargets`，reason 使用 `ZIG_TARGET_UNBUILDABLE`，并使 pipeline failed。
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。
 - registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextStorageLayout` only reuses equal method-name/descriptor text inside one owner and its purpose domain, never across owners. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB decoded text; larger owners retain heap allocation. Both paths zero the text scratch and `JNINativeMethod[]`, and the heap path then frees them.
 - runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
@@ -969,6 +978,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
   明文去重且每个function只调用自身实际引用的decoder。未allowlist文本仍留在
   原activation-local fragment。
 - JNI local-reference lifetime：`NativeLocalReferenceSafety`识别需要精确规划的reachable cyclic CFG；`toolchain.localref`下的classifier、site-sensitive CFG facts、release scheduler、transfer safety与validator形成per-method immutable plan，覆盖normal/parallel/handler/explicit-throw edge。handler需求只回传到block live-in，不进入normal live-out。`NativeImplementationPlan`保存plan或精确unavailable reason，LLVM backend只消费已验证plan；registered native的ref-producing callee改走JVM/JNI nested activation，不能安全桥接的compiler-internal callee fail closed。
+- internal method dispatch：`HostJniInternalMethodDispatchSource`只为批准且由static/virtual dispatch helper到达的target生成descriptor-aware bridge。它调用hash-only local wrapper，不查询method ID；reference/owned/pending-exception shape必须通过nested JNI local frame提升结果或恢复异常。same-owner direct scalar target不生成未使用wrapper，降低体积。
 - native text：`toolchain.nativetext.NativeTextEncoder` 生成 build/purpose/use-scoped
   ciphertext、codec plan与`NativeTextStoragePermutation`。多字节ciphertext由
   `NativeTextStoragePermutationPlanner`派生offset/coprime-stride affine
@@ -979,6 +989,9 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
   sensitive literal按C function和明文分组，在真实use-site首次解码到一个聚合
   activation-local scratch slot；同一activation复用该slot，不跨function共享
   encoding/plaintext cache，并通过统一cleanup hook清零所有exit。
+  `NativeScratchZeroizerSource`可在translation unit内提供metadata-free
+  `noinline` zeroizer/cleanup callback；它只接收scratch地址/长度，不拥有
+  ciphertext/codec/JVM metadata，不能变成共享decoder或plaintext cache。
   `NativeTextSourceScanner`供generated-C gate与attacker audit共同识别reusable
   decoder fanout、固定shape和相邻seed/cipher，
   `GeneratedNativeAffineStorageAudit`另以`AFFINE_CIPHERTEXT_STORAGE` /

@@ -6,6 +6,7 @@
 
 - original input JAR entries
 - final method outcome / rewrite plan
+- final method-internalization plan
 - native registration plan
 - selected target dynamic libraries
 - manifest/resource/signature policy
@@ -49,6 +50,8 @@ xyz.melodysky.packaging
 - `NativeLoaderClassGenerator`
 - `RuntimeLoaderCollisionValidator`
 - `NativeRegistrationPlanner`
+- `InternalizedMethodClassTransform`
+- `InternalizedMethodArtifactVerifier`
 - `RegisterNativesTableBuilder`
 - `SkippedMethodCollector`
 - `SkippedMethodGate`
@@ -61,7 +64,7 @@ skipped method 的 terminal 展示和确认应由小型、独立的 CLI/pipeline
 
 selector 命中且有 Code 的 method 在 final plan 中只能是：
 
-- `nativeLowered`：拥有经过验证的完整 native implementation，可以改写并注册。
+- `nativeLowered`：拥有经过验证的完整 native implementation。常规形态改写并注册；`internalNativeOnly`形态删除Java declaration与registration，只保留由native caller可达的hidden implementation。
 - `skipped`：当前不能完整保持语义；保留输入 JAR 中原 Code，不改写为 native，不生成 body helper，不加入 `RegisterNatives`。
 
 不得存在“部分 native、其余从复制字节码执行”的第三种 method 状态，也不得把原 class/method Code 编码后放进动态库。native sources、object graph、最终动态库和 output JAR 都不包含为执行 skipped method 而生成的 class bytes、carrier、decoder 或 hidden-class definition entry。
@@ -105,9 +108,12 @@ TUI 在打印列表和读取输入前必须结束/暂停 active progress region�
 Packaging 只为 `nativeLowered` method 生成 rewrite strategy：
 
 - `nativeOriginal`：ordinary class method with Code。移除 Code、设置 `ACC_NATIVE`，以原 name/descriptor 注册。
+- `internalNativeOnly`：仅由final method-internalization plan产生。删除完整Java `method_info`，不注册；保留hidden LLVM body与caller实际需要的internal dispatch wrapper。
 - `constructorStub`：保留从入口到唯一、真实初始化`uninitializedThis`的 `this(...)` / `super(...)` invocation为止的精确Java prefix，包括原descriptor与实参计算；随后调用same-owner private static native body helper承载post-init IR。只接受可唯一识别initializing call的线性prefix，并要求整个constructor没有exception table；不满足时完整constructor为`skipped`。
 - `classInitializerStub`：保持或生成 `<clinit>` loader/bootstrap stub，再调用same-owner private static native body helper承载完整、经final plan验证的initializer IR。
 - `interfaceMethodStub`：保持 interface method 合法字节码，并调用拥有 native method 的 generated helper。
+
+`internalNativeOnly`只消费analysis/final planner已经批准的immutable plan，不在packaging阶段重新推断world或observer边界。该plan可包含declared/current-JAR scope下的exact allowlisted public static，以及仅declared `CLOSED_WORLD`下、所有调用点same-owner exact的public instance；后者不要求method/class为final。resolved exact observer在进入packaging前必须已拒绝，unsupported/unbounded reflection/JNI/agent风险只保留warning/report evidence，不能被packaging擅自升级或静默丢弃。
 
 `<init>`、`<clinit>` 和 interface method 不能强制使用 `nativeOriginal`。`skipped` method 不生成任何 strategy；no-Code declaration 只保留 eligibility evidence。
 
@@ -142,6 +148,7 @@ Registration rules：
 - ordinary class methods register against their owner class。
 - constructor/class-initializer body helpers register as same-owner private static native helpers。
 - interface helpers register against generated helper classes。
+- `internalNativeOnly` methods不进入registration plan；其owner/name/descriptor不会因该target单独进入`JNINativeMethod[]`。
 - tables 按 registration owner 分组；同一 build identity 保持 deterministic，正式 randomized build 对 ordinary owner-local method order 和 owner order 做 build-scoped 重排，hidden 模式遵从其独立 protection physical order。
 - `skipped` 和 no-Code declarations 都没有 binding。
 - owner lookup 不得在 helper 注册前触发 selected owner `<clinit>`；`JNI_OnLoad` 直接以 slash internal name 调用 JNI `FindClass`，依赖发起 `System.load` 的 defining-loader context，不以 TCCL 作为 registration resolver。
@@ -160,6 +167,17 @@ Packaging 只删除 final field plan 批准且结构仍匹配的 field。每一�
 任何 accessor 为 `skipped`、缺少 implementation、仍走普通 JVM field ABI 或未通过 final validation 时，该 field 都保留在 classfile。
 
 approved primitive slot 使用 per-defining-`jclass` weak-keyed raw-bit storage；approved reference/array slot 始终留在 JVM heap，通过 Loader 的 `ClassValue<Object[]>` 和 JNI ObjectArray API 访问。不得通过 skipped method 或复制字节码访问 sidecar。
+
+## Method Internalization
+
+Packaging只消费final immutable method plan，不重新推断call graph。对每个approved method：
+
+- 结构必须仍精确匹配owner/name/descriptor/access与ordinary Code-bearing method kind。
+- ordinary rewrite先完成，随后`InternalizedMethodClassTransform`删除精确的`MethodNode`；缺失、重复或形态漂移以`METHOD_INTERNALIZATION_REWRITE_FAILED`阻止final JAR。
+- final registration plan必须已经过滤该binding，native implementation与caller route仍必须存在。
+- packaged JAR通过`InternalizedMethodArtifactVerifier`递归扫描method declaration、`MethodInsn`、LDC method Handle、invokedynamic/ConstantDynamic bootstrap和`EnclosingMethod` metadata；任一残留是blocking artifact-audit failure。
+
+V1支持private/protected static（包括cross-owner protected static caller）与same-owner exact private/protected instance method。后者不能通过receiver runtime class伪造dispatch；cross-owner instance/interface/non-exact virtual均保留普通Java native declaration。
 
 ## Managed Zig Build
 
@@ -192,7 +210,7 @@ signed input handling 服从 `docs/io-config-output-contract.md` 中的 `signatu
 
 Packaging validator 至少检查：
 
-- 每个 `nativeLowered` method 都有且只有一个 validated implementation、rewrite 和 registration binding。
+- 每个 `nativeLowered` method 都有且只有一个 validated implementation和rewrite；ordinary/stub形态有唯一registration binding，`internalNativeOnly`则必须无Java declaration、无binding且仍有native caller closure。
 - 每个constructor stub保留的prefix与final initializer plan逐指令一致，helper call只出现在初始化调用之后；每个`<clinit>` stub只保留loader/bootstrap与native helper调用，不复制原initializer body。
 - 每个 `skipped` method 保留原 Code，且没有 rewrite/helper/binding。
 - no-Code eligibility evidence 不进入 executable method counts 或 confirmation。
@@ -202,6 +220,7 @@ Packaging validator 至少检查：
 - input base/MR Loader collision 在 Zig 前拒绝。
 - native source/artifact 中没有为执行 skipped method 而保存的 class bytes 或 decode/define machinery。
 - internalized field 的全部 accessor 都是 final `nativeLowered` 且 storage ABI 合格。
+- internalized method 在JAR中没有declaration/invocation/Handle/bootstrap/EnclosingMethod残留，在native closure中仍有hidden implementation与所需wrapper。
 - generated wrapper、LLVM function、bootstrap identifier 是 deterministic hash-only token，dynamic exports 精确匹配 allowlist。
 - manifest/resource/signature policy、target artifact SHA-256、report manifest 和 artifact audit 一致。
 - output JAR entry ordering deterministic。
@@ -217,6 +236,7 @@ Packaging validator 至少检查：
 - validate/dry-run 不读 stdin，也不形成 final skipped set；dry-run 写入 deferred/conditional confirmation 字段。
 - Loader identity/version/exactly-one-entry、minimal method set、optional ClassValue sidecar。
 - fieldInternalization final accessor gate。
+- methodInternalization protected/public static在declared/current-JAR scope下的cross-owner route、same-owner protected/public-instance exact dispatch、非final public instance、resolved exact observer拒绝、unbounded observer风险report、class transform与residual audit。
 - manifest/resource/service/MR/module-info preservation。
 - signed input `fail`、`strip`、`resign`。
 - six-target artifact/export/privacy audit 与 host child-JVM differential。当前新增initializer路径的真实运行证据仅覆盖Windows real-Zig host；其他target不以cross-link证据代替JVM runtime parity。

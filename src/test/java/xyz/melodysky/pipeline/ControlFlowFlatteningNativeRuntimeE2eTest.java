@@ -252,6 +252,8 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
                       "methodSplitting": false,
                       "callIndirection": false,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": false
                     },

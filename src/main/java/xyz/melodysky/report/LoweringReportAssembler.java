@@ -50,6 +50,12 @@ public final class LoweringReportAssembler {
                     methodArtifact.methodId(),
                     result.status(),
                     rewrite == null ? null : rewrite.strategy(),
+                    retentionMode(result, rewrite, registration),
+                    rewrite == null
+                            || rewrite.strategy()
+                                    != MethodRewriteStrategy
+                                            .INTERNAL_NATIVE_ONLY,
+                    registration.isPresent(),
                     source.accessFlags().names(),
                     compilerFlags(source),
                     registration.map(NativeRegistrationEntry::nativeSymbol).orElse(null),
@@ -62,6 +68,22 @@ public final class LoweringReportAssembler {
                     result.reason()));
         }
         return List.copyOf(methods);
+    }
+
+    private NativeMethodRetentionMode retentionMode(
+            SsaMethodResult result,
+            MethodRewriteDecision rewrite,
+            Optional<NativeRegistrationEntry> registration) {
+        if (rewrite != null
+                && rewrite.strategy()
+                        == MethodRewriteStrategy
+                                .INTERNAL_NATIVE_ONLY) {
+            return NativeMethodRetentionMode.INTERNAL_NATIVE_ONLY;
+        }
+        if (registration.isPresent()) {
+            return NativeMethodRetentionMode.REGISTERED_NATIVE;
+        }
+        return NativeMethodRetentionMode.JAVA_BYTECODE;
     }
 
     private Map<String, MethodRewriteDecision> indexRewrites(List<MethodRewriteDecision> rewriteDecisions) {

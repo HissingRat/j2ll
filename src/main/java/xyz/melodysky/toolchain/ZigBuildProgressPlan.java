@@ -2,6 +2,7 @@ package xyz.melodysky.toolchain;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Objects;
 
@@ -63,16 +64,91 @@ final class ZigBuildProgressPlan {
                     .map(input -> new CompileUnit(input.id(), List.of(input)))
                     .toList();
         }
-        int unitCount = MAX_COMPILE_UNITS;
-        ArrayList<CompileUnit> units = new ArrayList<>(unitCount);
-        for (int unitIndex = 0; unitIndex < unitCount; unitIndex++) {
-            int start = unitIndex * inputs.size() / unitCount;
-            int end = (unitIndex + 1) * inputs.size() / unitCount;
-            units.add(new CompileUnit(
-                    "batch-" + unitIndex,
-                    inputs.subList(start, end)));
+
+        EnumMap<CompileInputKind, List<CompileInput>> inputsByKind =
+                new EnumMap<>(CompileInputKind.class);
+        for (CompileInputKind kind : CompileInputKind.values()) {
+            List<CompileInput> matching = inputs.stream()
+                    .filter(input -> input.kind() == kind)
+                    .toList();
+            if (!matching.isEmpty()) {
+                inputsByKind.put(kind, matching);
+            }
+        }
+        EnumMap<CompileInputKind, Integer> unitsByKind =
+                allocateUnitCounts(inputsByKind);
+        ArrayList<CompileUnit> units =
+                new ArrayList<>(MAX_COMPILE_UNITS);
+        for (CompileInputKind kind : CompileInputKind.values()) {
+            List<CompileInput> matching = inputsByKind.get(kind);
+            if (matching == null) {
+                continue;
+            }
+            int unitCount = unitsByKind.get(kind);
+            for (int unitIndex = 0;
+                    unitIndex < unitCount;
+                    unitIndex++) {
+                int start =
+                        unitIndex * matching.size() / unitCount;
+                int end = (unitIndex + 1)
+                        * matching.size()
+                        / unitCount;
+                units.add(new CompileUnit(
+                        kind.idPrefix()
+                                + "-batch-"
+                                + unitIndex,
+                        matching.subList(start, end)));
+            }
         }
         return List.copyOf(units);
+    }
+
+    private static EnumMap<CompileInputKind, Integer>
+            allocateUnitCounts(
+                    EnumMap<CompileInputKind, List<CompileInput>>
+                            inputsByKind) {
+        EnumMap<CompileInputKind, Integer> result =
+                new EnumMap<>(CompileInputKind.class);
+        for (CompileInputKind kind : inputsByKind.keySet()) {
+            result.put(kind, 1);
+        }
+        int remaining = MAX_COMPILE_UNITS - result.size();
+        while (remaining > 0) {
+            CompileInputKind selected = null;
+            for (CompileInputKind candidate
+                    : CompileInputKind.values()) {
+                List<CompileInput> matching =
+                        inputsByKind.get(candidate);
+                if (matching == null
+                        || result.get(candidate)
+                                >= matching.size()) {
+                    continue;
+                }
+                if (selected == null
+                        || hasHigherCurrentLoad(
+                                matching.size(),
+                                result.get(candidate),
+                                inputsByKind.get(selected).size(),
+                                result.get(selected))) {
+                    selected = candidate;
+                }
+            }
+            if (selected == null) {
+                break;
+            }
+            result.put(selected, result.get(selected) + 1);
+            remaining--;
+        }
+        return result;
+    }
+
+    private static boolean hasHigherCurrentLoad(
+            int leftInputs,
+            int leftUnits,
+            int rightInputs,
+            int rightUnits) {
+        return (long) leftInputs * rightUnits
+                > (long) rightInputs * leftUnits;
     }
 
     record TargetPlan(NativeBuildUnit buildUnit, List<CompileUnit> compileUnits) {
@@ -97,6 +173,16 @@ final class ZigBuildProgressPlan {
             if (inputs.isEmpty()) {
                 throw new IllegalArgumentException("compile progress unit must contain an input");
             }
+        }
+
+        CompileInputKind kind() {
+            CompileInputKind kind = inputs.get(0).kind();
+            if (inputs.stream()
+                    .anyMatch(input -> input.kind() != kind)) {
+                throw new IllegalStateException(
+                        "compile progress units must be homogeneous");
+            }
+            return kind;
         }
     }
 

@@ -1039,6 +1039,8 @@ class J2llCliTest implements Opcodes {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": true
                     },

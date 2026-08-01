@@ -67,6 +67,8 @@ xyz.melodysky.ir.pass.protection
 - `IrCallIndirectionPass`：当前只为已证明的 module-local same-owner static/private-special call 附加 typed semantic plan，再由 backend lower 到 hidden pointer table；group key 同时包含 Java/SSA signature 与最终 native function 的隐藏 `JNIEnv*` / owner-`jclass` ABI proof，禁止把表面 IR signature 相同但真实 LLVM function-pointer type 不同的目标混入一组。virtual/interface 和 cross-owner direct call 在 backend 支持前 fail closed。
 - `NativeFieldIrRewriter`：在 declared `CLOSED_WORLD`，或 build 时由用户明确批准的 current-JAR-only field plan 后，把 same-owner static `boolean/byte/short/char/int/long/float/double` 与 reference/array field access 改成带 exact storage-kind 的 opaque slot；primitive 进入 native raw-bit storage，reference/array 进入 JVM-managed ClassValue sidecar。current-JAR-only 不改变 configured world、不读取 classpath，并在报告中保留风险边界。该 Config field 默认关闭。
 
+`methodInternalization`不是SSA rewrite pass；它消费final native implementation plan与`analysis.method`的immutable use plan。exact allowlisted public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权，public instance只接受declared `CLOSED_WORLD`、same-owner caller closure和逐调用点exact dispatch；不要求method/class为final，也不因可覆写slot本身拒绝。已解析exact observer会保留Java入口，unsupported/unbounded reflection/JNI/agent surface只作为user-accepted risk进入warning/report。批准项的registration过滤、native route与MethodNode删除分别由final planner/toolchain/packaging负责，IR pass不得自行推断或删除Java入口。
+
 `methodTableHiding` 不是 SSA method pass；它消费 final native registration plan，在 packaging/toolchain 层生成 build-diverse owner-local registration order，并只在注册窗口构造临时 `JNINativeMethod[]`。report token 不进入 generated C/native，也不生成 split runtime tables。当前 schema v1 的已知 IR/LLVM pass 字段均已实现；单 method/module 不适用仍只跳过对应 pass并写 protection report，不改变 lowering status。
 
 当前 v1 已实现的 LLVM protection 子集：
@@ -77,7 +79,7 @@ xyz.melodysky.ir.pass.protection
 - `LLVM_BLOCK_LAYOUT_PERTURBATION`：固定 entry，只改变 non-entry block textual/emission order。
 - `LLVM_GLOBAL_LAYOUT`：只在现有 candidate slots 间重排完整 module-local globals，不改 definition/reference/alignment/section，也不处理 generated-C tables。
 
-所有 LLVM pass 在 text emission 前操作 `LlvmModule` 并做 input/output validation。8 项的 Windows real-Zig host 与六目标 feature-specific structural evidence 已通过；optimizer-sensitive machine-code retention/non-host runtime 状态见 [`../protection-implementation-checklist.md`](../protection-implementation-checklist.md)。
+所有 LLVM pass 在 text emission 前操作 `LlvmModule` 并做 input/output validation。各项host/六目标/optimizer-sensitive machine-code retention/non-host runtime状态见 [`../protection-implementation-checklist.md`](../protection-implementation-checklist.md)；final-plan method internalization不伪装成LLVM module pass。
 
 ## 顺序建议
 

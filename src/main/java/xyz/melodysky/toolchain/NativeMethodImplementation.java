@@ -131,6 +131,30 @@ public record NativeMethodImplementation(
         return new LlvmFunctionAbi(passesJniEnv, passesOwnerClass);
     }
 
+    public NativeMethodImplementation withDecision(
+            MethodRewriteDecision replacement) {
+        return new NativeMethodImplementation(
+                entry,
+                replacement,
+                path,
+                llvmFunctionSymbol,
+                reasonCode,
+                passesJniEnv,
+                passesOwnerClass,
+                fieldKeys,
+                directCallTargets,
+                allocationKeys,
+                typeCheckKeys,
+                classObjectKeys,
+                runtimeMetadataKeys,
+                constructorCallKeys,
+                staticCallKeys,
+                dispatchKeys,
+                stringHelperSymbols,
+                templateIrMethod,
+                initializerPlan);
+    }
+
     @Override
     public int compareTo(NativeMethodImplementation other) {
         return entry.compareTo(other.entry);

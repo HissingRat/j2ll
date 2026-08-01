@@ -886,6 +886,8 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                       "methodSplitting": false,
                       "callIndirection": false,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": false,
                       "blockNameObfuscation": false
                     },

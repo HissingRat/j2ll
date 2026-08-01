@@ -272,7 +272,11 @@ public final class GeneratedNativeHardeningAudit {
         }
         NativeTextSourceMetrics nativeTextMetrics =
                 new NativeTextSourceScanner().scan(structural);
-        if (structural.contains("__attribute__((cleanup(j2ll_nt_cleanup_")
+        if (structural.contains(
+                        "__attribute__((cleanup("
+                                + NativeScratchZeroizerSource
+                                        .CLEANUP_FUNCTION_NAME
+                                + ")")
                 && (containsIdentifierPrefix(structural, "j2ll_nt_scratch_")
                         || containsIdentifierPrefix(
                                 structural,

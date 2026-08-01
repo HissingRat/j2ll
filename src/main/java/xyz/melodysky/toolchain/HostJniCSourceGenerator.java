@@ -205,7 +205,23 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         builder,
                         fragmentTextObfuscator,
                         buildKey,
-                        lowSensitivityLeaves);
+                lowSensitivityLeaves);
+        List<Binding> wrapperBindings =
+                wrapperBindings(bindings);
+        for (Binding binding : wrapperBindings) {
+            if (binding.decision().strategy()
+                    == MethodRewriteStrategy.INTERNAL_NATIVE_ONLY) {
+                appendInternalWrapperForwardDeclaration(
+                        builder,
+                        binding);
+            }
+        }
+        if (wrapperBindings.stream().anyMatch(binding ->
+                binding.decision().strategy()
+                        == MethodRewriteStrategy
+                                .INTERNAL_NATIVE_ONLY)) {
+            builder.append('\n');
+        }
         fragments.append(
                 "registration-runtime",
                 HostJniRegistrationRuntimeSource.helperSource());
@@ -252,7 +268,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
         if (hasLlvmBindings) {
             builder.append('\n');
         }
-        for (Binding binding : physicalBindingOrder(bindings, buildKey)) {
+        for (Binding binding : physicalBindingOrder(
+                wrapperBindings,
+                buildKey)) {
             fragments.append(
                     "binding-wrapper:"
                             + binding.decision().method().methodKey(),
@@ -285,6 +303,24 @@ public final class HostJniCSourceGenerator implements Opcodes {
                                         + binding.decision().method().methodKey(),
                                 "")
                         .symbol()))
+                .toList();
+    }
+
+    private List<Binding> wrapperBindings(
+            List<Binding> bindings) {
+        java.util.Set<String> bridgedTargets = bindings.stream()
+                .flatMap(binding -> java.util.stream.Stream.concat(
+                        binding.staticCallKeys().stream(),
+                        binding.dispatchKeys().stream()))
+                .collect(java.util.stream.Collectors
+                        .toUnmodifiableSet());
+        return bindings.stream()
+                .filter(binding -> binding.decision().strategy()
+                                != MethodRewriteStrategy
+                                        .INTERNAL_NATIVE_ONLY
+                        || bridgedTargets.contains(binding.decision()
+                                .method()
+                                .methodKey()))
                 .toList();
     }
 
@@ -356,6 +392,15 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .append(");\n");
     }
 
+    private void appendInternalWrapperForwardDeclaration(
+            StringBuilder builder,
+            Binding binding) {
+        builder.append("static ")
+                .append(binding.descriptor().cPrototype(
+                        binding.entry().nativeSymbol()))
+                .append(";\n");
+    }
+
     private void appendFunction(
             StringBuilder builder,
             Binding binding,
@@ -370,7 +415,10 @@ public final class HostJniCSourceGenerator implements Opcodes {
                             binding.decision().method().methodKey(),
                             internalReturnType(binding.descriptor()),
                             binding.llvmFunctionSymbol().orElseThrow(),
-                            internalAbiParameters(binding));
+                            internalAbiParameters(binding),
+                            NativeLocalAbiProfile.forAbi(
+                                    binding.passesJniEnv(),
+                                    binding.passesOwnerClass()));
             builder.append(localAbi.source());
             llvmInvocation = Optional.of(localAbi.wrapperInvocation());
             llvmWrapperPrelude = Optional.of(localAbi.wrapperPrelude());

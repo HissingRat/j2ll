@@ -3,6 +3,9 @@ package xyz.melodysky.toolchain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeMap;
+import java.util.Map;
+import java.util.stream.Collectors;
+import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.runtime.RuntimeTokenDomain;
 import xyz.melodysky.runtime.RuntimeTokenMapper;
@@ -19,6 +22,17 @@ final class HostJniDispatchRuntimeSource {
             List<HostJniCSourceGenerator.Binding> bindings,
             RuntimeTokenMapper runtimeTokens) {
         TreeMap<String, DispatchBinding> entries = new TreeMap<>();
+        Map<String, HostJniCSourceGenerator.Binding> internalTargets =
+                bindings.stream()
+                        .filter(binding -> binding.decision() != null)
+                        .filter(binding -> binding.decision().strategy()
+                                == MethodRewriteStrategy
+                                        .INTERNAL_NATIVE_ONLY)
+                        .collect(Collectors.toUnmodifiableMap(
+                                binding -> binding.decision()
+                                        .method()
+                                        .methodKey(),
+                                binding -> binding));
         bindings.stream()
                 .filter(binding ->
                         binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
@@ -52,7 +66,11 @@ final class HostJniDispatchRuntimeSource {
                 RuntimeTokenDomain.DISPATCH_METHOD,
                 List.copyOf(entries.values()),
                 DispatchBinding::identity)) {
-            appendBinding(builder, runtimeTokens, entry);
+            appendBinding(
+                    builder,
+                    runtimeTokens,
+                    entry,
+                    internalTargets.get(entry.methodKey()));
         }
     }
 
@@ -94,7 +112,8 @@ final class HostJniDispatchRuntimeSource {
     private static void appendBinding(
             StringBuilder builder,
             RuntimeTokenMapper runtimeTokens,
-            DispatchBinding entry) {
+            DispatchBinding entry,
+            HostJniCSourceGenerator.Binding internalTarget) {
         MethodParts parts = MethodParts.parse(entry.methodKey());
         String suffix = returnSuffix(parts.descriptor());
         String operation = switch (entry.kind()) {
@@ -139,6 +158,16 @@ final class HostJniDispatchRuntimeSource {
                     .append("        j2ll_throw_new(env, \"java/lang/NullPointerException\", \"call receiver is null\");\n")
                     .append(defaultReturn(suffix, "        "))
                     .append("    }\n");
+        }
+        if (internalTarget != null
+                && entry.kind() != Kind.CONSTRUCTOR) {
+            new HostJniInternalMethodDispatchSource().appendBody(
+                    builder,
+                    internalTarget,
+                    suffix,
+                    entry.kind() == Kind.STATIC);
+            builder.append("}\n\n");
+            return;
         }
         if (entry.kind() == Kind.VIRTUAL || entry.kind() == Kind.INTERFACE) {
             builder.append(

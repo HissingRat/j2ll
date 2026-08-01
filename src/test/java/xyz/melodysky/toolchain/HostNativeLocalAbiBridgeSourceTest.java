@@ -39,6 +39,9 @@ final class HostNativeLocalAbiBridgeSourceTest {
                     planner.plan(entry.getValue(), METHOD, 7);
 
             assertEquals(first, repeated);
+            assertEquals(
+                    NativeLocalAbiProfile.COMPACT_DIVERSE,
+                    first.profile());
             assertEquals(entry.getKey(), first.shape());
             assertEquals(
                     first.shape().bridgeCount(),
@@ -71,6 +74,41 @@ final class HostNativeLocalAbiBridgeSourceTest {
                 7);
         assertNotEquals(direct, single);
         assertNotEquals(single, dual);
+    }
+
+    @Test
+    void jvmSemanticSurfaceAlwaysUsesBranchedTopologyAndRecordsProfile() {
+        NativeLocalAbiPlanner planner = new NativeLocalAbiPlanner();
+        assertEquals(
+                NativeLocalAbiProfile.COMPACT_DIVERSE,
+                NativeLocalAbiProfile.forAbi(false, false));
+        assertEquals(
+                NativeLocalAbiProfile.JVM_SEMANTIC_SURFACE,
+                NativeLocalAbiProfile.forAbi(true, false));
+        assertEquals(
+                NativeLocalAbiProfile.JVM_SEMANTIC_SURFACE,
+                NativeLocalAbiProfile.forAbi(false, true));
+        assertEquals(
+                NativeLocalAbiProfile.JVM_SEMANTIC_SURFACE,
+                NativeLocalAbiProfile.forAbi(true, true));
+
+        for (int index = 0; index < 1024; index++) {
+            NativeLocalAbiPlan plan = planner.plan(
+                    NativeTextBuildKey.fromUtf8(
+                            "semantic-surface-" + index),
+                    METHOD,
+                    PARAMETERS.size(),
+                    NativeLocalAbiProfile.JVM_SEMANTIC_SURFACE);
+
+            assertEquals(
+                    NativeLocalAbiProfile.JVM_SEMANTIC_SURFACE,
+                    plan.profile());
+            assertEquals(
+                    NativeLocalAbiPlan.Shape
+                            .BRANCHED_PERMUTING_BRIDGE,
+                    plan.shape());
+            assertEquals(3, plan.bridgeSymbols().size());
+        }
     }
 
     @Test
@@ -137,6 +175,8 @@ final class HostNativeLocalAbiBridgeSourceTest {
                         + "(env, owner, arg0, arg1);"));
         assertTrue(single.wrapperInvocation().startsWith(
                 single.plan().bridgeSymbols().get(0) + "("));
+        assertFalse(single.source().contains("noinline"));
+        assertFalse(single.source().contains("used"));
 
         HostNativeLocalAbiBridgeSource.Emission dual = source.emit(
                 keys.get(
@@ -157,6 +197,8 @@ final class HostNativeLocalAbiBridgeSourceTest {
                         + "("));
         assertTrue(dual.wrapperInvocation().startsWith(
                 dual.plan().bridgeSymbols().get(0) + "("));
+        assertFalse(dual.source().contains("noinline"));
+        assertFalse(dual.source().contains("used"));
 
         HostNativeLocalAbiBridgeSource.Emission branched = source.emit(
                 keys.get(
@@ -168,7 +210,8 @@ final class HostNativeLocalAbiBridgeSourceTest {
                 PARAMETERS);
         assertEquals(3, branched.plan().bridgeSymbols().size());
         assertTrue(branched.source().contains(
-                "__attribute__((noinline, optnone, used))"));
+                "__attribute__((noinline, used))"));
+        assertFalse(branched.source().contains("optnone"));
         assertTrue(branched.wrapperPrelude().contains(
                 "volatile uintptr_t"));
         assertTrue(branched.wrapperPrelude().contains(

@@ -342,6 +342,15 @@ public final class PackagingReportWriter {
                 method.addProperty("descriptor", decision.method().descriptor());
                 method.addProperty("rewriteStrategy", decision.strategy().wireName());
                 method.addProperty("registrationOwner", decision.registrationOwner());
+                boolean internalOnly = decision.strategy()
+                        == MethodRewriteStrategy
+                                .INTERNAL_NATIVE_ONLY;
+                method.addProperty(
+                        "javaMethodPresent",
+                        !internalOnly);
+                method.addProperty(
+                        "registrationPresent",
+                        !internalOnly);
                 methods.add(method);
             }
             classJson.add("methods", methods);

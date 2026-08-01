@@ -111,9 +111,15 @@ public final class NativeLlvmCompiler {
             List<IrMethod> registeredMethods = methods.stream()
                     .filter(method -> inputs.registeredMethodKeys().contains(method.methodKey()))
                     .toList();
+            List<IrMethod> userMethods = methods.stream()
+                    .filter(method -> inputs
+                            .implementationMethodKeys()
+                            .contains(method.methodKey()))
+                    .toList();
             compiled.add(new NativeLlvmModuleCompilation(
                     owner,
                     registeredMethods,
+                    userMethods,
                     methods,
                     blockLayout,
                     opaquePredicates,
@@ -136,6 +142,7 @@ public final class NativeLlvmCompiler {
         StringBuilder canonical = new StringBuilder(protectionConfig.toString()).append('\n');
         implementationPlan.llvmImplementations().forEach(implementation -> canonical
                 .append(implementation.methodKey()).append('|')
+                .append(implementation.decision().strategy()).append('|')
                 .append(implementation.path()).append('|')
                 .append(implementation.llvmFunctionSymbol()).append('|')
                 .append(implementation.passesJniEnv()).append('|')
@@ -184,9 +191,20 @@ public final class NativeLlvmCompiler {
                 new LinkedHashMap<>();
         LinkedHashMap<String, NativeLocalReferencePlan>
                 localReferencePlansByMethod = new LinkedHashMap<>();
-        LinkedHashSet<String> registeredMethodKeys = implementationPlan.llvmImplementations().stream()
+        LinkedHashSet<String> registeredMethodKeys = implementationPlan
+                .registeredImplementations()
+                .stream()
+                .filter(implementation ->
+                        implementation.path()
+                                == NativeImplementationPath
+                                        .LLVM_NATIVE_PATH)
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Set<String> implementationMethodKeys =
+                implementationPlan.llvmImplementations().stream()
+                        .map(NativeMethodImplementation::methodKey)
+                        .collect(java.util.stream.Collectors
+                                .toUnmodifiableSet());
         LinkedHashMap<String, ArrayList<IrMethod>> mutableMethodsByOwner =
                 new LinkedHashMap<>();
 
@@ -224,7 +242,7 @@ public final class NativeLlvmCompiler {
                     .map(plan -> plan.nativeBody())
                     .orElseGet(() -> irMethods.get(implementation.methodKey()));
             for (String targetKey : implementation.directCallTargets()) {
-                if (registeredMethodKeys.contains(targetKey)) {
+                if (implementationMethodKeys.contains(targetKey)) {
                     continue;
                 }
                 IrMethod helper = irMethods.get(targetKey);
@@ -264,7 +282,8 @@ public final class NativeLlvmCompiler {
                 java.util.Collections.unmodifiableMap(functionAbisByMethod),
                 java.util.Collections.unmodifiableMap(
                         localReferencePlansByMethod),
-                java.util.Collections.unmodifiableSet(registeredMethodKeys));
+                java.util.Collections.unmodifiableSet(registeredMethodKeys),
+                implementationMethodKeys);
     }
 
     private void validateCompilerInternalCalls(IrMethod helper) throws IOException {
@@ -300,6 +319,7 @@ public final class NativeLlvmCompiler {
             Map<String, LlvmFunctionAbi> functionAbisByMethod,
             Map<String, NativeLocalReferencePlan>
                     localReferencePlansByMethod,
-            Set<String> registeredMethodKeys) {
+            Set<String> registeredMethodKeys,
+            Set<String> implementationMethodKeys) {
     }
 }

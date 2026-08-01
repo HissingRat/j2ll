@@ -9,6 +9,7 @@ import xyz.melodysky.ir.model.BusinessStringConstantRef;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.toolchain.nativetext.NativeScratchZeroizerSource;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
 import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
@@ -19,8 +20,9 @@ import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
  * Emits one small native helper per distinct business-string value.
  *
  * <p>There is deliberately no token dispatcher, pointer directory, shared
- * business decoder or shared business cleanup routine. Each helper owns its
- * ciphertext, decode material and plaintext lifetime.</p>
+ * business decoder or shared plaintext storage. Each helper owns its
+ * ciphertext, decode material and plaintext lifetime. Cleanup uses only the
+ * metadata-free native zeroizer shared by the translation unit.</p>
  */
 final class HostJniStringConstantRuntimeSource {
     private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
@@ -80,15 +82,13 @@ final class HostJniStringConstantRuntimeSource {
                 .append("    jstring result = (*env)->NewStringUTF(env, ")
                 .append(scratch)
                 .append(");\n")
-                .append("    volatile unsigned char* clear_cursor =\n")
-                .append("            (volatile unsigned char*)")
+                .append("    ")
+                .append(NativeScratchZeroizerSource.FUNCTION_NAME)
+                .append("(")
                 .append(scratch)
-                .append(";\n")
-                .append("    for (size_t index = 0; index < sizeof(")
+                .append(", sizeof(")
                 .append(scratch)
-                .append("); index++) {\n")
-                .append("        clear_cursor[index] = 0u;\n")
-                .append("    }\n")
+                .append("));\n")
                 .append("    return result;\n")
                 .append("}\n\n");
     }

@@ -399,6 +399,8 @@ class ProgramProtectionNativeRuntimeE2eTest {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": %s,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": false
                     },

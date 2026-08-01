@@ -32,7 +32,13 @@ public final class NativeRegistrationPlanner {
             List<MethodRewriteDecision> decisions,
             Function<MethodRewriteDecision, String> symbolFor) {
         return new NativeRegistrationPlan(decisions.stream()
-                .filter(decision -> decision.strategy() != MethodRewriteStrategy.NOT_APPLICABLE)
+                .filter(decision ->
+                        decision.strategy()
+                                        != MethodRewriteStrategy
+                                                .NOT_APPLICABLE
+                                && decision.strategy()
+                                        != MethodRewriteStrategy
+                                                .INTERNAL_NATIVE_ONLY)
                 .map(decision -> entryFor(decision, symbolFor.apply(decision)))
                 .toList());
     }

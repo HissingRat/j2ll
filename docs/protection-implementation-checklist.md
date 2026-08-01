@@ -1,6 +1,6 @@
 # Protection Implementation And Evidence Checklist
 
-本文档跟踪 8 个后补 protection work item 的实现与验收证据。它不再是“未实现字段清单”：当前代码已经把这 8 项全部接入对应的 program/IR/LLVM/native pipeline，`ProtectionAvailabilityReporter.currentImplementation()` 不再为它们产生 `PROTECTION_PASS_NOT_IMPLEMENTED`。
+本文档跟踪 9 个后补 protection work item 的实现与验收证据。它不再是“未实现字段清单”：当前代码已经把这 9 项全部接入对应的 program/IR/LLVM/native pipeline，`ProtectionAvailabilityReporter.currentImplementation()` 不再为它们产生 `PROTECTION_PASS_NOT_IMPLEMENTED`。
 
 “已经接线”不等于“所有发布证据已经闭环”。本清单明确区分：
 
@@ -15,6 +15,7 @@
 
 - selector 命中且有 Code 的 method 最终只能是 `nativeLowered` 或 `skipped`。
 - JVM/JNI runtime helper 是 native implementation 的组成部分；完整 helper-backed path 仍是 `nativeLowered`。
+- `methodInternalization` 批准项仍是 `nativeLowered`，但 retention 为 `internalNativeOnly`：Java `method_info` 和 registration 都不存在，hidden native body 由其他 native-lowered caller 保持可达。
 - 任一 stage 无法完整保持方法语义时，整 method `skipped`，原 Code 保留在 owner class 中，不生成 native rewrite、helper body 或 `RegisterNatives` binding。
 - no-Code selector match 是单独 eligibility evidence，不触发 skipped-method confirmation。
 - 不复制、编码或嵌入可执行的原 class/method Code，也不生成其 carrier、decoder 或 hidden-class definition path。
@@ -31,25 +32,26 @@
 | IR | `callIndirection` | 已接线，当前限 module-local same-owner static/private-special call + hidden LLVM table | Windows host static int/long、异常传播与六目标 table-retention evidence 已通过；更广 dispatch/cross-owner backend/runtime 待补 |
 | Packaging/native registration | `methodTableHiding` | 已接线，owner-local transient straight-line table + encoded-at-rest JNI metadata | host 注册/双 ClassLoader 与六目标 multi-owner structural evidence 已通过；virtual/interface 与 non-host runtime 待补 |
 | Program / IR | `fieldInternalization` | 已进入 Config/schema，默认 `false`；严格 `private static` `Z/B/S/C/I/J/F/D`、`L...;` 和 `[...]` 子集已接线 | host 全类型边界、Object identity/null/GC strong-hold、并发/双 ClassLoader 与六目标 primitive/ClassValue storage/privacy evidence 已通过；non-host runtime 待补 |
+| Final native plan / packaging | `methodInternalization` | 已进入 Config/schema，默认 `false`；private/protected static、same-owner exact private/protected instance，以及exact allowlisted public static/public instance子集；public static可用declared/current-JAR scope，public instance只用declared closed world且逐调用点same-owner exact，不要求final | 新策略已有focused、Windows real-Zig Dummy/runtime及最新v2五目标artifact证据；non-host runtime与catalog外第三方callback仍单独验收 |
 | LLVM | `opaquePredicates` | 已接线，validated conditional-branch model 子集 | Windows host 与六目标 emitted-IR/build-graph evidence 已通过；ReleaseSafe 仍可能折叠当前恒真 predicate |
 | LLVM | `blockLayoutPerturbation` | 已接线，只改变 non-entry block emission order | Windows host 与六目标 build-graph/export evidence 已通过；不保证 linker 后的最终 machine-code layout |
 | LLVM | `globalLayout` | 已接线，只重排 module-local LLVM global emission slots | Windows host 与六目标 global-retention/privacy/export evidence 已通过；non-host runtime 待补 |
 
-`fakeBranches`、`basicBlockSplitting` 和 `blockNameObfuscation` 已分别接入独立 IR pass，因此不在这 8 项中。`visibilityHardening` 也不在清单中：该字段已从 Config/schema 删除，hidden LLVM linkage 和 final export allowlist audit 是不可关闭的 JVM-hosted baseline。
+`fakeBranches`、`basicBlockSplitting` 和 `blockNameObfuscation` 已分别接入独立 IR pass，因此不在这 9 项中。`visibilityHardening` 也不在清单中：该字段已从 Config/schema 删除，hidden LLVM linkage 和 final export allowlist audit 是不可关闭的 JVM-hosted baseline。
 
 ## 通用完成门槛
 
 | Gate | Status | Evidence / remaining work |
 | --- | --- | --- |
 | Plan/model-driven，不以 ASM 或 `.ll` 文本替换绕过 stage | 已满足 | program coordinator、field plan、LLVM module passes、registration plan 都消费显式模型 |
-| Boolean `false` 为 no-op，`true` 进入真实实现 | 已满足 | 8 项均已列入 current implementation；`fieldInternalization` 与实现同步进入 schema，默认关闭 |
+| Boolean `false` 为 no-op，`true` 进入真实实现 | 已满足 | 9 项均已列入 current implementation；field/method internalization 与实现同步进入 schema，默认关闭 |
 | Build identity 域分离 token/order | 进行中 | 默认 build root 随机；显式 seed 模式覆盖同 seed 稳定性，报告只写 mode 与 context-bound hash |
-| pass 前后 validator / fail-closed rollback | 已满足 | IR、LLVM、field final plan、registration-plan matching 和 packaging transform 都有 validator/fail-closed 边界 |
-| focused unit/golden tests | 已满足 | 8 项均有适用、不适用或 disabled/invalid shape 的 focused coverage |
+| pass 前后 validator / fail-closed rollback | 已满足 | IR、LLVM、field/method final plan、registration-plan matching 和 packaging transform 都有 validator/fail-closed 边界 |
+| focused unit/golden tests | 已满足 | 9 项均有适用、不适用或 disabled/invalid shape 的 focused coverage |
 | main pipeline wiring | 已满足 | `NativeLlvmCompiler` 只编译 final LLVM implementation/helper closure；reports、intermediates 与 Zig 共用同一 final module result，generated C 与 field transform 由后续对应 stage 消费 |
-| pass-specific host child-JVM E2E | 已满足（Windows host） | `ProgramProtectionNativeRuntimeE2eTest` 覆盖 program/IR/LLVM 六项，`ProtectionStateNativeRuntimeE2eTest` 覆盖 field/method-table；两项 gated real-Zig tests 均已实际通过 |
-| 六目标 feature-specific compile/link/content/privacy/export audit | 已满足 | `ProtectionCrossTargetEvidenceTest` 让共享 LLVM/C sources 分别进入六个 target graph，验证六个非空 artifact、目标格式/架构、仅 `JNI_OnLoad` 导出（平台固有 runtime 符号单独容忍）及 UTF-8/UTF-16 raw identity absence |
-| non-host OS/JVM runtime E2E | 待补 | 所有 8 项都仍受 `CROSS_TARGET_RUNTIME_E2E_PENDING` 边界约束 |
+| pass-specific host child-JVM E2E | 已满足（Windows host） | 既有8项与method internalization gated real-Zig tests均通过；新增fixture同时覆盖protected static cross-owner、same-owner protected-final instance、可观察`<clinit>`顺序及normal/exception reference-return路径 |
+| 六目标 feature-specific compile/link/content/privacy/export audit | 已满足 | method internalization gated real-Zig fixture一次构建Windows x64/arm64、Linux x64/arm64、macOS x64/arm64六库并通过artifact/export/residual audit；v2五目标业务样本另通过 |
+| non-host OS/JVM runtime E2E | 待补 | 所有 9 项都仍受 `CROSS_TARGET_RUNTIME_E2E_PENDING` 边界约束 |
 | stable protection/packaging/audit evidence | 已满足当前 v1 范围 | 各 pass 已写 `RAN`/`SKIPPED`/`FAILED`；field 有独立 report，method-table 有 packaging hash-only evidence；host 与六目标专项测试消费这些证据 |
 
 六目标专项证明 transformed LLVM/generated C 被列入每个 target 的真实 Zig build graph，并验证最终动态库、架构、export allowlist 与静态 plaintext privacy；它不声称在 stripped/optimized machine code 中还能按名字找到 outlined helper、IR call table 或 opaque branch。`ReleaseSafe`/linker 可 inline、fold 或重排这些形态，non-host runtime 也仍需在目标 OS/JVM 上单独执行。
@@ -189,6 +191,40 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 - [ ] 显式 seed 模式的 deterministic native/report 双跑，以及默认模式的 diversity 双跑。
 - [ ] 在非 host OS/JVM 上运行同一状态隔离场景。
+
+## Final native plan `methodInternalization`
+
+`protection.ir.methodInternalization` 是必填 boolean、默认 `false`。required `publicMethodInternalizationAllowList`是exact selector数组、默认`[]`；class selector、wildcard和重复项在config阶段失败。该pass在所有方法的 final implementation path 已确定后运行，因此不会把尚未 lower 的 Java body误当作 native closure。`CLOSED_WORLD`直接满足 requirement；其他 world 可由用户对该 feature 单独 Y 授权 current-JAR-only call/override/observer scope。该Y适用于private/protected与exact allowlisted public static，public instance仍只允许declared `CLOSED_WORLD`。
+
+当前 v1 边界：
+
+- candidate 必须是 ordinary Code-bearing `nativeOriginal` + `LLVM_NATIVE_PATH`。private/protected沿用普通候选边界；public必须命中一个无wildcard exact allowlist entry。
+- static candidate 允许 native-lowered caller cross-owner；instance candidate 只允许 same-owner，并要求 `invokespecial` direct target或 scope 内唯一的 exact `invokevirtual` target。
+- public支持static或same-owner exact instance。public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权；public instance只接受declared `CLOSED_WORLD`并合并input与全部configured classPath。public instance不要求method/class为final，也不因可覆写slot本身拒绝；所有调用点必须exact，实际non-exact dispatch才fail closed。
+- 每个 observed caller 都必须是 final `LLVM_NATIVE_PATH`，且 implementation plan 已包含 direct/dispatch route。任一 unselected、`skipped`、template caller或零 caller都保留 Java method。
+- constructor/class initializer/interface/synchronized/bridge/synthetic/multi-release owner、non-exact dispatch、已解析exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic observer、launcher/agent entry、`EnclosingMethod` metadata，以及closed exact catalog按真实hierarchy+descriptor识别到的Object/Runnable/Callable/线程/定时器/序列化/Comparator/常见函数式JDK callback均拒绝。catalog不会blanket拒绝普通override slot；catalog外第三方framework callback与unsupported/unbounded reflection/JNI/agent observation仍作为user-accepted risk进入warning/report，current-JAR-only还明确报告configured classpath与JAR外caller/observer未分析。
+- approved decision把 rewrite strategy改为`internalNativeOnly`；registration plan过滤该 binding，LLVM body保持hidden可达。需要JNI语义的call使用nested local frame，reference return与pending exception都promote回caller activation；direct pure-scalar path不强制增加桥。
+- packaging删除完整`MethodNode`，artifact audit递归检查declaration、`MethodInsn`、Handle、invokedynamic/ConstantDynamic和`EnclosingMethod`残留。lowering report明确写`retentionMode/internalNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`。
+
+已完成：
+
+- [x] planner focused tests覆盖private/protected static、cross-owner protected static、same-owner protected instance exact/non-exact、non-native caller、Handle/reflection/MR/world边界。
+- [x] internal JNI dispatch source tests覆盖descriptor参数、defining owner lookup、nested local frame、reference result与pending exception promotion。
+- [x] class transform与artifact verifier tests覆盖精确删除及所有classfile residual surface。
+- [x] lowering/packaging/protection evidence接线，且final-plan validator检查implementation/registration分离。
+- [x] `publicMethodInternalizationAllowList` config/schema/resolved-config evidence要求exact、无wildcard、无重复，默认空。
+
+待补：
+
+- [x] 当前v2真实五目标构建验证`LaoShuUtils`的`verifyJson`、`chatJson`、`updateJson`与`updateNickJson`从output JAR和registration消失、hidden native closure仍完整；本轮共12个method internalized，71个`nativeLowered`/0个`skipped`保持不变，registration由71降为59。
+- [x] 2026-08-01旧public扩展fixture在一次真实六目标构建中通过Windows child-JVM parity：cross-owner public static与same-owner public-final instance均删除Java declaration/registration并保持reference result、pending exception与class-init语义。该结果保留为历史语义基线，不证明当前非final-instance或observer-risk策略。
+- [x] 同期旧v2 declared-closed-world五目标构建为71 `nativeLowered`/0 `skipped`、10个`internalNativeOnly`、61个registration并通过artifact/symbol/plaintext/residual audit。7个exact allowlisted `LaoShuUtils` public static因16个未解析reflection site触发`METHOD_INTERNALIZATION_PUBLIC_REFLECTION_SCOPE_UNRESOLVED`而保留；该blanket unresolved-reflection边界已被新策略取代，只能作为历史结果，不能作为当前合同。
+- [x] Windows host child-JVM real-Zig execution覆盖protected static cross-owner与same-owner protected-final instance；normal reference return、目标class `<clinit>` active-use顺序和两条pending-exception跨local-frame恢复均与original一致。
+- [x] v2五目标artifact/symbol/plaintext/residual audit通过；五库raw总量2,572,606 B。相对上一随机build观察到-43,984 B（-1.681%），Windows x64为497,664 B（-6,144 B，-1.220%），output JAR为3,850,660 B（-27,358 B，-0.705%）；因build identity不同，这些只是方向性size evidence，不是受控A/B归因。
+- [x] gated real-Zig fixture在同一次matrix invocation产出六目标动态库，覆盖Windows arm64并通过artifact/export/residual audit；Windows x64继续运行child-JVM parity。
+- [ ] 非host OS/JVM runtime E2E与更广instance dispatch形态。
+- [x] 新策略focused/runtime证据覆盖public static declared/current-JAR scope、same-owner非final exact public instance、实际non-exact override与cross-owner拒绝、resolved exact observer拒绝、unsupported/unbounded observer warning/report、parse-incomplete public-instance保留及known JVM/JDK callback保留。Windows `dTestMethodInternalization`使用real Zig验证current-JAR public static删除1项及declared-closed非final public/protected target删除3项，child-JVM parity通过；real-Zig method fixture另删除4项并通过六目标构建与Windows parity。
+- [x] 2026-08-01 02:52的最新v2五目标构建为71 `nativeLowered`/0 `skipped`、14个`internalNativeOnly`、57个registration并通过artifact/symbol/plaintext/residual audit。7个allowlisted `LaoShuUtils` public static中`generateIV`、`encrypt`、`decrypt`、`base64ToPublicKey`已从Java method table与registration删除；`generateAESKey`、`keyToBase64`、`encryptRSA`因`METHOD_INTERNALIZATION_NO_NATIVE_CALLER`保留。17个未解析reflection site只产生单条aggregate accepted-risk warning，不再全局否决public候选。
 
 ## LLVM `opaquePredicates`
 

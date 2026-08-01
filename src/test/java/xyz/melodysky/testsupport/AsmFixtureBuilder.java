@@ -3063,6 +3063,50 @@ public final class AsmFixtureBuilder implements Opcodes {
         dynamicForName.visitMaxs(0, 0);
         dynamicForName.visitEnd();
 
+        MethodVisitor dynamicGetMethod = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dynamicGetMethod",
+                "(Ljava/lang/Class;Ljava/lang/String;)V",
+                null,
+                null);
+        dynamicGetMethod.visitCode();
+        dynamicGetMethod.visitVarInsn(ALOAD, 0);
+        dynamicGetMethod.visitVarInsn(ALOAD, 1);
+        dynamicGetMethod.visitInsn(ICONST_0);
+        dynamicGetMethod.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        dynamicGetMethod.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getMethod",
+                "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+                false);
+        dynamicGetMethod.visitInsn(POP);
+        dynamicGetMethod.visitInsn(RETURN);
+        dynamicGetMethod.visitMaxs(0, 0);
+        dynamicGetMethod.visitEnd();
+
+        MethodVisitor dynamicMethodHandleLookup = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "dynamicMethodHandleLookup",
+                "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)V",
+                null,
+                null);
+        dynamicMethodHandleLookup.visitCode();
+        dynamicMethodHandleLookup.visitVarInsn(ALOAD, 0);
+        dynamicMethodHandleLookup.visitVarInsn(ALOAD, 1);
+        dynamicMethodHandleLookup.visitVarInsn(ALOAD, 2);
+        dynamicMethodHandleLookup.visitVarInsn(ALOAD, 3);
+        dynamicMethodHandleLookup.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandles$Lookup",
+                "findVirtual",
+                "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+                false);
+        dynamicMethodHandleLookup.visitInsn(POP);
+        dynamicMethodHandleLookup.visitInsn(RETURN);
+        dynamicMethodHandleLookup.visitMaxs(0, 0);
+        dynamicMethodHandleLookup.visitEnd();
+
         writer.visitEnd();
         return writer.toByteArray();
     }

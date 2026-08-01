@@ -16,12 +16,15 @@
 - `ReachabilityResult`
 - `RuntimeTypeResult`
 - `DevirtualizationPlan`
+- `NativeMethodUseIndex`
+- `NativeMethodInternalizationPlan`
 - conservative dispatch and unsupported-boundary metadata
 
 ## 推荐包
 
 ```text
 xyz.melodysky.analysis.callgraph
+xyz.melodysky.analysis.method
 xyz.melodysky.analysis.runtime
 ```
 
@@ -95,6 +98,17 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 
 当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。只要完整方法最终拥有可执行 native implementation，这种 JVM/JNI helper-backed 路径仍记录为 `nativeLowered`。当前 child JVM E2E 已覆盖 class inherited default-interface method 和 class override default method。conflict/diamond 或更复杂 descriptor、incomplete-hierarchy-sensitive shape 无法由当前 helper 保持语义时，完整 caller 记录为 `skipped`，保留原 Code，不生成 native registration，并报告明确 reason。
 
+## Method Internalization Use Analysis
+
+`NativeMethodUseAnalyzer` 在 final native implementation plan 已知后建立 method-use index；它不能只复用 call graph 的“可能 target”集合，因为删除 Java declaration 还必须覆盖 classfile metadata observer：
+
+- 扫描 input 与 declared-closed-world classpath 中的 method instructions。
+- 递归扫描 LDC `Handle`、invokedynamic/ConstantDynamic bootstrap arguments。
+- 记录 exact reflection/MethodHandles lookup 与 `EnclosingMethod` references。
+- static call 保留 exact symbolic target；instance call同时保存 invoke kind、scope内exact-target证据和unknown external target。
+
+Planner只批准已有final `LLVM_NATIVE_PATH`的private/protected static，或same-owner exact private/protected instance method。required exact allowlist另可授权public static及same-owner exact public instance：public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权；public instance只接受declared `CLOSED_WORLD`与parse-complete input+configured-classpath world。缺失任一superclass/interface会产生`MISSING_EXTERNAL_CLASS`并只以`METHOD_INTERNALIZATION_PUBLIC_INSTANCE_ANALYSIS_WORLD_INCOMPLETE`保留相关public instance候选，不把可继续证明的public static/private/protected候选整体关闭。public instance不要求method/class为final，也不因override slot本身拒绝，但每个调用点必须exact且caller仍须same-owner；实际non-exact dispatch会保留Java入口。每个incoming caller都必须已有final LLVM implementation和native direct/dispatch route。cross-owner protected/public static允许通过defining-class native bridge进入hidden target；cross-owner instance、interface/non-exact virtual、unselected/skipped caller、已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer与已知external Java entry都保留Java入口。无法穷举的reflection/JNI/agent动态观察面进入warning/report，由exact allowlist与world授权接受风险；current-JAR-only明确把configured classpath及JAR外caller/subclass/observer排除在证据外，不伪装成`CLOSED_WORLD`或“证明不存在”。
+
 ## 测试
 
 - CHA final receiver 单目标。
@@ -104,3 +118,6 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 - RTA 排除未实例化 subtype。
 - RTA 遇到 unknown allocation 后恢复保守 target set。
 - devirtualization plan 输出 reason。
+- protected/public static在declared/current-JAR scope下的cross-owner决策，以及same-owner protected/public instance method-use/internalization决策。
+- 非final public instance在所有调用点exact时可批准；实际override导致non-exact dispatch时拒绝。
+- 已解析exact Handle/bootstrap/ConstantDynamic/reflection/EnclosingMethod与known external entry拒绝；unsupported/unbounded动态observer只产生风险warning/report。

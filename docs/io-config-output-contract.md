@@ -34,7 +34,7 @@ j2ll 的主输入是一个 Java JAR 文件。
 保证：
 
 - requested lowering set 中的每个 method 都必须产生稳定、可解释的结果。
-- `nativeLowered` method 必须完成 native lowering、rewritten bytecode、native registration 和 selected-target native build。LLVM body、JNI/runtime helper-backed body 和 legal constructor/class-initializer/interface stub 都可以是该状态，只要原业务语义不依赖被复制或嵌入的原 method bytecode。
+- `nativeLowered` method 必须完成 native lowering 和 selected-target native build。通常它会改写 Java declaration 并进入 native registration；`methodInternalization` 批准的严格子集则删除整个 Java `method_info`、不进入 `RegisterNatives`，只保留 hidden native implementation。LLVM body、JNI/runtime helper-backed body 和 legal constructor/class-initializer/interface stub 都可以是该状态，只要原业务语义不依赖被复制或嵌入的原 method bytecode。
 - final native planner 无法安全生成 LLVM/helper-backed/template body 时，该 method 必须变成 `skipped` + 稳定 reason，并从 rewrite、registration、native source 和 packaging facts 中移除；不得生成或嵌入 fallback class blob。
 - `skipped` method 保留原始 bytecode，不进入 `RegisterNatives`，并在 `reports/lowering-report.json` 与 `reports/skipped-method-report.json` 中记录 skip stage、reason code、human-readable reason 和是否影响调用方 lowering。
 - excluded method 可以保留为原始 bytecode。
@@ -130,6 +130,8 @@ Config.json
       "methodSplitting": true,
       "callIndirection": true,
       "fieldInternalization": false,
+      "methodInternalization": false,
+      "publicMethodInternalizationAllowList": [],
       "methodTableHiding": true,
       "blockNameObfuscation": true
     },
@@ -217,6 +219,12 @@ The default build mode and `--dry-run` allocate a workspace automatically at `<r
 
 On success stdout is intentionally short and includes only the final output JAR path, reports directory, summary report path and report index path. Dry-run success prints `dryRunReport=...`, `reportsDir=...`, `summaryReport=...` and `reportIndex=...`. Full-build progress is written only to stderr. Interactive terminals use optimized legacy phase regions: compiler work is shown as `Read bytecode` / `Lower to IR` / `Emit LLVM IR`; native preparation may use `Build native` / `Stage`, while the active target graph uses one aggregate `Build native` row and one stable row per selected target; packaging/audit/report writing is shown as `Finalize JAR`. Each target percentage is exactly the number of completed Zig build-graph work units divided by the total graph units planned for that target. Large source sets are deterministically balanced into at most 64 observable compile units per target so marker count and polling I/O remain bounded. `BUILDING`, `LINKING`, and `COMPLETED` states (rendered as `building`, `linking`, and `completed`) must follow real graph boundaries, not console-text parsing or elapsed-time estimates. Entering `LINKING` need not advance the counter, so the bar may remain at the final compilation percentage until linking finishes. A target reaches `100%` / `COMPLETED` only after its final non-empty DLL/SO/dylib has been installed at the planned flat workspace output path. The aggregate `Build native` bar remains a real completed-target count; as soon as every target is complete, all target rows collapse immediately to one aggregate completed row before finalization begins. A phase transition completes the previous region and starts the next region; only the active region is erased and redrawn in place. Normal-width terminals use 28-character bars, while narrow terminals may shorten the bar before truncating the label, real count, or useful detail. Redirected/CI output receives exactly one control-sequence-free `[current/total]` line per high-level stage plus the short success result; target progress callbacks do not add log lines. Method lowering and LLVM emission report real current/total counts, including honest zero-work states. Managed Zig remains one matrix-wide invocation and may schedule independent targets concurrently. The TUI must not concatenate all target names into one detail, parse unstable Zig console text, claim an execution order, or describe graph-unit percentages as Zig/Clang/LLVM compiler-internal progress. The skipped-method list, warning and confirmation prompt are emitted after final planning and before this native region begins; they are stderr diagnostics, not progress rows, and also appear in redirected output. On failure or declined confirmation the complete active progress region is only cleared and terminated before stderr prints the primary human-readable failure; the renderer must not insert a redundant `BUILD FAILED` or Gradle-style actionable-stage summary ahead of that diagnostic. One short `hint=...` line is printed when available, followed by the reports directory, summary report path and report index path. Detailed diagnostics remain in `reports/*.json`; CLI output must not dump long JSON bodies. Release-readiness failures additionally print `releaseReadinessReport=<path>` and at most the top three `missingEvidence` entries from `reports/release-readiness.json`.
 
+Compile-unit balancing must keep every observable unit homogeneous by source kind.
+Generated C units use Zig `ReleaseSmall`; per-class LLVM units and the final link
+module use `ReleaseSafe`. These modes are fixed implementation policy, not
+CLI/config fields. A C/LLVM mixed unit is invalid because it would make one input
+class inherit the other's optimization mode.
+
 Minimal command:
 
 ```bash
@@ -271,13 +279,13 @@ Analysis world model. Required. Allowed values:
 - `JDK_EXTERNAL_WORLD`
 - `UNKNOWN_DYNAMIC_WORLD`
 
-Recommended default is `PARTIAL_WORLD`: application classes from the input JAR are analyzed directly, `classPath` is used when present, and missing external/library facts stay conservative. Any analysis/protection pass that requires a stronger world model must declare that requirement before execution. `fieldInternalization` is the first shared confirmation-gate consumer: outside `CLOSED_WORLD`, build asks whether to continue with a feature-scoped current-input-JAR-only analysis. This execution decision never mutates the configured `worldModel`.
+Recommended default is `PARTIAL_WORLD`: application classes from the input JAR are analyzed directly, `classPath` is used when present, and missing external/library facts stay conservative. Any analysis/protection pass that requires a stronger world model must declare that requirement before execution. `fieldInternalization` and `methodInternalization` are independent shared confirmation-gate consumers: outside `CLOSED_WORLD`, build asks once for each enabled feature whether to continue with its feature-scoped current-input-JAR-only analysis. These execution decisions never mutate the configured `worldModel`. The method decision covers private/protected and exact-allowlisted public static candidates; public instance internalization remains limited to declared `CLOSED_WORLD`.
 
 World model validation matrix:
 
 | Value | Minimum required inputs | Main consequence |
 | --- | --- | --- |
-| `CLOSED_WORLD` | input JAR, every application/library entry needed by the analysis in `classPath`, and no unreported external observer/dynamic-loading escape hatch | Historical wire name for the user's complete-world assertion. It directly satisfies `fieldInternalization` and can enable aggressive devirtualization. j2ll scans supplied inputs and rejects unresolved/dynamic facts it observes, but cannot prove an omitted agent, external JNI library or generated class does not exist. |
+| `CLOSED_WORLD` | input JAR, every application/library entry needed by the analysis in `classPath`, and the user's complete-world assertion; feature reports still enumerate observed escape hatches | Historical wire name for the user's complete-world assertion. It directly satisfies field/method internalization and can enable aggressive devirtualization. Public removal additionally requires an exact allowlist entry; public instance also requires a parse-complete combined input/classPath hierarchy/call world and exact same-owner call sites. For exact-allowlisted public method internalization, j2ll hard-rejects resolved exact method observers and known external Java entries, but reports unsupported/unbounded reflection/JNI/agent surfaces as accepted risks because it cannot prove an omitted observer does not exist. Other features may retain stricter observer gates. |
 | `PARTIAL_WORLD` | input JAR; optional `classPath` and JDK metadata | Recommended default. Missing external metadata is allowed but produces conservative external nodes; unsafe method shapes become `skipped`. |
 | `JDK_EXTERNAL_WORLD` | input JAR plus enough JDK identity metadata to classify JDK classes | Application classes are analyzed; JDK methods use intrinsics, runtime/JNI helpers or ordinary JVM dispatch from native code when supported. |
 | `UNKNOWN_DYNAMIC_WORLD` | input JAR only | Reflection, custom classloaders and generated classes are assumed possible. Analysis must stay conservative and avoid protection decisions that require a complete classpath. |
@@ -477,7 +485,7 @@ The CLI `--debug` flag overrides all five switches to `true` for that run. This 
 
 `protection`
 
-Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and all non-semantic-surface-changing implemented passes. `fieldInternalization` is implemented but defaults to `false` because it deliberately removes approved fields from Java reflection.
+Controls SSA IR protection, LLVM module model protection and binary hardening. Required field. The recommended default config enables protection and all non-semantic-surface-changing implemented passes. `fieldInternalization` and `methodInternalization` are implemented but default to `false` because they deliberately remove approved members from Java reflection.
 
 Fields:
 
@@ -493,7 +501,7 @@ Protection availability behavior:
 - If a protection pass is implemented but not applicable to a specific method, j2ll skips that pass for that method and emits a warning; protection-pass inapplicability alone does not change a `nativeLowered` method into method status `skipped`.
 - If a protection pass declares a hard requirement such as `classPath`, JDK metadata or target toolchain support and the requirement is missing, preflight emits a clear error and exits. The error must name the pass and tell the user to provide the missing input or disable that pass.
 
-The eight previously tracked work items are now wired as bounded v1 subsets: IR/program `methodInlining`, `methodSplitting`, `callIndirection`, `fieldInternalization`; packaging/native registration `methodTableHiding`; LLVM `opaquePredicates`, `blockLayoutPerturbation` and `globalLayout`. All eight now have passing Windows real-Zig host child-JVM evidence and six-target feature-specific build-graph/content/privacy/export evidence. This does not imply non-host JVM execution or stable optimized machine-code retention: broader host boundary shapes, optimizer/linker retention limits and non-host OS/JVM runtime status are tracked separately in `docs/protection-implementation-checklist.md`.
+The previously tracked work items are now wired as bounded v1 subsets: IR/program/final-plan `methodInlining`, `methodSplitting`, `callIndirection`, `fieldInternalization`, `methodInternalization`; packaging/native registration `methodTableHiding`; LLVM `opaquePredicates`, `blockLayoutPerturbation` and `globalLayout`. Their exact runtime and cross-target evidence is tracked separately in `docs/protection-implementation-checklist.md`; structural cross-link evidence does not imply non-host JVM execution or stable optimized machine-code retention.
 
 ### Protection IR Fields
 
@@ -512,10 +520,12 @@ Pass fields:
 - `methodSplitting`: outline a bounded pure-scalar single-block suffix with explicit scalar live-in and one scalar live-out into a compiler-internal LLVM helper. It does not add a Java method.
 - `callIndirection`: attach a typed IR table/dispatcher plan to proven same-owner static/private-special calls, then lower that explicit plan to hidden LLVM pointer tables. The current per-owner backend rejects virtual/interface (including devirtualized single-target) and cross-owner direct calls with `IR_CALL_INDIRECTION_BACKEND_UNSUPPORTED_SHAPE`; it does not reinterpret their JVM bridge semantics.
 - `fieldInternalization`: migrate strictly eligible `private static` primitive/reference state out of the Java field declaration and remove the field from the output class. Primitive values use descriptor-aware native raw-bit slots; references/arrays use a JVM-managed per-defining-Class `ClassValue<Object[]>` sidecar. Default is `false`; `CLOSED_WORLD` runs directly, while another world requires build-time Y approval for current-JAR-only analysis. See the dedicated contract below.
+- `methodInternalization`: remove a strictly eligible Java method declaration and its `RegisterNatives` binding after final planning proves that every observed entry is already inside the LLVM-native closure. Private/protected use the ordinary closed-world/current-JAR-only policy. Public additionally requires an exact allowlist entry: public static may use declared closed world or the current-JAR-only Y decision, while public instance requires declared `CLOSED_WORLD`. Its hidden LLVM implementation remains in every selected native library. Default is `false`. See the dedicated contract below.
+- `publicMethodInternalizationAllowList`: required `array<string>`, with examples defaulting to `[]`. Every element must be a unique, wildcard-free exact `<owner>#<name>!<descriptor>` selector; class selectors, wildcard owners and duplicates are config errors. It authorizes consideration of that public method but does not override the public-instance declared-world rule, resolved exact-observer rejection, caller closure or final-path validation. The resolved-config report preserves the exact declared entries for audit.
 - `methodTableHiding`: derive a build-diverse owner-local physical registration order and construct a transient `JNINativeMethod[]` with straight-line assignments inside each owner registration window. Opaque binding tokens remain report-only evidence; generated C/native emits no persistent token/function-pointer table or runtime join. JVM `RegisterNatives` still receives the real owner/name/descriptor at runtime.
 - `blockNameObfuscation`: deterministically replace IR basic-block names and remap all terminator, exception-edge and exception-site handler references.
 
-Each pass field is a required boolean: `true` enables the pass and `false` disables it. `fieldInternalization` defaults to `false`; the other examples may enable the implemented bounded subsets. `fakeBranches`, `basicBlockSplitting` and `blockNameObfuscation` are separate fields, passes and protection-report rows.
+Each pass field is a required boolean: `true` enables the pass and `false` disables it. `fieldInternalization` and `methodInternalization` default to `false`; the other examples may enable the implemented bounded subsets. `publicMethodInternalizationAllowList` is the required non-boolean authorization list beside those fields and defaults to `[]`. `fakeBranches`, `basicBlockSplitting` and `blockNameObfuscation` are separate fields, passes and protection-report rows.
 
 #### `fieldInternalization` Contract
 
@@ -535,6 +545,21 @@ Enabling this field is an explicit acceptance that a plan-approved field will no
 - The final native implementation plan is revalidated before Zig; packaging rechecks the field declaration before removal; artifact audit rejects any remaining declaration, bytecode access or field handle/bootstrap reference.
 
 Ineligible fields stay in the output class and continue through the existing JNI field helper path. Protection inapplicability does not change method lowering status.
+
+#### `methodInternalization` Contract
+
+Enabling this field explicitly accepts that an approved method is absent from `Class.getDeclaredMethod(s)`, MethodHandle lookup and other Java metadata observers. It does not introduce a third lowering outcome: an approved method remains `nativeLowered`, with `rewriteStrategy=internalNativeOnly`, `retentionMode=internalNativeOnly`, `javaMethodPresent=false` and `registrationPresent=false`.
+
+- If `worldModel` is not `CLOSED_WORLD`, a real build asks `methodInternalization requires CLOSED_WORLD, continue? (Y/N)`. Y authorizes only this feature and invocation to inspect calls, overrides and metadata inside the current input JAR; configured `classPath`, JAR-external callers/subclasses and external reflection/JNI/agent observers remain out of scope. N/EOF exits before pipeline/Zig work. Validate and dry-run emit the requirement but do not read stdin.
+- That Y applies to private/protected candidates and exact-allowlisted public static candidates. Public instance candidates must match one exact `publicMethodInternalizationAllowList` entry and the configured world must be declared `CLOSED_WORLD`; current-JAR-only never authorizes public instance removal.
+- The final implementation must already be an ordinary Code-bearing `LLVM_NATIVE_PATH` method using `nativeOriginal`. Constructors, class initializers, interfaces, synchronized, bridge/synthetic, abstract/already-native and multi-release owner shapes are not removed.
+- V1 accepts `private` or `protected` static methods, including protected static calls from another selected owner. It also accepts private/protected instance methods only when every caller has the same owner and each `invokespecial` or `invokevirtual` edge is proven exact in the effective scope. Cross-owner instance and interface dispatch remain Java-visible.
+- Exact-allowlisted public support includes public static and same-owner exact public instance. Public instance does not require a final method or final defining class, and a potentially overridable slot is not itself a rejection reason. Under declared `CLOSED_WORLD`, the pipeline parses input plus every configured classPath entry; each public-instance call site must still resolve exactly to the candidate and every caller must be same-owner. An actual override that makes dispatch non-exact prevents removal.
+- Every observed caller must itself have a final `LLVM_NATIVE_PATH` implementation and a validated native direct/dispatch route. Zero callers, an unselected/skipped/template caller, non-exact target, a resolved exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic observer, `EnclosingMethod` reference, launcher/agent entry, or a closed-catalog JVM/JDK callback entry keeps the Java method. The callback catalog covers exact Object virtual, Runnable/Callable, Thread/TimerTask, serialization, Comparator, common `java.util.function` and primitive-function contracts only when the declaring owner really implements or inherits the catalog type and the descriptor matches exactly; it is not a blanket override-slot veto. Third-party framework callbacks outside that closed catalog and unsupported or unbounded reflection/JNI/agent observation remain user-accepted risk and must not be reported as proven absent. For current-JAR-only public static, configured classpath and every JAR-external caller/observer remain explicitly outside the analysis scope.
+- Approved static/instance reference-returning or JNI-sensitive calls use a nested JNI local frame. Pending exceptions are promoted out of that frame and restored before returning to the outer native activation. Cross-owner static calls resolve the defining `jclass`; native code never reads a Java object layout directly.
+- Final-plan validation removes the binding from `NativeRegistrationPlan` but retains the hidden implementation and any internal-call wrapper actually needed by callers. Packaging atomically removes the exact `MethodNode`; artifact audit rejects any residual declaration, `MethodInsn`, method `Handle`, bootstrap/ConstantDynamic or `EnclosingMethod` reference.
+
+A `KEPT` decision is an exact no-op: the existing `nativeOriginal` rewrite and `RegisterNatives` behavior remains in force.
 
 ### Protection LLVM Fields
 
@@ -674,7 +699,7 @@ Required readiness evidence even when the feature is disabled or has no candidat
 
 `reports/lowering-report.json`
 
-Requested lowering set with only `nativeLowered` and `skipped` method outcomes, plus a separate selector-level `excluded` list. Build failures are referenced as diagnostics and are not method outcomes.
+Requested lowering set with only `nativeLowered` and `skipped` method outcomes, plus a separate selector-level `excluded` list. Every requested method records `retentionMode` (`registeredNative`, `internalNativeOnly`, or `javaBytecode`), `javaMethodPresent` and `registrationPresent`, so an internalized native method is not mistaken for either a registered native declaration or a skipped Java body. Build failures are referenced as diagnostics and are not method outcomes.
 
 `reports/opcode-support-matrix.json`
 
@@ -682,7 +707,7 @@ Deterministic opcode/category/status/reason/test coverage matrix used by release
 
 `reports/packaging-report.json`
 
-Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. When method-table hiding is enabled, it also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and report-only binding tokens, plus `physicalStrategy=ownerLocalTransientStraightLine`, `runtimeTokenTableEmitted=false`, `runtimeFunctionTableEmitted=false` and temporary-table zeroization evidence. It does not write raw owner/member mapping in that object.
+Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. Each rewritten-method entry records `javaMethodPresent` and `registrationPresent`; an `internalNativeOnly` entry has both false and is absent from registered-native groups. When method-table hiding is enabled, the report also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and report-only binding tokens, plus `physicalStrategy=ownerLocalTransientStraightLine`, `runtimeTokenTableEmitted=false`, `runtimeFunctionTableEmitted=false` and temporary-table zeroization evidence. It does not write raw owner/member mapping in that object.
 
 `reports/protection-report.json`
 
@@ -833,6 +858,9 @@ The method list and confirmation decision form one invocation-scoped evidence re
       "methodId": "run__8f3a21c0d4e5f607",
       "status": "nativeLowered",
       "rewriteStrategy": "nativeOriginal",
+      "retentionMode": "registeredNative",
+      "javaMethodPresent": true,
+      "registrationPresent": true,
       "accessFlags": ["public"],
       "compilerFlags": ["synthetic"],
       "nativeSymbol": "j2ll_pkg_Foo_run_8f3a21c0d4e5f607",
@@ -875,7 +903,7 @@ The method list and confirmation decision form one invocation-scoped evidence re
 }
 ```
 
-`accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip.
+`accessFlags` records JVM access facts. `compilerFlags` records audit-oriented flags such as `bridge`, `synthetic`, `enumGenerated` and `recordGenerated`; these flags do not imply skip. `retentionMode`, `javaMethodPresent` and `registrationPresent` separate ordinary registered natives, internal-only hidden natives, and preserved Java bytecode without adding another method outcome.
 `nativeImplementationPath` records whether the registered native body is `LLVM_NATIVE_PATH`, `TEMPLATE_JNI_PATH`, or `null` when no executable native body was produced for that requested method.
 `helperBackedSites` records metadata/reflection/JNI/Unsafe/MethodHandle/ConstantDynamic sites whose semantics are executed from a native implementation through a runtime helper or ordinary JVM/JNI dispatch rather than direct LLVM instructions. `helperKind` is a non-sensitive category/base symbol and `helperIdentityHash` is a domain-separated SHA-256 of the complete compiler-private helper identity. The full helper string is never serialized because it may contain owner/member descriptors or a `string:<business literal>` carrier. This remains true native lowering and does not imply an embedded copy of the original method body. It also records field/array/arraycopy/allocation/String/StringBuilder/JDK/div-rem/JVM-numeric/monitor/exception/call/stub decisions such as `FIELD_HELPER`, `ARRAY_HELPER`, `ARRAYCOPY_HELPER`, `ALLOCATION_HELPER`, `STRING_HELPER`, `STRING_BUILDER_HELPER`, `JDK_INTRINSIC_HELPER`, `JDK_COLLECTION_HELPER`, `THROWABLE_HELPER`, `THREAD_HELPER`, `JVM_NUMERIC_HELPER`, `DIV_REM_EXCEPTION_HELPER`, `MONITOR_HELPER`, `SYNCHRONIZED_METHOD_HELPER`, `EXCEPTION_HELPER`, `REFLECTION_HELPER`, `REFLECTION_FIELD_HELPER`, `REFLECTION_METHOD_HELPER`, `REFLECTION_CONSTRUCTOR_HELPER`, `REFLECTION_ACCESSIBLE_HELPER`, `UNSAFE_HELPER`, `DIRECT_LLVM_CALL`, `JVM_CALL_HELPER`, `DISPATCH_HELPER`, `DEFAULT_INTERFACE_DISPATCH_HELPER`, `DEFERRED_DISPATCH_HELPER`, `CONSTRUCTOR_BODY_HELPER`, `CLASS_INITIALIZER_BODY_HELPER`, `JNI_ABI_REGISTER_NATIVES` and `RUNTIME_METADATA_HELPER`. Current static reflection helper coverage includes no-arg, reference, primitive and array constant-parameter method/constructor descriptors, typed field accessors `getInt/setInt/getBoolean/setBoolean/getLong/setLong/getDouble/setDouble`, reference `Field.get/set`, and a bounded `setAccessible(true)` helper for statically resolved Method/Constructor/Field objects. Dynamic reflection strings, dynamic parameter arrays, scan-style reflection and MethodHandle adapter chains may use ordinary JVM/JNI dispatch when the descriptor fits the validated bridge matrix. A native call into a Java/JDK target is helper-backed execution, not an embedded bytecode copy of the caller. If an operation cannot be represented by direct LLVM or an approved helper/dispatch bridge, the whole selected caller is `skipped` with a stable reason such as `REFLECTION_UNSUPPORTED_SCAN`, `UNSAFE_RAW_MEMORY_UNSUPPORTED`, `ALT_METAFACTORY_UNSUPPORTED`, `UNSUPPORTED_JVM_EXCEPTION_FLOW`, `UNSUPPORTED_EXCEPTION_STATE_MERGE` or `UNSUPPORTED_DEFAULT_INTERFACE_SUPER`; the evidence belongs in `reports/skipped-method-report.json`, and no embedded class blob is allowed.
 
@@ -1083,6 +1111,15 @@ Packaging rewrites methods according to their JVM method kind. The strategy is r
 - The generated native implementation is bound with `RegisterNatives`.
 - The native implementation symbol is internal/hidden; it is not exported as a JNI name-mangled method symbol.
 
+`internalNativeOnly`
+
+Final-plan-only rewrite for a method already proven `nativeLowered` through `LLVM_NATIVE_PATH`.
+
+- Packaging removes the complete Java `method_info`; it does not leave an `ACC_NATIVE` declaration or Java stub.
+- The method is absent from `RegisterNatives`; its hidden LLVM implementation remains linked because validated native callers reference it.
+- Protected static callers may cross owner through a defining-class/nested-local-frame native bridge. Protected/private instance methods are limited to same-owner exact dispatch.
+- Any plan/declaration mismatch or residual invocation/handle/bootstrap/enclosing-method reference fails artifact finalization instead of silently restoring the Java method.
+
 `constructorStub`
 
 Java `<init>` cannot become an ordinary native method. j2ll must keep a legal constructor stub.
@@ -1121,7 +1158,7 @@ No rewrite or registration is attempted when a selected Code-bearing method has 
 
 Abstract methods, already-native methods, interface declarations without Code and annotation elements have no Java method body to lower. A selector match is recorded for audit, but the declaration does not enter the requested set, receives no method status and does not trigger confirmation.
 
-### Field Declaration Rewrite
+### Member Declaration Rewrite
 
 Method rewrite strategy and field internalization are separate plans. When `fieldInternalization` approves a field:
 
@@ -1131,6 +1168,8 @@ Method rewrite strategy and field internalization are separate plans. When `fiel
 - the packaged JAR is scanned again for residual declaration, field instruction, field MethodHandle and bootstrap field reference before artifact audit can pass.
 
 No other field, method or class attribute is removed by this transform. A `KEPT` decision is an exact no-op for that field.
+
+Method internalization consumes its own immutable final plan after ordinary method rewriting. It removes only exact `INTERNAL_NATIVE_ONLY` `MethodNode` matches. It never deletes a caller, constructor/stub helper, skipped body, annotation element or unrelated overload.
 
 ### Repackaging Rules
 
@@ -1208,16 +1247,16 @@ The runtime and output JAR must contain no fallback helper class, hidden-class d
 
 ### World Model
 
-World model 是分析阶段对“程序类世界是否完整”的假设。它会影响 CHA/RTA、devirtualization、IR call indirection 和 field internalization。当前 `methodTableHiding` 只隐藏已经确定的 native registration mapping，不改变 Java dispatch，因此本身不要求 `CLOSED_WORLD`。
+World model 是分析阶段对“程序类世界是否完整”的假设。它会影响 CHA/RTA、devirtualization、IR call indirection、field internalization 和 method internalization。当前 `methodTableHiding` 只隐藏已经确定的 native registration mapping，不改变 Java dispatch，因此本身不要求 `CLOSED_WORLD`。
 
 常见模型：
 
-- `CLOSED_WORLD`：历史 wire name，表示用户声明输入 JAR 与提供的 `classPath` 覆盖分析所需 JVM classes，且没有未声明的 external observer/dynamic loading。它允许更激进 devirtualization，并直接满足 `fieldInternalization` 的 world requirement；输出仍是 JVM-hosted JAR。
+- `CLOSED_WORLD`：历史 wire name，表示用户声明输入 JAR 与提供的 `classPath` 覆盖分析所需 JVM classes，并接受报告中明确列出的无法穷举external observer/dynamic-loading风险。它允许更激进 devirtualization，并直接满足 field/method internalization 的 world requirement；输出仍是 JVM-hosted JAR。
 - `PARTIAL_WORLD`：应用 class 大体已知，但外部库或运行时可能不完整。分析必须对 external type 保守。
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 主要作为外部 runtime/library 处理。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader、runtime generated class 改变类型世界。只能做非常保守的 dispatch 优化。
 
-`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。需要 whole-program scope 的功能统一通过 execution requirement 描述。当前 `fieldInternalization` 在 build 中允许用户显式 Y 接受 current-JAR-only 边界；其他未实现降级的 requirement 仍应 fail closed。任何批准都必须 feature-scoped、仅本次 invocation 有效并进入 diagnostics/对应报告，不能把配置改写为 `CLOSED_WORLD`。
+`worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。需要 whole-program scope 的功能统一通过 execution requirement 描述。当前 field/method internalization 在 build 中分别允许用户显式 Y 接受 current-JAR-only 边界；method decision覆盖private/protected及exact allowlisted public static，public instance仍只接受declared `CLOSED_WORLD`。两个决定独立、按稳定顺序询问。其他未实现降级的 requirement 仍应 fail closed。任何批准都必须 feature-scoped、仅本次 invocation 有效并进入 diagnostics/report，不能把配置改写为 `CLOSED_WORLD`。
 
 ### Loader And Native Registration
 
@@ -1248,9 +1287,9 @@ The reserved base/MR loader-entry collision checks run before Zig. A base collis
 
 For every method reported as `nativeLowered`:
 
-- The class bytecode in the output jar is rewritten to call native code.
-- The corresponding native implementation exists in every selected target dynamic library.
-- The native registration plan includes that method.
+- The native implementation exists in every selected target dynamic library.
+- An ordinary registered native keeps a rewritten class declaration/stub and a matching registration entry.
+- An `internalNativeOnly` method instead has no Java declaration and no registration entry; every approved input-visible use resolves to its retained hidden native implementation.
 - The lowering report records the method as `nativeLowered`.
 - Runtime/JNI helper-backed operations are permitted, but no path may execute an embedded copy of the selected method's original bytecode.
 

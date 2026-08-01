@@ -12,13 +12,19 @@ import java.util.Objects;
  * exception behavior.</p>
  */
 record NativeLocalAbiPlan(
+        NativeLocalAbiProfile profile,
         Shape shape,
         int parameterCount,
         List<String> bridgeSymbols,
         List<List<Integer>> parameterOrders,
         int branchSalt) {
     NativeLocalAbiPlan {
+        Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(shape, "shape");
+        if (!profile.candidateShapes().contains(shape)) {
+            throw new IllegalArgumentException(
+                    "local ABI shape is outside its profile");
+        }
         if (parameterCount < 0) {
             throw new IllegalArgumentException(
                     "parameterCount must not be negative");

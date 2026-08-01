@@ -61,6 +61,7 @@ public final class ZigBuildWriter {
 
                 pub fn build(b: *std.Build) void {
                     const optimize = .ReleaseSafe;
+                    const c_optimize = .ReleaseSmall;
                 """);
         if (!buildPlan.units().isEmpty()) {
             builder.append("    const progress_markers = b.addWriteFiles();\n");

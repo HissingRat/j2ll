@@ -33,6 +33,9 @@ class ZigBuildWriterTest {
         new ZigBuildWriter().write(workspace, "j2lltest", plan, new ZigInputSet(sources));
 
         String buildZig = Files.readString(workspace.buildZig());
+        assertTrue(buildZig.contains("const optimize = .ReleaseSafe;"));
+        assertTrue(buildZig.contains(
+                "const c_optimize = .ReleaseSmall;"));
         assertTrue(buildZig.contains("const progress_markers = b.addWriteFiles();"));
         assertFalse(buildZig.contains(".addCSourceFiles("));
         assertTrue(buildZig.contains(".pic = true"));
@@ -105,10 +108,27 @@ class ZigBuildWriterTest {
                 ZigBuildProgressPlan.MAX_COMPILE_UNITS,
                 countOccurrences(buildZig, "module_linux_x64.linkLibrary(compile_linux_x64_"));
         for (ZigBuildProgressPlan.CompileUnit compileUnit : target.compileUnits()) {
+            assertEquals(
+                    1,
+                    compileUnit.inputs().stream()
+                            .map(ZigBuildProgressPlan.CompileInput::kind)
+                            .distinct()
+                            .count(),
+                    compileUnit.id());
             String unitSymbol = "linux_x64_" + compileUnit.id().replace('-', '_');
             assertTrue(buildZig.contains(
                     "install_compile_marker_" + unitSymbol
                             + ".step.dependOn(&compile_" + unitSymbol + ".step)"));
+            String optimizeMode = compileUnit.kind()
+                    == ZigBuildProgressPlan.CompileInputKind.C
+                    ? "c_optimize"
+                    : "optimize";
+            assertTrue(buildZig.contains(
+                    "const module_" + unitSymbol
+                            + " = b.createModule(.{\n"
+                            + "        .target = target_linux_x64,\n"
+                            + "        .optimize = " + optimizeMode + ",\n"),
+                    compileUnit.id());
         }
         for (Path source : java.util.stream.Stream.concat(
                         cSources.stream(),
@@ -225,6 +245,21 @@ class ZigBuildWriterTest {
                 "const compile_" + symbol + "_c_1 = b.addLibrary"));
         assertTrue(buildZig.contains(
                 "const compile_" + symbol + "_llvm_0 = b.addLibrary"));
+        assertTrue(buildZig.contains(
+                "const module_" + symbol
+                        + "_c_0 = b.createModule(.{\n"
+                        + "        .target = target_" + symbol + ",\n"
+                        + "        .optimize = c_optimize,\n"));
+        assertTrue(buildZig.contains(
+                "const module_" + symbol
+                        + "_llvm_0 = b.createModule(.{\n"
+                        + "        .target = target_" + symbol + ",\n"
+                        + "        .optimize = optimize,\n"));
+        assertTrue(buildZig.contains(
+                "const module_" + symbol
+                        + " = b.createModule(.{\n"
+                        + "        .target = target_" + symbol + ",\n"
+                        + "        .optimize = optimize,\n"));
         assertTrue(buildZig.contains(
                 "module_" + symbol + ".linkLibrary(compile_" + symbol + "_c_0)"));
         assertTrue(buildZig.contains(

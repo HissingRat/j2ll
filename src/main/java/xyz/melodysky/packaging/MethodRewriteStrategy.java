@@ -2,6 +2,7 @@ package xyz.melodysky.packaging;
 
 public enum MethodRewriteStrategy {
     NATIVE_ORIGINAL("nativeOriginal"),
+    INTERNAL_NATIVE_ONLY("internalNativeOnly"),
     CONSTRUCTOR_STUB("constructorStub"),
     CLASS_INITIALIZER_STUB("classInitializerStub"),
     INTERFACE_METHOD_STUB("interfaceMethodStub"),

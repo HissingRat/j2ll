@@ -65,7 +65,13 @@ final class ZigTargetBuildEmitter {
             ZigBuildProgressPlan.CompileUnit compileUnit,
             String unitSymbol) {
         builder.append("    const module_").append(unitSymbol).append(" = b.createModule(.{\n");
-        appendModuleOptions(builder, target);
+        appendModuleOptions(
+                builder,
+                target,
+                compileUnit.kind()
+                        == ZigBuildProgressPlan.CompileInputKind.C
+                        ? "c_optimize"
+                        : "optimize");
         builder.append("    });\n");
         for (ZigBuildProgressPlan.CompileInput compileInput : compileUnit.inputs()) {
             appendCompileInput(builder, compileInput, unitSymbol);
@@ -165,7 +171,7 @@ final class ZigTargetBuildEmitter {
         NativeBuildUnit unit = targetPlan.buildUnit();
         TargetTriple target = targetPlan.target();
         builder.append("    const module_").append(targetSymbol).append(" = b.createModule(.{\n");
-        appendModuleOptions(builder, target);
+        appendModuleOptions(builder, target, "optimize");
         builder.append("    });\n");
         for (String compileLibrarySymbol : compileLibrarySymbols) {
             builder.append("    module_").append(targetSymbol).append(".linkLibrary(")
@@ -228,9 +234,14 @@ final class ZigTargetBuildEmitter {
                 .append(");\n");
     }
 
-    private void appendModuleOptions(StringBuilder builder, TargetTriple target) {
+    private void appendModuleOptions(
+            StringBuilder builder,
+            TargetTriple target,
+            String optimizeMode) {
         builder.append("        .target = target_").append(target.safeSymbol()).append(",\n")
-                .append("        .optimize = optimize,\n")
+                .append("        .optimize = ")
+                .append(optimizeMode)
+                .append(",\n")
                 .append("        .strip = ").append(strip).append(",\n")
                 .append("        .pic = true,\n")
                 .append("        .link_libc = true,\n");

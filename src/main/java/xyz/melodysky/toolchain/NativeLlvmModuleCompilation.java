@@ -19,6 +19,7 @@ import xyz.melodysky.ir.model.IrMethod;
 public record NativeLlvmModuleCompilation(
         String owner,
         List<IrMethod> registeredMethods,
+        List<IrMethod> userMethods,
         List<IrMethod> compiledMethods,
         LlvmBlockLayoutPerturbationResult blockLayout,
         LlvmOpaquePredicateResult opaquePredicates,
@@ -30,6 +31,8 @@ public record NativeLlvmModuleCompilation(
         Objects.requireNonNull(owner, "owner");
         registeredMethods = List.copyOf(
                 Objects.requireNonNull(registeredMethods, "registeredMethods"));
+        userMethods = List.copyOf(
+                Objects.requireNonNull(userMethods, "userMethods"));
         compiledMethods = List.copyOf(Objects.requireNonNull(compiledMethods, "compiledMethods"));
         Objects.requireNonNull(blockLayout, "blockLayout");
         Objects.requireNonNull(opaquePredicates, "opaquePredicates");
@@ -37,6 +40,29 @@ public record NativeLlvmModuleCompilation(
         Objects.requireNonNull(llvmCallIndirection, "llvmCallIndirection");
         Objects.requireNonNull(globalLayout, "globalLayout");
         Objects.requireNonNull(llvmText, "llvmText");
+    }
+
+    public NativeLlvmModuleCompilation(
+            String owner,
+            List<IrMethod> registeredMethods,
+            List<IrMethod> compiledMethods,
+            LlvmBlockLayoutPerturbationResult blockLayout,
+            LlvmOpaquePredicateResult opaquePredicates,
+            LlvmIrCallIndirectionResult irCallIndirection,
+            LlvmCallIndirectionResult llvmCallIndirection,
+            LlvmGlobalLayoutResult globalLayout,
+            String llvmText) {
+        this(
+                owner,
+                registeredMethods,
+                registeredMethods,
+                compiledMethods,
+                blockLayout,
+                opaquePredicates,
+                irCallIndirection,
+                llvmCallIndirection,
+                globalLayout,
+                llvmText);
     }
 
     public LlvmModule module() {

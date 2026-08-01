@@ -230,6 +230,75 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 
 实现证据：aggregate registration root 与 per-owner helper 均为 C `static`，Zig 只保留 `JNI_OnLoad`，symbol allowlist 与 final artifact audit 只要求 `JNI_OnLoad`（目标格式固有 runtime 符号单独容忍）。
 
+### H1b — 删除 native-only Java method entry
+
+状态：`IN_PROGRESS`
+
+`methodInternalization`针对“已经只被native-lowered caller使用”的严格子集，同时删除Java `method_info`和对应`RegisterNatives` binding。public入口只有在required exact `publicMethodInternalizationAllowList`中逐method授权后才参与，不能因启用普通pass或使用宽泛lowering selector而隐式删除。它降低三条静态恢复捷径：
+
+- classfile不再直接暴露该method的name/descriptor/access与native declaration。
+- registration observer/table只包含真正仍需JVM entry的bindings。
+- native call graph不再强制呈现“Java binding wrapper -> hidden body”的一一映射。
+
+当前安全/语义边界：
+
+- ordinary final `LLVM_NATIVE_PATH`的private/protected static，以及same-owner exact private/protected instance method可批准；exact allowlisted public进一步支持public static及same-owner exact public instance。
+- static caller允许cross-owner，但必须走defining-class-aware bridge；reference result与pending exception通过nested JNI local frame promotion。
+- public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权；public instance只接受declared `CLOSED_WORLD`及parse-complete input+全部configured classPath world。public instance不要求method/class为final，也不因存在可覆写slot本身拒绝，但所有调用点必须exact且caller仍须same-owner；实际non-exact dispatch仍保留Java entry。
+- 已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry与closed exact catalog识别到的JVM/JDK callback会硬拒绝候选。callback catalog覆盖Object虚方法、Runnable/Callable、Thread/TimerTask、序列化、Comparator与常见`java.util.function`/primitive-function合同，并且同时要求真实hierarchy关系和exact descriptor；这不恢复blanket override-slot veto。catalog外第三方framework callback及无法穷举的reflection/JNI/agent动态观察面仍作为allowlist/world授权接受的风险进入warning/report；current-JAR-only还要明确记录configured classpath及JAR外caller/observer未被分析。
+- `CLOSED_WORLD`或显式current-JAR-only Y授权只是分析scope声明，不是对外部agent/JNI hook不可见的安全承诺。
+- implementation symbol仍存在于native code，攻击者可以通过native call graph和动态trace恢复；本项目标是减少稳定metadata与批量mapping，不是隐藏可执行语义。
+
+验收：
+
+- lowering report写`retentionMode=internalNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`；packaging registration groups中无该target。
+- output JAR中没有declaration、`MethodInsn`、method Handle、bootstrap/ConstantDynamic或`EnclosingMethod`残留。
+- selected-target库仍包含完整hidden implementation/caller closure且export allowlist不扩大。
+- fake-JNI动态probe的binding数应按internalized target数量下降；剩余JVM entry仍可被hook，不把下降误报为`RegisterNatives`不可观察。
+- attacker regression比较同一输入开启/关闭该pass后的classfile surface、registration bindings、wrapper分类、native/generated-C大小和runtime parity。
+
+2026-07-31当前v2实测：71个`nativeLowered`中12个转为
+`internalNativeOnly`，0个`skipped`，registration由71降为59。
+`LaoShuUtils.verifyJson/chatJson/updateJson/updateNickJson`四个protected
+static target在input `javap`中存在，在output method table与registration groups中
+均不存在；`jar.internalizedMethodResiduals`、五目标artifact/symbol/plaintext audit
+全部通过。gated real-Zig fixture另在一次matrix invocation产出完整六目标动态库，
+并在Windows child JVM覆盖cross-owner protected static、same-owner
+protected-final instance、目标`<clinit>`先于call body执行，以及normal reference
+return和两条pending-exception跨nested-local-frame恢复。
+
+2026-08-01旧public扩展把exact allowlisted cross-owner public static与same-owner
+public-final instance加入同一个real-Zig fixture：六目标一次编译/链接成功，Windows
+child JVM parity验证删除后的normal reference result、pending exception与class-init
+语义。旧v2业务样本曾刻意保留7个allowlisted `LaoShuUtils` public static：输入中
+16个未解析reflection site使每个目标产生
+`METHOD_INTERNALIZATION_PUBLIC_REFLECTION_SCOPE_UNRESOLVED`，最终仍是71
+`nativeLowered`/0 `skipped`、10个`internalNativeOnly`和61个registration，artifact
+audit通过。该结果是历史fail-closed证据，但“未解析reflection全局否决public”的
+边界已被当前策略取代，不能再作为当前合同或验收；新回归必须分别验证exact observer
+硬拒绝、unbounded动态observer warning/report，以及非final same-owner exact public
+instance和allowlisted public static的删除与runtime parity。
+
+2026-08-01 02:52的新策略回归已完成：focused tests覆盖resolved exact observer硬拒绝、
+dynamic `Class.getMethod`/`MethodHandles.Lookup.find*` unsupported evidence、actual
+non-exact/cross-owner拒绝、parse-incomplete hierarchy保留与closed known-JVM-callback
+catalog；Windows real-Zig Dummy分别删除1个current-JAR allowlisted public static leaf，
+以及declared-closed world中的non-final public instance、protected instance和protected
+static共3项，child-JVM parity均通过。最新v2五目标构建仍为71 `nativeLowered`/0
+`skipped`，但达到14个`internalNativeOnly`和57个registration；7个allowlisted
+`LaoShuUtils` public static中`generateIV`、`encrypt`、`decrypt`和
+`base64ToPublicKey`已从method table/registration删除，另外3个因没有native caller而
+以`METHOD_INTERNALIZATION_NO_NATIVE_CALLER`保留。17个未解析reflection site只产生
+一条aggregate accepted-risk warning，artifact/symbol/plaintext/residual audit全部通过。
+五库raw总量2,570,726 B，Windows x64为496,640 B，output JAR为3,845,948 B；与前一
+随机build相比变化很小，不能把差异单独归因于本策略。
+
+本轮五库raw总量2,572,606 B，上一随机build为2,616,590 B；Windows x64
+497,664 B对503,808 B，output JAR 3,850,660 B对3,878,018 B。由于两轮使用不同
+随机build identity，这组下降只作方向性size evidence，不能单独归因于method
+internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_PROGRESS`；
+报告中的59个registration bindings不是动态hook验收的替代品。
+
 ### H2 — 删除全局 metadata 解码目录
 
 状态：`IN_PROGRESS`
@@ -425,11 +494,14 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
   compiler-internal兼容回归，不是新的production emission。
 - 每个不同 Java 字符串值形成一个小型 local helper group；相同值可在同一构建内
   去重，但不存在统一 token dispatcher、全局 pointer directory、business
-  decoder 或 business zeroizer。不同 build identity 会同时改变 helper symbol、
+  decoder 或 plaintext cache。不同 build identity 会同时改变 helper symbol、
   ciphertext 与派生材料。
 - 每个 helper 只持有自己的 ciphertext，在栈上解码 modified UTF-8，紧邻
   `NewStringUTF` 使用；无论 `NewStringUTF` 成功还是返回 `NULL`，随后都通过
-  inline volatile loop 清零整段临时明文并保持 JNI pending exception。
+  translation-unit内共享的metadata-free `noinline` zeroizer清零整段临时明文并
+  保持JNI pending exception。通用generated-C聚合scratch另使用同一个metadata-free
+  cleanup callback。两者只接收scratch地址/长度，不接收ciphertext、codec或JVM
+  metadata，不构成shared decoder。
 - registration/runtime metadata 继续使用独立的 native-text purpose、owner-local
   lifetime 与 codec/lookup；业务字符串 helper 不调用集中 metadata decoder。
 - 每个 helper 的 use identity 还会选择四种 codec family 之一和独立 schedule；
@@ -483,22 +555,25 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 
 已完成的第一个安全切片：
 
-- 每个 `LLVM_NATIVE_PATH` binding 都从 direct canonical、单层参数重排 bridge、
-  双层参数重排 bridge和bounded branched参数重排bridge中派生一种build-scoped
-  call topology。非branched bridge形态下wrapper按物理排列传参，最内层bridge
-  恢复LLVM function的规范参数顺序。
+- final native ABI传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface
+  binding固定采用bounded branched参数重排，使其不保留direct one-hop wrapper。
+  不传递两者的pure-native scalar binding仍从direct canonical、单层参数重排、
+  双层参数重排和branched四种shape中派生build-scoped call topology。非branched
+  形态下wrapper按物理排列传参，最内层bridge恢复LLVM function的规范参数顺序。
 - bridge 不执行 JNI 调用，不读取 Java object 内存，不改变 `jobject` /
   `jclass` 表示、ownership 或 local-reference lifetime，也不检查、清除或
   新建 pending exception。
-- shape、bridge symbol、参数排列和 wrapper 物理顺序由 invocation build key
-  的独立 domain 派生；同 build/binding 可复现，不同 build 可以选择不同 shape。
+- profile、shape内的bridge symbol、参数排列和wrapper物理顺序由invocation
+  build key的独立domain派生；同build/binding可复现，pure-native binding在不同
+  build可以选择不同shape，semantic-surface binding则保持branched profile并改变
+  route细节。
 - 不生成 persistent/volatile function-pointer data slot。bridge 保持 C
   `static`，不扩大 dynamic export allowlist；direct shape 直接调用规范 LLVM
   function。
 - branched形态只使用wrapper activation-local volatile predicate，在一层route
-  与两层route间选择；最多三个`static` bridge，不添加新的逻辑参数或JVM状态。
-  四种shape按build-derived selector选择，从设计上把较昂贵branched形态限制为
-  四种候选之一，而不是让每个wrapper无界展开。
+  与两层route间选择；最多三个`static __attribute__((noinline, used))` bridge，
+  不添加新的逻辑参数或JVM状态。bridge不使用`optnone`，避免把正常size
+  optimization一并关闭。
 - 这个branch只增加静态classifier需要处理的topology，不是完整性检查或安全
   边界；动态hook与结构化binary analysis仍可观察或恢复实际route。
 - `HostNativeLocalAbiBridgeCParityTest`会真实编译并分别执行branched的一层与
@@ -506,6 +581,34 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
   conditional形态也经过host C compile/run。96-site `-O2` object对照另以固定
   header allowance和per-site上限阻断无界拓扑膨胀；这不是跨平台final-library
   hard cap，最终库仍使用artifact size evidence观测。
+
+本轮同时把generated C compile unit切到`ReleaseSmall`，per-class LLVM input与
+final link module保持`ReleaseSafe`；observable compile unit按source kind同质分组，
+避免C/LLVM在batch中共用错误optimization mode。
+
+2026-07-31在当前v2输入上完成了两次默认随机build与Windows x64
+fake-JNI/Ghidra复验：
+
+- 两次build均为71 `nativeLowered`、0 `skipped`，五个selected target全部成功，
+  artifact/symbol audit通过；Windows动态导出只有`JNI_OnLoad`，静态encoded
+  metadata directory仍为0。
+- 第一轮相对旧基线的五库raw总量由3,502,027 B降到2,611,446 B
+  （-25.43%）；Windows x64由686,080 B降到503,296 B（-26.64%）。
+  output JAR由3,969,705 B降到3,872,737 B（-2.44%）。generated JNI C由
+  4,800,630 B增到4,842,471 B（+0.87%），表明最终体积收益来自C优化与重复
+  machine-code合并，不是靠减少hardening source。
+- 第二轮五库raw总量为2,616,590 B；相对第一轮，各目标库size差异为
+  0%–0.86%，未出现randomized topology导致的无界体积波动。
+- source topology由旧第一轮的15/22/19/15
+  （direct/single/double/branched）变为4/3/5/59。Ghidra最终wrapper分类由
+  35 direct / 26 multiple-callee / 10 unresolved变为4 / 59 / 8；第二个新
+  build为3 / 58 / 10。
+- 两个新build的71个wrapper相同RVA为0；双方可解析的60个binding中，相同
+  resolution fingerprint只有3个。`decrypt`、`encrypt`、`encryptRSA`、
+  `verifyJson`与`createCombinedDigest`在两次build中都呈现two-route
+  multiple-callee，而不是旧样本的direct one-hop。
+- fake JNI probe仍能完整观察11 owners / 71 bindings。这符合
+  `RegisterNatives`的动态边界，不能把上述静态分析成本提升解释为隐藏运行时映射。
 
 这个切片只覆盖 wrapper 到 LLVM implementation 的边界。field/static-field
 与 method dispatch 已改为 concrete-binding hash-only helper，并移除了统一
@@ -773,7 +876,7 @@ binding再次确认运行时映射可观察，不能被报告成隐藏成功。
 
 ## 实施顺序
 
-1. H1：先移除稳定导出入口。
+1. H1/H1b：移除稳定导出入口，并删除只在native closure内使用的Java method entry。
 2. H2/H3：按 owner 拆 registration metadata，删除全局 decode-all 目录并清零。
 3. H4：引入 build identity/KDF，默认随机、显式 seed 可复现。
 4. H5：业务字符串改为按 token/site 临时解码。
@@ -788,5 +891,5 @@ binding再次确认运行时映射可观察，不能被报告成隐藏成功。
 - 没有原始 bytecode 副本或 silent fallback；
 - 没有单一静态全局表/入口能恢复绝大多数 metadata、字符串或 binding；
 - 默认两个构建显著不同，显式 seed 可复现；
-- dynamic observation 仍然可能，但需要按 owner、调用点或运行路径采集；
+- dynamic observation 仍然可能；internal-only target不再出现在registration hook中，但剩余JVM entry仍可捕获，其他语义需要按owner、native调用点或运行路径采集；
 - 所有改变通过 JVM 语义 parity、六目标构建/export audit、artifact audit 和 attacker regression。

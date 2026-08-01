@@ -1307,7 +1307,12 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         String source = generatedJniSource(workspace);
         assertTrue(source.contains("jobject j2ll_rt_string_constant_"));
         assertTrue(source.contains("j2ll_business_text_"), source);
-        assertTrue(source.contains("volatile unsigned char* clear_cursor"), source);
+        assertTrue(source.contains(
+                "j2ll_native_text_zero(j2ll_business_text_"),
+                source);
+        assertFalse(source.contains(
+                "volatile unsigned char* clear_cursor"),
+                source);
         assertFalse(source.contains(
                 "jobject j2ll_rt_string_constant(JNIEnv* env, int64_t token)"));
         assertFalse(source.contains("j2ll_encrypted_string_constant_table"));
@@ -1348,7 +1353,10 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                 differential.outputRun().stdout());
         String source = generatedJniSource(workspace);
         assertTrue(source.contains("j2ll_business_text_"));
-        assertTrue(source.contains("volatile unsigned char* clear_cursor"));
+        assertTrue(source.contains(
+                "j2ll_native_text_zero(j2ll_business_text_"));
+        assertFalse(source.contains(
+                "volatile unsigned char* clear_cursor"));
         assertFalse(source.contains("j2ll_encrypted_string_constant_table"));
         assertFalse(source.contains("j2ll_string_constant_table"));
         assertFalse(source.contains(
@@ -2453,6 +2461,8 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": true
                     },

@@ -17,6 +17,8 @@ public final class PackagingDiagnostics {
             DiagnosticCode.of("GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW");
     public static final DiagnosticCode FIELD_INTERNALIZATION_REWRITE_FAILED =
             DiagnosticCode.of("FIELD_INTERNALIZATION_REWRITE_FAILED");
+    public static final DiagnosticCode METHOD_INTERNALIZATION_REWRITE_FAILED =
+            DiagnosticCode.of("METHOD_INTERNALIZATION_REWRITE_FAILED");
 
     private PackagingDiagnostics() {
     }

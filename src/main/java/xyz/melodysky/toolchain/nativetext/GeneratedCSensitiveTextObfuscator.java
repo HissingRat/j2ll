@@ -94,8 +94,8 @@ final class GeneratedCSensitiveTextObfuscator {
             prologue.append("    } ")
                     .append(scratch)
                     .append(" __attribute__((cleanup(")
-                    .append(cleanupSymbol(List.copyOf(
-                            groupedEncodings.values())))
+                    .append(NativeScratchZeroizerSource
+                            .CLEANUP_FUNCTION_NAME)
                     .append("))) = {\n")
                     .append("        .length = ");
             for (int index = 0; index < functionEncodings.size(); index++) {
@@ -124,9 +124,7 @@ final class GeneratedCSensitiveTextObfuscator {
                     function.start(),
                     prologue.toString()));
         }
-        return preamble(
-                        List.copyOf(groupedEncodings.values()),
-                        functionPlans)
+        return preamble(functionPlans)
                 + GeneratedCTextEdits.apply(fragment, edits);
     }
 
@@ -178,9 +176,7 @@ final class GeneratedCSensitiveTextObfuscator {
         return indexes;
     }
 
-    private String preamble(
-            List<NativeTextEncoding> encodings,
-            List<FunctionPlan> functionPlans) {
+    private String preamble(List<FunctionPlan> functionPlans) {
         StringBuilder source = new StringBuilder("""
                 #if !defined(__clang__) && !defined(__GNUC__)
                 #error "j2ll activation-local native text cleanup requires clang/gcc cleanup support"
@@ -195,13 +191,7 @@ final class GeneratedCSensitiveTextObfuscator {
                                 function.scratch()));
             }
         }
-        return source.append("static void ")
-                .append(cleanupSymbol(encodings))
-                .append("(void* memory) {\n")
-                .append("    const size_t length = *((const size_t*)memory);\n")
-                .append("    j2ll_native_text_zero((unsigned char*)memory + sizeof(size_t), length);\n")
-                .append("}\n\n")
-                .toString();
+        return source.toString();
     }
 
     private String lazyUseMacro(
@@ -255,10 +245,6 @@ final class GeneratedCSensitiveTextObfuscator {
 
     private String useMacro(NativeTextEncoding encoding) {
         return "j2ll_nt_use_" + token(encoding);
-    }
-
-    private String cleanupSymbol(List<NativeTextEncoding> encodings) {
-        return "j2ll_nt_cleanup_" + token(encodings.get(0));
     }
 
     private record LiteralGroup(int functionStart, int functionEnd, String value) {}

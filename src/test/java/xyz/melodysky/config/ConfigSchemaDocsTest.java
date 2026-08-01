@@ -72,6 +72,7 @@ class ConfigSchemaDocsTest {
                 "methodSplitting",
                 "callIndirection",
                 "fieldInternalization",
+                "methodInternalization",
                 "methodTableHiding",
                 "blockNameObfuscation")) {
             assertEquals("boolean", irProperties.getAsJsonObject(field).get("type").getAsString(), field);
@@ -89,6 +90,21 @@ class ConfigSchemaDocsTest {
                         .getAsJsonObject("ir")
                         .getAsJsonArray("required"))
                 .contains("blockNameObfuscation"));
+        assertTrue(strings(protectionProperties
+                        .getAsJsonObject("ir")
+                        .getAsJsonArray("required"))
+                .contains("methodInternalization"));
+        JsonObject publicAllowList = irProperties.getAsJsonObject(
+                "publicMethodInternalizationAllowList");
+        assertEquals("array", publicAllowList.get("type").getAsString());
+        assertEquals(
+                "string",
+                publicAllowList.getAsJsonObject("items").get("type").getAsString());
+        assertTrue(publicAllowList.get("uniqueItems").getAsBoolean());
+        assertTrue(strings(protectionProperties
+                        .getAsJsonObject("ir")
+                        .getAsJsonArray("required"))
+                .contains("publicMethodInternalizationAllowList"));
         assertFalse(llvmProperties.has("visibilityHardening"));
     }
 

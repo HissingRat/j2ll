@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.nio.file.Path;
@@ -27,6 +28,8 @@ class ConfigLoaderTest {
         assertEquals(SignaturePolicy.FAIL, config.signaturePolicy());
         assertTrue(config.intermediates().includePerClassLlvm());
         assertTrue(config.protection().ir().constantEncryption());
+        assertFalse(config.protection().ir().methodInternalization());
+        assertTrue(config.protection().ir().publicMethodInternalizationAllowList().isEmpty());
         assertTrue(config.protection().ir().blockNameObfuscation());
         assertNotNull(config.protection().seed());
         assertEquals(64, config.protection().seed().length());
@@ -203,6 +206,136 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void enabledMethodInternalizationRequiresBuildConfirmationOutsideClosedWorld() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("methodInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.config().orElseThrow().protection().ir().methodInternalization());
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.code().equals(ConfigDiagnostics.METHOD_INTERNALIZATION_REQUIRES_CLOSED_WORLD)
+                        && diagnostic.severity() == xyz.melodysky.diagnostic.DiagnosticSeverity.WARNING
+                        && "confirmationRequired".equals(diagnostic.decision())));
+    }
+
+    @Test
+    void enabledMethodInternalizationNeedsNoConfirmationInClosedWorld() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.addProperty("worldModel", "CLOSED_WORLD");
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("methodInternalization", true);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.code().equals(ConfigDiagnostics.METHOD_INTERNALIZATION_REQUIRES_CLOSED_WORLD)));
+    }
+
+    @Test
+    void rejectsConfigMissingMethodInternalization() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .remove("methodInternalization");
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
+                        && diagnostic.message().contains("protection.ir.methodInternalization")));
+    }
+
+    @Test
+    void acceptsExactPublicMethodInternalizationSelectorsInDeclaredOrder() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        JsonArray allowList = new JsonArray();
+        allowList.add("fixture/PublicApi#zeta!(Ljava/lang/String;)V");
+        allowList.add("fixture/PublicApi#alpha!()I");
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .add("publicMethodInternalizationAllowList", allowList);
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertFalse(result.hasErrors(), result.diagnostics().toString());
+        assertEquals(
+                java.util.List.of(
+                        "fixture/PublicApi#zeta!(Ljava/lang/String;)V",
+                        "fixture/PublicApi#alpha!()I"),
+                result.config().orElseThrow().protection().ir()
+                        .publicMethodInternalizationAllowList().stream()
+                        .map(Selector::raw)
+                        .toList());
+    }
+
+    @Test
+    void rejectsClassWildcardAndDuplicatePublicMethodAuthorization() {
+        for (java.util.List<String> invalid : java.util.List.of(
+                java.util.List.of("fixture/PublicApi"),
+                java.util.List.of("fixture/*#run!()V"),
+                java.util.List.of(
+                        "fixture/PublicApi#run!()V",
+                        "fixture/PublicApi#run!()V"))) {
+            JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+            JsonArray allowList = new JsonArray();
+            invalid.forEach(allowList::add);
+            json.getAsJsonObject("protection")
+                    .getAsJsonObject("ir")
+                    .add("publicMethodInternalizationAllowList", allowList);
+
+            ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+            assertTrue(result.hasErrors(), invalid.toString());
+            assertTrue(result.diagnostics().stream()
+                    .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_SELECTOR)
+                            && diagnostic.message().contains("publicMethodInternalizationAllowList")),
+                    result.diagnostics().toString());
+        }
+    }
+
+    @Test
+    void rejectsMissingNonArrayOrNonStringPublicMethodAuthorizationList() {
+        JsonObject missing = JsonParser.parseString(baseJson()).getAsJsonObject();
+        missing.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .remove("publicMethodInternalizationAllowList");
+        ConfigLoadResult missingResult = new ConfigLoader().load(missing, Path.of("/cfg"));
+        assertTrue(missingResult.hasErrors());
+        assertTrue(missingResult.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
+                        && diagnostic.message().contains("publicMethodInternalizationAllowList")));
+
+        JsonObject nonArray = JsonParser.parseString(baseJson()).getAsJsonObject();
+        nonArray.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .addProperty("publicMethodInternalizationAllowList", true);
+        ConfigLoadResult nonArrayResult = new ConfigLoader().load(nonArray, Path.of("/cfg"));
+        assertTrue(nonArrayResult.hasErrors());
+        assertTrue(nonArrayResult.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
+                        && diagnostic.message().contains("publicMethodInternalizationAllowList")));
+
+        JsonObject invalidEntry = JsonParser.parseString(baseJson()).getAsJsonObject();
+        JsonArray allowList = new JsonArray();
+        allowList.add(7);
+        invalidEntry.getAsJsonObject("protection")
+                .getAsJsonObject("ir")
+                .add("publicMethodInternalizationAllowList", allowList);
+        ConfigLoadResult invalidResult = new ConfigLoader().load(invalidEntry, Path.of("/cfg"));
+        assertTrue(invalidResult.hasErrors());
+        assertTrue(invalidResult.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
+                        && diagnostic.message().contains("publicMethodInternalizationAllowList[0]")));
+    }
+
+    @Test
     void rejectsMissingBlockNameObfuscation() {
         JsonObject json = JsonParser.parseString(baseJson()
                         .replace("\"blockNameObfuscation\": true", "\"legacyBlockName\": true"))
@@ -343,6 +476,8 @@ class ConfigLoaderTest {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": true
                     },

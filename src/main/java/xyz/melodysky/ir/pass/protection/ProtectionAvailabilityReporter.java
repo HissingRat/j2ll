@@ -29,6 +29,7 @@ public final class ProtectionAvailabilityReporter {
                         "methodSplitting",
                         "callIndirection",
                         "fieldInternalization",
+                        "methodInternalization",
                         "methodTableHiding"),
                 Set.of(
                         "nameObfuscation",
@@ -53,6 +54,7 @@ public final class ProtectionAvailabilityReporter {
             warnIfMissing(diagnostics, "methodSplitting", config.ir().methodSplitting(), implementedIrPasses);
             warnIfMissing(diagnostics, "callIndirection", config.ir().callIndirection(), implementedIrPasses);
             warnIfMissing(diagnostics, "fieldInternalization", config.ir().fieldInternalization(), implementedIrPasses);
+            warnIfMissing(diagnostics, "methodInternalization", config.ir().methodInternalization(), implementedIrPasses);
             warnIfMissing(diagnostics, "methodTableHiding", config.ir().methodTableHiding(), implementedIrPasses);
             warnIfMissing(diagnostics, "blockNameObfuscation", config.ir().blockNameObfuscation(), implementedIrPasses);
         }

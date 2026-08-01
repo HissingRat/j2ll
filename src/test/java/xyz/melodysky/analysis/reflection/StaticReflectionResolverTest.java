@@ -82,6 +82,25 @@ class StaticReflectionResolverTest {
     }
 
     @Test
+    void publicMethodAndMethodHandleLookupsProduceUnsupportedEvidence() {
+        Fixture fixture = fixture();
+        ReflectionPlan plan = new StaticReflectionResolver().resolve(
+                fixture.program(),
+                fixture.metadataIndex());
+
+        assertTrue(plan.unsupportedSites().stream().anyMatch(site ->
+                site.method().equals("dynamicGetMethod")
+                        && site.reasonCode().equals(
+                                StaticReflectionDiagnostics
+                                        .UNRESOLVED_PUBLIC_METHOD_LOOKUP)));
+        assertTrue(plan.unsupportedSites().stream().anyMatch(site ->
+                site.method().equals("dynamicMethodHandleLookup")
+                        && site.reasonCode().equals(
+                                StaticReflectionDiagnostics
+                                        .UNRESOLVED_METHOD_HANDLE_LOOKUP)));
+    }
+
+    @Test
     void callGraphIncludesStaticallyResolvedReflectiveTarget() {
         Fixture fixture = fixture();
         ClassHierarchy hierarchy = new ClassHierarchyBuilder()

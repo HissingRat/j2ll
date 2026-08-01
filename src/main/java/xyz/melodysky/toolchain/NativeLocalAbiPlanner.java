@@ -13,14 +13,27 @@ import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 /** Derives a domain-separated local ABI topology from one invocation build key. */
 final class NativeLocalAbiPlanner {
     private static final byte[] DOMAIN =
-            "j2ll/native-local-abi/v3".getBytes(StandardCharsets.UTF_8);
+            "j2ll/native-local-abi/v4".getBytes(StandardCharsets.UTF_8);
 
     NativeLocalAbiPlan plan(
             NativeTextBuildKey buildKey,
             String methodKey,
             int parameterCount) {
+        return plan(
+                buildKey,
+                methodKey,
+                parameterCount,
+                NativeLocalAbiProfile.COMPACT_DIVERSE);
+    }
+
+    NativeLocalAbiPlan plan(
+            NativeTextBuildKey buildKey,
+            String methodKey,
+            int parameterCount,
+            NativeLocalAbiProfile profile) {
         Objects.requireNonNull(buildKey, "buildKey");
         Objects.requireNonNull(methodKey, "methodKey");
+        Objects.requireNonNull(profile, "profile");
         if (methodKey.isBlank()) {
             throw new IllegalArgumentException("methodKey must not be blank");
         }
@@ -29,14 +42,19 @@ final class NativeLocalAbiPlanner {
                     "parameterCount must not be negative");
         }
 
-        byte[] identity = derive(buildKey, methodKey, "identity");
+        byte[] identity =
+                derive(buildKey, methodKey, profile, "identity");
         String token = HexFormat.of().formatHex(identity, 0, 12);
-        NativeLocalAbiPlan.Shape[] shapes =
-                NativeLocalAbiPlan.Shape.values();
-        NativeLocalAbiPlan.Shape shape = shapes[
+        List<NativeLocalAbiPlan.Shape> shapes =
+                profile.candidateShapes();
+        NativeLocalAbiPlan.Shape shape = shapes.get(
                 Byte.toUnsignedInt(
-                                derive(buildKey, methodKey, "shape")[0])
-                        % shapes.length];
+                                derive(
+                                        buildKey,
+                                        methodKey,
+                                        profile,
+                                        "shape")[0])
+                        % shapes.size());
         ArrayList<String> bridgeSymbols =
                 new ArrayList<>(shape.bridgeCount());
         ArrayList<List<Integer>> parameterOrders =
@@ -52,6 +70,7 @@ final class NativeLocalAbiPlanner {
             parameterOrders.add(parameterOrder(
                     buildKey,
                     methodKey,
+                    profile,
                     parameterCount,
                     bridge));
         }
@@ -60,10 +79,12 @@ final class NativeLocalAbiPlanner {
                 ? ByteBuffer.wrap(derive(
                                 buildKey,
                                 methodKey,
+                                profile,
                                 "branch-salt"))
                         .getInt()
                 : 0;
         return new NativeLocalAbiPlan(
+                profile,
                 shape,
                 parameterCount,
                 bridgeSymbols,
@@ -91,6 +112,7 @@ final class NativeLocalAbiPlanner {
     private List<Integer> parameterOrder(
             NativeTextBuildKey buildKey,
             String methodKey,
+            NativeLocalAbiProfile profile,
             int parameterCount,
             int bridge) {
         ArrayList<RankedParameter> ranked = new ArrayList<>();
@@ -100,6 +122,7 @@ final class NativeLocalAbiPlanner {
                     derive(
                             buildKey,
                             methodKey,
+                            profile,
                             "bridge:"
                                     + bridge
                                     + ":parameter:"
@@ -117,6 +140,7 @@ final class NativeLocalAbiPlanner {
     private byte[] derive(
             NativeTextBuildKey buildKey,
             String methodKey,
+            NativeLocalAbiProfile profile,
             String use) {
         MessageDigest digest = sha256();
         updateLengthPrefixed(digest, DOMAIN);
@@ -124,6 +148,9 @@ final class NativeLocalAbiPlanner {
         updateLengthPrefixed(
                 digest,
                 methodKey.getBytes(StandardCharsets.UTF_8));
+        updateLengthPrefixed(
+                digest,
+                profile.name().getBytes(StandardCharsets.UTF_8));
         updateLengthPrefixed(
                 digest,
                 use.getBytes(StandardCharsets.UTF_8));

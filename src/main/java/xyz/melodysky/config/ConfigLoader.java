@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -58,6 +59,8 @@ public final class ConfigLoader {
             "methodSplitting",
             "callIndirection",
             "fieldInternalization",
+            "methodInternalization",
+            "publicMethodInternalizationAllowList",
             "methodTableHiding",
             "blockNameObfuscation");
     private static final Set<String> LLVM_FIELDS = Set.of(
@@ -112,9 +115,26 @@ public final class ConfigLoader {
                             + "build requires confirmation before using current-input-JAR-only analysis")
                     .withDecision("confirmationRequired"));
         }
+        boolean methodInternalizationEnabled = protectionObject.get("enabled").getAsBoolean()
+                && irProtectionObject.get("enabled").getAsBoolean()
+                && irProtectionObject
+                .get("methodInternalization")
+                .getAsBoolean();
+        if (methodInternalizationEnabled && worldModel != AnalysisWorld.CLOSED_WORLD) {
+            diagnostics.add(Diagnostic.warning(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.METHOD_INTERNALIZATION_REQUIRES_CLOSED_WORLD,
+                    "protection.ir.methodInternalization requires worldModel=CLOSED_WORLD; "
+                            + "build requires confirmation before using current-input-JAR-only analysis")
+                    .withDecision("confirmationRequired"));
+        }
         SignaturePolicy signaturePolicy = parseSignaturePolicy(root, diagnostics);
         List<Selector> whiteList = parseSelectors("whiteList", root.getAsJsonArray("whiteList"), diagnostics);
         List<Selector> blackList = parseSelectors("blackList", root.getAsJsonArray("blackList"), diagnostics);
+        List<Selector> publicMethodInternalizationAllowList = parseExactMethodSelectors(
+                "protection.ir.publicMethodInternalizationAllowList",
+                irProtectionObject.getAsJsonArray("publicMethodInternalizationAllowList"),
+                diagnostics);
         TargetConfig target = parseTarget(root.getAsJsonObject("target"), diagnostics);
         List<TargetTriple> targets = target.enabledTargets();
         if (targets.isEmpty()) {
@@ -170,7 +190,11 @@ public final class ConfigLoader {
                 signaturePolicy,
                 signing,
                 parseIntermediates(root.getAsJsonObject("intermediates")),
-                parseProtection(root.getAsJsonObject("protection"), seed, seedMode));
+                parseProtection(
+                        root.getAsJsonObject("protection"),
+                        seed,
+                        seedMode,
+                        publicMethodInternalizationAllowList));
         return new ConfigLoadResult(Optional.of(config), diagnostics);
     }
 
@@ -204,6 +228,12 @@ public final class ConfigLoader {
             validateBoolean(ir, "methodSplitting", "protection.ir.methodSplitting", diagnostics);
             validateBoolean(ir, "callIndirection", "protection.ir.callIndirection", diagnostics);
             validateBoolean(ir, "fieldInternalization", "protection.ir.fieldInternalization", diagnostics);
+            validateBoolean(ir, "methodInternalization", "protection.ir.methodInternalization", diagnostics);
+            validateStringArray(
+                    ir,
+                    "publicMethodInternalizationAllowList",
+                    "protection.ir.publicMethodInternalizationAllowList",
+                    diagnostics);
             validateBoolean(ir, "methodTableHiding", "protection.ir.methodTableHiding", diagnostics);
             validateBoolean(ir, "blockNameObfuscation", "protection.ir.blockNameObfuscation", diagnostics);
         }
@@ -305,6 +335,39 @@ public final class ConfigLoader {
         }
     }
 
+    private void validateStringArray(
+            JsonObject owner,
+            String field,
+            String path,
+            List<Diagnostic> diagnostics) {
+        if (!owner.has(field)) {
+            return;
+        }
+        JsonElement value = owner.get(field);
+        if (!value.isJsonArray()) {
+            diagnostics.add(Diagnostic.error(
+                    DiagnosticStage.CONFIG,
+                    ConfigDiagnostics.INVALID_FIELD_VALUE,
+                    "config field must be an array: " + path));
+            return;
+        }
+        int index = 0;
+        for (JsonElement element : value.getAsJsonArray()) {
+            if (!element.isJsonPrimitive()
+                    || !element.getAsJsonPrimitive().isString()) {
+                diagnostics.add(Diagnostic.error(
+                        DiagnosticStage.CONFIG,
+                        ConfigDiagnostics.INVALID_FIELD_VALUE,
+                        "config field array entry must be a string: "
+                                + path
+                                + "["
+                                + index
+                                + "]"));
+            }
+            index++;
+        }
+    }
+
     private SignaturePolicy parseSignaturePolicy(JsonObject root, List<Diagnostic> diagnostics) {
         try {
             return SignaturePolicy.parse(root.get("signaturePolicy").getAsString());
@@ -340,6 +403,43 @@ public final class ConfigLoader {
             String raw = value.getAsString();
             try {
                 selectors.add(parser.parse(raw));
+            } catch (IllegalArgumentException exception) {
+                diagnostics.add(Diagnostic.error(
+                        DiagnosticStage.CONFIG,
+                        ConfigDiagnostics.INVALID_SELECTOR,
+                        field + " contains invalid selector " + raw + ": " + exception.getMessage()));
+            }
+        }
+        return List.copyOf(selectors);
+    }
+
+    private List<Selector> parseExactMethodSelectors(
+            String field,
+            JsonArray values,
+            List<Diagnostic> diagnostics) {
+        SelectorParser parser = new SelectorParser();
+        ArrayList<Selector> selectors = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (JsonElement value : values) {
+            String raw = value.getAsString();
+            try {
+                Selector selector = parser.parse(raw);
+                if (!selector.isMethodSelector()) {
+                    throw new IllegalArgumentException(
+                            "entry must identify one exact method, not a class");
+                }
+                if (selector.classPattern().contains("*")) {
+                    throw new IllegalArgumentException(
+                            "wildcards are not allowed in public method authorization");
+                }
+                if (!seen.add(selector.raw())) {
+                    diagnostics.add(Diagnostic.error(
+                            DiagnosticStage.CONFIG,
+                            ConfigDiagnostics.INVALID_SELECTOR,
+                            field + " contains duplicate selector " + raw));
+                    continue;
+                }
+                selectors.add(selector);
             } catch (IllegalArgumentException exception) {
                 diagnostics.add(Diagnostic.error(
                         DiagnosticStage.CONFIG,
@@ -412,17 +512,22 @@ public final class ConfigLoader {
     private ProtectionConfig parseProtection(
             JsonObject protection,
             String seed,
-            ProtectionSeedMode seedMode) {
+            ProtectionSeedMode seedMode,
+            List<Selector> publicMethodInternalizationAllowList) {
         return new ProtectionConfig(
                 protection.get("enabled").getAsBoolean(),
                 seed,
                 seedMode,
-                parseIrProtection(protection.getAsJsonObject("ir")),
+                parseIrProtection(
+                        protection.getAsJsonObject("ir"),
+                        publicMethodInternalizationAllowList),
                 parseLlvmProtection(protection.getAsJsonObject("llvm")),
                 parseBinaryProtection(protection.getAsJsonObject("binary")));
     }
 
-    private IrProtectionConfig parseIrProtection(JsonObject ir) {
+    private IrProtectionConfig parseIrProtection(
+            JsonObject ir,
+            List<Selector> publicMethodInternalizationAllowList) {
         return new IrProtectionConfig(
                 ir.get("enabled").getAsBoolean(),
                 ir.get("controlFlowFlattening").getAsBoolean(),
@@ -434,6 +539,8 @@ public final class ConfigLoader {
                 ir.get("methodSplitting").getAsBoolean(),
                 ir.get("callIndirection").getAsBoolean(),
                 ir.get("fieldInternalization").getAsBoolean(),
+                ir.get("methodInternalization").getAsBoolean(),
+                publicMethodInternalizationAllowList,
                 ir.get("methodTableHiding").getAsBoolean(),
                 ir.get("blockNameObfuscation").getAsBoolean());
     }

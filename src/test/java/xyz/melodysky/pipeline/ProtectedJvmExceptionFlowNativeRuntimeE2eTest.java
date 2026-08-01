@@ -117,6 +117,8 @@ class ProtectedJvmExceptionFlowNativeRuntimeE2eTest {
                       "methodSplitting": true,
                       "callIndirection": true,
                       "fieldInternalization": false,
+                      "methodInternalization": false,
+                      "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": true,
                       "blockNameObfuscation": true
                     },
