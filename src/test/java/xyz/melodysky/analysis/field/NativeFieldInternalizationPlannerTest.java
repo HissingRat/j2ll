@@ -235,7 +235,7 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
     }
 
     @Test
-    void rejectsInstanceAccessorSoInheritedCallsCannotPartitionStaticStateByReceiverClass() {
+    void internalizesPrivateStaticReferenceAccessedBySameOwnerInstanceLlvmMethod() {
         ParsedField field = field(
                 OWNER,
                 "state",
@@ -271,8 +271,42 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
                 .orElseThrow();
 
         assertFalse(index.accessesFor(decision.field()).get(0).methodStatic());
-        assertReason(decision, FieldInternalizationReason.ACCESS_METHOD_NOT_STATIC);
+        assertTrue(decision.internalized(), decision.reasons().toString());
+    }
+
+    @Test
+    void keepsPrivateStaticReferenceWhenSameOwnerInstanceAccessorIsNotLlvmNative() {
+        String descriptor = "[B";
+        FieldId fieldId = new FieldId(OWNER, "digest", descriptor);
+        ParsedField field = field(
+                OWNER,
+                fieldId.name(),
+                descriptor,
+                ACC_PRIVATE | ACC_STATIC);
+        ParsedMethod instanceAccessor = method(
+                ACC_PUBLIC,
+                OWNER,
+                "readFromInstance",
+                new FieldInsnNode(GETSTATIC, OWNER, fieldId.name(), descriptor),
+                new InsnNode(POP),
+                new InsnNode(RETURN));
+        FieldUseIndex index = analyzer.analyze(program(parsedClass(
+                OWNER,
+                List.of(field),
+                List.of(instanceAccessor))));
+
+        NativeFieldInternalizationDecision decision = plan(
+                        index,
+                        AnalysisWorld.CLOSED_WORLD,
+                        true,
+                        1L,
+                        ignored -> FieldAccessImplementationPath.NON_LLVM_PATH)
+                .decisionFor(fieldId)
+                .orElseThrow();
+
+        assertFalse(index.accessesFor(fieldId).get(0).methodStatic());
         assertFalse(decision.internalized());
+        assertReason(decision, FieldInternalizationReason.ACCESS_PATH_NOT_LLVM_NATIVE);
     }
 
     @Test

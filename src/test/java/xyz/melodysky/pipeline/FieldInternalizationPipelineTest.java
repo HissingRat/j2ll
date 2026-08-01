@@ -123,6 +123,70 @@ class FieldInternalizationPipelineTest implements Opcodes {
                 diagnostic.message().contains("missing-dependency.jar")));
     }
 
+    @Test
+    void finalLlvmPathAllowsSameOwnerInstanceAccessor() throws Exception {
+        ParsedClass parsedClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        OWNER + ".class",
+                        candidateClass(ACC_PRIVATE),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        ParsedMethod parsedMethod = parsedClass.methods().stream()
+                .filter(method -> method.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+        ParsedProgram program = new ParsedProgram(List.of(parsedClass));
+        IrValue resultValue = new IrValue("%state", IrType.I32);
+        IrMethod irMethod = new IrMethod(
+                OWNER,
+                "read",
+                "()I",
+                IrType.I32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.fieldGet(
+                                resultValue,
+                                IrOpcode.GET_STATIC,
+                                List.of(),
+                                FIELD_KEY)),
+                        IrTerminator.returnValue(resultValue))));
+
+        Path inputJar = temp.resolve("instance-input.jar");
+        try (JarOutputStream ignored =
+                new JarOutputStream(Files.newOutputStream(inputJar))) {
+            // A valid empty JAR is enough for multi-release entry discovery.
+        }
+        FieldInternalizationPipelineResult result =
+                new FieldInternalizationPipeline().run(
+                        config(inputJar, temp.resolve("missing-instance-dependency.jar")),
+                        program,
+                        Map.of(irMethod.methodKey(), irMethod),
+                        implementationPlan(parsedMethod),
+                        23L,
+                        WholeProgramAnalysisPolicy.currentJarOnly(
+                                List.of(WholeProgramAnalysisFeature.FIELD_INTERNALIZATION)));
+
+        assertFalse(parsedMethod.accessFlags().isStatic());
+        assertEquals(1, result.plan().internalizedFields().size());
+        assertFalse(result.plan()
+                .internalizedFields()
+                .get(0)
+                .accesses()
+                .get(0)
+                .methodStatic());
+        assertEquals(
+                IrOpcode.GET_NATIVE_STATIC,
+                result.methods()
+                        .get(irMethod.methodKey())
+                        .blocks()
+                        .get(0)
+                        .instructions()
+                        .get(0)
+                        .opcode());
+    }
+
     private ResolvedConfig config(Path inputJar, Path missingClasspath) {
         TargetConfig target = TargetConfig.single(TargetTriple.LINUX_X64);
         return new ResolvedConfig(
@@ -193,12 +257,16 @@ class FieldInternalizationPipelineTest implements Opcodes {
     }
 
     private byte[] candidateClass() {
+        return candidateClass(ACC_PRIVATE | ACC_STATIC);
+    }
+
+    private byte[] candidateClass(int methodAccess) {
         ClassWriter writer = new ClassWriter(0);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, OWNER, null, "java/lang/Object", null);
         writer.visitField(ACC_PRIVATE | ACC_STATIC, "state", "I", null, null)
                 .visitEnd();
         MethodVisitor method = writer.visitMethod(
-                ACC_PRIVATE | ACC_STATIC,
+                methodAccess,
                 "read",
                 "()I",
                 null,
@@ -206,7 +274,7 @@ class FieldInternalizationPipelineTest implements Opcodes {
         method.visitCode();
         method.visitFieldInsn(GETSTATIC, OWNER, "state", "I");
         method.visitInsn(IRETURN);
-        method.visitMaxs(1, 0);
+        method.visitMaxs(1, (methodAccess & ACC_STATIC) == 0 ? 1 : 0);
         method.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();

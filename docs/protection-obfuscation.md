@@ -369,13 +369,22 @@ generated JNI C从4,800,630 B增至4,842,471 B（+0.87%），说明缩减来自
 当前 v1 接受 input base class 中的 `private static boolean/byte/short/char/int/long/float/double` 与 JVM reference/array 字段，并进一步要求：
 
 - 非 final/volatile/synthetic/enum-generated，无 ConstantValue、Signature、annotation/type-annotation；字段自身不能被 `<clinit>` 访问，owner 不能带 serialization 语义或 multi-release counterpart。仅存在无关字段初始化的 `<clinit>` 不再 owner-wide 阻断。
-- 每个访问当前都是 same-owner static method，且每个 accessor 的最终 method status 必须为 `nativeLowered`，implementation path 还必须支持对应 internalized-storage ABI。当前 primitive/reference/array storage lowering 都要求最终 LLVM-backed slot path；普通 template、unselected/`skipped`、classpath/cross-owner access 任一存在都保留 JVM field。
+- 每个 accessor 都必须是 same-owner static 或 instance method，最终 method status 为 `nativeLowered`，且 final implementation path 是支持对应 internalized-storage ABI 的 `LLVM_NATIVE_PATH`。instance wrapper必须传递field的declared defining `jclass`，不能用receiver runtime class作为sidecar key；普通 template、unselected/`skipped`、classpath/cross-owner access 任一存在都保留 JVM field。
 - `CLOSED_WORLD` scope 扫描 input 与提供的 classpath；current-JAR-only scope 只扫描 input。后者忽略 owner 不在 input JAR 的 unresolved external field reference，同 symbolic owner 的 unresolved reference以及 owner-local reflection/Unsafe/VarHandle/MethodHandles Lookup/JNI/serialization/agent field-observer surface仍拒绝候选。普通 MethodHandle invocation 和单纯 dynamic class loading 本身不等于字段观察，不再误阻断。
 - approved access 改写为带 exact storage-kind 的 opaque slot。primitive storage 使用 defining `jclass` 的 `jweak` + `IsSameObject` 做 ClassLoader 隔离，以 `_Atomic uint64_t` relaxed raw-bit load/store 避免 C data-race UB；`boolean` 写入取 low bit，`byte/short/char` 分别执行 8/16-bit 截断与 sign/sign/zero extension，`float/double` 经 LLVM `bitcast` 保存 raw bits。
 - reference/array storage 由唯一生成的 `<embeddedLibraryDirectory>/Loader.class` 按需直接继承 `ClassValue`，为每个 defining `Class` 缓存一个 `Object[]`。每个 native function activation 使用 native stack cache cell，在首次实际执行字段访问时惰性获取一次 local ref并在退出时释放。所有批准访问都由最终 native implementation通过 JVM ObjectArray API执行，保留 GC barrier、Java identity和共享状态；不创建 native strong global ref，也不把 `jobject` 转成整数或裸指针。
 - final native plan、packaging field removal 和 artifact residual-reference audit 使用同一批准 plan并全部 fail closed。
 
 独立 `reports/field-internalization-report.json` 使用 hash-only field id 记录 `INTERNALIZED` / `KEPT`、storage kind/location、native slot/reference index、access/final-path、primitive/reference/cache/lifecycle policy、field removal 和 reason；`worldAnalysis` 另记录 configured world、实际 scope、authorization、classpath 是否被扫描以及 external-observer policy，不能把 current-JAR-only 伪装成 closed world。gated real-Zig host E2E覆盖支持类型、窄整数边界、float/double raw bits、Object identity/null/GC strong hold、并发和双 ClassLoader；六目标专项覆盖 LLVM calls、primitive storage、ClassValue/ObjectArray bridge、build graph、privacy和 export。non-host runtime与 deterministic real-Zig dual-run仍待补。
+
+2026-08-01 18:36 的 v2 五目标实测把 `MelodyPlugin.userDigest`、
+`handshakeDigest`、`yggdrasilDigest` 三个 `private static byte[]` 从 `KEPT`
+改为 `INTERNALIZED`：三者均由 static `createCombinedDigest()` 读取、instance
+`postApply(...)` 写入，最终走 `jvmClassValueSidecar`，并已从 output class
+删除。全局 internalized field 数由 3 增至 6；71 个 selected method 仍全部
+`nativeLowered`、0 `skipped`，五个 selected target、artifact/symbol/plaintext/
+residual audit 全部通过。独立 host real-Zig child-JVM fixture 另验证了基类与
+子类 receiver 共享 declared-owner sidecar、第二个 ClassLoader 保持隔离。
 
 ### Method internalization
 

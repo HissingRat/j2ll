@@ -108,10 +108,6 @@ public final class FieldInternalizationPipeline {
                     if (method == null) {
                         return FieldAccessImplementationPath.UNKNOWN;
                     }
-                    // V1 uses the JNI static-method declaring jclass directly.
-                    if (!method.accessFlags().isStatic()) {
-                        return FieldAccessImplementationPath.NON_LLVM_PATH;
-                    }
                     return paths.get(methodKey) == NativeImplementationPath.LLVM_NATIVE_PATH
                             ? FieldAccessImplementationPath.LLVM_NATIVE_PATH
                             : FieldAccessImplementationPath.NON_LLVM_PATH;

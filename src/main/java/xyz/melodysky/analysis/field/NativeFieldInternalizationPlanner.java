@@ -161,9 +161,6 @@ public final class NativeFieldInternalizationPlanner {
                 reasons.add(FieldInternalizationReason.OWNER_HAS_CLASS_INITIALIZER);
                 reasons.add(FieldInternalizationReason.CLASS_INITIALIZER_ACCESS);
             }
-            if (!access.methodStatic()) {
-                reasons.add(FieldInternalizationReason.ACCESS_METHOD_NOT_STATIC);
-            }
             if (!access.referenceKind().staticAccess()) {
                 reasons.add(FieldInternalizationReason.INSTANCE_FIELD_REFERENCE);
             }

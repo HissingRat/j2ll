@@ -64,6 +64,7 @@ public final class IsolatedStaticStateHarness {
             first.getMethod("setObject", Object.class).invoke(null, new Object[] {null});
             boolean cleared = first.getMethod("getObject").invoke(null) == null;
             System.out.println("object=" + same + "/" + held + "/" + cleared);
+            exerciseInstanceByteArray(first, firstLoader);
             first.getMethod("setObject", Object.class).invoke(null, "llvm-value");
             String skippedRead =
                     (String) first.getMethod("skippedRead").invoke(null);
@@ -89,7 +90,9 @@ public final class IsolatedStaticStateHarness {
                     + Long.toHexString(Double.doubleToRawLongBits(
                             (double) second.getMethod("setDouble", double.class).invoke(null, 0.0d)))
                     + "/"
-                    + second.getMethod("getObject").invoke(null));
+                    + second.getMethod("getObject").invoke(null)
+                    + "/"
+                    + second.getMethod("getInstanceByteArray").invoke(null));
         }
     }
 
@@ -137,6 +140,33 @@ public final class IsolatedStaticStateHarness {
 
     private static int invokeInt(Class<?> type, String method, int value) throws Exception {
         return (int) type.getMethod(method, int.class).invoke(null, value);
+    }
+
+    private static void exerciseInstanceByteArray(Class<?> type, ClassLoader loader) throws Exception {
+        Class<?> childType = Class.forName("pkg.NativeStateChild", true, loader);
+        Object base = type.getConstructor().newInstance();
+        Object child = childType.getConstructor().newInstance();
+        Method set = type.getMethod("setInstanceByteArray", byte[].class);
+        Method get = type.getMethod("getInstanceByteArray");
+
+        byte[] baseValue = {1, 2, 3};
+        set.invoke(base, (Object) baseValue);
+        byte[] afterBase = (byte[]) get.invoke(null);
+
+        byte[] childValue = {4, 5, 6};
+        set.invoke(child, (Object) childValue);
+        byte[] afterChild = (byte[]) get.invoke(null);
+        System.out.println("instance-array="
+                + (afterBase == baseValue) + "/" + sum(afterBase) + "/"
+                + (afterChild == childValue) + "/" + sum(afterChild));
+    }
+
+    private static int sum(byte[] values) {
+        int total = 0;
+        for (byte value : values) {
+            total += value;
+        }
+        return total;
     }
 
     private static void forceGc() throws InterruptedException {

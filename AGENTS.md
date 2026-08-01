@@ -86,8 +86,8 @@
 
 - `fieldInternalization`已进入 schema，默认 `false`；只在 declared `CLOSED_WORLD`或本次 build明确 Y授权 current-input-JAR-only scope时分析。
 - Current-JAR-only授权不改写 configured `worldModel`、不解析 configured `classPath`，必须进入 diagnostics/report。N/EOF在 workspace/pipeline/Zig前退出；validate/dry-run只记录 `confirmationRequired`。
-- 候选仅限 input-base `private static` primitive/reference/array field；instance、non-static accessor、volatile/final、ConstantValue、field-owning `<clinit>` access、multi-release与 reflection/serialization/JNI/Unsafe/VarHandle/MethodHandles Lookup/agent observation边界保留 JVM field。
-- 每个真实 accessor最终必须为 `nativeLowered`且 implementation path支持对应 storage ABI。任一 unselected或 `skipped` accessor都保留 JVM field；不存在 bytecode-accessor rewrite path。
+- 候选仅限 input-base `private static` primitive/reference/array field；instance field、volatile/final、ConstantValue、field-owning `<clinit>` access、multi-release与 reflection/serialization/JNI/Unsafe/VarHandle/MethodHandles Lookup/agent observation边界保留 JVM field。
+- 每个真实 accessor必须是same-owner static或instance method，最终为`nativeLowered`且 final implementation path为支持对应storage ABI的`LLVM_NATIVE_PATH`。任一cross-owner、unselected、`skipped`或non-LLVM accessor都保留JVM field；不存在bytecode-accessor rewrite path。
 - Primitive使用 per-defining-`jclass` weak-keyed relaxed atomic raw bits，按 descriptor执行 boolean low-bit、窄整数截断/扩展和 float/double bitcast。
 - Reference/array始终留在 JVM heap，由唯一 Loader按需加入 `ClassValue<Object[]>` sidecar强持有。`ClassValue`是跨调用 cache；native activation首次实际访问时惰性获取 local ref、复用并在退出时释放，不建立 native strong global ref。
 - Native instance wrapper向field sidecar传递method/field的declared defining `jclass`，不得用`GetObjectClass(self)`按receiver runtime subclass分裂static storage。

@@ -167,7 +167,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 - 只处理 input base class 中的 `private static boolean/byte/short/char/int/long/float/double` 与 JVM reference/array。
 - 字段必须非 final/volatile/synthetic/enum-generated，无 ConstantValue、Signature、annotation/type-annotation；字段自身不能被 `<clinit>` 访问，owner 不能带 serialization 语义或 multi-release counterpart；无关 `<clinit>` 不做 owner-wide 阻断。
-- 访问 method 当前还必须是 same-owner static method。primitive、reference 和 array access 都只接受 final `nativeLowered` method，且 final implementation 必须使用 field plan 认可的 native storage ABI；`skipped` 或普通 JVM field ABI accessor 一律拒绝 internalization。
+- 访问 method 可以是 same-owner static 或 instance method。primitive、reference 和 array access 都只接受final outcome为`nativeLowered`、且final implementation为使用field plan认可storage ABI的`LLVM_NATIVE_PATH`的accessor；cross-owner、`skipped` 或 non-LLVM accessor 一律拒绝 internalization。instance wrapper必须把field的declared defining `jclass`传给storage/sidecar ABI，不能按receiver runtime class分裂static state。
 - classpath access、cross-owner/nestmate access和 instance field 均拒绝。
 - `FieldUseAnalyzer` 扫描 `FieldInsn`、LDC field Handle、invokedynamic/ConstantDynamic bootstrap arguments，并按 JVM field resolution 找实际 declaration。同 symbolic owner 的 unresolved field reference 使候选保守失效；current-JAR-only scope 仍忽略 owner 不属于 input JAR 的 unresolved external reference。
 - owner-local reflection、Unsafe、VarHandle、MethodHandles Lookup field API、JNI/native loading、serialization 和 agent/instrumentation field-observer surface 使候选保留在 JVM。普通 MethodHandle invocation或单纯 dynamic class loading 不构成字段观察。

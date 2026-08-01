@@ -48,7 +48,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertEquals("0.15.2", runZigVersion(zigExecutable(j2llHome)));
 
         Path inputJar = temp.resolve("native-state.jar");
-        writeJar(inputJar, nativeStateClass());
+        writeJar(inputJar, nativeStateClass(), nativeStateChildClass());
         ResolvedConfig config = config(inputJar);
         Path workspace = temp.resolve("out/native-state");
 
@@ -76,8 +76,9 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 float-bits=7fa12345/80000000
                 double-bits=7ff123456789abcd/8000000000000000
                 object=true/true/true
+                instance-array=true/6/true/15
                 skipped-shared=lvm-value/kipped-value/skipped-value
-                second-types=0/0/0/0/0/0/null
+                second-types=0/0/0/0/0/0/null/null
                 """, rewritten.stdout());
 
         assertFieldDispositionAndMinimalLoader(pipeline.outputJar());
@@ -113,7 +114,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 keptField = decision;
             }
         }
-        assertEquals(8, internalizedFields);
+        assertEquals(9, internalizedFields);
         assertEquals(1, keptFields);
         assertEquals("REFERENCE", keptField.get("storageKind").getAsString());
         assertFalse(keptField.get("removedFromOutputClass").getAsBoolean());
@@ -136,7 +137,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertTrue(methodTableEvidence.get("enabled").getAsBoolean());
         assertEquals("RAN", methodTableEvidence.get("status").getAsString());
         assertEquals(1, methodTableEvidence.get("ownerCount").getAsInt());
-        assertEquals(12, methodTableEvidence.get("bindingCount").getAsInt());
+        assertEquals(14, methodTableEvidence.get("bindingCount").getAsInt());
         assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\""));
         assertFalse(packagingReport.contains("\"fallbackBlobs\""));
         assertFalse(packagingReport.contains("\"nativeEmbeddedClassBlob\""));
@@ -171,6 +172,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         byte[] nativeBytes = Files.readAllBytes(nativeLibrary);
         for (String sensitive : List.of(
                 "pkg/NativeState",
+                "pkg/NativeStateChild",
                 "counter",
                 "total",
                 "distinctiveByteState",
@@ -180,9 +182,12 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 "distinctiveFloatState",
                 "distinctiveDoubleState",
                 "distinctiveObjectState",
+                "instanceByteArrayState",
                 "getCounter",
                 "getTotal",
                 "addLong",
+                "setInstanceByteArray",
+                "getInstanceByteArray",
                 "skippedRead",
                 "skippedWrite")) {
             assertFalse(NativeBinaryPrivacyInspector.contains(
@@ -197,7 +202,8 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertFalse(generatedC.contains("\"getCounter\""));
         assertTrue(generatedC.contains("j2ll_nfs_get_b"));
         assertTrue(generatedC.contains("j2ll_nfs_get_f32_bits"));
-        assertFalse(generatedC.contains("j2ll_nfs_reference_sidecar"));
+        assertTrue(generatedC.contains("j2ll_nfs_reference_sidecar_cached"));
+        assertTrue(generatedC.contains("j2ll_nfs_release_reference_sidecar"));
         assertFalse(generatedC.contains("j2ll_fallback_sidecar"));
         assertFalse(generatedC.contains("nativeEmbeddedClassBlob"));
         assertFalse(generatedC.contains(
@@ -214,7 +220,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                     node.fields.stream().map(field -> field.name).toList());
             JarEntry loaderEntry = jar.getJarEntry("native_state_test/Loader.class");
             ClassReader loader = new ClassReader(jar.getInputStream(loaderEntry).readAllBytes());
-            assertEquals("java/lang/Object", loader.getSuperName());
+            assertEquals("java/lang/ClassValue", loader.getSuperName());
             assertTrue(jar.stream().noneMatch(candidate ->
                     candidate.getName().startsWith("native_state_test/Loader$")));
         }
@@ -270,6 +276,8 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                     "pkg/NativeState#setDouble!(D)D",
                     "pkg/NativeState#setObject!(Ljava/lang/Object;)Ljava/lang/Object;",
                     "pkg/NativeState#getObject!()Ljava/lang/Object;",
+                    "pkg/NativeState#setInstanceByteArray!([B)V",
+                    "pkg/NativeState#getInstanceByteArray!()[B",
                     "pkg/NativeState#skippedRead!()Ljava/lang/String;",
                     "pkg/NativeState#skippedWrite!(Ljava/lang/String;)Ljava/lang/String;"
                   ],
@@ -346,19 +354,24 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 target == TargetTriple.MACOS_ARM64);
     }
 
-    private void writeJar(Path jar, byte[] classBytes) throws Exception {
+    private void writeJar(Path jar, byte[] classBytes, byte[] childClassBytes) throws Exception {
         try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
-            JarEntry entry = new JarEntry("pkg/NativeState.class");
-            entry.setTime(0L);
-            output.putNextEntry(entry);
-            output.write(classBytes);
-            output.closeEntry();
+            writeEntry(output, "pkg/NativeState.class", classBytes);
+            writeEntry(output, "pkg/NativeStateChild.class", childClassBytes);
         }
+    }
+
+    private void writeEntry(JarOutputStream output, String name, byte[] bytes) throws Exception {
+        JarEntry entry = new JarEntry(name);
+        entry.setTime(0L);
+        output.putNextEntry(entry);
+        output.write(bytes);
+        output.closeEntry();
     }
 
     private byte[] nativeStateClass() {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-        writer.visit(V17, ACC_PUBLIC | ACC_FINAL | ACC_SUPER, "pkg/NativeState", null,
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/NativeState", null,
                 "java/lang/Object", null);
         writer.visitField(ACC_PRIVATE | ACC_STATIC, "counter", "I", null, null).visitEnd();
         writer.visitField(ACC_PRIVATE | ACC_STATIC, "total", "J", null, null).visitEnd();
@@ -372,6 +385,12 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 ACC_PRIVATE | ACC_STATIC,
                 "distinctiveObjectState",
                 "Ljava/lang/Object;",
+                null,
+                null).visitEnd();
+        writer.visitField(
+                ACC_PRIVATE | ACC_STATIC,
+                "instanceByteArrayState",
+                "[B",
                 null,
                 null).visitEnd();
 
@@ -430,7 +449,23 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         emitFloatFieldRoundTrip(writer);
         emitDoubleFieldRoundTrip(writer);
         emitObjectAccessors(writer);
+        emitInstanceByteArrayAccessors(writer);
         emitObjectSkippedAccessors(writer);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] nativeStateChildClass() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_FINAL | ACC_SUPER, "pkg/NativeStateChild", null,
+                "pkg/NativeState", null);
+        MethodVisitor constructor = writer.visitMethod(ACC_PUBLIC, "<init>", "()V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitMethodInsn(INVOKESPECIAL, "pkg/NativeState", "<init>", "()V", false);
+        constructor.visitInsn(RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -522,6 +557,33 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 "pkg/NativeState",
                 "distinctiveObjectState",
                 "Ljava/lang/Object;");
+        get.visitInsn(ARETURN);
+        get.visitMaxs(0, 0);
+        get.visitEnd();
+    }
+
+    private void emitInstanceByteArrayAccessors(ClassWriter writer) {
+        MethodVisitor set = writer.visitMethod(
+                ACC_PUBLIC | ACC_SYNCHRONIZED,
+                "setInstanceByteArray",
+                "([B)V",
+                null,
+                null);
+        set.visitCode();
+        set.visitVarInsn(ALOAD, 1);
+        set.visitFieldInsn(PUTSTATIC, "pkg/NativeState", "instanceByteArrayState", "[B");
+        set.visitInsn(RETURN);
+        set.visitMaxs(0, 0);
+        set.visitEnd();
+
+        MethodVisitor get = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC | ACC_SYNCHRONIZED,
+                "getInstanceByteArray",
+                "()[B",
+                null,
+                null);
+        get.visitCode();
+        get.visitFieldInsn(GETSTATIC, "pkg/NativeState", "instanceByteArrayState", "[B");
         get.visitInsn(ARETURN);
         get.visitMaxs(0, 0);
         get.visitEnd();
