@@ -65,9 +65,15 @@ xyz.melodysky.ir.pass.protection
 - `MethodInliningPass`：program-level pure-scalar static/private-self direct callee 子集。前端 direct call 即使没有 handler 也会携带 pending-exception evidence；只有 callee 已证明不产生 exception、site 没有 handler，且 synthetic exception value 完全无使用时，inline 才能删除该 evidence。protected edge、具体 exception check 或仍被使用的 exception value 继续 fail closed。
 - `MethodSplittingPass`：program-level single-block scalar suffix outline，helper 只进入 compiler-internal LLVM/native path。
 - `IrCallIndirectionPass`：当前只为已证明的 module-local same-owner static/private-special call 附加 typed semantic plan，再由 backend lower 到 hidden pointer table；group key 同时包含 Java/SSA signature 与最终 native function 的隐藏 `JNIEnv*` / owner-`jclass` ABI proof，禁止把表面 IR signature 相同但真实 LLVM function-pointer type 不同的目标混入一组。virtual/interface 和 cross-owner direct call 在 backend 支持前 fail closed。
-- `NativeFieldIrRewriter`：在 declared `CLOSED_WORLD`，或 build 时由用户明确批准的 current-JAR-only field plan 后，把 same-owner static 或 instance LLVM-native accessor 对 `private static boolean/byte/short/char/int/long/float/double` 与 reference/array field 的访问改成带 exact storage-kind 的 opaque slot；primitive 进入 native raw-bit storage，reference/array 进入 JVM-managed ClassValue sidecar。instance wrapper使用field的declared defining `jclass`，不按receiver runtime class拆分static storage。current-JAR-only 不改变 configured world、不读取 classpath，并在报告中保留风险边界。该 Config field 默认关闭。
+- `NativeFieldIrRewriter`：在 declared `CLOSED_WORLD`，或 build 时由用户明确批准的 current-JAR-only field plan 后，把 same-owner static 或 instance LLVM-native accessor 对可变 `private static boolean/byte/short/char/int/long/float/double` 与 reference/array field 的访问改成带 exact storage-kind 的 opaque slot；primitive 进入 native raw-bit storage，reference/array 进入 JVM-managed ClassValue sidecar。配套的`NativeConstantFieldIrFolder`把获准primitive `ConstantValue`显式读取替换为SSA常量且不分配slot；显式String读取暂不折叠。instance wrapper使用field的declared defining `jclass`，不按receiver runtime class拆分static storage。current-JAR-only 不改变 configured world、不读取 classpath，并在报告中保留风险边界。该 Config field 默认关闭。
 
 `methodInternalization`不是SSA rewrite pass；它消费final native implementation plan与`analysis.method`的immutable use plan。exact allowlisted public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权，public instance只接受declared `CLOSED_WORLD`、same-owner caller closure和逐调用点exact dispatch；不要求method/class为final，也不因可覆写slot本身拒绝。已解析exact observer会保留Java入口，unsupported/unbounded reflection/JNI/agent surface只作为user-accepted risk进入warning/report。批准项的registration过滤、native route与MethodNode删除分别由final planner/toolchain/packaging负责，IR pass不得自行推断或删除Java入口。
+
+普通optimization之后、protection之前运行`JdkPureNativeIntrinsicPass`。当前只匹配same-block、unique-use且不逃逸的精确`ByteBuffer.allocate(4).putInt(i).array()`，把对象式JDK dispatch融合为保持三个异常site顺序的native frame helper。它不把Java object放进native heap；结果仍由JNI `NewByteArray`创建。
+
+`NativeOnlyMethodCoalescingCoordinator`位于method internalization之后。它只消费immutable final-use/implementation facts，并复用严格inlining safety proof把单一直接call site的pure-scalar、non-throwing小callee合并到caller。callee一旦涉及field、nested call、monitor、JNI/reference ownership、recursion或超过bounded size即保持独立hidden LLVM body。该优化改变physical retention report，不新增method outcome。
+
+该stage逐callee持久化coverage：已经完成证明但shape不适用时写`notApplicable/SKIPPED`；inliner或IR validator失败而无法可靠判定时写`unknown/FAILED`并保留原standalone body，不能把内部验证失败伪装成普通不适用。
 
 `methodTableHiding` 不是 SSA method pass；它消费 final native registration plan，在 packaging/toolchain 层生成 build-diverse owner-local registration order，并只在注册窗口构造临时 `JNINativeMethod[]`。report token 不进入 generated C/native，也不生成 split runtime tables。当前 schema v1 的已知 IR/LLVM pass 字段均已实现；单 method/module 不适用仍只跳过对应 pass并写 protection report，不改变 lowering status。
 
@@ -89,6 +95,7 @@ xyz.melodysky.ir.pass.protection
 validate
   -> canonical CFG cleanup
   -> simple scalar cleanup
+  -> exact JDK call-combination intrinsics
   -> protection passes
   -> protection-aware validation
   -> final CFG cleanup

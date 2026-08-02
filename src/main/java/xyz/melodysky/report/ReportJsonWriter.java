@@ -93,6 +93,9 @@ public final class ReportJsonWriter {
         nullableString(object, "nativeSymbol", method.nativeSymbol());
         nullableString(object, "registrationOwner", method.registrationOwner());
         nullableString(object, "nativeImplementationPath", method.nativeImplementationPath());
+        if (method.coalescedInto() != null) {
+            object.addProperty("coalescedInto", method.coalescedInto());
+        }
         JsonArray helperBackedSites = new JsonArray();
         for (HelperBackedSiteReport site : method.helperBackedSites()) {
             JsonObject siteJson = new JsonObject();

@@ -184,7 +184,7 @@ public final class FieldInternalizationPipeline {
                         .map(access -> access.methodKey())
                         .toList(),
                 internalized.stream()
-                        .map(decision -> decision.nativeSlotId().orElseThrow())
+                        .flatMap(decision -> decision.nativeSlotId().stream())
                         .toList(),
                 Long.toString(seed));
     }

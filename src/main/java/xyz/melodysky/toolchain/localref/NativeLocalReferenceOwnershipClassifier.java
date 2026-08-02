@@ -16,6 +16,7 @@ import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 
 /**
  * Classifies reference SSA values as owned, borrowed, dynamic or alias.
@@ -57,8 +58,11 @@ final class NativeLocalReferenceOwnershipClassifier {
             return Optional.of(instruction.operands().get(0));
         }
         if (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
-                && baseSymbol(instruction.symbol().orElse(""))
-                        .equals("j2ll_rt_objects_require_non_null")) {
+                && (baseSymbol(instruction.symbol().orElse(""))
+                                .equals("j2ll_rt_objects_require_non_null")
+                        || PureNativeJdkRuntimeHelpers
+                                .returnsOperandZeroAlias(
+                                        instruction.symbol().orElse("")))) {
             return Optional.of(instruction.operands().get(0));
         }
         return Optional.empty();

@@ -43,7 +43,7 @@ final class HostJniDispatchRuntimeSource {
                     binding.staticCallKeys().forEach(key -> add(
                             entries,
                             new DispatchBinding(Kind.STATIC, key)));
-                    binding.templateIrMethod().stream()
+                    binding.implementationIrMethod().stream()
                             .flatMap(method -> method.blocks().stream())
                             .flatMap(block -> block.instructions().stream())
                             .filter(instruction ->

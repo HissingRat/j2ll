@@ -15,6 +15,7 @@ import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 
 /**
  * Fail-closed validation for a planned JNI local-reference lifetime.
@@ -385,9 +386,13 @@ public final class NativeLocalReferencePlanValidator {
                                 == IrOpcode.CALL_RUNTIME_HELPER
                         && instruction.result().isPresent()
                         && !instruction.operands().isEmpty()
-                        && baseSymbol(instruction.symbol().orElse(""))
-                                .equals(
-                                        "j2ll_rt_objects_require_non_null")) {
+                        && (baseSymbol(instruction.symbol().orElse(""))
+                                        .equals(
+                                                "j2ll_rt_objects_require_non_null")
+                                || PureNativeJdkRuntimeHelpers
+                                        .returnsOperandZeroAlias(
+                                                instruction.symbol()
+                                                        .orElse("")))) {
                     addTransfer(
                             mutable,
                             instruction.operands().get(0),

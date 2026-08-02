@@ -26,6 +26,7 @@ import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
@@ -516,6 +517,9 @@ public final class NativeImplementationPlanner {
         if (isUnsafeHelperInstruction(instruction)) {
             return supportsUnsafeHelperInstruction(instruction);
         }
+        if (isPureNativeJdkHelperInstruction(instruction)) {
+            return supportsPureNativeJdkHelperInstruction(instruction);
+        }
         if (isJdkScalarHelperInstruction(instruction)) {
             return supportsJdkScalarHelperInstruction(instruction);
         }
@@ -846,6 +850,7 @@ public final class NativeImplementationPlanner {
                 || isRuntimeMetadataHelperInstruction(instruction)
                 || isVarHandleHelperInstruction(instruction)
                 || isUnsafeHelperInstruction(instruction)
+                || isPureNativeJdkHelperInstruction(instruction)
                 || isJdkScalarHelperInstruction(instruction)
                 || isMonitorHelperInstruction(instruction)
                 || isDispatchHelperInstruction(instruction)
@@ -1195,6 +1200,51 @@ public final class NativeImplementationPlanner {
                                 || runtimeHelperBaseSymbol(symbol).equals("j2ll_rt_thread_sleep")
                                 || runtimeHelperBaseSymbol(symbol).startsWith("j2ll_rt_objects_"))
                         .orElse(false);
+    }
+
+    private boolean isPureNativeJdkHelperInstruction(
+            IrInstruction instruction) {
+        return instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER
+                && instruction.symbol()
+                        .map(PureNativeJdkRuntimeHelpers
+                                ::isI32BigEndianFrameHelper)
+                        .orElse(false);
+    }
+
+    private boolean supportsPureNativeJdkHelperInstruction(
+            IrInstruction instruction) {
+        String symbol = runtimeHelperBaseSymbol(
+                instruction.symbol().orElseThrow());
+        if (symbol.equals(
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_NEW)) {
+            return instruction.result()
+                            .map(IrValue::type)
+                            .filter(type -> type == IrType.REFERENCE)
+                            .isPresent()
+                    && instruction.operands().isEmpty();
+        }
+        if (symbol.equals(
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_WRITE)) {
+            return instruction.result()
+                            .map(IrValue::type)
+                            .filter(type -> type == IrType.REFERENCE)
+                            .isPresent()
+                    && instruction.operands().size() == 2
+                    && instruction.operands().get(0).type()
+                            == IrType.REFERENCE
+                    && instruction.operands().get(1).type() == IrType.I32;
+        }
+        if (symbol.equals(
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_FINISH)) {
+            return instruction.result()
+                            .map(IrValue::type)
+                            .filter(type -> type == IrType.REFERENCE)
+                            .isPresent()
+                    && instruction.operands().size() == 1
+                    && instruction.operands().get(0).type()
+                            == IrType.REFERENCE;
+        }
+        return false;
     }
 
     private boolean isUnsafeHelperInstruction(IrInstruction instruction) {
@@ -1731,7 +1781,10 @@ public final class NativeImplementationPlanner {
     private boolean containsJdkScalarHelper(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
-                .anyMatch(this::isJdkScalarHelperInstruction);
+                .anyMatch(instruction ->
+                        isJdkScalarHelperInstruction(instruction)
+                                || isPureNativeJdkHelperInstruction(
+                                        instruction));
     }
 
     private boolean containsUnsafeHelper(IrMethod method) {
@@ -1882,7 +1935,9 @@ public final class NativeImplementationPlanner {
                 || base.equals("j2ll_rt_reflect_set_accessible")
                 || base.startsWith("j2ll_rt_reflect_field_")
                 || base.startsWith("j2ll_rt_unsafe_")
-                || base.startsWith("j2ll_rt_var_handle_");
+                || base.startsWith("j2ll_rt_var_handle_")
+                || PureNativeJdkRuntimeHelpers
+                        .isI32BigEndianFrameHelper(base);
     }
 
     private boolean containsThrowTerminator(IrMethod method) {

@@ -61,8 +61,7 @@ public final class LlvmCallIndirectionPass {
                             dispatcherName(module.identifier(), entry.getKey(), config.seed()),
                             entry.getKey(),
                             entry.getValue(),
-                            indirectionByTarget,
-                            functionsByName))
+                            indirectionByTarget))
                     .forEach(allFunctions::add);
         } else {
             targetsBySignature.entrySet().stream()
@@ -248,8 +247,7 @@ public final class LlvmCallIndirectionPass {
             String dispatcher,
             Signature signature,
             List<String> targets,
-            Map<String, IndirectTarget> dispatchersByTarget,
-            Map<String, LlvmFunction> functionsByName) {
+            Map<String, IndirectTarget> dispatchersByTarget) {
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
         parameters.add(new LlvmParameter(LlvmType.I32, "%j2ll_selector"));
         parameters.addAll(signature.parameters());
@@ -264,7 +262,7 @@ public final class LlvmCallIndirectionPass {
                 LlvmTerminator.switchOn("%j2ll_selector", caseName(targets.stream().sorted().findFirst().orElseThrow()), cases)));
         targets.stream()
                 .sorted()
-                .map(target -> dispatcherCaseBlock(target, functionsByName.get(target), signature))
+                .map(target -> dispatcherCaseBlock(target, signature))
                 .forEach(blocks::add);
         return new LlvmFunction(
                 dispatcher,
@@ -291,8 +289,8 @@ public final class LlvmCallIndirectionPass {
                 "internal constant [" + ordered.size() + " x ptr] [" + initializer + "]");
     }
 
-    private LlvmBasicBlock dispatcherCaseBlock(String targetName, LlvmFunction target, Signature signature) {
-        String typedArguments = target.parameters().stream()
+    private LlvmBasicBlock dispatcherCaseBlock(String targetName, Signature signature) {
+        String typedArguments = signature.parameters().stream()
                 .map(parameter -> parameter.type().text() + " " + parameter.name())
                 .reduce((left, right) -> left + ", " + right)
                 .orElse("");
@@ -378,9 +376,13 @@ public final class LlvmCallIndirectionPass {
         }
 
         static Signature of(LlvmFunction function) {
-            return new Signature(function.returnType(), function.parameters().stream()
-                    .map(parameter -> new LlvmParameter(parameter.type(), parameter.name()))
-                    .toList());
+            ArrayList<LlvmParameter> canonicalParameters = new ArrayList<>();
+            for (int index = 0; index < function.parameters().size(); index++) {
+                canonicalParameters.add(new LlvmParameter(
+                        function.parameters().get(index).type(),
+                        "%j2ll_arg_" + index));
+            }
+            return new Signature(function.returnType(), canonicalParameters);
         }
 
         @Override

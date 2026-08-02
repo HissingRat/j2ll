@@ -22,6 +22,7 @@ import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
@@ -76,6 +77,38 @@ class RuntimeHelperSiteAnalyzerTest implements Opcodes {
 
         assertTrue(sites.contains(new RuntimeHelperSite("j2ll_rt_string_length", "STRING_HELPER")));
         assertTrue(sites.contains(new RuntimeHelperSite("j2ll_rt_thread_sleep", "THREAD_HELPER")));
+    }
+
+    @Test
+    void reportsFinalIntrinsicIrInsteadOfTheRawJdkDispatchChain() {
+        ParsedMethod source = sourceMethod();
+        String rawTarget = "java/nio/ByteBuffer#array!()[B";
+        IrMethod raw = methodWith(
+                source,
+                IrInstruction.call(
+                        Optional.empty(),
+                        IrOpcode.CALL_VIRTUAL,
+                        List.of(),
+                        rawTarget));
+        IrMethod finalIr = methodWith(
+                source,
+                IrInstruction.operation(
+                        Optional.empty(),
+                        IrOpcode.CALL_RUNTIME_HELPER,
+                        List.of(),
+                        PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_FINISH));
+
+        List<RuntimeHelperSite> sites = analyzer.analyze(
+                SsaMethodResult.nativeLowered(source, raw),
+                Optional.of(finalIr),
+                Optional.empty(),
+                Optional.empty(),
+                NO_DEFAULT_INTERFACES);
+
+        assertTrue(sites.contains(new RuntimeHelperSite(
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_FINISH,
+                "JDK_INTRINSIC_HELPER")));
+        assertFalse(sites.stream().anyMatch(site -> site.helper().contains(rawTarget)));
     }
 
     @Test

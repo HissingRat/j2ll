@@ -249,6 +249,8 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - `CLOSED_WORLD`或显式current-JAR-only Y授权只是分析scope声明，不是对外部agent/JNI hook不可见的安全承诺。
 - implementation symbol仍存在于native code，攻击者可以通过native call graph和动态trace恢复；本项目标是减少稳定metadata与批量mapping，不是隐藏可执行语义。
 
+在logical method internalization之上已加入第一个physical coalescing切片：若一个internal-only小方法恰有一个direct native call site，并能证明pure scalar、non-throwing、无field/nested-call/monitor/JNI-owned-reference、非递归且不超过bounded instruction budget，则直接复用严格inlining proof把callee合并进caller。lowering report改写为`coalescedNativeOnly`并记录stable caller method key；LLVM compiler、generated-C binding filter与artifact audit共同要求callee function/declaration/reference/wrapper/workspace symbol全部消失。A→B→C chain当前显式fail closed，避免nested coalescing产生悬空physical target；initializer-plan caller也暂不合并，防止caller IR变化后继续消费旧initializer plan。inline rewrite必须逐instruction保留未替换call的call-indirection metadata。reference/helper-backed target暂不为了覆盖率放宽。
+
 验收：
 
 - lowering report写`retentionMode=internalNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`；packaging registration groups中无该target。
@@ -256,6 +258,7 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - selected-target库仍包含完整hidden implementation/caller closure且export allowlist不扩大。
 - fake-JNI动态probe的binding数应按internalized target数量下降；剩余JVM entry仍可被hook，不把下降误报为`RegisterNatives`不可观察。
 - attacker regression比较同一输入开启/关闭该pass后的classfile surface、registration bindings、wrapper分类、native/generated-C大小和runtime parity。
+- 对`coalescedNativeOnly`另比较callee standalone LLVM/C/native symbol surface是否为零，并确认caller ABI在合并后重新按final IR推导。
 
 2026-07-31当前v2实测：71个`nativeLowered`中12个转为
 `internalNativeOnly`，0个`skipped`，registration由71降为59。
@@ -675,8 +678,37 @@ token resolver。
   默认随机identity，该结果是当前样本的实测窗口，不作为显式seed严格A/B或全局
   size保证。
 
-固定的通用 JDK runtime helper 仍使用 canonical ABI；高收益 fused JDK helper
-与更广泛 JNI helper 形态也尚未实现，因此 H6 继续保持 `IN_PROGRESS`。
+第一个exact fused JDK组合已经接线：same-block、unique-use、non-escaping的
+`ByteBuffer.allocate(4).putInt(i).array()`在ordinary optimization后、protection前
+改为三个小型frame helper。helper仍用JNI `NewByteArray`创建真实JVM `byte[]`，只把
+4-byte big-endian scratch放在native stack，并保留allocate/putInt/array三个原始
+exception site的求值与pending-exception边界。其他capacity、alias/escape、cross-block、
+indirected shape保持普通JVM dispatch。该切片减少一组稳定
+token-resolver → `GetStaticMethodID`/`GetMethodID` → `Call*MethodA`模板，但不是通用
+ByteBuffer native object model，也没有把Java对象复制到native heap。
+
+固定的其他通用 JDK runtime helper 仍使用 canonical ABI；Cipher/digest/Base64等更高层
+组合与更广泛 JNI helper 形态尚未实现，因此 H6 继续保持 `IN_PROGRESS`。
+
+2026-08-02更新v2五目标实测命中7组exact ByteBuffer chain：`MelodyPlugin`最终LLVM
+包含12个frame-helper call，`LaoShuUtils`包含9个，共替换21个原JDK call boundary。
+五目标artifact audit通过，发布JAR与五个flat native library均无
+`java/nio/ByteBuffer`明文命中。相对`build_2026-08-01_18-36-03`随机identity构建，
+五库变化为Linux arm64 -816 B、Linux x64 -8 B、macOS两目标不变、Windows x64
+-512 B，JAR -794 B；这只是同一样本的方向性窗口，不是显式seed受控A/B归因。
+
+同一构建把177个`private static final ConstantValue`声明折叠/移除为
+`ssaFoldedNoRuntimeStorage`，另有6个可变reference field继续使用ClassValue sidecar。
+`LaoShuUtils`输出中`aesKey`、`ALGORITHM`、`TRANSFORMATION`与`KEY_SIZE`均消失，
+`MelodyPlugin`的3个digest数组也继续消失。71个selected method保持
+`nativeLowered`、0个`skipped`，最终artifact audit通过。
+
+native-only coalescing在dummy real-Zig路径已有实际命中与standalone callee residual
+为零的证据；本次v2的14个`internalNativeOnly`目标则0命中。逐目标reason为5个
+`METHOD_INLINING_EXCEPTION_SENSITIVE`、4个非single-caller、2个callee-too-large，
+以及各1个caller-chain、local-reference和invoke-kind边界。这里不为追求数字放宽
+reference/helper/exception语义；下一切片必须先提供exception transfer与owned local-ref
+remap proof。
 第三轮双构建中 57/57 wrapper 的 coarse shape 分类仍相同：地址/RVA 提取器
 已无法直接复用，但高层 wrapper classifier 仍可 100% 复用；只有 normalized
 resolution fingerprint 降到 7/57。第四种branched topology接入后的两份更新

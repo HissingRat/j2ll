@@ -64,7 +64,7 @@ skipped method 的 terminal 展示和确认应由小型、独立的 CLI/pipeline
 
 selector 命中且有 Code 的 method 在 final plan 中只能是：
 
-- `nativeLowered`：拥有经过验证的完整 native implementation。常规形态改写并注册；`internalNativeOnly`形态删除Java declaration与registration，只保留由native caller可达的hidden implementation。
+- `nativeLowered`：拥有经过验证的完整 native implementation。常规形态改写并注册；`internalNativeOnly`形态删除Java declaration与registration。其native语义默认由caller可达的hidden implementation承载，也可在严格coalescing后只保留在唯一caller body中。
 - `skipped`：当前不能完整保持语义；保留输入 JAR 中原 Code，不改写为 native，不生成 body helper，不加入 `RegisterNatives`。
 
 不得存在“部分 native、其余从复制字节码执行”的第三种 method 状态，也不得把原 class/method Code 编码后放进动态库。native sources、object graph、最终动态库和 output JAR 都不包含为执行 skipped method 而生成的 class bytes、carrier、decoder 或 hidden-class definition entry。
@@ -108,12 +108,12 @@ TUI 在打印列表和读取输入前必须结束/暂停 active progress region�
 Packaging 只为 `nativeLowered` method 生成 rewrite strategy：
 
 - `nativeOriginal`：ordinary class method with Code。移除 Code、设置 `ACC_NATIVE`，以原 name/descriptor 注册。
-- `internalNativeOnly`：仅由final method-internalization plan产生。删除完整Java `method_info`，不注册；保留hidden LLVM body与caller实际需要的internal dispatch wrapper。
+- `internalNativeOnly`：仅由final method-internalization plan产生。删除完整Java `method_info`，不注册；默认保留hidden LLVM body与caller实际需要的internal dispatch wrapper。若physical retention为`coalescedNativeOnly`，则callee语义已合并进唯一caller，不再发出独立LLVM body/declaration/reference或generated-C wrapper。
 - `constructorStub`：保留从入口到唯一、真实初始化`uninitializedThis`的 `this(...)` / `super(...)` invocation为止的精确Java prefix，包括原descriptor与实参计算；随后调用same-owner private static native body helper承载post-init IR。只接受可唯一识别initializing call的线性prefix，并要求整个constructor没有exception table；不满足时完整constructor为`skipped`。
 - `classInitializerStub`：保持或生成 `<clinit>` loader/bootstrap stub，再调用same-owner private static native body helper承载完整、经final plan验证的initializer IR。
 - `interfaceMethodStub`：保持 interface method 合法字节码，并调用拥有 native method 的 generated helper。
 
-`internalNativeOnly`只消费analysis/final planner已经批准的immutable plan，不在packaging阶段重新推断world或observer边界。该plan可包含declared/current-JAR scope下的exact allowlisted public static，以及仅declared `CLOSED_WORLD`下、所有调用点same-owner exact的public instance；后者不要求method/class为final。resolved exact observer在进入packaging前必须已拒绝，unsupported/unbounded reflection/JNI/agent风险只保留warning/report evidence，不能被packaging擅自升级或静默丢弃。
+`internalNativeOnly`只消费analysis/final planner已经批准的immutable plan，不在packaging阶段重新推断world或observer边界。该plan可包含declared/current-JAR scope下的exact allowlisted public static，以及仅declared `CLOSED_WORLD`下、所有调用点same-owner exact的public instance；后者不要求method/class为final。resolved exact observer在进入packaging前必须已拒绝，unsupported/unbounded reflection/JNI/agent风险只保留warning/report evidence，不能被packaging擅自升级或静默丢弃。Coalescing使用另一个immutable physical-retention plan；packaging仍删除同一个MethodNode，LLVM compiler、C binding filter与artifact audit共同证明callee standalone surface消失。
 
 `<init>`、`<clinit>` 和 interface method 不能强制使用 `nativeOriginal`。`skipped` method 不生成任何 strategy；no-Code declaration 只保留 eligibility evidence。
 
@@ -210,7 +210,7 @@ signed input handling 服从 `docs/io-config-output-contract.md` 中的 `signatu
 
 Packaging validator 至少检查：
 
-- 每个 `nativeLowered` method 都有且只有一个 validated implementation和rewrite；ordinary/stub形态有唯一registration binding，`internalNativeOnly`则必须无Java declaration、无binding且仍有native caller closure。
+- 每个 `nativeLowered` method 都有且只有一个 validated logical implementation和rewrite；ordinary/stub形态有唯一registration binding，`internalNativeOnly`则必须无Java declaration、无binding且仍有native caller closure。`coalescedNativeOnly`由caller body承载该closure，并额外要求callee standalone LLVM/C/workspace residual为零。
 - 每个constructor stub保留的prefix与final initializer plan逐指令一致，helper call只出现在初始化调用之后；每个`<clinit>` stub只保留loader/bootstrap与native helper调用，不复制原initializer body。
 - 每个 `skipped` method 保留原 Code，且没有 rewrite/helper/binding。
 - no-Code eligibility evidence 不进入 executable method counts 或 confirmation。

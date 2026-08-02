@@ -5,6 +5,7 @@ import java.util.Optional;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrOpcode;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
 
 /** Maps helper-shaped IR operations to stable evidence names and reason codes. */
@@ -234,6 +235,10 @@ final class RuntimeHelperSiteClassifier {
     }
 
     private String runtimeHelperReason(String helper) {
+        if (PureNativeJdkRuntimeHelpers
+                .isI32BigEndianFrameHelper(helper)) {
+            return "JDK_INTRINSIC_HELPER";
+        }
         if (helper.startsWith("j2ll_rt_var_handle_")) {
             return "VARHANDLE_HELPER";
         }

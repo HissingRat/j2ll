@@ -87,6 +87,9 @@ public record RuntimeHelper(
                 || kind == RuntimeHelperKind.STRING_BUILDER_APPEND_F64
                 || kind == RuntimeHelperKind.STRING_BUILDER_TO_STRING
                 || kind == RuntimeHelperKind.SYSTEM_ARRAYCOPY
+                || kind == RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_NEW
+                || kind == RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_WRITE
+                || kind == RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_FINISH
                 || kind == RuntimeHelperKind.INTEGER_VALUE_OF
                 || kind == RuntimeHelperKind.INTEGER_INT_VALUE
                 || kind == RuntimeHelperKind.LONG_VALUE_OF
@@ -164,6 +167,8 @@ public record RuntimeHelper(
                     STRING_BUILDER_APPEND_I32, STRING_BUILDER_APPEND_I64,
                     STRING_BUILDER_APPEND_F32, STRING_BUILDER_APPEND_F64,
                     STRING_BUILDER_TO_STRING, SYSTEM_ARRAYCOPY,
+                    I32_BIG_ENDIAN_FRAME_NEW, I32_BIG_ENDIAN_FRAME_WRITE,
+                    I32_BIG_ENDIAN_FRAME_FINISH,
                     MATH_ABS_I32, MATH_ABS_I64, MATH_ABS_F32, MATH_ABS_F64,
                     MATH_MIN_I32, MATH_MIN_I64, MATH_MIN_F32, MATH_MIN_F64,
                     MATH_MAX_I32, MATH_MAX_I64, MATH_MAX_F32, MATH_MAX_F64,

@@ -48,6 +48,18 @@ public record NativeFieldInternalizationPlan(
                 .toList();
     }
 
+    public List<NativeFieldInternalizationDecision> nativeStoredFields() {
+        return decisions.stream()
+                .filter(NativeFieldInternalizationDecision::nativeStored)
+                .toList();
+    }
+
+    public List<NativeFieldInternalizationDecision> constantFoldedFields() {
+        return decisions.stream()
+                .filter(NativeFieldInternalizationDecision::constantFolded)
+                .toList();
+    }
+
     public Set<FieldId> approvedFieldIds() {
         TreeSet<FieldId> fields = new TreeSet<>();
         internalizedFields().forEach(decision -> fields.add(decision.field()));
@@ -57,9 +69,9 @@ public record NativeFieldInternalizationPlan(
     public NativeFieldStorageKind storageKind(
             NativeFieldInternalizationDecision decision) {
         Objects.requireNonNull(decision, "decision");
-        if (!decision.internalized() || !decisions.contains(decision)) {
+        if (!decision.nativeStored() || !decisions.contains(decision)) {
             throw new IllegalArgumentException(
-                    "field decision is not internalized by this plan");
+                    "field decision does not use native slot storage in this plan");
         }
         return NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
                 .orElseThrow(() -> new IllegalStateException(
@@ -107,7 +119,7 @@ public record NativeFieldInternalizationPlan(
                 .distinct()
                 .count();
         long slotCount = decisions.stream()
-                .filter(NativeFieldInternalizationDecision::internalized)
+                .filter(NativeFieldInternalizationDecision::nativeStored)
                 .count();
         if (distinctSlots != slotCount) {
             throw new IllegalArgumentException(
@@ -121,7 +133,7 @@ public record NativeFieldInternalizationPlan(
         TreeMap<String, ArrayList<FieldId>> fieldsByOwner = new TreeMap<>();
         decisions.stream()
                 .filter(Objects::nonNull)
-                .filter(NativeFieldInternalizationDecision::internalized)
+                .filter(NativeFieldInternalizationDecision::nativeStored)
                 .map(NativeFieldInternalizationDecision::field)
                 .filter(NativeFieldInternalizationPlan::isReference)
                 .sorted()
@@ -163,7 +175,7 @@ public record NativeFieldInternalizationPlan(
         TreeMap<FieldId, NativeFieldInternalizationDecision> internalized =
                 new TreeMap<>();
         for (NativeFieldInternalizationDecision decision : decisions) {
-            if (decision.internalized()) {
+            if (decision.nativeStored()) {
                 internalized.put(decision.field(), decision);
             }
         }

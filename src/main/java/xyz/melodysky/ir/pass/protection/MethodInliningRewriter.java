@@ -242,7 +242,8 @@ final class MethodInliningRewriter {
                         instruction.floatLiteral(),
                         instruction.doubleLiteral(),
                         instruction.symbol(),
-                        instruction.exceptionSites()))
+                        instruction.exceptionSites(),
+                        instruction.callIndirection()))
                 .toList();
     }
 

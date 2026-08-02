@@ -4,7 +4,7 @@
 
 Tier 是 compiler-development 与 release-evidence 分类，不是用户 Config 选项。selector 命中的 Code-bearing method最终只有：
 
-- `nativeLowered`：由 LLVM、生成式 template/stub 或经过验证的 JNI/runtime helper-backed native implementation完成。普通Java入口保留native declaration/stub并注册；whole-program method-internalization批准项则只保留hidden native body/native caller closure，Java method_info与registration均删除。
+- `nativeLowered`：由 LLVM、生成式 template/stub 或经过验证的 JNI/runtime helper-backed native implementation完成。普通Java入口保留native declaration/stub并注册；whole-program method-internalization批准项保留native caller closure并删除Java method_info与registration，其物理实现可以是独立hidden body或严格合并进唯一caller的`coalescedNativeOnly`。
 - `skipped`：保留原 Java method/classfile 形态，不生成 native body，不进入 `RegisterNatives`。
 
 `excluded` 只描述 selector 外方法；pipeline/toolchain/packaging failure 是 build status。Schema v1 不增加 `requiredNative`，也不在 native artifact 中保存 selected method 的 bytecode副本。
@@ -51,7 +51,7 @@ Tier 0 尚未承诺 executable native lowering，但 selector audit仍不能丢�
 
 有 Code 的 method 只有在全部用户语义都由 native implementation承担时才是 `nativeLowered`；否则整个 method 为 `skipped`。
 
-`methodInternalization`不会新增第三种outcome。它只在final `LLVM_NATIVE_PATH`已经证明后，删除只由最终LLVM caller可达的private/protected static或same-owner exact instance入口。public必须额外命中required exact `publicMethodInternalizationAllowList`：public static可使用declared `CLOSED_WORLD`或本次Y授权的current-JAR-only scope，public instance只允许declared `CLOSED_WORLD`并合并input与完整classPath world。public instance不要求method/class为final，也不因可覆写slot本身拒绝，但每个调用点必须exact且caller仍须same-owner；已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry与closed exact catalog识别到的Object/Runnable/Callable/线程/定时器/序列化/常见函数式JDK callback都会保留Java入口。callback catalog要求真实hierarchy关系与exact descriptor，不是blanket override-slot veto；catalog外第三方framework callback及无法穷举的reflection/JNI/agent动态观察面仍作为用户接受风险进入warning/report。reference-returning internal call仍通过JNI nested-local-frame bridge维持GC/local-reference/pending-exception语义；任何unselected/skipped caller或non-exact virtual dispatch同样fail closed。
+`methodInternalization`不会新增第三种outcome。它只在final `LLVM_NATIVE_PATH`已经证明后，删除只由最终LLVM caller可达的private/protected static或same-owner exact instance入口。public必须额外命中required exact `publicMethodInternalizationAllowList`：public static可使用declared `CLOSED_WORLD`或本次Y授权的current-JAR-only scope，public instance只允许declared `CLOSED_WORLD`并合并input与完整classPath world。public instance不要求method/class为final，也不因可覆写slot本身拒绝，但每个调用点必须exact且caller仍须same-owner；已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry与closed exact catalog识别到的Object/Runnable/Callable/线程/定时器/序列化/常见函数式JDK callback都会保留Java入口。callback catalog要求真实hierarchy关系与exact descriptor，不是blanket override-slot veto；catalog外第三方framework callback及无法穷举的reflection/JNI/agent动态观察面仍作为用户接受风险进入warning/report。reference-returning internal call仍通过JNI nested-local-frame bridge维持GC/local-reference/pending-exception语义；任何unselected/skipped caller或non-exact virtual dispatch同样fail closed。一个独立的physical-retention优化只会把唯一直接call site、pure scalar/non-throwing、无field/call/monitor/JNI-owned-reference的bounded callee合并进caller；其他internalized method仍保留hidden body。
 
 ## Tier 2: 常见 Java 语言特性
 
@@ -119,7 +119,7 @@ Bridge、synthetic、enum-generated 和 record-generated methods默认按普通�
 
 - String/StringBuilder/StringConcat、System.arraycopy、Math、boxing、Objects、`Thread.sleep(J)V`，以及 `Object.getClass()` / `Class.getClassLoader()` 的env-backed JNI helper。`Object.getClass()` 对null receiver显式产生 `NullPointerException`，非null receiver通过JNI `GetObjectClass` 返回JVM-managed `Class` object。
 - common LambdaMetafactory、LDC MethodHandle direct target 与受限 adapter dispatch。
-- validated descriptor matrix内的 collection/formatter/Throwable/Thread/JDK calls可从 native implementation经 JNI dispatch执行；当前额外覆盖class-relative resource stream、InputStream close/read、ByteBuffer parse、`Arrays.fill(byte[], byte)`、Throwable suppression与`privateLookupIn`/hidden-class lookup链。
+- validated descriptor matrix内的 collection/formatter/Throwable/Thread/JDK calls可从 native implementation经 JNI dispatch执行；当前额外覆盖class-relative resource stream、InputStream close/read、ByteBuffer parse、`Arrays.fill(byte[], byte)`、Throwable suppression与`privateLookupIn`/hidden-class lookup链。精确same-block unique-use `ByteBuffer.allocate(4).putInt(i).array()`会进一步融合为native frame helper，JNI创建结果`byte[]`，不建立native ByteBuffer/object model。
 
 边界：
 

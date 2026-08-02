@@ -1,5 +1,6 @@
 package zoo.basic;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -15,7 +16,19 @@ public final class StringJdkBasicCase implements Case {
 
     @Override
     public String run() {
-        return stableStringOps() + ":" + collectionOps();
+        return stableStringOps()
+                + ":"
+                + collectionOps()
+                + ":"
+                + Arrays.toString(bigEndianIntFrame(0x01020304))
+                + ":"
+                + Arrays.toString(bigEndianIntFrame(Integer.MIN_VALUE))
+                + ":"
+                + Arrays.toString(bigEndianIntFrame(Integer.MAX_VALUE));
+    }
+
+    public static byte[] bigEndianIntFrame(int value) {
+        return ByteBuffer.allocate(4).putInt(value).array();
     }
 
     public static String stableStringOps() {

@@ -108,7 +108,7 @@ final class NativeFieldIrAccessVerifier {
         TreeSet<String> approvedSlots = new TreeSet<>();
         TreeMap<AccessCountKey, Integer> counts = new TreeMap<>();
         TreeSet<String> issues = new TreeSet<>();
-        for (NativeFieldInternalizationDecision decision : plan.internalizedFields()) {
+        for (NativeFieldInternalizationDecision decision : plan.nativeStoredFields()) {
             String slot = new NativeFieldSlotRef(
                             plan.storageKind(decision),
                             decision.nativeSlotId().orElseThrow(),

@@ -3,6 +3,10 @@ package zoo.basic;
 import zoo.Case;
 
 public final class PrimitiveBasicCase implements Case {
+    private static final int INLINE_LEAF_BIAS = 17;
+    private static final String UNUSED_CONSTANT_LABEL =
+            "primitive-basic-constant";
+
     @Override
     public String name() {
         return "PrimitiveBasicCase";
@@ -29,7 +33,7 @@ public final class PrimitiveBasicCase implements Case {
     }
 
     public static int publicStaticLeaf(int value) {
-        return value;
+        return value + INLINE_LEAF_BIAS - 17;
     }
 
     public static long longMath(long value, long divisor) {

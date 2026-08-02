@@ -56,6 +56,9 @@ class RuntimeHelperCatalogTest {
         assertTrue(catalog.helper(RuntimeHelperKind.STRING_BUILDER_NEW).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.STRING_BUILDER_APPEND_I32).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.SYSTEM_ARRAYCOPY).isPresent());
+        assertTrue(catalog.helper(RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_NEW).isPresent());
+        assertTrue(catalog.helper(RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_WRITE).isPresent());
+        assertTrue(catalog.helper(RuntimeHelperKind.I32_BIG_ENDIAN_FRAME_FINISH).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.ALLOC_OBJECT).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.NEW_BYTE_ARRAY).isPresent());
         assertTrue(catalog.helper(RuntimeHelperKind.NEW_SHORT_ARRAY).isPresent());
@@ -164,6 +167,9 @@ class RuntimeHelperCatalogTest {
         assertTrue(declarations.contains("declare ptr @j2ll_rt_string_builder_new(ptr) ; stringBuilderNew"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_string_builder_append_i32(ptr, ptr, i32) ; stringBuilderAppendI32"));
         assertTrue(declarations.contains("declare void @j2ll_rt_system_arraycopy(ptr, ptr, i32, ptr, i32, i32) ; systemArraycopy"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_i32_be_frame_new(ptr) ; i32BigEndianFrameNew"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_i32_be_frame_write(ptr, ptr, i32) ; i32BigEndianFrameWrite"));
+        assertTrue(declarations.contains("declare ptr @j2ll_rt_i32_be_frame_finish(ptr, ptr) ; i32BigEndianFrameFinish"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_alloc_object(ptr, i64) ; allocObject"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_new_byte_array(ptr, i32) ; newByteArray"));
         assertTrue(declarations.contains("declare ptr @j2ll_rt_new_short_array(ptr, i32) ; newShortArray"));

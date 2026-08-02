@@ -341,6 +341,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
 
     private List<Binding> bindings(NativeImplementationPlan implementationPlan) {
         return implementationPlan.implementations().stream()
+                .filter(implementation ->
+                        implementation.coalescedIntoMethodKey().isEmpty())
                 .map(implementation -> new Binding(
                         implementation.entry(),
                         implementation.decision(),
@@ -358,7 +360,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         implementation.staticCallKeys(),
                         implementation.dispatchKeys(),
                         implementation.stringHelperSymbols(),
-                        implementation.templateIrMethod(),
+                        implementation.implementationIrMethod(),
                         implementation.reasonCode(),
                         bindingDescriptor(implementation.entry(), implementation.decision())))
                 .sorted(Comparator.comparing(Binding::entry))
@@ -542,7 +544,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
         }
         String name = binding.decision().method().name();
         if (binding.decision().strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            if (binding.templateIrMethod().isPresent()) {
+            if (binding.implementationIrMethod().isPresent()) {
                 appendGenericBodyHelper(
                         builder,
                         binding,
@@ -553,7 +555,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             return;
         }
         if (binding.decision().strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            if (binding.templateIrMethod().isPresent()) {
+            if (binding.implementationIrMethod().isPresent()) {
                 appendGenericBodyHelper(
                         builder,
                         binding,
@@ -836,7 +838,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             StringBuilder builder,
             Binding binding,
             BusinessStringSymbolMapper businessStringSymbols) {
-        IrMethod method = binding.templateIrMethod().orElseThrow();
+        IrMethod method = binding.implementationIrMethod().orElseThrow();
         Map<String, String> values = new LinkedHashMap<>();
         for (int index = 0; index < method.parameters().size(); index++) {
             values.put(method.parameters().get(index).name(), "arg" + index);
@@ -1411,7 +1413,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             List<String> staticCallKeys,
             List<String> dispatchKeys,
             List<String> stringHelperSymbols,
-            Optional<IrMethod> templateIrMethod,
+            Optional<IrMethod> implementationIrMethod,
             String reasonCode,
             JniMethodDescriptor descriptor) {
     }

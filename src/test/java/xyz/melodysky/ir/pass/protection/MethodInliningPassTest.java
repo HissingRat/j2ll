@@ -13,6 +13,10 @@ import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrCallIndirectionMode;
+import xyz.melodysky.ir.model.IrCallIndirectionRef;
+import xyz.melodysky.ir.model.IrCallInvokeKind;
+import xyz.melodysky.ir.model.IrCallSignature;
 import xyz.melodysky.ir.model.IrClass;
 import xyz.melodysky.ir.model.IrExceptionSite;
 import xyz.melodysky.ir.model.IrExceptionSiteKind;
@@ -92,6 +96,56 @@ class MethodInliningPassTest {
                     .flatMap(instruction -> instruction.result().stream())
                     .forEach(value -> assertTrue(definitions.add(value.name())));
         });
+    }
+
+    @Test
+    void remappingCallerUsesPreservesOtherCallIndirectionMetadata() {
+        IrMethod callee = identityCallee("coalescedCallee");
+        IrValue argument = value("%argument", IrType.I32);
+        IrValue callResult = value("%callResult", IrType.I32);
+        IrValue otherResult = value("%otherResult", IrType.I32);
+        IrCallIndirectionRef indirection = new IrCallIndirectionRef(
+                "plan",
+                "group",
+                "entry",
+                IrCallIndirectionMode.TABLE,
+                new IrCallSignature(IrType.I32, List.of(IrType.I32)),
+                IrCallInvokeKind.STATIC);
+        IrInstruction otherCall = IrInstruction.call(
+                        Optional.of(otherResult),
+                        IrOpcode.CALL_STATIC,
+                        List.of(callResult),
+                        key("other", "(I)I"))
+                .withCallIndirection(indirection);
+        IrMethod caller = method(
+                "coalescingCaller",
+                "(I)I",
+                IrType.I32,
+                List.of(argument),
+                new IrBlock(
+                        "entry",
+                        List.of(
+                                IrInstruction.call(
+                                        Optional.of(callResult),
+                                        IrOpcode.CALL_STATIC,
+                                        List.of(argument),
+                                        callee.methodKey()),
+                                otherCall),
+                        IrTerminator.returnValue(otherResult)));
+
+        IrMethod transformed = find(
+                run(caller, callee, staticCandidate(caller, callee)).program(),
+                caller.methodKey());
+        IrInstruction preserved = transformed.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .filter(instruction -> instruction.symbol()
+                        .filter(key("other", "(I)I")::equals)
+                        .isPresent())
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(Optional.of(indirection), preserved.callIndirection());
+        assertTrue(new IrMethodValidator().validate(transformed).isEmpty());
     }
 
     @Test

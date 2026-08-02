@@ -26,6 +26,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.method.PublicMethodInternalizationDiagnostics;
@@ -65,7 +66,9 @@ class DummyMethodInternalizationE2eTest {
                     xyz.melodysky.progress.BuildProgressListener.none(),
                     WholeProgramAnalysisPolicy.currentJarOnly(List.of(
                             WholeProgramAnalysisFeature
-                                    .METHOD_INTERNALIZATION)),
+                                    .METHOD_INTERNALIZATION,
+                            WholeProgramAnalysisFeature
+                                    .FIELD_INTERNALIZATION)),
                     SkippedMethodApproval.allowAll());
         }
 
@@ -75,13 +78,36 @@ class DummyMethodInternalizationE2eTest {
                 "zoo/basic/PrimitiveBasicCase",
                 "publicStaticLeaf",
                 "(I)I"));
+        assertFalse(jarContainsField(
+                pipeline.outputJar(),
+                "zoo/basic/PrimitiveBasicCase",
+                "INLINE_LEAF_BIAS",
+                "I"));
+        assertFalse(jarContainsField(
+                pipeline.outputJar(),
+                "zoo/basic/PrimitiveBasicCase",
+                "UNUSED_CONSTANT_LABEL",
+                "Ljava/lang/String;"));
         assertTrue(pipeline.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.code().equals(
                         PublicMethodInternalizationDiagnostics
                                 .UNRESOLVED_REFLECTION_RISK_ACCEPTED)));
         assertEquals(
-                1,
+                0,
                 internalNativeOnlyCount(workspace));
+        assertEquals(
+                1,
+                coalescedNativeOnlyCount(workspace));
+        String lowering = Files.readString(workspace.resolve(
+                "reports/lowering-report.json"));
+        assertTrue(lowering.contains(
+                "\"coalescedInto\": "
+                        + "\"zoo/basic/PrimitiveBasicCase#simpleInt!(II)I\""),
+                lowering);
+        assertPassedArtifactCheck(
+                workspace,
+                "native.coalescedMethodStandaloneBodies",
+                "COALESCED_NATIVE_STANDALONE_BODIES_ABSENT");
     }
 
     @Test
@@ -128,8 +154,15 @@ class DummyMethodInternalizationE2eTest {
                     method);
         }
         assertEquals(
-                3,
+                2,
                 internalNativeOnlyCount(workspace));
+        assertEquals(
+                1,
+                coalescedNativeOnlyCount(workspace));
+        assertPassedArtifactCheck(
+                workspace,
+                "native.coalescedMethodStandaloneBodies",
+                "COALESCED_NATIVE_STANDALONE_BODIES_ABSENT");
     }
 
     private void assertSuccessfulParity(
@@ -148,11 +181,41 @@ class DummyMethodInternalizationE2eTest {
 
     private int internalNativeOnlyCount(Path workspace)
             throws IOException {
+        return retentionModeCount(workspace, "internalNativeOnly");
+    }
+
+    private int coalescedNativeOnlyCount(Path workspace)
+            throws IOException {
+        return retentionModeCount(workspace, "coalescedNativeOnly");
+    }
+
+    private int retentionModeCount(Path workspace, String retentionMode)
+            throws IOException {
         String lowering = Files.readString(workspace.resolve(
                 "reports/lowering-report.json"));
         return count(
                 lowering,
-                "\"retentionMode\": \"internalNativeOnly\"");
+                "\"retentionMode\": \"" + retentionMode + "\"");
+    }
+
+    private void assertPassedArtifactCheck(
+            Path workspace,
+            String name,
+            String reasonCode) throws IOException {
+        JsonArray checks = JsonParser.parseString(Files.readString(
+                        workspace.resolve("reports/artifact-audit.json")))
+                .getAsJsonObject()
+                .getAsJsonArray("checks");
+        assertTrue(
+                checks.asList().stream()
+                        .map(element -> element.getAsJsonObject())
+                        .anyMatch(check -> check.get("name").getAsString()
+                                        .equals(name)
+                                && check.get("status").getAsString()
+                                        .equals("passed")
+                                && check.get("reasonCode").getAsString()
+                                        .equals(reasonCode)),
+                checks.toString());
     }
 
     private ResolvedConfig config(
@@ -196,7 +259,7 @@ class DummyMethodInternalizationE2eTest {
                       "methodInlining": false,
                       "methodSplitting": false,
                       "callIndirection": false,
-                      "fieldInternalization": false,
+                      "fieldInternalization": true,
                       "methodInternalization": true,
                       "publicMethodInternalizationAllowList": [],
                       "methodTableHiding": false,
@@ -390,6 +453,43 @@ class DummyMethodInternalizationE2eTest {
                                     String candidateDescriptor,
                                     String signature,
                                     String[] exceptions) {
+                                if (candidateName.equals(name)
+                                        && candidateDescriptor.equals(
+                                                descriptor)) {
+                                    found[0] = true;
+                                }
+                                return null;
+                            }
+                        },
+                        ClassReader.SKIP_CODE
+                                | ClassReader.SKIP_DEBUG
+                                | ClassReader.SKIP_FRAMES);
+            }
+            return found[0];
+        }
+    }
+
+    private boolean jarContainsField(
+            Path jarPath,
+            String owner,
+            String name,
+            String descriptor) throws IOException {
+        try (JarFile jar = new JarFile(jarPath.toFile(), false)) {
+            JarEntry entry = jar.getJarEntry(owner + ".class");
+            if (entry == null) {
+                return false;
+            }
+            boolean[] found = {false};
+            try (var input = jar.getInputStream(entry)) {
+                new ClassReader(input).accept(
+                        new ClassVisitor(Opcodes.ASM9) {
+                            @Override
+                            public FieldVisitor visitField(
+                                    int access,
+                                    String candidateName,
+                                    String candidateDescriptor,
+                                    String signature,
+                                    Object value) {
                                 if (candidateName.equals(name)
                                         && candidateDescriptor.equals(
                                                 descriptor)) {

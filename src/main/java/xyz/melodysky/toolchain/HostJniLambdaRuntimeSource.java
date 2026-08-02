@@ -22,10 +22,10 @@ final class HostJniLambdaRuntimeSource {
             RuntimeTokenMapper runtimeTokens) {
         Map<String, String[]> lambdaSpecs = new TreeMap<>();
         for (HostJniCSourceGenerator.Binding binding : bindings) {
-            if (binding.path() != NativeImplementationPath.LLVM_NATIVE_PATH || binding.templateIrMethod().isEmpty()) {
+            if (binding.path() != NativeImplementationPath.LLVM_NATIVE_PATH || binding.implementationIrMethod().isEmpty()) {
                 continue;
             }
-            binding.templateIrMethod().orElseThrow().blocks().stream()
+            binding.implementationIrMethod().orElseThrow().blocks().stream()
                     .flatMap(block -> block.instructions().stream())
                     .filter(instruction -> instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER)
                     .flatMap(instruction -> instruction.symbol().stream())

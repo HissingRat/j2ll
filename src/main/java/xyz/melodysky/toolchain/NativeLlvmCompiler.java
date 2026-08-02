@@ -157,7 +157,8 @@ public final class NativeLlvmCompiler {
                 .append(implementation.staticCallKeys()).append('|')
                 .append(implementation.dispatchKeys()).append('|')
                 .append(implementation.stringHelperSymbols()).append('|')
-                .append(implementation.initializerPlan())
+                .append(implementation.initializerPlan()).append('|')
+                .append(implementation.coalescedIntoMethodKey())
                 .append('\n'));
         implementationPlan.localReferencePlans().entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
@@ -201,15 +202,16 @@ public final class NativeLlvmCompiler {
                 .map(NativeMethodImplementation::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         Set<String> implementationMethodKeys =
-                implementationPlan.llvmImplementations().stream()
+                implementationPlan.emittedLlvmImplementations().stream()
                         .map(NativeMethodImplementation::methodKey)
                         .collect(java.util.stream.Collectors
                                 .toUnmodifiableSet());
         LinkedHashMap<String, ArrayList<IrMethod>> mutableMethodsByOwner =
                 new LinkedHashMap<>();
 
+        validateCoalescedInputs(implementationPlan, irMethods);
         for (NativeMethodImplementation implementation
-                : implementationPlan.llvmImplementations()) {
+                : implementationPlan.emittedLlvmImplementations()) {
             directCallsByMethod.put(
                     implementation.methodKey(),
                     Set.copyOf(implementation.directCallTargets()));
@@ -237,7 +239,7 @@ public final class NativeLlvmCompiler {
                     .add(method);
         }
         for (NativeMethodImplementation implementation
-                : implementationPlan.llvmImplementations()) {
+                : implementationPlan.emittedLlvmImplementations()) {
             IrMethod caller = implementation.initializerPlan()
                     .map(plan -> plan.nativeBody())
                     .orElseGet(() -> irMethods.get(implementation.methodKey()));
@@ -284,6 +286,54 @@ public final class NativeLlvmCompiler {
                         localReferencePlansByMethod),
                 java.util.Collections.unmodifiableSet(registeredMethodKeys),
                 implementationMethodKeys);
+    }
+
+    private void validateCoalescedInputs(
+            NativeImplementationPlan implementationPlan,
+            Map<String, IrMethod> irMethods) throws IOException {
+        for (NativeMethodImplementation implementation
+                : implementationPlan.llvmImplementations()) {
+            if (implementation.coalescedIntoMethodKey().isEmpty()) {
+                continue;
+            }
+            String calleeKey = implementation.methodKey();
+            String callerKey = implementation.coalescedIntoMethodKey()
+                    .orElseThrow();
+            if (irMethods.containsKey(calleeKey)) {
+                throw new IOException(
+                        "coalesced native-only method still has standalone IR: "
+                                + calleeKey);
+            }
+            NativeMethodImplementation caller = implementationPlan
+                    .implementationFor(callerKey)
+                    .orElseThrow(() -> new IOException(
+                            "coalesced native-only caller implementation is missing: "
+                                    + callerKey));
+            if (!caller.emitsStandaloneLlvmBody()
+                    || !irMethods.containsKey(callerKey)) {
+                throw new IOException(
+                        "coalesced native-only caller has no emitted IR body: "
+                                + callerKey);
+            }
+            boolean metadataResidual = implementationPlan
+                    .emittedLlvmImplementations()
+                    .stream()
+                    .anyMatch(candidate -> candidate.directCallTargets()
+                                    .contains(calleeKey)
+                            || candidate.staticCallKeys().contains(calleeKey)
+                            || candidate.dispatchKeys().contains(calleeKey));
+            boolean irResidual = irMethods.values().stream()
+                    .flatMap(method -> method.blocks().stream())
+                    .flatMap(block -> block.instructions().stream())
+                    .anyMatch(instruction -> instruction.symbol()
+                            .filter(calleeKey::equals)
+                            .isPresent());
+            if (metadataResidual || irResidual) {
+                throw new IOException(
+                        "coalesced native-only method retains a native call edge: "
+                                + calleeKey);
+            }
+        }
     }
 
     private void validateCompilerInternalCalls(IrMethod helper) throws IOException {

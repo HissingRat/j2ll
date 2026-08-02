@@ -204,7 +204,8 @@ class BytecodeToSsaLowererTest {
         var instruction = result.irMethod().orElseThrow().blocks().get(0).instructions().get(0);
         assertEquals(IrOpcode.CONST_DOUBLE, instruction.opcode());
         assertEquals(2.5D, instruction.doubleLiteral().orElseThrow());
-        assertTrue(llvm(result.irMethod().orElseThrow()).contains("fadd double 0.0, 2.5"));
+        assertTrue(llvm(result.irMethod().orElseThrow()).contains(
+                "bitcast i64 4612811918334230528 to double"));
     }
 
     @Test

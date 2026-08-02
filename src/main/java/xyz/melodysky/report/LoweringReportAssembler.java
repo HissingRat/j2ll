@@ -10,6 +10,7 @@ import xyz.melodysky.analysis.hierarchy.DefaultInterfaceAnalyzer;
 import xyz.melodysky.analysis.runtime.RuntimeHelperSiteAnalyzer;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
+import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
@@ -30,6 +31,7 @@ public final class LoweringReportAssembler {
             ParsedProgram program,
             IntermediateArtifactLayout layout,
             List<SsaMethodResult> ssaResults,
+            Map<String, IrMethod> finalNativeIr,
             List<MethodRewriteDecision> rewriteDecisions,
             NativeRegistrationPlan registrationPlan,
             NativeImplementationPlan implementationPlan) {
@@ -50,7 +52,7 @@ public final class LoweringReportAssembler {
                     methodArtifact.methodId(),
                     result.status(),
                     rewrite == null ? null : rewrite.strategy(),
-                    retentionMode(result, rewrite, registration),
+                    retentionMode(result, rewrite, registration, implementation.orElse(null)),
                     rewrite == null
                             || rewrite.strategy()
                                     != MethodRewriteStrategy
@@ -61,7 +63,18 @@ public final class LoweringReportAssembler {
                     registration.map(NativeRegistrationEntry::nativeSymbol).orElse(null),
                     registration.map(NativeRegistrationEntry::registrationOwner).orElse(null),
                     implementation.map(item -> item.path().wireName()).orElse(null),
-                    helperSiteAnalyzer.analyze(result, registration, implementation, defaultInterfaces).stream()
+                    implementation.flatMap(item -> item.coalescedIntoMethodKey())
+                            .orElse(null),
+                    helperSiteAnalyzer.analyze(
+                                    result,
+                                    result.irMethod().map(original ->
+                                            finalNativeIr.getOrDefault(
+                                                    source.methodKey(),
+                                                    original)),
+                                    registration,
+                                    implementation,
+                                    defaultInterfaces)
+                            .stream()
                             .map(helperReportFactory::create)
                             .toList(),
                     result.reasonCode(),
@@ -73,7 +86,12 @@ public final class LoweringReportAssembler {
     private NativeMethodRetentionMode retentionMode(
             SsaMethodResult result,
             MethodRewriteDecision rewrite,
-            Optional<NativeRegistrationEntry> registration) {
+            Optional<NativeRegistrationEntry> registration,
+            xyz.melodysky.toolchain.NativeMethodImplementation implementation) {
+        if (implementation != null
+                && implementation.coalescedIntoMethodKey().isPresent()) {
+            return NativeMethodRetentionMode.COALESCED_NATIVE_ONLY;
+        }
         if (rewrite != null
                 && rewrite.strategy()
                         == MethodRewriteStrategy

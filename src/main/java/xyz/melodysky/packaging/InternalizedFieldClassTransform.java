@@ -67,21 +67,28 @@ public final class InternalizedFieldClassTransform {
                 continue;
             }
             seen.add(id.fieldKey());
-            boolean structurallySafe = (field.access & Opcodes.ACC_PRIVATE) != 0
+            var decision = plan.decisionFor(id).orElseThrow();
+            boolean commonSafe = (field.access & Opcodes.ACC_PRIVATE) != 0
                     && (field.access & Opcodes.ACC_STATIC) != 0
                     && (field.access
-                                    & (Opcodes.ACC_FINAL
-                                            | Opcodes.ACC_VOLATILE
+                                    & (Opcodes.ACC_VOLATILE
                                             | Opcodes.ACC_SYNTHETIC
                                             | Opcodes.ACC_ENUM))
                             == 0
-                    && field.value == null
                     && field.signature == null
                     && !hasEntries(field.visibleAnnotations)
                     && !hasEntries(field.invisibleAnnotations)
                     && !hasEntries(field.visibleTypeAnnotations)
-                    && !hasEntries(field.invisibleTypeAnnotations)
-                    && NativeFieldStorageKind.fromDescriptor(field.desc).isPresent();
+                    && !hasEntries(field.invisibleTypeAnnotations);
+            boolean structurallySafe = commonSafe
+                    && (decision.nativeStored()
+                            ? (field.access & Opcodes.ACC_FINAL) == 0
+                                    && field.value == null
+                                    && NativeFieldStorageKind.fromDescriptor(field.desc).isPresent()
+                            : decision.constantFolded()
+                                    && (field.access & Opcodes.ACC_FINAL) != 0
+                                    && decision.constant().orElseThrow()
+                                            .matchesClassfileValue(field.value));
             if (!structurallySafe) {
                 retained.add(field);
                 diagnostics.add(Diagnostic.error(

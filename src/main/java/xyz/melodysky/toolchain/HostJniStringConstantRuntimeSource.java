@@ -98,10 +98,10 @@ final class HostJniStringConstantRuntimeSource {
             BusinessStringSymbolMapper symbolMapper) {
         TreeMap<String, LocalizedBusinessString> constants = new TreeMap<>();
         for (HostJniCSourceGenerator.Binding binding : bindings) {
-            if (binding.templateIrMethod().isEmpty()) {
+            if (binding.implementationIrMethod().isEmpty()) {
                 continue;
             }
-            IrMethod method = binding.templateIrMethod().orElseThrow();
+            IrMethod method = binding.implementationIrMethod().orElseThrow();
             for (IrInstruction instruction : method.blocks().stream()
                     .flatMap(block -> block.instructions().stream())
                     .toList()) {
@@ -126,7 +126,7 @@ final class HostJniStringConstantRuntimeSource {
 
     static boolean isNeeded(List<HostJniCSourceGenerator.Binding> bindings) {
         return bindings.stream()
-                .flatMap(binding -> binding.templateIrMethod().stream())
+                .flatMap(binding -> binding.implementationIrMethod().stream())
                 .flatMap(method -> method.blocks().stream())
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction ->

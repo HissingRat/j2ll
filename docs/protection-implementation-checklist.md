@@ -15,7 +15,7 @@
 
 - selector 命中且有 Code 的 method 最终只能是 `nativeLowered` 或 `skipped`。
 - JVM/JNI runtime helper 是 native implementation 的组成部分；完整 helper-backed path 仍是 `nativeLowered`。
-- `methodInternalization` 批准项仍是 `nativeLowered`，但 retention 为 `internalNativeOnly`：Java `method_info` 和 registration 都不存在，hidden native body 由其他 native-lowered caller 保持可达。
+- `methodInternalization` 批准项仍是 `nativeLowered`：Java `method_info` 和 registration 都不存在。默认retention为`internalNativeOnly` hidden body；严格single-call-site coalescing后可报告`coalescedNativeOnly`并只在caller body中保留语义。
 - 任一 stage 无法完整保持方法语义时，整 method `skipped`，原 Code 保留在 owner class 中，不生成 native rewrite、helper body 或 `RegisterNatives` binding。
 - no-Code selector match 是单独 eligibility evidence，不触发 skipped-method confirmation。
 - 不复制、编码或嵌入可执行的原 class/method Code，也不生成其 carrier、decoder 或 hidden-class definition path。
@@ -33,6 +33,8 @@
 | Packaging/native registration | `methodTableHiding` | 已接线，owner-local transient straight-line table + encoded-at-rest JNI metadata | host 注册/双 ClassLoader 与六目标 multi-owner structural evidence 已通过；virtual/interface 与 non-host runtime 待补 |
 | Program / IR | `fieldInternalization` | 已进入 Config/schema，默认 `false`；严格 `private static` `Z/B/S/C/I/J/F/D`、`L...;` 和 `[...]` 子集已接线 | host 全类型边界、Object identity/null/GC strong-hold、并发/双 ClassLoader 与六目标 primitive/ClassValue storage/privacy evidence 已通过；non-host runtime 待补 |
 | Final native plan / packaging | `methodInternalization` | 已进入 Config/schema，默认 `false`；private/protected static、same-owner exact private/protected instance，以及exact allowlisted public static/public instance子集；public static可用declared/current-JAR scope，public instance只用declared closed world且逐调用点same-owner exact，不要求final | 新策略已有focused、Windows real-Zig Dummy/runtime及最新v2五目标artifact证据；non-host runtime与catalog外第三方callback仍单独验收 |
+| IR/JDK combination | exact ByteBuffer i32 frame | ordinary optimization后、protection前融合same-block unique-use `allocate(4).putInt(i).array()` | focused IR/helper/typed-catch/ABI、dummy real-Zig，以及v2五目标7组chain/零ByteBuffer发布明文；更广buffer/cipher/digest组合待单独证明 |
+| Final physical retention | native-only single-caller coalescing | strict pure-scalar/non-throwing、唯一direct call site的小型`internalNativeOnly` callee | focused caller-ABI/chain/fail-closed/source-residual与dummy real-Zig已命中；当前v2的14个目标因exception/reference/caller边界0命中，更广reference/helper callee不在当前边界 |
 | LLVM | `opaquePredicates` | 已接线，validated conditional-branch model 子集 | Windows host 与六目标 emitted-IR/build-graph evidence 已通过；ReleaseSafe 仍可能折叠当前恒真 predicate |
 | LLVM | `blockLayoutPerturbation` | 已接线，只改变 non-entry block emission order | Windows host 与六目标 build-graph/export evidence 已通过；不保证 linker 后的最终 machine-code layout |
 | LLVM | `globalLayout` | 已接线，只重排 module-local LLVM global emission slots | Windows host 与六目标 global-retention/privacy/export evidence 已通过；non-host runtime 待补 |
@@ -163,10 +165,11 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 
 这是会改变 Java reflection surface 的显式 opt-in：批准字段会从 output classfile 删除，因此 `Class.getDeclaredField(s)` 不再看到它。`CLOSED_WORLD` 是用户对完整 world 和无外部 observer 的声明；current-JAR-only 则是 feature-scoped、本次运行有效的风险接受，不改变 `worldModel`，明确排除配置 classpath 与 JAR 外 observer。N/EOF fail closed，validate/dry-run 只记录待确认 warning。
 
-当前 v1 边界仍是严格 closed-world 子集：
+当前 v1 边界仍是严格 closed-world 子集，并分为mutable slot与compile-time constant两条路径：
 
-- 只处理 input base class 中的 `private static boolean/byte/short/char/int/long/float/double` 与 JVM reference/array。
-- 字段必须非 final/volatile/synthetic/enum-generated，无 ConstantValue、Signature、annotation/type-annotation；字段自身不能被 `<clinit>` 访问，owner 不能带 serialization 语义或 multi-release counterpart；无关 `<clinit>` 不做 owner-wide 阻断。
+- mutable slot只处理input base class中的`private static boolean/byte/short/char/int/long/float/double`与JVM reference/array；字段必须非final/volatile/synthetic/enum-generated，无ConstantValue、Signature、annotation/type-annotation。
+- compile-time constant路径只处理`private static final` classfile `ConstantValue`。显式same-owner `Z/B/S/C/I/J/F/D GETSTATIC`在protection前折叠为typed SSA constant，不生成native slot；零field-reference primitive/String声明可直接删除。显式String读取因JVM intern/object identity边界保留。任意write、cross-owner/non-LLVM accessor或dynamic observer拒绝。
+- 两条路径的字段自身都不能被`<clinit>`访问，owner不能带serialization语义或multi-release counterpart；无关`<clinit>`不做owner-wide阻断。
 - 访问 method 可以是 same-owner static 或 instance method。primitive、reference 和 array access 都只接受final outcome为`nativeLowered`、且final implementation为使用field plan认可storage ABI的`LLVM_NATIVE_PATH`的accessor；cross-owner、`skipped` 或 non-LLVM accessor 一律拒绝 internalization。instance wrapper必须把field的declared defining `jclass`传给storage/sidecar ABI，不能按receiver runtime class分裂static state。
 - classpath access、cross-owner/nestmate access和 instance field 均拒绝。
 - `FieldUseAnalyzer` 扫描 `FieldInsn`、LDC field Handle、invokedynamic/ConstantDynamic bootstrap arguments，并按 JVM field resolution 找实际 declaration。同 symbolic owner 的 unresolved field reference 使候选保守失效；current-JAR-only scope 仍忽略 owner 不属于 input JAR 的 unresolved external reference。
@@ -203,8 +206,9 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - public支持static或same-owner exact instance。public static可使用declared `CLOSED_WORLD`或本次current-JAR-only Y授权；public instance只接受declared `CLOSED_WORLD`并合并input与全部configured classPath。public instance不要求method/class为final，也不因可覆写slot本身拒绝；所有调用点必须exact，实际non-exact dispatch才fail closed。
 - 每个 observed caller 都必须是 final `LLVM_NATIVE_PATH`，且 implementation plan 已包含 direct/dispatch route。任一 unselected、`skipped`、template caller或零 caller都保留 Java method。
 - constructor/class initializer/interface/synchronized/bridge/synthetic/multi-release owner、non-exact dispatch、已解析exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic observer、launcher/agent entry、`EnclosingMethod` metadata，以及closed exact catalog按真实hierarchy+descriptor识别到的Object/Runnable/Callable/线程/定时器/序列化/Comparator/常见函数式JDK callback均拒绝。catalog不会blanket拒绝普通override slot；catalog外第三方framework callback与unsupported/unbounded reflection/JNI/agent observation仍作为user-accepted risk进入warning/report，current-JAR-only还明确报告configured classpath与JAR外caller/observer未分析。
-- approved decision把 rewrite strategy改为`internalNativeOnly`；registration plan过滤该 binding，LLVM body保持hidden可达。需要JNI语义的call使用nested local frame，reference return与pending exception都promote回caller activation；direct pure-scalar path不强制增加桥。
-- packaging删除完整`MethodNode`，artifact audit递归检查declaration、`MethodInsn`、Handle、invokedynamic/ConstantDynamic和`EnclosingMethod`残留。lowering report明确写`retentionMode/internalNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`。
+- approved decision把 rewrite strategy改为`internalNativeOnly`；registration plan过滤该 binding，logical LLVM implementation保持native可达。需要JNI语义的call使用nested local frame，reference return与pending exception都promote回caller activation；direct pure-scalar path不强制增加桥。
+- 后续physical coalescing只接受唯一direct call site、pure scalar/non-throwing、无field/nested-call/monitor/JNI-owned-reference且bounded-size的callee；三层chain显式fail closed，避免coalesced target自身再次成为coalescing caller。批准项不发出callee standalone LLVM body/declaration/reference或C wrapper。
+- packaging删除完整`MethodNode`，artifact audit递归检查declaration、`MethodInsn`、Handle、invokedynamic/ConstantDynamic和`EnclosingMethod`残留。lowering report写`retentionMode=internalNativeOnly`或`coalescedNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`；后一形态另写`coalescedInto`。
 
 已完成：
 

@@ -19,6 +19,7 @@ import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchyStage;
 import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
+import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.analysis.reflection.StaticReflectionResolver;
 import xyz.melodysky.analysis.runtime.RuntimeAnalysisPipeline;
@@ -52,6 +53,7 @@ import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.ir.pass.JdkPureNativeIntrinsicPipeline;
 import xyz.melodysky.ir.pass.OptimizationPipeline;
 import xyz.melodysky.ir.pass.PassContext;
 import xyz.melodysky.ir.pass.protection.ProtectionPipeline;
@@ -147,6 +149,8 @@ public final class MainlinePipeline {
     private final SelectorMatcher selectorMatcher = new SelectorMatcher();
     private final MethodCfgBuilder cfgBuilder = new MethodCfgBuilder();
     private final OptimizationPipeline optimizationPipeline = OptimizationPipeline.defaultPipeline();
+    private final JdkPureNativeIntrinsicPipeline jdkPureNativeIntrinsicPipeline =
+            new JdkPureNativeIntrinsicPipeline();
     private final ProtectionPipeline protectionPipeline = ProtectionPipeline.defaultPipeline();
     private final LlvmTextEmitter llvmEmitter = new LlvmTextEmitter();
     private final MethodRewritePlanner rewritePlanner = new MethodRewritePlanner();
@@ -458,19 +462,13 @@ public final class MainlinePipeline {
             var optimizedResult = optimizationPipeline.run(optimizationInput, PassContext.empty());
             diagnostics.addAll(optimizedResult.diagnostics());
             IrMethod optimized = optimizedResult.artifact().orElse(optimizationInput);
+            var intrinsicResult = jdkPureNativeIntrinsicPipeline.run(optimized);
+            diagnostics.addAll(intrinsicResult.diagnostics());
+            optimized = intrinsicResult.artifact().orElse(optimized);
             optimizedIr.put(method.methodKey(), optimized);
-            var protectionResult = protectionPipeline.runDetailed(
-                    optimized,
-                    xyz.melodysky.ir.pass.protection.ProtectionConfig.fromResolved(
-                            config.protection(),
-                            irProtectionSeed));
-            diagnostics.addAll(protectionResult.diagnostics());
-            protectionReports.addAll(protectionResult.reports());
-            protectedIr.put(method.methodKey(), protectionResult.method());
         }
         buildProgress.methodLoweringComplete(requestedMethodCount);
 
-        buildProgress.nativePlanning(protectedIr.size());
         List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(program, selection.requestedMethods(), ssaResults);
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(rewriteDecisions, wrapperSymbolSeed);
@@ -482,6 +480,39 @@ public final class MainlinePipeline {
                 .flatMap(parsedClass -> parsedClass.methods().stream())
                 .map(ParsedMethod::methodKey)
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        FieldInternalizationPipelineResult fieldInternalization =
+                new FieldInternalizationPreparationCoordinator(
+                                implementationPlanner)
+                        .run(
+                                config,
+                                program,
+                                optimizedIr,
+                                registrationPlan,
+                                rewriteDecisions,
+                                availableProgramMethodKeys,
+                                initializerPlans,
+                                fieldInternalizationSeed,
+                                wholeProgramPolicy);
+        diagnostics.addAll(fieldInternalization.diagnostics());
+        optimizedIr.clear();
+        optimizedIr.putAll(fieldInternalization.methods());
+        NativeFieldInternalizationPlan fieldInternalizationPlan =
+                fieldInternalization.plan();
+
+        optimizedIr.values().stream()
+                .sorted(java.util.Comparator.comparing(IrMethod::methodKey))
+                .forEach(method -> {
+                    var protectionResult = protectionPipeline.runDetailed(
+                            method,
+                            xyz.melodysky.ir.pass.protection.ProtectionConfig.fromResolved(
+                                    config.protection(),
+                                    irProtectionSeed));
+                    diagnostics.addAll(protectionResult.diagnostics());
+                    protectionReports.addAll(protectionResult.reports());
+                    protectedIr.put(method.methodKey(), protectionResult.method());
+                });
+
+        buildProgress.nativePlanning(protectedIr.size());
         NativeImplementationPlan preliminaryImplementationPlan = implementationPlanner.plan(
                 registrationPlan,
                 rewriteDecisions,
@@ -502,19 +533,6 @@ public final class MainlinePipeline {
         protectionReports.addAll(programProtection.reports());
         protectedIr.clear();
         protectedIr.putAll(programProtection.javaMethods());
-        FieldInternalizationPipelineResult fieldInternalization =
-                new FieldInternalizationPipeline().run(
-                        config,
-                        program,
-                        protectedIr,
-                        preliminaryImplementationPlan,
-                        fieldInternalizationSeed,
-                        wholeProgramPolicy);
-        diagnostics.addAll(fieldInternalization.diagnostics());
-        protectedIr.clear();
-        protectedIr.putAll(fieldInternalization.methods());
-        NativeFieldInternalizationPlan fieldInternalizationPlan =
-                fieldInternalization.plan();
         LinkedHashMap<String, IrMethod> nativeIrBuilder = new LinkedHashMap<>(protectedIr);
         nativeIrBuilder.putAll(programProtection.compilerInternalMethods());
         Map<String, IrMethod> nativeIr =
@@ -567,13 +585,25 @@ public final class MainlinePipeline {
         rewriteDecisions = internalizedMethods.rewriteDecisions();
         implementationPlan = internalizedMethods.implementationPlan();
         registrationPlan = implementationPlan.registrationPlan();
+        protectionReports.add(
+                methodInternalization.protectionReport());
+        NativeOnlyMethodCoalescingResult methodCoalescing =
+                new NativeOnlyMethodCoalescingCoordinator().run(
+                        nativeIr,
+                        methodInternalizationPlan,
+                        implementationPlan,
+                        programProtectionSeed);
+        nativeIr = methodCoalescing.methods();
+        implementationPlan = methodCoalescing.implementationPlan();
+        registrationPlan = implementationPlan.registrationPlan();
+        NativeOnlyMethodCoalescingPlan methodCoalescingPlan =
+                methodCoalescing.plan();
+        protectionReports.add(methodCoalescing.protectionReport());
         List<Diagnostic> methodFinalPlanDiagnostics =
                 new MethodInternalizationFinalPlanValidator().validate(
                         methodInternalizationPlan,
                         implementationPlan);
         diagnostics.addAll(methodFinalPlanDiagnostics);
-        protectionReports.add(
-                methodInternalization.protectionReport());
         List<Diagnostic> fieldFinalPlanDiagnostics =
                 new FieldInternalizationFinalPlanValidator().validate(
                         fieldInternalizationPlan,
@@ -606,6 +636,11 @@ public final class MainlinePipeline {
                         nativeIr,
                         llvmProtectionConfig,
                         buildProgress.llvmCompilationProgress());
+        diagnostics.addAll(
+                new NativeOnlyMethodCoalescingFinalPlanValidator().validate(
+                        methodCoalescingPlan,
+                        implementationPlan,
+                        llvmCompilation));
         for (NativeLlvmModuleCompilation compiledModule : llvmCompilation.modules()) {
             List<IrMethod> reportMethods =
                     compiledModule.userMethods();
@@ -826,7 +861,10 @@ public final class MainlinePipeline {
                     nativeBuildResult.map(ZigNativeBuildResult::exportedSymbols).orElse(List.of()),
                     sensitivePlaintextFacts(protectionReports, implementationPlan),
                     fieldInternalizationPlan,
-                    methodInternalizationPlan);
+                    methodInternalizationPlan,
+                    methodCoalescingPlan,
+                    implementationPlan,
+                    llvmCompilation);
             if (!artifactAuditResult.passed()) {
                 Files.deleteIfExists(outputJar);
                 diagnostics.add(Diagnostic.error(
@@ -847,6 +885,7 @@ public final class MainlinePipeline {
                 ssaResults,
                 program,
                 layout,
+                nativeIr,
                 rewriteDecisions,
                 registrationPlan,
                 implementationPlan,
@@ -1125,6 +1164,7 @@ public final class MainlinePipeline {
             List<SsaMethodResult> ssaResults,
             ParsedProgram program,
             IntermediateArtifactLayout layout,
+            Map<String, IrMethod> finalNativeIr,
             List<MethodRewriteDecision> rewriteDecisions,
             NativeRegistrationPlan registrationPlan,
             NativeImplementationPlan implementationPlan,
@@ -1160,6 +1200,7 @@ public final class MainlinePipeline {
                         program,
                         layout,
                         ssaResults,
+                        finalNativeIr,
                         rewriteDecisions,
                         implementedRegistrationPlan,
                         implementationPlan),

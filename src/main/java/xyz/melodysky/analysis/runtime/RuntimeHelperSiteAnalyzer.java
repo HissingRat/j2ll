@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 import xyz.melodysky.analysis.hierarchy.DefaultInterfaceAnalysis;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
+import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.ssa.SsaMethodResult;
@@ -24,14 +25,28 @@ public final class RuntimeHelperSiteAnalyzer {
             Optional<NativeRegistrationEntry> registration,
             Optional<NativeMethodImplementation> implementation,
             DefaultInterfaceAnalysis defaultInterfaces) {
+        return analyze(
+                result,
+                result.irMethod(),
+                registration,
+                implementation,
+                defaultInterfaces);
+    }
+
+    public List<RuntimeHelperSite> analyze(
+            SsaMethodResult result,
+            Optional<IrMethod> finalIrMethod,
+            Optional<NativeRegistrationEntry> registration,
+            Optional<NativeMethodImplementation> implementation,
+            DefaultInterfaceAnalysis defaultInterfaces) {
         ParsedMethod source = result.sourceMethod();
-        if (result.irMethod().isEmpty()) {
+        if (finalIrMethod.isEmpty()) {
             return jniAbiSite(source, registration);
         }
 
         ArrayList<RuntimeHelperSite> sites = new ArrayList<>();
         addMethodBoundarySites(source, sites);
-        var method = result.irMethod().orElseThrow();
+        var method = finalIrMethod.orElseThrow();
         method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(classifier::isReportable)

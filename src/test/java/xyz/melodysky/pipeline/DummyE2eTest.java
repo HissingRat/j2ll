@@ -31,6 +31,7 @@ import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.testsupport.FakeManagedZig;
 import xyz.melodysky.testsupport.dummy.DummyReportAsserter;
 import xyz.melodysky.toolchain.HostPlatform;
+import xyz.melodysky.toolchain.J2llHomeResolver;
 import xyz.melodysky.toolchain.TargetTriple;
 
 class DummyE2eTest {
@@ -64,7 +65,7 @@ class DummyE2eTest {
 
         Path workspace = workspace(profile);
         MainlinePipelineResult pipeline;
-        try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home-" + profile))) {
+        try (AutoCloseable ignored = useManagedZig(profile)) {
             pipeline = new MainlinePipeline().run(
                     config(inputJar, selectors),
                     workspace,
@@ -87,6 +88,11 @@ class DummyE2eTest {
         }
         if (pipeline.outputJar() != null) {
             DummyReportAsserter.assertProfile(profile, workspace, pipeline.outputJar(), expectedReasonCodes, failures);
+        }
+        if (profile.equals("basic") || profile.equals("all")) {
+            assertBigEndianIntFrameIntrinsicEvidence(
+                    workspace.resolve("reports/lowering-report.json"),
+                    failures);
         }
         LoweringSummary loweringSummary = LoweringSummary.read(
                 workspace.resolve("reports/lowering-report.json"),
@@ -290,12 +296,61 @@ class DummyE2eTest {
                 "zoo/basic/ControlFlowBasicCase#lookup!(I)I",
                 "zoo/basic/ExceptionBasicCase#catchCode!()I",
                 "zoo/basic/StringJdkBasicCase#stableStringOps!()Ljava/lang/String;",
+                "zoo/basic/StringJdkBasicCase#bigEndianIntFrame!(I)[B",
                 "zoo/basic/InterfaceLambdaConcatBasicCase#run!()Ljava/lang/String;",
                 "zoo/basic/PolymorphismBasicCase#virtualDispatch!()Ljava/lang/String;",
                 "zoo/basic/PolymorphismBasicCase#abstractDispatch!()Ljava/lang/String;",
                 "zoo/basic/PolymorphismBasicCase#superDispatch!()Ljava/lang/String;",
                 "zoo/basic/PolymorphismBasicCase#bridgeDispatch!()Ljava/lang/String;",
                 "zoo/basic/ReflectionBasicCase#run!()Ljava/lang/String;");
+    }
+
+    private void assertBigEndianIntFrameIntrinsicEvidence(
+            Path loweringReport,
+            List<String> failures) {
+        if (!Files.isRegularFile(loweringReport)) {
+            return;
+        }
+        try {
+            JsonArray methods = JsonParser.parseString(Files.readString(loweringReport))
+                    .getAsJsonObject()
+                    .getAsJsonArray("requestedMethods");
+            if (methods == null) {
+                failures.add("reports: lowering report has no requestedMethods");
+                return;
+            }
+            for (JsonElement element : methods) {
+                JsonObject method = element.getAsJsonObject();
+                if (!"zoo/basic/StringJdkBasicCase".equals(string(method, "class"))
+                        || !"bigEndianIntFrame".equals(string(method, "method"))
+                        || !"(I)[B".equals(string(method, "descriptor"))) {
+                    continue;
+                }
+                if (!"nativeLowered".equals(string(method, "status"))) {
+                    failures.add("reports: bigEndianIntFrame was not nativeLowered");
+                    return;
+                }
+                JsonArray sites = method.getAsJsonArray("helperBackedSites");
+                if (sites != null
+                        && java.util.stream.StreamSupport.stream(sites.spliterator(), false)
+                                .map(JsonElement::getAsJsonObject)
+                                .map(site -> string(site, "reasonCode"))
+                                .anyMatch("JDK_INTRINSIC_HELPER"::equals)) {
+                    return;
+                }
+                failures.add("reports: bigEndianIntFrame has no JDK_INTRINSIC_HELPER evidence");
+                return;
+            }
+            failures.add("reports: bigEndianIntFrame is missing from lowering report");
+        } catch (Exception exception) {
+            failures.add("reports: failed to inspect bigEndianIntFrame evidence: "
+                    + exception.getMessage());
+        }
+    }
+
+    private String string(JsonObject object, String name) {
+        JsonElement element = object.get(name);
+        return element == null || element.isJsonNull() ? null : element.getAsString();
     }
 
     private List<String> advancedSelectors() {
@@ -339,9 +394,49 @@ class DummyE2eTest {
     }
 
     private String javaBinary() {
-        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")
+        return isWindows()
                 ? "java.exe"
                 : "java";
+    }
+
+    private AutoCloseable useManagedZig(String profile) throws Exception {
+        Path realHome = realJ2llHome();
+        if (realHome != null && Files.isRegularFile(zigExecutable(realHome))) {
+            return useJ2llHome(realHome);
+        }
+        return FakeManagedZig.installAndUse(temp.resolve("j2ll-home-" + profile));
+    }
+
+    private Path realJ2llHome() {
+        String configured = System.getProperty("j2ll.realHome");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("J2LL_REAL_HOME");
+        }
+        return configured == null || configured.isBlank()
+                ? null
+                : Path.of(configured).toAbsolutePath().normalize();
+    }
+
+    private Path zigExecutable(Path home) {
+        return home.resolve("zig").resolve(isWindows() ? "zig.exe" : "zig");
+    }
+
+    private AutoCloseable useJ2llHome(Path home) {
+        String previous = System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
+        System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, home.toString());
+        return () -> {
+            if (previous == null) {
+                System.clearProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
+            } else {
+                System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, previous);
+            }
+        };
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT)
+                .contains("win");
     }
 
     private record ChildRun(int exitCode, String stdout, String stderr) {}

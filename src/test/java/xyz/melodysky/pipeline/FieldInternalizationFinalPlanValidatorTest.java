@@ -16,6 +16,8 @@ import xyz.melodysky.analysis.field.FieldInternalizationStatus;
 import xyz.melodysky.analysis.field.FieldReferenceKind;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
+import xyz.melodysky.analysis.field.NativeFieldInternalizationStorage;
+import xyz.melodysky.analysis.field.NativeFieldConstant;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.jvm.AccessFlags;
 import xyz.melodysky.ir.model.NativeFieldSlotRef;
@@ -113,6 +115,35 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
                 diagnostic.code().value().equals("FIELD_INTERNALIZATION_FINAL_PLAN_MISMATCH")));
     }
 
+    @Test
+    void rechecksConstantAccessorFinalPathAndRejectsRawFieldSurvival() {
+        NativeFieldInternalizationPlan constantPlan =
+                constantFieldPlan();
+
+        assertTrue(validator.validate(
+                        constantPlan,
+                        new NativeImplementationPlan(List.of(implementation(
+                                NativeImplementationPath.LLVM_NATIVE_PATH,
+                                List.of()))))
+                .isEmpty());
+        var nonLlvm = validator.validate(
+                constantPlan,
+                new NativeImplementationPlan(List.of(implementation(
+                        NativeImplementationPath.TEMPLATE_JNI_PATH,
+                        List.of()))));
+        var rawField = validator.validate(
+                constantPlan,
+                new NativeImplementationPlan(List.of(implementation(
+                        NativeImplementationPath.LLVM_NATIVE_PATH,
+                        List.of(FIELD.fieldKey())))));
+
+        assertEquals(1, nonLlvm.size());
+        assertTrue(nonLlvm.get(0).message().contains("constant-folded field accessor"));
+        assertEquals(1, rawField.size());
+        assertTrue(rawField.get(0).message().contains(
+                "raw JVM constant field access survived"));
+    }
+
     private NativeFieldInternalizationPlan fieldPlan() {
         return fieldPlan(FIELD, SLOT);
     }
@@ -137,6 +168,29 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
                 Optional.of(slot),
                 List.of(access),
                 List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+    }
+
+    private NativeFieldInternalizationPlan constantFieldPlan() {
+        FieldAccessSite access = new FieldAccessSite(
+                FIELD,
+                METHOD_KEY,
+                FIELD.owner(),
+                "access",
+                true,
+                FieldCodeOrigin.INPUT,
+                FieldReferenceKind.BYTECODE_STATIC_READ,
+                FIELD.owner(),
+                0,
+                false);
+        return new NativeFieldInternalizationPlan(List.of(
+                new NativeFieldInternalizationDecision(
+                        FIELD,
+                        FieldInternalizationStatus.INTERNALIZED,
+                        NativeFieldInternalizationStorage.COMPILE_TIME_CONSTANT,
+                        Optional.empty(),
+                        NativeFieldConstant.from("I", Integer.valueOf(17)),
+                        List.of(access),
+                        List.of(FieldInternalizationReason.FIELD_CONSTANT_INTERNALIZATION_ELIGIBLE))));
     }
 
     private NativeMethodImplementation implementation(

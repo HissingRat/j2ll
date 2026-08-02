@@ -83,6 +83,49 @@ class LlvmCallIndirectionPassTest {
     }
 
     @Test
+    void groupsFunctionTypesEvenWhenCalleeParameterNamesDiffer() {
+        LlvmFunction left = function(
+                "j2ll_left",
+                List.of(new LlvmBasicBlock(
+                        "entry",
+                        List.of(LlvmInstruction.raw(Optional.of("%sum"), "add i32 %p0, 1")),
+                        new LlvmTerminator(LlvmType.I32, Optional.of("%sum")))));
+        LlvmFunction right = new LlvmFunction(
+                "j2ll_right",
+                LlvmLinkage.EXTERNAL,
+                LlvmVisibility.HIDDEN,
+                LlvmType.I32,
+                List.of(new LlvmParameter(LlvmType.I32, "%value")),
+                List.of(new LlvmBasicBlock(
+                        "entry",
+                        List.of(LlvmInstruction.raw(Optional.of("%sum"), "add i32 %value, 2")),
+                        new LlvmTerminator(LlvmType.I32, Optional.of("%sum")))));
+        LlvmFunction caller = function(
+                "j2ll_caller",
+                List.of(new LlvmBasicBlock(
+                        "entry",
+                        List.of(
+                                LlvmInstruction.raw(Optional.of("%l"), "call i32 @j2ll_left(i32 %p0)"),
+                                LlvmInstruction.raw(Optional.of("%r"), "call i32 @j2ll_right(i32 %l)")),
+                        new LlvmTerminator(LlvmType.I32, Optional.of("%r")))));
+
+        LlvmCallIndirectionResult tableResult = new LlvmCallIndirectionPass()
+                .run(new LlvmModule("pkg/NamedArgs", List.of(left, right, caller)),
+                        LlvmProtectionConfig.enabled(29));
+        LlvmCallIndirectionResult dispatcherResult = new LlvmCallIndirectionPass()
+                .run(new LlvmModule("pkg/NamedArgs", List.of(left, right, caller)),
+                        LlvmProtectionConfig.dispatcher(29));
+
+        assertEquals(1, tableResult.dispatcherSymbols().size());
+        assertEquals(1, tableResult.module().globals().size());
+        assertEquals(1, dispatcherResult.dispatcherSymbols().size());
+        String dispatcherText = new LlvmTextEmitter().emit(dispatcherResult.module());
+        assertTrue(dispatcherText.contains("i32 %j2ll_arg_0"));
+        assertTrue(dispatcherText.contains("call i32 @j2ll_left(i32 %j2ll_arg_0)"));
+        assertTrue(dispatcherText.contains("call i32 @j2ll_right(i32 %j2ll_arg_0)"));
+    }
+
+    @Test
     void tableIndirectionKeepsInstanceReceiverSignatureOnIndirectCall() {
         LlvmFunction callee = new LlvmFunction(
                 "j2ll_instance_callee",
@@ -128,10 +171,12 @@ class LlvmCallIndirectionPassTest {
         assertEquals("CALL_INDIRECTION_DISPATCHER", result.reasonCode());
         String dispatcher = result.dispatcherSymbols().get(0);
         assertTrue(dispatcher.startsWith("j2ll_cid_"));
-        assertTrue(text.contains("define external hidden i32 @" + dispatcher + "(i32 %j2ll_selector, i32 %p0)"));
+        assertTrue(text.contains("define external hidden i32 @" + dispatcher
+                + "(i32 %j2ll_selector, i32 %j2ll_arg_0)"));
         assertTrue(text.matches("(?s).*%r = call i32 @" + dispatcher + "\\(i32 [0-9]+, i32 %p0\\).*"));
         assertTrue(text.contains("switch i32 %j2ll_selector"));
-        assertTrue(text.contains("%j2ll_indirect_result = call i32 @j2ll_callee(i32 %p0)"));
+        assertTrue(text.contains(
+                "%j2ll_indirect_result = call i32 @j2ll_callee(i32 %j2ll_arg_0)"));
     }
 
     @Test

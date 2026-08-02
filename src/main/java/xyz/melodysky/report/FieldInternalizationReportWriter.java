@@ -68,6 +68,7 @@ public final class FieldInternalizationReportWriter {
         root.addProperty("storagePolicy", "descriptorAwareHybrid");
         root.addProperty("primitiveStoragePolicy", "perDefiningJclassWeakIdentityAtomicBits");
         root.addProperty("referenceStoragePolicy", "jvmClassValueObjectArray");
+        root.addProperty("constantStoragePolicy", "ssaFoldedNoRuntimeStorage");
         root.addProperty("atomicPolicy", "relaxedAtomicPrimitiveBits");
         root.addProperty(
                 "cachePolicy",
@@ -136,21 +137,24 @@ public final class FieldInternalizationReportWriter {
         JsonObject object = new JsonObject();
         object.addProperty("fieldIdHash", sha256(decision.field().fieldKey()));
         object.addProperty("status", decision.status().name());
+        object.addProperty("internalizationStorage", decision.storage().name());
         NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
                 .ifPresentOrElse(
                         kind -> object.addProperty("storageKind", kind.name()),
                         () -> object.addProperty("storageKind", "UNSUPPORTED"));
         object.addProperty(
                 "storageLocation",
-                decision.internalized()
-                        ? NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
-                                .filter(NativeFieldStorageKind::reference)
-                                .map(ignored -> "jvmClassValueSidecar")
-                                .orElse("nativeAtomicBits")
-                        : null);
+                decision.constantFolded()
+                        ? "ssaFoldedNoRuntimeStorage"
+                        : decision.nativeStored()
+                                ? NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
+                                        .filter(NativeFieldStorageKind::reference)
+                                        .map(ignored -> "jvmClassValueSidecar")
+                                        .orElse("nativeAtomicBits")
+                                : null);
         object.addProperty(
                 "referenceSidecarIndex",
-                decision.internalized()
+                decision.nativeStored()
                                 && NativeFieldStorageKind.fromDescriptor(decision.field().descriptor())
                                         .filter(NativeFieldStorageKind::reference)
                                         .isPresent()

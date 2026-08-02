@@ -20,6 +20,7 @@ public record LoweringReportMethod(
         String nativeSymbol,
         String registrationOwner,
         String nativeImplementationPath,
+        String coalescedInto,
         List<HelperBackedSiteReport> helperBackedSites,
         String reasonCode,
         String reason) {
@@ -33,6 +34,11 @@ public record LoweringReportMethod(
         accessFlags = List.copyOf(Objects.requireNonNull(accessFlags, "accessFlags"));
         compilerFlags = List.copyOf(Objects.requireNonNull(compilerFlags, "compilerFlags"));
         helperBackedSites = List.copyOf(Objects.requireNonNull(helperBackedSites, "helperBackedSites"));
+        if (retentionMode == NativeMethodRetentionMode.COALESCED_NATIVE_ONLY
+                && (coalescedInto == null || coalescedInto.isBlank())) {
+            throw new IllegalArgumentException(
+                    "coalesced native-only report method requires its caller identity");
+        }
     }
 
     public LoweringReportMethod(
@@ -75,6 +81,7 @@ public record LoweringReportMethod(
                 nativeSymbol,
                 registrationOwner,
                 nativeImplementationPath,
+                null,
                 helperBackedSites,
                 reasonCode,
                 reason);

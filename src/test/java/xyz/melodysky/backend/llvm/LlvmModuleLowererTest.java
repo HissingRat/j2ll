@@ -681,6 +681,51 @@ class LlvmModuleLowererTest {
     }
 
     @Test
+    void lowersRawFloatAndDoubleConstantsWithoutCanonicalizingTheirBits() {
+        int floatNanBits = 0x7fa12345;
+        long negativeZeroBits = 0x8000000000000000L;
+        IrValue floatValue = new IrValue("%float_nan", IrType.F32);
+        IrValue doubleValue = new IrValue("%double_negative_zero", IrType.F64);
+        IrMethod floatMethod = new IrMethod(
+                "pkg/RawConstants",
+                "floatNan",
+                "()F",
+                IrType.F32,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.constFloat(
+                                floatValue,
+                                Float.intBitsToFloat(floatNanBits))),
+                        IrTerminator.returnValue(floatValue))));
+        IrMethod doubleMethod = new IrMethod(
+                "pkg/RawConstants",
+                "doubleNegativeZero",
+                "()D",
+                IrType.F64,
+                List.of(),
+                List.of(new IrBlock(
+                        "entry",
+                        List.of(IrInstruction.constDouble(
+                                doubleValue,
+                                Double.longBitsToDouble(negativeZeroBits))),
+                        IrTerminator.returnValue(doubleValue))));
+
+        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
+                .lowerClass(new IrClass(
+                        "pkg/RawConstants",
+                        List.of(floatMethod, doubleMethod))));
+
+        assertTrue(text.contains("%float_nan = bitcast i32 "
+                + floatNanBits + " to float"));
+        assertTrue(text.contains("%double_negative_zero = bitcast i64 "
+                + negativeZeroBits + " to double"));
+        assertFalse(text.contains("NaN"));
+        assertFalse(text.contains("fadd float 0.0"));
+        assertFalse(text.contains("fadd double 0.0"));
+    }
+
+    @Test
     void lowersMonitorHelpersThroughJniEnvBackedRuntimeCalls() {
         IrValue monitor = new IrValue("%p0", IrType.REFERENCE);
         IrMethod method = new IrMethod(

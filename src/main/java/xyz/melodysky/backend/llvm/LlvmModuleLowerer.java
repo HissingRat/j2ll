@@ -31,6 +31,7 @@ import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminatorKind;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 import xyz.melodysky.runtime.RuntimeHelperCatalog;
 import xyz.melodysky.runtime.RuntimeHelperKind;
 import xyz.melodysky.runtime.RuntimeTokenDomain;
@@ -224,9 +225,10 @@ public final class LlvmModuleLowerer {
         for (IrMethod method : irClass.methods()) {
             Set<String> directCalls = directCallsByMethod.getOrDefault(method.methodKey(), Set.of());
             Set<String> staticCalls = staticCallsByMethod.getOrDefault(method.methodKey(), Set.of());
-            LlvmFunctionAbi inferred = new LlvmFunctionAbi(
-                    methodNeedsJniEnv(method, directCalls, staticCalls),
-                    methodNeedsOwnerClass(method, directCalls));
+            LlvmFunctionAbi inferred = inferFunctionAbi(
+                    method,
+                    directCalls,
+                    staticCalls);
             LlvmFunctionAbi planned =
                     plannedFunctionAbis.get(method.methodKey());
             if (planned != null && !planned.equals(inferred)) {
@@ -244,6 +246,26 @@ public final class LlvmModuleLowerer {
                     planned == null ? inferred : planned);
         }
         return Map.copyOf(result);
+    }
+
+    /** Shared exact ABI inference for final-plan IR transformations. */
+    public LlvmFunctionAbi inferFunctionAbi(
+            IrMethod method,
+            Set<String> directCallMethodKeys,
+            Set<String> staticCallMethodKeys) {
+        java.util.Objects.requireNonNull(method, "method");
+        java.util.Objects.requireNonNull(
+                directCallMethodKeys,
+                "directCallMethodKeys");
+        java.util.Objects.requireNonNull(
+                staticCallMethodKeys,
+                "staticCallMethodKeys");
+        return new LlvmFunctionAbi(
+                methodNeedsJniEnv(
+                        method,
+                        directCallMethodKeys,
+                        staticCallMethodKeys),
+                methodNeedsOwnerClass(method, directCallMethodKeys));
     }
 
     private List<LlvmDeclaration> runtimeHelperDeclarations(
@@ -1027,6 +1049,20 @@ public final class LlvmModuleLowerer {
                     Optional.of(instruction.result().orElseThrow().name()),
                     "bitcast i64 " + instruction.operands().get(0).name() + " to double");
         }
+        if (instruction.opcode() == IrOpcode.CONST_FLOAT) {
+            int rawBits = Float.floatToRawIntBits(
+                    instruction.floatLiteral().orElseThrow());
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "bitcast i32 " + rawBits + " to float");
+        }
+        if (instruction.opcode() == IrOpcode.CONST_DOUBLE) {
+            long rawBits = Double.doubleToRawLongBits(
+                    instruction.doubleLiteral().orElseThrow());
+            return LlvmInstruction.raw(
+                    Optional.of(instruction.result().orElseThrow().name()),
+                    "bitcast i64 " + rawBits + " to double");
+        }
         if (isArrayHelper(instruction)) {
             return lowerEnvBackedHelperCall(instruction, arrayHelperName(instruction));
         }
@@ -1048,8 +1084,8 @@ public final class LlvmModuleLowerer {
         String opcode = switch (instruction.opcode()) {
             case CONST_INT -> "add";
             case CONST_LONG -> "add";
-            case CONST_FLOAT -> "fadd";
-            case CONST_DOUBLE -> "fadd";
+            case CONST_FLOAT, CONST_DOUBLE ->
+                    throw new IllegalStateException("handled earlier");
             case CONST_STRING, CONST_CLASS, CONST_METHOD_TYPE, CONST_METHOD_HANDLE ->
                     throw new IllegalStateException("handled earlier");
             case CLASS_OBJECT, CLASS_INIT_GUARD, CLASS_INIT_BEGIN, CLASS_INIT_END, CLASS_INIT_FAILED ->
@@ -1115,8 +1151,8 @@ public final class LlvmModuleLowerer {
         return switch (instruction.opcode()) {
             case CONST_INT -> List.of("0", Integer.toString(instruction.intLiteral().orElseThrow()));
             case CONST_LONG -> List.of("0", Long.toString(instruction.longLiteral().orElseThrow()));
-            case CONST_FLOAT -> List.of("0.0", Float.toString(instruction.floatLiteral().orElseThrow()));
-            case CONST_DOUBLE -> List.of("0.0", Double.toString(instruction.doubleLiteral().orElseThrow()));
+            case CONST_FLOAT, CONST_DOUBLE ->
+                    throw new IllegalStateException("handled earlier");
             case NEG_I32, NEG_I64 -> List.of("0", instruction.operands().get(0).name());
             case NEG_F32, NEG_F64 -> List.of("-0.0", instruction.operands().get(0).name());
             default -> instruction.operands().stream().map(IrValue::name).toList();
@@ -2125,7 +2161,9 @@ public final class LlvmModuleLowerer {
                 || base.equals("j2ll_rt_reflect_set_accessible")
                 || base.startsWith("j2ll_rt_reflect_field_")
                 || base.startsWith("j2ll_rt_unsafe_")
-                || base.startsWith("j2ll_rt_var_handle_");
+                || base.startsWith("j2ll_rt_var_handle_")
+                || PureNativeJdkRuntimeHelpers
+                        .isI32BigEndianFrameHelper(base);
     }
 
     private String runtimeHelperBaseSymbol(String symbol) {

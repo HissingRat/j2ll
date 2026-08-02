@@ -1,8 +1,8 @@
 package xyz.melodysky.toolchain;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.List;
 import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.packaging.MethodRewriteDecision;
@@ -28,7 +28,8 @@ public record NativeMethodImplementation(
         List<String> dispatchKeys,
         List<String> stringHelperSymbols,
         Optional<IrMethod> templateIrMethod,
-        Optional<InitializerImplementationPlan> initializerPlan) implements Comparable<NativeMethodImplementation> {
+        Optional<InitializerImplementationPlan> initializerPlan,
+        Optional<String> coalescedIntoMethodKey) implements Comparable<NativeMethodImplementation> {
     public NativeMethodImplementation {
         Objects.requireNonNull(entry, "entry");
         Objects.requireNonNull(decision, "decision");
@@ -47,11 +48,71 @@ public record NativeMethodImplementation(
         stringHelperSymbols = List.copyOf(Objects.requireNonNull(stringHelperSymbols, "stringHelperSymbols"));
         Objects.requireNonNull(templateIrMethod, "templateIrMethod");
         Objects.requireNonNull(initializerPlan, "initializerPlan");
+        coalescedIntoMethodKey = Objects.requireNonNull(
+                coalescedIntoMethodKey,
+                "coalescedIntoMethodKey");
         if (initializerPlan.isPresent()
                 && path != NativeImplementationPath.LLVM_NATIVE_PATH) {
             throw new IllegalArgumentException(
                     "initializer implementation plans require the LLVM native path");
         }
+        if (coalescedIntoMethodKey.isPresent()) {
+            if (path != NativeImplementationPath.LLVM_NATIVE_PATH
+                    || decision.strategy()
+                            != xyz.melodysky.packaging.MethodRewriteStrategy
+                                    .INTERNAL_NATIVE_ONLY) {
+                throw new IllegalArgumentException(
+                        "only LLVM internal-native-only methods may be coalesced");
+            }
+            if (coalescedIntoMethodKey.orElseThrow()
+                    .equals(decision.method().methodKey())) {
+                throw new IllegalArgumentException(
+                        "native-only method cannot be coalesced into itself");
+            }
+        }
+    }
+
+    public NativeMethodImplementation(
+            NativeRegistrationEntry entry,
+            MethodRewriteDecision decision,
+            NativeImplementationPath path,
+            Optional<String> llvmFunctionSymbol,
+            String reasonCode,
+            boolean passesJniEnv,
+            boolean passesOwnerClass,
+            List<String> fieldKeys,
+            List<String> directCallTargets,
+            List<String> allocationKeys,
+            List<String> typeCheckKeys,
+            List<String> classObjectKeys,
+            List<String> runtimeMetadataKeys,
+            List<String> constructorCallKeys,
+            List<String> staticCallKeys,
+            List<String> dispatchKeys,
+            List<String> stringHelperSymbols,
+            Optional<IrMethod> templateIrMethod,
+            Optional<InitializerImplementationPlan> initializerPlan) {
+        this(
+                entry,
+                decision,
+                path,
+                llvmFunctionSymbol,
+                reasonCode,
+                passesJniEnv,
+                passesOwnerClass,
+                fieldKeys,
+                directCallTargets,
+                allocationKeys,
+                typeCheckKeys,
+                classObjectKeys,
+                runtimeMetadataKeys,
+                constructorCallKeys,
+                staticCallKeys,
+                dispatchKeys,
+                stringHelperSymbols,
+                templateIrMethod,
+                initializerPlan,
+                Optional.empty());
     }
 
     public NativeMethodImplementation(
@@ -92,6 +153,7 @@ public record NativeMethodImplementation(
                 dispatchKeys,
                 stringHelperSymbols,
                 templateIrMethod,
+                Optional.empty(),
                 Optional.empty());
     }
 
@@ -119,6 +181,7 @@ public record NativeMethodImplementation(
                 List.of(),
                 List.of(),
                 List.of(),
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
     }
@@ -152,7 +215,76 @@ public record NativeMethodImplementation(
                 dispatchKeys,
                 stringHelperSymbols,
                 templateIrMethod,
-                initializerPlan);
+                initializerPlan,
+                coalescedIntoMethodKey);
+    }
+
+    public boolean emitsStandaloneLlvmBody() {
+        return path == NativeImplementationPath.LLVM_NATIVE_PATH
+                && coalescedIntoMethodKey.isEmpty();
+    }
+
+    public NativeMethodImplementation coalescedInto(String callerMethodKey) {
+        return new NativeMethodImplementation(
+                entry,
+                decision,
+                path,
+                llvmFunctionSymbol,
+                "LLVM_NATIVE_ONLY_BODY_COALESCED",
+                passesJniEnv,
+                passesOwnerClass,
+                fieldKeys,
+                directCallTargets,
+                allocationKeys,
+                typeCheckKeys,
+                classObjectKeys,
+                runtimeMetadataKeys,
+                constructorCallKeys,
+                staticCallKeys,
+                dispatchKeys,
+                stringHelperSymbols,
+                templateIrMethod,
+                initializerPlan,
+                Optional.of(callerMethodKey));
+    }
+
+    /** Implementation IR snapshot used by generated-runtime reachability. */
+    public Optional<IrMethod> implementationIrMethod() {
+        return templateIrMethod;
+    }
+
+    public NativeMethodImplementation withEffectiveIrMethod(
+            IrMethod callerBody,
+            String removedTargetMethodKey,
+            LlvmFunctionAbi updatedAbi) {
+        Objects.requireNonNull(updatedAbi, "updatedAbi");
+        return new NativeMethodImplementation(
+                entry,
+                decision,
+                path,
+                llvmFunctionSymbol,
+                reasonCode,
+                updatedAbi.passesJniEnv(),
+                updatedAbi.passesOwnerClass(),
+                fieldKeys,
+                directCallTargets.stream()
+                        .filter(target -> !target.equals(removedTargetMethodKey))
+                        .toList(),
+                allocationKeys,
+                typeCheckKeys,
+                classObjectKeys,
+                runtimeMetadataKeys,
+                constructorCallKeys,
+                staticCallKeys.stream()
+                        .filter(target -> !target.equals(removedTargetMethodKey))
+                        .toList(),
+                dispatchKeys.stream()
+                        .filter(target -> !target.equals(removedTargetMethodKey))
+                        .toList(),
+                stringHelperSymbols,
+                Optional.of(callerBody),
+                initializerPlan,
+                coalescedIntoMethodKey);
     }
 
     @Override

@@ -19,8 +19,12 @@ import java.util.stream.Stream;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
+import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
 import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
 import xyz.melodysky.packaging.InternalizedMethodArtifactVerifier;
+import xyz.melodysky.toolchain.NativeImplementationPlan;
+import xyz.melodysky.toolchain.NativeLlvmCompilation;
+import xyz.melodysky.toolchain.NativeOnlyMethodCoalescingEmissionVerifier;
 
 public class ArtifactAudit {
     public ArtifactAuditResult audit(
@@ -186,6 +190,64 @@ public class ArtifactAudit {
                 fieldResult.checkedSensitiveFacts(),
                 fieldResult.observedOnlySensitiveFacts(),
                 fieldResult.skippedSensitiveFacts());
+    }
+
+    public ArtifactAuditResult audit(
+            Path workspaceRoot,
+            Path outputJar,
+            String embeddedLibraryDirectory,
+            List<EmbeddedLibraryReport> embeddedLibraries,
+            List<String> exportedSymbols,
+            List<SensitivePlaintextFact> sensitivePlaintextFacts,
+            NativeFieldInternalizationPlan fieldInternalizationPlan,
+            NativeMethodInternalizationPlan methodInternalizationPlan,
+            NativeOnlyMethodCoalescingPlan methodCoalescingPlan,
+            NativeImplementationPlan implementationPlan,
+            NativeLlvmCompilation llvmCompilation)
+            throws IOException {
+        ArtifactAuditResult methodResult = audit(
+                workspaceRoot,
+                outputJar,
+                embeddedLibraryDirectory,
+                embeddedLibraries,
+                exportedSymbols,
+                sensitivePlaintextFacts,
+                fieldInternalizationPlan,
+                methodInternalizationPlan);
+        if (!methodResult.passed()) {
+            return methodResult;
+        }
+        List<String> residuals =
+                new NativeOnlyMethodCoalescingEmissionVerifier()
+                        .workspaceResiduals(
+                                workspaceRoot,
+                                methodCoalescingPlan,
+                                implementationPlan,
+                                llvmCompilation);
+        boolean noCoalescedMethods =
+                methodCoalescingPlan.coalescedCount() == 0;
+        ArtifactAuditCheck coalescingCheck = residuals.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "native.coalescedMethodStandaloneBodies",
+                        noCoalescedMethods
+                                ? "NO_COALESCED_NATIVE_METHODS"
+                                : "COALESCED_NATIVE_STANDALONE_BODIES_ABSENT",
+                        noCoalescedMethods
+                                ? "no native-only methods were physically coalesced"
+                                : "coalesced methods have no LLVM function, declaration, call reference, or generated-C wrapper")
+                : ArtifactAuditCheck.failed(
+                        "native.coalescedMethodStandaloneBodies",
+                        "COALESCED_NATIVE_STANDALONE_BODY_RESIDUAL",
+                        "coalesced native method residuals: " + residuals);
+        ArrayList<ArtifactAuditCheck> checks =
+                new ArrayList<>(methodResult.checks());
+        checks.add(coalescingCheck);
+        return new ArtifactAuditResult(
+                residuals.isEmpty(),
+                checks,
+                methodResult.checkedSensitiveFacts(),
+                methodResult.observedOnlySensitiveFacts(),
+                methodResult.skippedSensitiveFacts());
     }
 
     public ArtifactAuditResult skipped(String reasonCode, String message) {

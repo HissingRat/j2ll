@@ -73,6 +73,14 @@ final class HostJniReachableRuntimeSourceEmitter {
         append(
                 fragments,
                 emissionFamilies,
+                HostJniRuntimeSourceFamily.PURE_NATIVE_JDK,
+                "pure-native-jdk",
+                fragment -> fragment.append(
+                        HostJniPureNativeJdkRuntimeSource
+                                .helperSource()));
+        append(
+                fragments,
+                emissionFamilies,
                 HostJniRuntimeSourceFamily.THREAD,
                 "jvm-thread",
                 fragment -> fragment.append(

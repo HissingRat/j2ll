@@ -30,6 +30,16 @@ public final class IsolatedStaticStateHarness {
             second.getMethod("add", int.class).invoke(null, 7);
             second.getMethod("addLong", long.class).invoke(null, 11L);
             System.out.println("second-after=" + counter(second) + "/" + total(second));
+            System.out.println("constant="
+                    + first.getMethod("getConstantLimit").invoke(null));
+            System.out.printf("constant-float-bits=%08x%n",
+                    Float.floatToRawIntBits((Float) first
+                            .getMethod("getConstantFloat")
+                            .invoke(null)));
+            System.out.printf("constant-double-bits=%016x%n",
+                    Double.doubleToRawLongBits((Double) first
+                            .getMethod("getConstantDouble")
+                            .invoke(null)));
             System.out.println("narrow="
                     + invokeInt(first, "setByte", 255) + "/"
                     + invokeInt(first, "setShort", 65535) + "/"

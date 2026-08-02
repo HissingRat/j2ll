@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +28,7 @@ import xyz.melodysky.config.ProtectionConfig;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.config.SignaturePolicy;
 import xyz.melodysky.config.TargetConfig;
+import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
@@ -39,11 +41,14 @@ import xyz.melodysky.ir.model.IrOpcode;
 import xyz.melodysky.ir.model.IrTerminator;
 import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
+import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
+import xyz.melodysky.toolchain.NativeImplementationPlanner;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
 import xyz.melodysky.toolchain.TargetTriple;
 
@@ -106,7 +111,10 @@ class FieldInternalizationPipelineTest implements Opcodes {
                 WholeProgramAnalysisScope.CURRENT_JAR_ONLY_USER_APPROVED,
                 result.analysisScope());
         assertFalse(result.classPathAnalyzed());
-        assertEquals(1, result.plan().internalizedFields().size());
+        assertEquals(
+                1,
+                result.plan().internalizedFields().size(),
+                () -> result.plan().decisions().toString());
         assertEquals(
                 IrOpcode.GET_NATIVE_STATIC,
                 result.methods()
@@ -184,6 +192,107 @@ class FieldInternalizationPipelineTest implements Opcodes {
                         .get(0)
                         .instructions()
                         .get(0)
+                        .opcode());
+    }
+
+    @Test
+    void preparationCoordinatorBuildsTheOptimizedIrPathProbeBeforeFieldRewrite()
+            throws Exception {
+        ParsedClass parsedClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        OWNER + ".class",
+                        candidateClass(),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        ParsedMethod parsedMethod = parsedClass.methods().stream()
+                .filter(method -> method.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+        ParsedProgram program = new ParsedProgram(List.of(parsedClass));
+        IrMethod irMethod = new BytecodeToSsaLowerer()
+                .lower(new MethodCfgBuilder()
+                        .build(parsedMethod)
+                        .artifact()
+                        .orElseThrow())
+                .artifact()
+                .orElseThrow()
+                .irMethod()
+                .orElseThrow();
+        MethodRewriteDecision decision = new MethodRewriteDecision(
+                parsedMethod,
+                MethodRewriteStrategy.NATIVE_ORIGINAL,
+                OWNER,
+                Optional.empty(),
+                "TEST");
+        NativeRegistrationEntry entry = new NativeRegistrationEntry(
+                OWNER,
+                parsedMethod.name(),
+                parsedMethod.descriptor(),
+                "j2ll_test_read");
+        Path inputJar = temp.resolve("coordinator-input.jar");
+        try (JarOutputStream ignored =
+                new JarOutputStream(Files.newOutputStream(inputJar))) {
+            // A valid empty JAR is enough for multi-release entry discovery.
+        }
+        Map<String, IrMethod> optimizedMethods =
+                Map.of(irMethod.methodKey(), irMethod);
+        NativeImplementationPlanner implementationPlanner =
+                new NativeImplementationPlanner();
+        NativeImplementationPlan probe = implementationPlanner.plan(
+                new NativeRegistrationPlan(List.of(entry)),
+                List.of(decision),
+                optimizedMethods,
+                Set.of(irMethod.methodKey()),
+                Set.of(),
+                Map.of());
+        assertTrue(
+                probe.implementationFor(irMethod.methodKey()).isPresent(),
+                () -> "implementations=" + probe.implementations()
+                        + ", unavailable=" + probe.unavailableReasonCodes());
+
+        FieldInternalizationPipelineResult result =
+                new FieldInternalizationPreparationCoordinator(
+                                implementationPlanner)
+                        .run(
+                                config(inputJar, temp.resolve("missing-coordinator-dependency.jar")),
+                                program,
+                                optimizedMethods,
+                                new NativeRegistrationPlan(List.of(entry)),
+                                List.of(decision),
+                                Set.of(irMethod.methodKey()),
+                                Map.of(),
+                                29L,
+                                WholeProgramAnalysisPolicy.currentJarOnly(
+                                        List.of(WholeProgramAnalysisFeature.FIELD_INTERNALIZATION)));
+
+        assertEquals(
+                1,
+                result.plan().internalizedFields().size(),
+                () -> result.plan().decisions().toString());
+        assertEquals(
+                IrOpcode.GET_NATIVE_STATIC,
+                result.methods()
+                        .get(irMethod.methodKey())
+                        .blocks()
+                        .stream()
+                        .flatMap(block -> block.instructions().stream())
+                        .filter(instruction ->
+                                instruction.opcode() == IrOpcode.GET_NATIVE_STATIC)
+                        .findFirst()
+                        .orElseThrow()
+                        .opcode());
+        assertEquals(
+                IrOpcode.GET_STATIC,
+                optimizedMethods.get(irMethod.methodKey())
+                        .blocks()
+                        .stream()
+                        .flatMap(block -> block.instructions().stream())
+                        .filter(instruction -> instruction.symbol()
+                                .map(FIELD_KEY::equals)
+                                .orElse(false))
+                        .findFirst()
+                        .orElseThrow()
                         .opcode());
     }
 

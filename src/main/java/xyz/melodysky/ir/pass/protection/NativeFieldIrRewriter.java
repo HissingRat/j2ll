@@ -44,7 +44,7 @@ public final class NativeFieldIrRewriter {
             NativeFieldInternalizationPlan plan,
             Set<String> llvmMethodKeys) {
         llvmMethodKeys = Set.copyOf(llvmMethodKeys);
-        Map<String, NativeFieldSlotRef> slotByField = plan.internalizedFields().stream()
+        Map<String, NativeFieldSlotRef> slotByField = plan.nativeStoredFields().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
                         decision -> decision.field().fieldKey(),
                         decision -> new NativeFieldSlotRef(
@@ -55,14 +55,30 @@ public final class NativeFieldIrRewriter {
                 .flatMap(decision -> decision.accesses().stream())
                 .map(access -> access.methodKey())
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        if (slotByField.isEmpty()) {
+        Map<String, xyz.melodysky.analysis.field.NativeFieldInternalizationDecision>
+                constantByField = plan.constantFoldedFields().stream()
+                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                decision -> decision.field().fieldKey(),
+                                decision -> decision));
+        if (slotByField.isEmpty() && constantByField.isEmpty()) {
             return new NativeFieldIrRewriteResult(input, List.of(), List.of(), List.of());
         }
         NativeFieldIrAccessVerifier accessVerifier = new NativeFieldIrAccessVerifier();
-        List<String> inputAccessIssues = accessVerifier.verifyInput(
-                input,
-                plan,
-                llvmMethodKeys);
+        NativeConstantFieldIrFolder constantFolder =
+                new NativeConstantFieldIrFolder();
+        List<String> inputAccessIssues = java.util.stream.Stream.concat(
+                        accessVerifier.verifyInput(
+                                        input,
+                                        plan,
+                                        llvmMethodKeys)
+                                .stream(),
+                        constantFolder.verifyInput(
+                                        input,
+                                        plan,
+                                        llvmMethodKeys)
+                                .stream())
+                .sorted()
+                .toList();
         if (!inputAccessIssues.isEmpty()) {
             return failed(input, ACCESS_MISMATCH, inputAccessIssues);
         }
@@ -87,7 +103,7 @@ public final class NativeFieldIrRewriter {
         }
         for (IrMethod method : sortedMethods) {
             RewriteMethodResult candidate = llvmMethodKeys.contains(method.methodKey())
-                    ? rewriteMethod(method, slotByField)
+                    ? rewriteMethod(method, slotByField, constantByField, constantFolder)
                     : new RewriteMethodResult(method, List.of(), false);
             rewritten.put(method.methodKey(), candidate.method());
             if (candidate.changed()) {
@@ -107,10 +123,15 @@ public final class NativeFieldIrRewriter {
                     DiagnosticCode.of("FIELD_INTERNALIZATION_OUTPUT_IR_INVALID"),
                     invalidOutputs);
         }
-        List<String> outputAccessIssues = accessVerifier.verifyOutput(
-                rewritten,
-                plan,
-                llvmMethodKeys);
+        List<String> outputAccessIssues = java.util.stream.Stream.concat(
+                        accessVerifier.verifyOutput(
+                                        rewritten,
+                                        plan,
+                                        llvmMethodKeys)
+                                .stream(),
+                        constantFolder.verifyOutput(rewritten, plan).stream())
+                .sorted()
+                .toList();
         if (!outputAccessIssues.isEmpty()) {
             return failed(input, ACCESS_MISMATCH, outputAccessIssues);
         }
@@ -123,13 +144,26 @@ public final class NativeFieldIrRewriter {
 
     private RewriteMethodResult rewriteMethod(
             IrMethod method,
-            Map<String, NativeFieldSlotRef> slotByField) {
+            Map<String, NativeFieldSlotRef> slotByField,
+            Map<String, xyz.melodysky.analysis.field.NativeFieldInternalizationDecision>
+                    constantByField,
+            NativeConstantFieldIrFolder constantFolder) {
         boolean changed = false;
         ArrayList<String> slots = new ArrayList<>();
         ArrayList<IrBlock> blocks = new ArrayList<>();
         for (IrBlock block : method.blocks()) {
             ArrayList<IrInstruction> instructions = new ArrayList<>();
             for (IrInstruction instruction : block.instructions()) {
+                var constant = instruction.symbol()
+                        .map(constantByField::get)
+                        .orElse(null);
+                if (constant != null && instruction.opcode() == IrOpcode.GET_STATIC) {
+                    instructions.addAll(constantFolder
+                            .fold(instruction, constant)
+                            .instructions());
+                    changed = true;
+                    continue;
+                }
                 NativeFieldSlotRef slot = instruction.symbol().map(slotByField::get).orElse(null);
                 if (slot == null
                         || (instruction.opcode() != IrOpcode.GET_STATIC

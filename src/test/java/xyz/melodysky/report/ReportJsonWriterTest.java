@@ -16,6 +16,43 @@ class ReportJsonWriterTest {
     private final ReportJsonWriter writer = new ReportJsonWriter();
 
     @Test
+    void writesPhysicalNativeOnlyCoalescingEvidence() {
+        LoweringReportMethod coalesced = new LoweringReportMethod(
+                "pkg/Foo",
+                "helper",
+                "(I)I",
+                "helper__coalesced",
+                LoweringStatus.NATIVE_LOWERED,
+                MethodRewriteStrategy.INTERNAL_NATIVE_ONLY,
+                NativeMethodRetentionMode.COALESCED_NATIVE_ONLY,
+                false,
+                false,
+                List.of("private", "static"),
+                List.of(),
+                null,
+                null,
+                "LLVM_NATIVE_PATH",
+                "pkg/Foo#entry!(I)I",
+                List.of(),
+                "LLVM_NATIVE_ONLY_BODY_COALESCED",
+                "standalone native body was merged into its only caller");
+
+        String json = writer.loweringJson(
+                List.of(coalesced),
+                List.of(),
+                List.of());
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                json.contains("\"retentionMode\": \"coalescedNativeOnly\""));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                json.contains("\"coalescedInto\": \"pkg/Foo#entry!(I)I\""));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                json.contains("\"status\": \"nativeLowered\""));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                json.contains("\"registrationPresent\": false"));
+    }
+
+    @Test
     void writesDiagnosticsMinimumSchemaGolden() {
         Diagnostic diagnostic = Diagnostic.warning(
                         DiagnosticStage.LOWERING,

@@ -26,7 +26,7 @@ public final class FieldInternalizationFinalPlanValidator {
             NativeFieldInternalizationPlan fieldPlan,
             NativeImplementationPlan implementationPlan) {
         ArrayList<Diagnostic> diagnostics = new ArrayList<>();
-        for (var decision : fieldPlan.internalizedFields()) {
+        for (var decision : fieldPlan.nativeStoredFields()) {
             String slot = decision.nativeSlotId().orElseThrow();
             String slotMarker = "native-slot:" + new NativeFieldSlotRef(
                             fieldPlan.storageKind(decision),
@@ -63,6 +63,33 @@ public final class FieldInternalizationFinalPlanValidator {
                     diagnostics.add(error(
                             "raw JVM field access survived final planning in "
                                     + methodKey + " (slot " + slot + ")"));
+                }
+            }
+        }
+        for (var decision : fieldPlan.constantFoldedFields()) {
+            for (String methodKey : decision.accesses().stream()
+                    .map(access -> access.methodKey())
+                    .distinct()
+                    .sorted()
+                    .toList()) {
+                var implementation = implementationPlan.implementationFor(methodKey);
+                if (implementation.isEmpty()) {
+                    diagnostics.add(error(
+                            "final native implementation is missing for constant-folded field accessor "
+                                    + methodKey));
+                    continue;
+                }
+                var resolved = implementation.orElseThrow();
+                if (resolved.path() != NativeImplementationPath.LLVM_NATIVE_PATH) {
+                    diagnostics.add(error(
+                            "final native implementation is not LLVM_NATIVE_PATH for "
+                                    + "constant-folded field accessor " + methodKey));
+                    continue;
+                }
+                if (resolved.fieldKeys().contains(decision.field().fieldKey())) {
+                    diagnostics.add(error(
+                            "raw JVM constant field access survived final planning in "
+                                    + methodKey));
                 }
             }
         }

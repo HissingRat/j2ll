@@ -59,27 +59,63 @@ public final class NativeFieldInternalizationPlanner {
             ParsedField field = entry.getValue();
             List<FieldAccessSite> accesses = useIndex.accessesFor(fieldId);
             EnumSet<FieldInternalizationReason> reasons = EnumSet.noneOf(FieldInternalizationReason.class);
+            boolean constantCandidate = field.accessFlags().isFinal()
+                    && field.hasConstantValue();
+            java.util.Optional<NativeFieldConstant> constant =
+                    constantCandidate
+                            ? NativeFieldConstant.from(field)
+                            : java.util.Optional.empty();
 
             addWorldReasons(analysisScope, worldComplete, reasons);
             if (useIndex.hasUnresolvedReferenceForOwner(fieldId.owner())) {
                 reasons.add(FieldInternalizationReason.UNRESOLVED_FIELD_REFERENCE);
             }
-            addDeclarationReasons(useIndex, fieldId, field, reasons);
-            addAccessReasons(fieldId, accesses, pathResolver, reasons);
+            if (constantCandidate) {
+                addConstantDeclarationReasons(
+                        useIndex,
+                        fieldId,
+                        field,
+                        constant,
+                        reasons);
+                addConstantAccessReasons(
+                        fieldId,
+                        constant,
+                        accesses,
+                        pathResolver,
+                        reasons);
+            } else {
+                addMutableDeclarationReasons(useIndex, fieldId, field, reasons);
+                addMutableAccessReasons(fieldId, accesses, pathResolver, reasons);
+            }
             addDynamicBoundaryReasons(useIndex, fieldId.owner(), reasons);
 
             if (reasons.isEmpty()) {
-                String slot = allocateSlot(random, fieldId, allocatedSlots);
-                decisions.add(new NativeFieldInternalizationDecision(
-                        fieldId,
-                        FieldInternalizationStatus.INTERNALIZED,
-                        java.util.Optional.of(slot),
-                        accesses,
-                        List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE)));
+                if (constantCandidate) {
+                    decisions.add(new NativeFieldInternalizationDecision(
+                            fieldId,
+                            FieldInternalizationStatus.INTERNALIZED,
+                            NativeFieldInternalizationStorage.COMPILE_TIME_CONSTANT,
+                            java.util.Optional.empty(),
+                            constant,
+                            accesses,
+                            List.of(FieldInternalizationReason.FIELD_CONSTANT_INTERNALIZATION_ELIGIBLE)));
+                } else {
+                    String slot = allocateSlot(random, fieldId, allocatedSlots);
+                    decisions.add(new NativeFieldInternalizationDecision(
+                            fieldId,
+                            FieldInternalizationStatus.INTERNALIZED,
+                            NativeFieldInternalizationStorage.NATIVE_SLOT,
+                            java.util.Optional.of(slot),
+                            java.util.Optional.empty(),
+                            accesses,
+                            List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE)));
+                }
             } else {
                 decisions.add(new NativeFieldInternalizationDecision(
                         fieldId,
                         FieldInternalizationStatus.KEPT,
+                        NativeFieldInternalizationStorage.JVM_FIELD,
+                        java.util.Optional.empty(),
                         java.util.Optional.empty(),
                         accesses,
                         List.copyOf(reasons)));
@@ -103,7 +139,7 @@ public final class NativeFieldInternalizationPlanner {
         }
     }
 
-    private void addDeclarationReasons(
+    private void addMutableDeclarationReasons(
             FieldUseIndex useIndex,
             FieldId fieldId,
             ParsedField field,
@@ -147,7 +183,46 @@ public final class NativeFieldInternalizationPlanner {
         }
     }
 
-    private void addAccessReasons(
+    private void addConstantDeclarationReasons(
+            FieldUseIndex useIndex,
+            FieldId fieldId,
+            ParsedField field,
+            java.util.Optional<NativeFieldConstant> constant,
+            Set<FieldInternalizationReason> reasons) {
+        if (useIndex.hasAmbiguousInputBaseDeclaration(fieldId)) {
+            reasons.add(FieldInternalizationReason.AMBIGUOUS_INPUT_DECLARATION);
+        }
+        if (useIndex.hasMultiReleaseCounterpart(field.owner())) {
+            reasons.add(FieldInternalizationReason.MULTI_RELEASE_OWNER);
+        }
+        AccessFlags access = field.accessFlags();
+        if (!access.isPrivate()) {
+            reasons.add(FieldInternalizationReason.FIELD_NOT_PRIVATE);
+        }
+        if (!access.isStatic()) {
+            reasons.add(FieldInternalizationReason.FIELD_NOT_STATIC);
+        }
+        if (constant.isEmpty()) {
+            reasons.add(FieldInternalizationReason.FIELD_CONSTANT_VALUE_UNSUPPORTED);
+        }
+        if (access.isVolatile()) {
+            reasons.add(FieldInternalizationReason.FIELD_VOLATILE);
+        }
+        if (access.isSynthetic() || access.has(AccessFlags.ENUM)) {
+            reasons.add(FieldInternalizationReason.FIELD_SYNTHETIC_OR_COMPILER_GENERATED);
+        }
+        if (field.signature() != null) {
+            reasons.add(FieldInternalizationReason.FIELD_HAS_SIGNATURE);
+        }
+        if (field.hasAnnotations()) {
+            reasons.add(FieldInternalizationReason.FIELD_HAS_ANNOTATIONS);
+        }
+        if (useIndex.isSerializableOwner(field.owner())) {
+            reasons.add(FieldInternalizationReason.OWNER_IS_SERIALIZABLE);
+        }
+    }
+
+    private void addMutableAccessReasons(
             FieldId field,
             List<FieldAccessSite> accesses,
             FieldAccessPathResolver pathResolver,
@@ -165,6 +240,60 @@ public final class NativeFieldInternalizationPlanner {
                 reasons.add(FieldInternalizationReason.INSTANCE_FIELD_REFERENCE);
             }
             if (access.referenceKind().methodHandle()) {
+                reasons.add(FieldInternalizationReason.METHOD_HANDLE_FIELD_REFERENCE);
+            }
+            if (access.origin() == FieldCodeOrigin.CLASSPATH) {
+                reasons.add(FieldInternalizationReason.CLASSPATH_FIELD_ACCESS);
+            }
+            if (!access.methodOwner().equals(field.owner())) {
+                reasons.add(FieldInternalizationReason.CROSS_OWNER_FIELD_ACCESS);
+            }
+            FieldAccessImplementationPath path = pathResolver.finalPathFor(access.methodKey());
+            if (path == null || path == FieldAccessImplementationPath.UNKNOWN) {
+                reasons.add(FieldInternalizationReason.ACCESS_PATH_UNKNOWN);
+            } else if (path != FieldAccessImplementationPath.LLVM_NATIVE_PATH) {
+                reasons.add(FieldInternalizationReason.ACCESS_PATH_NOT_LLVM_NATIVE);
+            }
+        }
+    }
+
+    private void addConstantAccessReasons(
+            FieldId field,
+            java.util.Optional<NativeFieldConstant> constant,
+            List<FieldAccessSite> accesses,
+            FieldAccessPathResolver pathResolver,
+            Set<FieldInternalizationReason> reasons) {
+        if (accesses.isEmpty()) {
+            // javac normally replaces ConstantValue reads with LDC. With no
+            // remaining field reference, removing the declaration neither
+            // synthesizes a value nor changes its identity.
+            return;
+        }
+        if (constant.map(NativeFieldConstant::stringConstant).orElse(false)) {
+            // The existing business-string helper returns a fresh jstring.
+            // Replacing GETSTATIC would therefore break ConstantValue String
+            // identity/interning semantics. Keep the declaration until a
+            // proven intern-preserving helper exists.
+            reasons.add(FieldInternalizationReason.FIELD_CONSTANT_STRING_IDENTITY_UNSUPPORTED);
+        }
+        for (FieldAccessSite access : accesses) {
+            if (access.methodName().equals("<clinit>")) {
+                reasons.add(FieldInternalizationReason.OWNER_HAS_CLASS_INITIALIZER);
+                reasons.add(FieldInternalizationReason.CLASS_INITIALIZER_ACCESS);
+            }
+            if (access.referenceKind() != FieldReferenceKind.BYTECODE_STATIC_READ) {
+                if (access.referenceKind() == FieldReferenceKind.BYTECODE_STATIC_WRITE
+                        || access.referenceKind() == FieldReferenceKind.METHOD_HANDLE_STATIC_WRITE) {
+                    reasons.add(FieldInternalizationReason.CONSTANT_FIELD_WRITE_ACCESS);
+                }
+                if (!access.referenceKind().staticAccess()) {
+                    reasons.add(FieldInternalizationReason.INSTANCE_FIELD_REFERENCE);
+                }
+                if (access.referenceKind().methodHandle()) {
+                    reasons.add(FieldInternalizationReason.METHOD_HANDLE_FIELD_REFERENCE);
+                }
+            }
+            if (access.bootstrapArgument()) {
                 reasons.add(FieldInternalizationReason.METHOD_HANDLE_FIELD_REFERENCE);
             }
             if (access.origin() == FieldCodeOrigin.CLASSPATH) {
@@ -230,7 +359,7 @@ public final class NativeFieldInternalizationPlanner {
             ProtectionRandom random) {
         TreeMap<String, ArrayList<FieldId>> fieldsByOwner = new TreeMap<>();
         decisions.stream()
-                .filter(NativeFieldInternalizationDecision::internalized)
+                .filter(NativeFieldInternalizationDecision::nativeStored)
                 .map(NativeFieldInternalizationDecision::field)
                 .filter(field -> NativeFieldStorageKind.fromDescriptor(field.descriptor())
                         .filter(NativeFieldStorageKind::reference)

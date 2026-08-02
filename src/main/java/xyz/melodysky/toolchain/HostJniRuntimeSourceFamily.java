@@ -14,6 +14,7 @@ enum HostJniRuntimeSourceFamily {
     EXCEPTION,
     MATH,
     JDK_OBJECT,
+    PURE_NATIVE_JDK,
     THREAD,
     MONITOR,
     ARRAY,

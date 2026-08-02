@@ -27,7 +27,7 @@ final class HostJniLocalizedFieldRuntimeSource {
         bindings.stream()
                 .filter(binding ->
                         binding.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
-                .flatMap(binding -> binding.templateIrMethod().stream())
+                .flatMap(binding -> binding.implementationIrMethod().stream())
                 .flatMap(method -> method.blocks().stream())
                 .flatMap(block -> block.instructions().stream())
                 .filter(HostJniLocalizedFieldRuntimeSource::isJvmFieldAccess)

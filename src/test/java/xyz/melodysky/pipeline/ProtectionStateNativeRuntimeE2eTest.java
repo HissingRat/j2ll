@@ -72,6 +72,9 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 first=600/1200
                 second-before=0/0
                 second-after=7/11
+                constant=73
+                constant-float-bits=7fa12345
+                constant-double-bits=8000000000000000
                 narrow=-1/-1/65535/0/1
                 float-bits=7fa12345/80000000
                 double-bits=7ff123456789abcd/8000000000000000
@@ -104,17 +107,25 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         JsonObject fieldReport = JsonParser.parseString(fieldReportText).getAsJsonObject();
         int internalizedFields = 0;
         int keptFields = 0;
+        int compileTimeConstants = 0;
         JsonObject keptField = null;
         for (var decisionElement : fieldReport.getAsJsonArray("decisions")) {
             JsonObject decision = decisionElement.getAsJsonObject();
             if ("INTERNALIZED".equals(decision.get("status").getAsString())) {
                 internalizedFields++;
+                if ("COMPILE_TIME_CONSTANT".equals(
+                        decision.get("internalizationStorage").getAsString())) {
+                    compileTimeConstants++;
+                    assertTrue(decision.get("nativeSlotId").isJsonNull());
+                    assertTrue(decision.get("referenceSidecarIndex").isJsonNull());
+                }
             } else if ("KEPT".equals(decision.get("status").getAsString())) {
                 keptFields++;
                 keptField = decision;
             }
         }
-        assertEquals(9, internalizedFields);
+        assertEquals(13, internalizedFields);
+        assertEquals(4, compileTimeConstants);
         assertEquals(1, keptFields);
         assertEquals("REFERENCE", keptField.get("storageKind").getAsString());
         assertFalse(keptField.get("removedFromOutputClass").getAsBoolean());
@@ -128,8 +139,28 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         String protectionReport = Files.readString(workspace.resolve("reports/protection-report.json"));
         assertTrue(protectionReport.contains("\"passName\": \"FIELD_INTERNALIZATION\""));
         assertTrue(protectionReport.contains("\"passName\": \"METHOD_TABLE_HIDING\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"FLOAT_CONSTANT_ENCRYPTION\""));
+        assertTrue(protectionReport.contains("\"reasonCode\": \"DOUBLE_CONSTANT_ENCRYPTION\""));
         assertTrue(protectionReport.contains(
                 "\"reasonCode\": \"METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT\""));
+        Path protectedIrPath;
+        try (var paths = Files.walk(workspace.resolve("intermediates/classes"))) {
+            protectedIrPath = paths
+                    .filter(path -> path.getFileName().toString().equals(
+                            "protected.ssa.ir"))
+                    .filter(path -> path.getParent()
+                            .getParent()
+                            .getFileName()
+                            .toString()
+                            .startsWith("NativeState__"))
+                    .findFirst()
+                    .orElseThrow();
+        }
+        String protectedIr = Files.readString(protectedIrPath);
+        assertFalse(protectedIr.contains("opcode=CONST_FLOAT"), protectedIr);
+        assertFalse(protectedIr.contains("opcode=CONST_DOUBLE"), protectedIr);
+        assertTrue(protectedIr.contains("opcode=BITCAST_I32_TO_F32"), protectedIr);
+        assertTrue(protectedIr.contains("opcode=BITCAST_I64_TO_F64"), protectedIr);
         String packagingReport = Files.readString(workspace.resolve("reports/packaging-report.json"));
         JsonObject methodTableEvidence = JsonParser.parseString(packagingReport)
                 .getAsJsonObject()
@@ -137,7 +168,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         assertTrue(methodTableEvidence.get("enabled").getAsBoolean());
         assertEquals("RAN", methodTableEvidence.get("status").getAsString());
         assertEquals(1, methodTableEvidence.get("ownerCount").getAsInt());
-        assertEquals(14, methodTableEvidence.get("bindingCount").getAsInt());
+        assertEquals(17, methodTableEvidence.get("bindingCount").getAsInt());
         assertFalse(packagingReport.contains("\"fallbackInvokeDescriptor\""));
         assertFalse(packagingReport.contains("\"fallbackBlobs\""));
         assertFalse(packagingReport.contains("\"nativeEmbeddedClassBlob\""));
@@ -184,6 +215,13 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 "distinctiveObjectState",
                 "instanceByteArrayState",
                 "getCounter",
+                "constantLimit",
+                "constantAlgorithm",
+                "constantFloat",
+                "constantDouble",
+                "getConstantLimit",
+                "getConstantFloat",
+                "getConstantDouble",
                 "getTotal",
                 "addLong",
                 "setInstanceByteArray",
@@ -267,6 +305,9 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                     "pkg/NativeState#add!(I)I",
                     "pkg/NativeState#addLong!(J)J",
                     "pkg/NativeState#getCounter!()I",
+                    "pkg/NativeState#getConstantLimit!()I",
+                    "pkg/NativeState#getConstantFloat!()F",
+                    "pkg/NativeState#getConstantDouble!()D",
                     "pkg/NativeState#getTotal!()J",
                     "pkg/NativeState#setByte!(I)I",
                     "pkg/NativeState#setShort!(I)I",
@@ -301,7 +342,7 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                       "controlFlowFlattening": false,
                       "fakeBranches": false,
                       "basicBlockSplitting": false,
-                      "constantEncryption": false,
+                      "constantEncryption": true,
                       "stringEncryption": false,
                       "methodInlining": false,
                       "methodSplitting": false,
@@ -388,6 +429,30 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
                 null,
                 null).visitEnd();
         writer.visitField(
+                ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                "constantLimit",
+                "I",
+                null,
+                Integer.valueOf(73)).visitEnd();
+        writer.visitField(
+                ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                "constantAlgorithm",
+                "Ljava/lang/String;",
+                null,
+                "field-constant-e2e-secret").visitEnd();
+        writer.visitField(
+                ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                "constantFloat",
+                "F",
+                null,
+                Float.intBitsToFloat(0x7fa12345)).visitEnd();
+        writer.visitField(
+                ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                "constantDouble",
+                "D",
+                null,
+                Double.longBitsToDouble(0x8000000000000000L)).visitEnd();
+        writer.visitField(
                 ACC_PRIVATE | ACC_STATIC,
                 "instanceByteArrayState",
                 "[B",
@@ -433,6 +498,56 @@ class ProtectionStateNativeRuntimeE2eTest implements Opcodes {
         getCounter.visitInsn(IRETURN);
         getCounter.visitMaxs(0, 0);
         getCounter.visitEnd();
+
+        MethodVisitor getConstantLimit = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "getConstantLimit",
+                "()I",
+                null,
+                null);
+        getConstantLimit.visitCode();
+        // Deliberately keep GETSTATIC instead of javac-style LDC so the E2E
+        // exercises SSA constant folding before the declaration is removed.
+        getConstantLimit.visitFieldInsn(
+                GETSTATIC,
+                "pkg/NativeState",
+                "constantLimit",
+                "I");
+        getConstantLimit.visitInsn(IRETURN);
+        getConstantLimit.visitMaxs(0, 0);
+        getConstantLimit.visitEnd();
+
+        MethodVisitor getConstantFloat = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "getConstantFloat",
+                "()F",
+                null,
+                null);
+        getConstantFloat.visitCode();
+        getConstantFloat.visitFieldInsn(
+                GETSTATIC,
+                "pkg/NativeState",
+                "constantFloat",
+                "F");
+        getConstantFloat.visitInsn(FRETURN);
+        getConstantFloat.visitMaxs(0, 0);
+        getConstantFloat.visitEnd();
+
+        MethodVisitor getConstantDouble = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "getConstantDouble",
+                "()D",
+                null,
+                null);
+        getConstantDouble.visitCode();
+        getConstantDouble.visitFieldInsn(
+                GETSTATIC,
+                "pkg/NativeState",
+                "constantDouble",
+                "D");
+        getConstantDouble.visitInsn(DRETURN);
+        getConstantDouble.visitMaxs(0, 0);
+        getConstantDouble.visitEnd();
 
         MethodVisitor getTotal = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC, "getTotal", "()J", null, null);

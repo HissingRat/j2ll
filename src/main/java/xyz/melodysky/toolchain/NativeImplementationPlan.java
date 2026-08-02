@@ -1,7 +1,7 @@
 package xyz.melodysky.toolchain;
 
-import java.util.Comparator;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +54,24 @@ public record NativeImplementationPlan(
                 });
         localReferencePlans =
                 Collections.unmodifiableMap(stableLocalReferences);
+        Map<String, NativeMethodImplementation> byMethod = implementations.stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        NativeMethodImplementation::methodKey,
+                        implementation -> implementation));
+        for (NativeMethodImplementation implementation : implementations) {
+            implementation.coalescedIntoMethodKey().ifPresent(callerKey -> {
+                NativeMethodImplementation caller = byMethod.get(callerKey);
+                if (caller == null
+                        || !caller.emitsStandaloneLlvmBody()
+                        || caller.path() != NativeImplementationPath.LLVM_NATIVE_PATH) {
+                    throw new IllegalArgumentException(
+                            "coalesced method target must be an emitted LLVM implementation: "
+                                    + implementation.methodKey()
+                                    + " -> "
+                                    + callerKey);
+                }
+            });
+        }
     }
 
     public NativeImplementationPlan(
@@ -104,6 +122,13 @@ public record NativeImplementationPlan(
     public List<NativeMethodImplementation> llvmImplementations() {
         return implementations.stream()
                 .filter(implementation -> implementation.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
+                .toList();
+    }
+
+    /** LLVM methods which still own a physical standalone function body. */
+    public List<NativeMethodImplementation> emittedLlvmImplementations() {
+        return implementations.stream()
+                .filter(NativeMethodImplementation::emitsStandaloneLlvmBody)
                 .toList();
     }
 

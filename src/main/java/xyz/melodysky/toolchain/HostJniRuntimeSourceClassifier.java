@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
 
 /** Maps one referenced LLVM helper symbol to its host-JNI source roots. */
 final class HostJniRuntimeSourceClassifier {
@@ -159,6 +160,12 @@ final class HostJniRuntimeSourceClassifier {
                 "j2ll_rt_double_double_value",
                 "j2ll_rt_objects_require_non_null",
                 "j2ll_rt_objects_equals");
+        add(
+                families,
+                HostJniRuntimeSourceFamily.PURE_NATIVE_JDK,
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_NEW,
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_WRITE,
+                PureNativeJdkRuntimeHelpers.I32_BIG_ENDIAN_FRAME_FINISH);
         add(
                 families,
                 HostJniRuntimeSourceFamily.THREAD,

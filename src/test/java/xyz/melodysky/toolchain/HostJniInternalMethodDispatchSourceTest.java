@@ -139,7 +139,7 @@ class HostJniInternalMethodDispatchSourceTest {
                 binding.staticCallKeys(),
                 binding.dispatchKeys(),
                 binding.stringHelperSymbols(),
-                binding.templateIrMethod());
+                binding.implementationIrMethod());
     }
 
     private HostJniCSourceGenerator.Binding binding(
