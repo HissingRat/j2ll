@@ -142,18 +142,20 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 该字段不是单 method IR rewrite。当前实现位于 registration plan 与 native C emission 边界：
 
 - `MethodTableHidingPlanner` 按 registration owner 分组，为每个 binding 派生 build-scoped physical order；显式 seed 模式下可复现。collision-free 64-bit token 只写 hash-only report evidence，不进入 native runtime。
-- 每个 owner 在自己的 registration window 内以 straight-line assignment 临时组装 `JNINativeMethod[]`，随后仍调用 JVM `RegisterNatives`，不改变真实 owner/name/descriptor 绑定。
+- 每个 owner 在自己的 registration window 内以 straight-line assignment 临时组装 `JNINativeMethod[]`，随后仍调用 JVM `RegisterNatives`，不改变真实 owner/name/descriptor 绑定。去重后的name/descriptor按同owner、同purpose组成最多8项/512 decoded bytes的group，每group一个encoding/decoder；单个超长文本独占。
 - generated source 必须消费与 final `NativeRegistrationPlan` 精确一致的外部 plan；empty/mismatch fail closed。
 - owner/name/descriptor 仍是 JNI 运行时必需信息，但最终 generated C 不再包含全局 metadata 目录、aggregate decode-all、persistent token/function arrays 或 nested join。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，只在自己的注册窗口解码到临时 scratch，并在 `RegisterNatives` 的成功/失败路径清零临时文本与 `JNINativeMethod[]` 后释放。这是静态 at-rest obfuscation，不是运行时内存保密。
-- aggregate root、per-owner helper、decode helper 和 implementation symbols 保持 internal/hidden；dynamic exports 只保留 JVM 必需的 `JNI_OnLoad`。owner name 在 lookup 后立即清零。rollback 同时检查 `UnregisterNatives` 返回值和 pending exception，exception restore 同时检查 `Throw` status与新的pending exception；任一证据不完整都通过编码诊断的 `FatalError` fail closed。
+- aggregate root、per-owner helper、decode helper 和 implementation symbols 保持 internal/hidden；dynamic exports 只保留 JVM 必需的 `JNI_OnLoad`。owner name 在 lookup 后立即清零。root以activation-local `jclass[]`/`registered_count`循环完成成功清理与失败逆序rollback；rollback同时检查`UnregisterNatives`返回值和pending exception，exception restore同时检查`Throw` status与新的pending exception。任一证据不完整都通过四个registration-domain、hash-only、`noinline,cold` failure leaf中的对应`FatalError` fail closed；leaf只接收`JNIEnv*`。
 
 已完成：
 
 - [x] report-token determinism、physical-order seed variation、collision-free evidence、disabled no-op tests。
 - [x] multi-owner/multi-method generated-C integration、exact-plan matching、host C compile 与 fake-Zig export test。
+- [x] zero-owner fake JavaVM/Clang compile-run覆盖无零长owner数组、无rollback路径与`JNI_VERSION_1_8`返回。
 - [x] gated real-Zig host child-JVM E2E 覆盖多 method 注册、静态 metadata 隐私与两个独立 ClassLoader。
 - [x] `protection-report.json` 和 `packaging-report.json` 提供 hash/token-only plan/owner/binding evidence。
 - [x] 六目标专项测试已验证 two-owner transient registration source 进入每个 target graph、无 token/function static arrays、六库 raw owner/member identity 不可见且只导出 `JNI_OnLoad`（平台固有 runtime 符号单独容忍）。
+- [x] 32-binding registration micro的Clang `-Oz` COFF object由23,015 B降到8,365 B（-63.65%）；2026-08-02 v2五目标动态库总量由2,574,614 B降到2,044,414 B（-20.59%），同时保持71 `nativeLowered`/0 `skipped`与artifact audit通过。
 
 待补：
 
@@ -207,7 +209,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - 每个 observed caller 都必须是 final `LLVM_NATIVE_PATH`，且 implementation plan 已包含 direct/dispatch route。任一 unselected、`skipped`、template caller或零 caller都保留 Java method。
 - constructor/class initializer/interface/synchronized/bridge/synthetic/multi-release owner、non-exact dispatch、已解析exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic observer、launcher/agent entry、`EnclosingMethod` metadata，以及closed exact catalog按真实hierarchy+descriptor识别到的Object/Runnable/Callable/线程/定时器/序列化/Comparator/常见函数式JDK callback均拒绝。catalog不会blanket拒绝普通override slot；catalog外第三方framework callback与unsupported/unbounded reflection/JNI/agent observation仍作为user-accepted risk进入warning/report，current-JAR-only还明确报告configured classpath与JAR外caller/observer未分析。
 - approved decision把 rewrite strategy改为`internalNativeOnly`；registration plan过滤该 binding，logical LLVM implementation保持native可达。需要JNI语义的call使用nested local frame，reference return与pending exception都promote回caller activation；direct pure-scalar path不强制增加桥。
-- 后续physical coalescing只接受唯一direct call site、pure scalar/non-throwing、无field/nested-call/monitor/JNI-owned-reference且bounded-size的callee；三层chain显式fail closed，避免coalesced target自身再次成为coalescing caller。批准项不发出callee standalone LLVM body/declaration/reference或C wrapper。
+- 后续physical coalescing只接受唯一direct call site、pure scalar/non-throwing、无field/nested-call/monitor/JNI-owned-reference且不超过96条instruction的callee；按bottom-up轮次支持多层chain，并把全部descendant的physical root同步重定向到最终caller。每caller最多64个site，轮数不超过internalized method数。批准项不发出callee standalone LLVM body/declaration/reference或C wrapper。
 - packaging删除完整`MethodNode`，artifact audit递归检查declaration、`MethodInsn`、Handle、invokedynamic/ConstantDynamic和`EnclosingMethod`残留。lowering report写`retentionMode=internalNativeOnly`或`coalescedNativeOnly`、`javaMethodPresent=false`、`registrationPresent=false`；后一形态另写`coalescedInto`。
 
 已完成：
@@ -229,6 +231,7 @@ IR 与 LLVM `indirectCalls` 现在是两个独立层：
 - [ ] 非host OS/JVM runtime E2E与更广instance dispatch形态。
 - [x] 新策略focused/runtime证据覆盖public static declared/current-JAR scope、same-owner非final exact public instance、实际non-exact override与cross-owner拒绝、resolved exact observer拒绝、unsupported/unbounded observer warning/report、parse-incomplete public-instance保留及known JVM/JDK callback保留。Windows `dTestMethodInternalization`使用real Zig验证current-JAR public static删除1项及declared-closed非final public/protected target删除3项，child-JVM parity通过；real-Zig method fixture另删除4项并通过六目标构建与Windows parity。
 - [x] 2026-08-01 02:52的最新v2五目标构建为71 `nativeLowered`/0 `skipped`、14个`internalNativeOnly`、57个registration并通过artifact/symbol/plaintext/residual audit。7个allowlisted `LaoShuUtils` public static中`generateIV`、`encrypt`、`decrypt`、`base64ToPublicKey`已从Java method table与registration删除；`generateAESKey`、`keyToBase64`、`encryptRSA`因`METHOD_INTERNALIZATION_NO_NATIVE_CALLER`保留。17个未解析reflection site只产生单条aggregate accepted-risk warning，不再全局否决public候选。
+- [x] native-only coalescing已覆盖单层及A→B→C bottom-up chain、最终root重定向、LLVM compile与standalone residual为零；2026-08-02 v2的14个目标因6个exception-sensitive、4个non-single-caller、2个local-reference-sensitive、1个invoke-kind与1个size边界而0命中，未为体积数字放宽语义证明。
 
 ## LLVM `opaquePredicates`
 

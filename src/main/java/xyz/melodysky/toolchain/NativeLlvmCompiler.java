@@ -11,12 +11,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
+import xyz.melodysky.backend.llvm.model.LlvmModuleEmissionPlan;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
+import xyz.melodysky.backend.llvm.model.LlvmUnwindEmissionMode;
 import xyz.melodysky.backend.llvm.model.LlvmVisibility;
 import xyz.melodysky.backend.llvm.protection.LlvmBlockLayoutPerturbationPass;
 import xyz.melodysky.backend.llvm.protection.LlvmBlockLayoutPerturbationResult;
@@ -108,6 +111,15 @@ public final class NativeLlvmCompiler {
             LlvmGlobalLayoutResult globalLayout =
                     new LlvmGlobalLayoutPass()
                             .runDetailed(llvmCallIndirection.module(), protectionConfig);
+            LlvmModuleEmissionPlan emissionPlan =
+                    LlvmModuleEmissionPlan.create(globalLayout.module());
+            String retainedText =
+                    emitter.emit(emissionPlan, LlvmUnwindEmissionMode.RETAIN);
+            Optional<String> omissionText = emissionPlan.proof().omissionSafe()
+                    ? Optional.of(emitter.emit(
+                            emissionPlan,
+                            LlvmUnwindEmissionMode.OMIT_PROVEN))
+                    : Optional.empty();
             List<IrMethod> registeredMethods = methods.stream()
                     .filter(method -> inputs.registeredMethodKeys().contains(method.methodKey()))
                     .toList();
@@ -126,7 +138,9 @@ public final class NativeLlvmCompiler {
                     irCallIndirection,
                     llvmCallIndirection,
                     globalLayout,
-                    emitter.emit(globalLayout.module())));
+                    emissionPlan,
+                    retainedText,
+                    omissionText));
             completed++;
         }
         listener.completed(inputs.methodsByOwner().size());

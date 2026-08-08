@@ -97,6 +97,7 @@ class MethodInternalizationNativeRuntimeE2eTest
                 yz
                 vw
                 no
+                42
                 static-caught
                 instance-caught
                 """,
@@ -127,6 +128,14 @@ class MethodInternalizationNativeRuntimeE2eTest
                         method.name().equals("publicStatic")),
                 lowering);
         assertFalse(outputProgram
+                .findClass("pkg/InternalTargets")
+                .orElseThrow()
+                .methods()
+                .stream()
+                .anyMatch(method ->
+                        method.name().equals("scalarLeaf")),
+                lowering);
+        assertFalse(outputProgram
                 .findClass("pkg/InternalCalls")
                 .orElseThrow()
                 .methods()
@@ -148,9 +157,16 @@ class MethodInternalizationNativeRuntimeE2eTest
                 count(lowering,
                         "\"retentionMode\": \"internalNativeOnly\""));
         assertEquals(
-                4,
+                5,
                 count(lowering,
                         "\"javaMethodPresent\": false"));
+        assertEquals(
+                1,
+                count(lowering,
+                        "\"retentionMode\": \"coalescedNativeOnly\""));
+        assertTrue(lowering.contains(
+                "\"coalescedInto\": \"pkg/InternalCalls#callScalar!(I)I\""),
+                lowering);
         String packaging = Files.readString(
                 workspace.resolve(
                         "reports/packaging-report.json"));
@@ -192,7 +208,9 @@ class MethodInternalizationNativeRuntimeE2eTest
                     "pkg/InternalTargets#publicStatic!(Ljava/lang/String;)Ljava/lang/String;",
                     "pkg/InternalCalls#callPublicStatic!(Ljava/lang/String;)Ljava/lang/String;",
                     "pkg/InternalCalls#publicInstance!(Ljava/lang/String;)Ljava/lang/String;",
-                    "pkg/InternalCalls#callPublicInstance!(Ljava/lang/String;)Ljava/lang/String;"
+                    "pkg/InternalCalls#callPublicInstance!(Ljava/lang/String;)Ljava/lang/String;",
+                    "pkg/InternalTargets#scalarLeaf!(I)I",
+                    "pkg/InternalCalls#callScalar!(I)I"
                   ],
                   "blackList": [],
                   "target": %s,
@@ -241,7 +259,8 @@ class MethodInternalizationNativeRuntimeE2eTest
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }
@@ -347,6 +366,19 @@ class MethodInternalizationNativeRuntimeE2eTest
         publicStatic.visitInsn(ARETURN);
         publicStatic.visitMaxs(0, 0);
         publicStatic.visitEnd();
+        MethodVisitor scalarLeaf = writer.visitMethod(
+                ACC_PROTECTED | ACC_STATIC,
+                "scalarLeaf",
+                "(I)I",
+                null,
+                null);
+        scalarLeaf.visitCode();
+        scalarLeaf.visitVarInsn(ILOAD, 0);
+        scalarLeaf.visitInsn(ICONST_1);
+        scalarLeaf.visitInsn(IADD);
+        scalarLeaf.visitInsn(IRETURN);
+        scalarLeaf.visitMaxs(0, 0);
+        scalarLeaf.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
     }
@@ -389,6 +421,24 @@ class MethodInternalizationNativeRuntimeE2eTest
         publicStaticCaller.visitInsn(ARETURN);
         publicStaticCaller.visitMaxs(0, 0);
         publicStaticCaller.visitEnd();
+
+        MethodVisitor scalarCaller = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "callScalar",
+                "(I)I",
+                null,
+                null);
+        scalarCaller.visitCode();
+        scalarCaller.visitVarInsn(ILOAD, 0);
+        scalarCaller.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/InternalTargets",
+                "scalarLeaf",
+                "(I)I",
+                false);
+        scalarCaller.visitInsn(IRETURN);
+        scalarCaller.visitMaxs(0, 0);
+        scalarCaller.visitEnd();
 
         MethodVisitor hidden = writer.visitMethod(
                 ACC_PROTECTED,
@@ -568,6 +618,24 @@ class MethodInternalizationNativeRuntimeE2eTest
                 "java/io/PrintStream",
                 "println",
                 "(Ljava/lang/String;)V",
+                false);
+        main.visitFieldInsn(
+                GETSTATIC,
+                "java/lang/System",
+                "out",
+                "Ljava/io/PrintStream;");
+        main.visitIntInsn(BIPUSH, 41);
+        main.visitMethodInsn(
+                INVOKESTATIC,
+                "pkg/InternalCalls",
+                "callScalar",
+                "(I)I",
+                false);
+        main.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/io/PrintStream",
+                "println",
+                "(I)V",
                 false);
         Label staticTryStart = new Label();
         Label staticTryEnd = new Label();

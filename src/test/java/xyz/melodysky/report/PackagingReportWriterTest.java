@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.google.gson.JsonParser;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.config.SignaturePolicy;
@@ -28,6 +29,7 @@ import xyz.melodysky.toolchain.NativeLibraryArtifact;
 import xyz.melodysky.toolchain.TargetTriple;
 import xyz.melodysky.toolchain.ZigBuildInvocation;
 import xyz.melodysky.toolchain.ZigNativeBuildResult;
+import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspection;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class PackagingReportWriterTest {
@@ -256,7 +258,10 @@ class PackagingReportWriterTest {
                         Path.of("/work/native/zig-workspace/c/jni_wrappers.c"),
                         "native/x64-windows.dll",
                         "a".repeat(64),
-                        List.of("JNI_OnLoad"))),
+                        List.of("JNI_OnLoad"),
+                        Optional.of(new NativeUnwindSectionInspection(
+                                TargetTriple.WINDOWS_X64,
+                                Map.of(".pdata", 24L))))),
                 new ZigBuildInvocation(
                         Path.of("/j2ll/zig/zig.exe"),
                         Path.of("/work/native/zig-workspace"),
@@ -287,6 +292,9 @@ class PackagingReportWriterTest {
         assertTrue(json.contains("\"actualJarPath\": \"native/x64-windows.dll\""));
         assertTrue(json.contains("\"windowsPdbPolicy\": \"excludePdbFromJarAndReports\""));
         assertTrue(json.contains("\"exportedSymbols\": [\n          \"JNI_OnLoad\"\n        ]"));
+        assertTrue(json.contains("\"unwindSections\": {"));
+        assertTrue(json.contains("\".pdata\": 24"));
+        assertTrue(json.contains("\"unwindSectionBytes\": 24"));
         assertTrue(json.contains("\"bootstrapEvents\""));
     }
 

@@ -135,7 +135,8 @@ class ProtectedJvmExceptionFlowNativeRuntimeE2eTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

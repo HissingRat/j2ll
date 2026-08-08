@@ -18,6 +18,7 @@ import xyz.melodysky.backend.llvm.model.LlvmInstruction;
 import xyz.melodysky.backend.llvm.model.LlvmIrCallIndirectionRef;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
+import xyz.melodysky.backend.llvm.model.LlvmNativeUnwindSemantics;
 import xyz.melodysky.backend.llvm.model.LlvmParameter;
 import xyz.melodysky.backend.llvm.model.LlvmSwitchCase;
 import xyz.melodysky.backend.llvm.model.LlvmTerminator;
@@ -693,7 +694,8 @@ public final class LlvmModuleLowerer {
                 visibility,
                 functionReturnType,
                 parameters,
-                blocks);
+                blocks,
+                LlvmNativeUnwindSemantics.PROVEN_ABSENT);
     }
 
     private NormalEdgeLowering lowerNormalEdges(
@@ -792,7 +794,7 @@ public final class LlvmModuleLowerer {
                 incoming.add("[ " + predecessor.arguments().get(index).name()
                         + ", %" + predecessor.predecessorBlock() + " ]");
             }
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(parameter.name()),
                     "phi " + typeLowerer.lower(parameter.type()).text() + " "
                             + String.join(", ", incoming)));
@@ -1009,7 +1011,7 @@ public final class LlvmModuleLowerer {
             return lowerConversion(instruction);
         }
         if (instruction.opcode() == IrOpcode.CONST_NULL) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "inttoptr i64 0 to ptr");
         }
@@ -1017,14 +1019,14 @@ public final class LlvmModuleLowerer {
             return lowerSymbolicConstant(instruction);
         }
         if (isPrimitiveCompare(instruction.opcode())) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "icmp " + comparePredicate(instruction.opcode()) + " i32 "
                             + instruction.operands().get(0).name() + ", "
                             + instruction.operands().get(1).name());
         }
         if (isReferenceCompare(instruction.opcode())) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "icmp " + comparePredicate(instruction.opcode()) + " ptr "
                             + instruction.operands().get(0).name() + ", "
@@ -1040,26 +1042,26 @@ public final class LlvmModuleLowerer {
             return lowerMemoryFence(instruction);
         }
         if (instruction.opcode() == IrOpcode.BITCAST_I32_TO_F32) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "bitcast i32 " + instruction.operands().get(0).name() + " to float");
         }
         if (instruction.opcode() == IrOpcode.BITCAST_I64_TO_F64) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "bitcast i64 " + instruction.operands().get(0).name() + " to double");
         }
         if (instruction.opcode() == IrOpcode.CONST_FLOAT) {
             int rawBits = Float.floatToRawIntBits(
                     instruction.floatLiteral().orElseThrow());
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "bitcast i32 " + rawBits + " to float");
         }
         if (instruction.opcode() == IrOpcode.CONST_DOUBLE) {
             long rawBits = Double.doubleToRawLongBits(
                     instruction.doubleLiteral().orElseThrow());
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "bitcast i64 " + rawBits + " to double");
         }
@@ -1090,7 +1092,8 @@ public final class LlvmModuleLowerer {
                     throw new IllegalStateException("handled earlier");
             case CLASS_OBJECT, CLASS_INIT_GUARD, CLASS_INIT_BEGIN, CLASS_INIT_END, CLASS_INIT_FAILED ->
                     throw new IllegalStateException("handled earlier");
-            case CLASS_INIT_HAPPENS_BEFORE -> throw new IllegalStateException("handled earlier");
+            case CLASS_INIT_HAPPENS_BEFORE, CLASS_INIT_ACTIVE_USE ->
+                    throw new IllegalStateException("handled earlier");
             case ADD_I32 -> "add";
             case SUB_I32 -> "sub";
             case MUL_I32 -> "mul";
@@ -1140,7 +1143,7 @@ public final class LlvmModuleLowerer {
                     throw new IllegalStateException("handled earlier");
         };
         List<String> operands = operands(instruction);
-        return new LlvmInstruction(
+        return LlvmInstruction.provenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 typeLowerer.lower(instruction.result().orElseThrow().type()),
                 opcode,
@@ -1280,7 +1283,8 @@ public final class LlvmModuleLowerer {
                 || opcode == IrOpcode.VOLATILE_WRITE_BARRIER
                 || opcode == IrOpcode.FINAL_FIELD_PUBLICATION
                 || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE
-                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
+                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                || opcode == IrOpcode.CLASS_INIT_ACTIVE_USE;
     }
 
     private boolean isMonitorHelper(IrOpcode opcode) {
@@ -1325,7 +1329,7 @@ public final class LlvmModuleLowerer {
         String fieldKey = instruction.symbol().orElseThrow();
         if (instruction.opcode() == IrOpcode.GET_STATIC) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + helper
                             + "("
@@ -1340,7 +1344,7 @@ public final class LlvmModuleLowerer {
         }
         if (instruction.opcode() == IrOpcode.PUT_STATIC) {
             IrValue value = instruction.operands().get(0);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.empty(),
                     "call void @" + helper
                             + "("
@@ -1356,7 +1360,7 @@ public final class LlvmModuleLowerer {
         }
         if (instruction.opcode() == IrOpcode.GET_FIELD) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + helper + "("
                             + localAbiArguments(
@@ -1372,7 +1376,7 @@ public final class LlvmModuleLowerer {
         }
         IrValue receiver = instruction.operands().get(0);
         IrValue value = instruction.operands().get(1);
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.empty(),
                 "call void @" + helper + "("
                         + localAbiArguments(
@@ -1448,23 +1452,23 @@ public final class LlvmModuleLowerer {
             String args = directCallArguments(targetAbi, instruction.operands());
             if (instruction.result().isPresent()) {
                 String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-                return preserveIrCallIndirection(instruction, LlvmInstruction.raw(
+                return preserveIrCallIndirection(instruction, LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(instruction.result().orElseThrow().name()),
                         "call " + type + " @" + target + "(" + args + ")"));
             }
             return preserveIrCallIndirection(
                     instruction,
-                    LlvmInstruction.raw(Optional.empty(), "call void @" + target + "(" + args + ")"));
+                    LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + target + "(" + args + ")"));
         }
         if (isConstructorCallHelperInstruction(instruction)) {
             String token = dispatchToken(instruction.symbol().orElseThrow());
             if (instruction.symbol().orElseThrow().endsWith("!()V")) {
-                return LlvmInstruction.raw(
+                return LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.empty(),
                         "call void @j2ll_rt_call_constructor_void(ptr %j2ll_env, "
                                 + typedOperand(instruction.operands().get(0)) + ", " + token + ")");
             }
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.empty(),
                     "call void @j2ll_rt_call_constructor_void_i32_i32(ptr %j2ll_env, "
                             + typedOperand(instruction.operands().get(0)) + ", " + token + ", "
@@ -1477,7 +1481,7 @@ public final class LlvmModuleLowerer {
             String token = dispatchToken(instruction.symbol().orElseThrow());
             String arguments = dispatchHelperArguments(instruction, receiver, token);
             String resultType = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + resultType + " @" + helper + "(ptr %j2ll_env, " + arguments + ")");
         }
@@ -1495,11 +1499,11 @@ public final class LlvmModuleLowerer {
         String prefix = callPrefix(instruction.opcode());
         if (instruction.result().isPresent()) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + prefix + symbol + "(" + args + ")");
         }
-        return LlvmInstruction.raw(Optional.empty(), "call void @" + prefix + symbol + "(" + args + ")");
+        return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + prefix + symbol + "(" + args + ")");
     }
 
     private LlvmInstruction preserveIrCallIndirection(
@@ -1587,7 +1591,7 @@ public final class LlvmModuleLowerer {
         String helper = localizedDispatchHelper(
                 operation,
                 methodKey);
-        lowered.add(LlvmInstruction.raw(
+        lowered.add(LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.empty(),
                 "call void @" + helper + "("
                         + localAbiArguments(
@@ -1631,7 +1635,7 @@ public final class LlvmModuleLowerer {
                         methodKey,
                         List.of("ptr %j2ll_env", argsPointer))
                 + ")";
-        lowered.add(LlvmInstruction.raw(
+        lowered.add(LlvmInstruction.rawProvenNoNativeUnwind(
                 instruction.result().map(IrValue::name),
                 call));
         return List.copyOf(lowered);
@@ -1668,7 +1672,7 @@ public final class LlvmModuleLowerer {
                                 receiver,
                                 argsPointer))
                 + ")";
-        lowered.add(LlvmInstruction.raw(instruction.result().map(IrValue::name), call));
+        lowered.add(LlvmInstruction.rawProvenNoNativeUnwind(instruction.result().map(IrValue::name), call));
         return List.copyOf(lowered);
     }
 
@@ -1688,42 +1692,42 @@ public final class LlvmModuleLowerer {
                     RuntimeTokenDomain.CLASS_RUNTIME,
                     "alloc_object",
                     symbol);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env)");
         }
         if (symbol.equals("primitiveArray:byte") || symbol.equals("primitiveArray:boolean")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_byte_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:short")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_short_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:char")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_char_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:int")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_int_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:long")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_long_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:float")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_float_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
         if (symbol.equals("primitiveArray:double")) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @j2ll_rt_new_double_array(ptr %j2ll_env, " + typedOperand(instruction.operands().get(0)) + ")");
         }
@@ -1731,7 +1735,7 @@ public final class LlvmModuleLowerer {
                 RuntimeTokenDomain.CLASS_RUNTIME,
                 "new_object_array",
                 symbol);
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 "call ptr @" + helper + "(ptr %j2ll_env, "
                         + typedOperand(instruction.operands().get(0)) + ")");
@@ -1747,12 +1751,12 @@ public final class LlvmModuleLowerer {
                 operation,
                 key);
         if (instruction.opcode() == IrOpcode.CHECKCAST) {
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env, "
                             + typedOperand(instruction.operands().get(0)) + ")");
         }
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 "call i32 @" + helper + "(ptr %j2ll_env, "
                         + typedOperand(instruction.operands().get(0)) + ")");
@@ -1769,7 +1773,7 @@ public final class LlvmModuleLowerer {
                     RuntimeTokenDomain.CLASS_OBJECT,
                     "class_for_name",
                     identity);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env, "
                             + typedOperand(instruction.operands().get(1))
@@ -1803,7 +1807,7 @@ public final class LlvmModuleLowerer {
                         domain,
                         operation,
                         key);
-                return LlvmInstruction.raw(
+                return LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(instruction.result().orElseThrow().name()),
                         "call ptr @" + helper + "("
                                 + localAbiArguments(
@@ -1822,7 +1826,7 @@ public final class LlvmModuleLowerer {
                     RuntimeTokenDomain.LAMBDA,
                     "lambda_new",
                     identity);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env, "
                             + typedOperand(
@@ -1833,11 +1837,11 @@ public final class LlvmModuleLowerer {
         String arguments = args.isEmpty() ? "ptr %j2ll_env" : "ptr %j2ll_env, " + args;
         if (instruction.result().isPresent()) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + symbol + "(" + arguments + ")");
         }
-        return LlvmInstruction.raw(Optional.empty(), "call void @" + symbol + "(" + arguments + ")");
+        return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + symbol + "(" + arguments + ")");
     }
 
     private LlvmInstruction lowerConversion(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1845,15 +1849,15 @@ public final class LlvmModuleLowerer {
         String operandType = typeLowerer.lower(operand.type()).text();
         String resultName = instruction.result().orElseThrow().name();
         return switch (instruction.opcode()) {
-            case I2L -> LlvmInstruction.raw(Optional.of(resultName), "sext i32 " + operand.name() + " to i64");
-            case I2F -> LlvmInstruction.raw(Optional.of(resultName), "sitofp i32 " + operand.name() + " to float");
-            case I2D -> LlvmInstruction.raw(Optional.of(resultName), "sitofp i32 " + operand.name() + " to double");
-            case L2I -> LlvmInstruction.raw(Optional.of(resultName), "trunc i64 " + operand.name() + " to i32");
-            case L2F -> LlvmInstruction.raw(Optional.of(resultName), "sitofp i64 " + operand.name() + " to float");
-            case L2D -> LlvmInstruction.raw(Optional.of(resultName), "sitofp i64 " + operand.name() + " to double");
-            case F2D -> LlvmInstruction.raw(Optional.of(resultName), "fpext float " + operand.name() + " to double");
-            case D2F -> LlvmInstruction.raw(Optional.of(resultName), "fptrunc double " + operand.name() + " to float");
-            case I2B, I2C, I2S, F2I, F2L, D2I, D2L -> LlvmInstruction.raw(
+            case I2L -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "sext i32 " + operand.name() + " to i64");
+            case I2F -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "sitofp i32 " + operand.name() + " to float");
+            case I2D -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "sitofp i32 " + operand.name() + " to double");
+            case L2I -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "trunc i64 " + operand.name() + " to i32");
+            case L2F -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "sitofp i64 " + operand.name() + " to float");
+            case L2D -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "sitofp i64 " + operand.name() + " to double");
+            case F2D -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "fpext float " + operand.name() + " to double");
+            case D2F -> LlvmInstruction.rawProvenNoNativeUnwind(Optional.of(resultName), "fptrunc double " + operand.name() + " to float");
+            case I2B, I2C, I2S, F2I, F2L, D2I, D2L -> LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(resultName),
                     "call " + typeLowerer.lower(instruction.result().orElseThrow().type()).text()
                             + " @" + helperName(instruction.opcode()) + "(" + operandType + " " + operand.name() + ")");
@@ -1874,12 +1878,12 @@ public final class LlvmModuleLowerer {
                     RuntimeTokenDomain.CLASS_OBJECT,
                     "class_object",
                     identity);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env)");
         }
         String helper = "j2ll_const_" + constantKind(instruction.opcode()) + "_" + stableHash(instruction.symbol().orElseThrow());
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 "call ptr @" + helper + "()");
     }
@@ -1887,7 +1891,7 @@ public final class LlvmModuleLowerer {
     private LlvmInstruction lowerBusinessStringConstant(
             xyz.melodysky.ir.model.IrInstruction instruction,
             BusinessStringConstantRef constant) {
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 "call ptr @"
                         + constant.helperSymbol(businessStringSymbols)
@@ -1902,7 +1906,7 @@ public final class LlvmModuleLowerer {
                     RuntimeTokenDomain.CLASS_OBJECT,
                     "class_object",
                     identity);
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call ptr @" + helper + "(ptr %j2ll_env)");
         }
@@ -1912,19 +1916,19 @@ public final class LlvmModuleLowerer {
             String arguments = args.isEmpty() ? "ptr %j2ll_env" : "ptr %j2ll_env, " + args;
             if (instruction.result().isPresent()) {
                 String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-                return LlvmInstruction.raw(
+                return LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(instruction.result().orElseThrow().name()),
                         "call " + type + " @" + helper + "(" + arguments + ")");
             }
-            return LlvmInstruction.raw(Optional.empty(), "call void @" + helper + "(" + arguments + ")");
+            return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + helper + "(" + arguments + ")");
         }
         if (instruction.result().isPresent()) {
             String type = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + helper + "(" + args + ")");
         }
-        return LlvmInstruction.raw(Optional.empty(), "call void @" + helper + "(" + args + ")");
+        return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + helper + "(" + args + ")");
     }
 
     private LlvmInstruction lowerMemoryFence(xyz.melodysky.ir.model.IrInstruction instruction) {
@@ -1938,14 +1942,15 @@ public final class LlvmModuleLowerer {
                             || instruction.symbol().orElse("").equals("classInitFailed"))
                     ? "release"
                     : "acquire";
+            case CLASS_INIT_ACTIVE_USE -> "acquire";
             default -> throw new IllegalArgumentException("not a memory fence opcode: " + instruction.opcode());
         };
-        return LlvmInstruction.raw(Optional.empty(), "fence " + ordering);
+        return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "fence " + ordering);
     }
 
     private LlvmInstruction lowerHelperCall(xyz.melodysky.ir.model.IrInstruction instruction, String helperName) {
         String resultType = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(instruction.result().orElseThrow().name()),
                 "call " + resultType + " @" + helperName + "(" + typedOperands(instruction.operands()) + ")");
     }
@@ -1957,11 +1962,11 @@ public final class LlvmModuleLowerer {
         String arguments = args.isEmpty() ? "ptr %j2ll_env" : "ptr %j2ll_env, " + args;
         if (instruction.result().isPresent()) {
             String resultType = typeLowerer.lower(instruction.result().orElseThrow().type()).text();
-            return LlvmInstruction.raw(
+            return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + resultType + " @" + helperName + "(" + arguments + ")");
         }
-        return LlvmInstruction.raw(Optional.empty(), "call void @" + helperName + "(" + arguments + ")");
+        return LlvmInstruction.rawProvenNoNativeUnwind(Optional.empty(), "call void @" + helperName + "(" + arguments + ")");
     }
 
     private String typedOperands(List<IrValue> operands) {

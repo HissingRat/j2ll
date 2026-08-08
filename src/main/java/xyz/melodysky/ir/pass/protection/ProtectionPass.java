@@ -17,5 +17,9 @@ public interface ProtectionPass {
         return "PROTECTION_PASS_NOT_APPLICABLE";
     }
 
+    default boolean canRunAroundMonitorSensitiveBlocks() {
+        return false;
+    }
+
     IrMethod run(IrMethod method, ProtectionConfig config);
 }

@@ -50,6 +50,7 @@ final class HostJniLambdaRuntimeSource {
                     const char* sam_desc;
                     int ref_kind;
                     const char* impl_owner;
+                    int impl_is_platform;
                     const char* impl_name;
                     const char* impl_desc;
                     const char* instantiated_desc;
@@ -183,7 +184,7 @@ final class HostJniLambdaRuntimeSource {
                         return NULL;
                     }
                     jobject impl_lookup;
-                    if (strncmp(entry->impl_owner, "java/", 5) == 0 || strncmp(entry->impl_owner, "javax/", 6) == 0) {
+                    if (entry->impl_is_platform) {
                         impl_lookup = (*env)->CallStaticObjectMethod(env, method_handles_class, public_lookup_method);
                     } else {
                         impl_lookup = (*env)->CallStaticObjectMethod(
@@ -306,6 +307,9 @@ final class HostJniLambdaRuntimeSource {
                     .append(Integer.parseInt(fields[4]))
                     .append(";\n")
                     .append("    entry.impl_owner = impl_owner;\n")
+                    .append("    entry.impl_is_platform = ")
+                    .append(isPlatformOwner(fields[5]) ? 1 : 0)
+                    .append(";\n")
                     .append("    entry.impl_name = impl_name;\n")
                     .append("    entry.impl_desc = impl_desc;\n")
                     .append("    entry.instantiated_desc = instantiated_desc;\n")
@@ -325,6 +329,10 @@ final class HostJniLambdaRuntimeSource {
 
     private static String escapeCString(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static boolean isPlatformOwner(String owner) {
+        return owner.startsWith("java/") || owner.startsWith("javax/");
     }
 
 }

@@ -75,7 +75,8 @@ final class HostNativeRegistrationSourceTest {
         assertFalse(source.contains("static JNINativeMethod j2ll_natives_"));
         assertFalse(source.contains("j2ll_hidden_method_metadata"));
         assertFalse(source.contains("j2ll_hidden_method_function"));
-        assertTrue(source.contains("JNINativeMethod methods_storage[2] = {{0}};"));
+        assertTrue(source.contains("JNINativeMethod methods_storage[2];"));
+        assertFalse(source.contains("methods_storage[2] = {{0}}"));
         assertTrue(source.contains("unsigned char text_scratch_storage["));
         assertTrue(source.contains("JNINativeMethod* methods = methods_storage;"));
         assertFalse(source.contains(
@@ -129,7 +130,7 @@ final class HostNativeRegistrationSourceTest {
                 NativeTextBuildKey.fromUtf8(
                         "owner-local-registration-text-dedup"));
 
-        assertEquals(10, occurrences(source, "_cipher[] = {"));
+        assertEquals(7, occurrences(source, "_cipher[] = {"));
         java.util.regex.Matcher signatures = java.util.regex.Pattern
                 .compile("\\.signature = \\(char\\*\\)"
                         + "\\(text_scratch \\+ ([0-9]+)\\)")
@@ -141,6 +142,54 @@ final class HostNativeRegistrationSourceTest {
         }
         assertEquals(3, offsets.size());
         assertEquals(2, offsets.stream().distinct().count());
+        assertRegistrationPlaintextAbsent(source);
+    }
+
+    @Test
+    void ownerLocalTextGroupsBoundRecoveryAndDecoderCodeSize() {
+        NativeRegistrationPlan manyDistinctTexts = new NativeRegistrationPlan(
+                IntStream.range(0, 32)
+                        .mapToObj(index -> new NativeRegistrationEntry(
+                                "sample/GroupedOwner",
+                                "method" + index,
+                                "(Lsample/Arg" + index + ";)V",
+                                "j2ll_fn_" + index))
+                        .toList());
+        NativeTextBuildKey key = NativeTextBuildKey.fromUtf8(
+                "bounded-owner-local-registration-groups");
+        NativeRegistrationTextPlan.Owner owner =
+                NativeRegistrationTextPlan.ordinary(
+                        manyDistinctTexts,
+                        key)
+                        .get(0);
+
+        assertEquals(8, owner.textGroups().size());
+        assertTrue(owner.textGroups().stream().allMatch(group ->
+                group.memberOffsets().size()
+                                <= NativeRegistrationTextPlan.MAX_GROUP_VALUES
+                        && (group.memberOffsets().size() == 1
+                                || group.encoding().decodedBufferLength()
+                                        <= NativeRegistrationTextPlan.MAX_GROUP_DECODED_BYTES)));
+        assertEquals(
+                2,
+                owner.textGroups().stream()
+                        .map(NativeRegistrationTextPlan.TextGroup::purpose)
+                        .distinct()
+                        .count());
+
+        String source = new HostNativeRegistrationSource().emit(
+                manyDistinctTexts,
+                new MethodTableHidingPlanner().plan(
+                        manyDistinctTexts,
+                        false,
+                        77L),
+                key);
+        // Four build-local failure leaves, one owner, and eight bounded text
+        // groups replace 64 independent name/descriptor decoder bodies.
+        assertEquals(13, occurrences(source, "_cipher[] = {"));
+        assertTrue(source.length() < 120_000, () ->
+                "registration source exceeded its bounded grouping budget: "
+                        + source.length());
         assertRegistrationPlaintextAbsent(source);
     }
 
@@ -253,14 +302,12 @@ final class HostNativeRegistrationSourceTest {
                 "if (unregister_status != JNI_OK)"));
         assertTrue(source.contains(
                 "rollback_exception = (*env)->ExceptionOccurred(env);"));
+        assertEquals(4, occurrences(source,
+                "(JNIEnv* env) __attribute__((noinline, cold));"));
+        assertEquals(4, occurrences(source,
+                "(*env)->FatalError(env, message);"));
         assertTrue(source.contains(
-                "(*env)->FatalError(env, rollback_failure_text)"));
-        assertTrue(source.contains(
-                "(*env)->FatalError(env, exception_restore_failure_text)"));
-        assertTrue(source.contains(
-                "j2ll_native_text_zero(rollback_failure_text, sizeof(rollback_failure_text))"));
-        assertTrue(source.contains(
-                "j2ll_native_text_zero(exception_restore_failure_text, sizeof(exception_restore_failure_text))"));
+                "j2ll_native_text_zero(message, sizeof(message));"));
         assertFalse(source.contains("native owner registration rollback failed"));
         assertFalse(source.contains("native owner registration exception restore failed"));
     }
@@ -372,27 +419,25 @@ final class HostNativeRegistrationSourceTest {
         assertTrue(source.contains("*registered_owner = owner_class;"));
         assertTrue(source.contains("owner_class = NULL;"));
         assertTrue(source.contains(
-                "(env, &registered_owner_0) != JNI_OK"));
+                "(env, &registered_owners[0]) != JNI_OK"));
         assertTrue(source.contains(
-                "(env, &registered_owner_1) != JNI_OK"));
+                "(env, &registered_owners[1]) != JNI_OK"));
         assertTrue(source.contains(
-                "(env, &registered_owner_2) != JNI_OK"));
+                "(env, &registered_owners[2]) != JNI_OK"));
         assertEquals(3, occurrences(source, "goto rollback;"));
 
         int rollback = source.indexOf("rollback:");
-        int unregisterTwo = source.indexOf(
-                "UnregisterNatives(env, registered_owner_2)",
-                rollback);
-        int unregisterOne = source.indexOf(
-                "UnregisterNatives(env, registered_owner_1)",
-                rollback);
-        int unregisterZero = source.indexOf(
-                "UnregisterNatives(env, registered_owner_0)",
-                rollback);
+        int decrement = source.indexOf("registered_count--;", rollback);
+        int loadOwner = source.indexOf(
+                "rollback_owner = registered_owners[registered_count]",
+                decrement);
+        int unregister = source.indexOf(
+                "UnregisterNatives(env, rollback_owner)",
+                loadOwner);
         assertTrue(rollback >= 0);
-        assertTrue(unregisterTwo > rollback);
-        assertTrue(unregisterOne > unregisterTwo);
-        assertTrue(unregisterZero > unregisterOne);
+        assertTrue(decrement > rollback);
+        assertTrue(loadOwner > decrement);
+        assertTrue(unregister > loadOwner);
         assertTrue(source.contains(
                 "failure_exception = (*env)->ExceptionOccurred(env);"));
         assertTrue(source.contains("(*env)->ExceptionClear(env);"));
@@ -400,19 +445,17 @@ final class HostNativeRegistrationSourceTest {
                 "unregister_status = (*env)->UnregisterNatives"));
         assertTrue(source.contains(
                 "if (unregister_status != JNI_OK)"));
-        assertTrue(source.contains(
-                "(*env)->FatalError(env, rollback_failure_text)"));
-        assertTrue(source.contains(
-                "j2ll_native_text_zero(rollback_failure_text, sizeof(rollback_failure_text))"));
+        assertEquals(4, occurrences(source,
+                "(JNIEnv* env) __attribute__((noinline, cold));"));
+        assertEquals(4, occurrences(source,
+                "(*env)->FatalError(env, message);"));
         assertFalse(source.contains("native registration rollback failed"));
         assertTrue(source.contains(
                 "throw_status = (*env)->Throw(env, failure_exception);"));
         assertTrue(source.contains(
                 "if (throw_status != JNI_OK || !(*env)->ExceptionCheck(env))"));
         assertTrue(source.contains(
-                "(*env)->FatalError(env, exception_restore_failure_text)"));
-        assertTrue(source.contains(
-                "j2ll_native_text_zero(exception_restore_failure_text, sizeof(exception_restore_failure_text))"));
+                "j2ll_native_text_zero(message, sizeof(message));"));
         assertFalse(source.contains(
                 "native registration exception restore failed"));
         assertEquals(
@@ -428,7 +471,7 @@ final class HostNativeRegistrationSourceTest {
     private String registrationCallOrder(String source) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern
                 .compile("if \\(j2ll_register_(h_[0-9a-f]{32})"
-                        + "\\(env, &registered_owner_[0-9]+\\)")
+                        + "\\(env, &registered_owners\\[[0-9]+\\]\\)")
                 .matcher(source);
         StringBuilder order = new StringBuilder();
         while (matcher.find()) {

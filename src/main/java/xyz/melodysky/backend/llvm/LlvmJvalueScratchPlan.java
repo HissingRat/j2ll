@@ -30,7 +30,7 @@ record LlvmJvalueScratchPlan(int capacity) {
             throw new IllegalStateException(
                     "empty jvalue scratch plan has no allocation");
         }
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(STORAGE),
                 "alloca [" + capacity + " x i64], align 8");
     }
@@ -55,7 +55,7 @@ record LlvmJvalueScratchPlan(int capacity) {
         String arrayType = "[" + capacity + " x i64]";
         String base = "%j2ll_args_base_" + suffix;
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
-        instructions.add(LlvmInstruction.raw(
+        instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(base),
                 "getelementptr inbounds "
                         + arrayType
@@ -65,13 +65,13 @@ record LlvmJvalueScratchPlan(int capacity) {
         for (int index = 0; index < arguments.size(); index++) {
             IrValue argument = arguments.get(index);
             String slot = "%j2ll_arg_" + suffix + "_" + index;
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(slot),
                     "getelementptr inbounds i64, ptr "
                             + base
                             + ", i32 "
                             + index));
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.empty(),
                     "store "
                             + typedOperand.apply(argument)

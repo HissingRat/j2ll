@@ -161,13 +161,14 @@
         "binary": {
           "type": "object",
           "additionalProperties": true,
-          "required": ["enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit"],
+          "required": ["enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit", "retainUnwindInfo"],
           "properties": {
             "enabled": { "type": "boolean", "default": true },
             "hideInternalSymbols": { "type": "boolean", "default": true },
             "strip": { "type": "boolean", "default": true },
             "removePdb": { "type": "boolean", "default": true },
-            "symbolAudit": { "type": "boolean", "default": true }
+            "symbolAudit": { "type": "boolean", "default": true },
+            "retainUnwindInfo": { "type": "boolean", "default": false }
           }
         }
       }

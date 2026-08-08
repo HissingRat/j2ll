@@ -8,6 +8,35 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 final class GeneratedNativeHardeningAuditTest {
+    @Test
+    void rejectsActivationLocalTupleUseAcrossFunctions() {
+        String generated = new GeneratedCFragmentTextObfuscator().obfuscate(
+                NativeTextBuildKey.fromUtf8("cross-function-tuple-audit"),
+                "cross-function-binding",
+                """
+                static int consume(const char* value);
+                static int owner(void) {
+                    return consume("owner/name");
+                }
+                """);
+        java.util.regex.Matcher use = java.util.regex.Pattern
+                .compile("j2ll_nt_use_([0-9a-f]{24})\\(\\)")
+                .matcher(generated);
+        assertTrue(use.find(), generated);
+        String forged = generated
+                + "\nstatic int other(void) { return consume(j2ll_nt_use_"
+                + use.group(1)
+                + "()); }\n";
+
+        GeneratedNativeHardeningAuditResult result =
+                new GeneratedNativeHardeningAudit().audit(forged);
+
+        assertTrue(result.findings().stream().anyMatch(finding ->
+                finding.code().equals(
+                        GeneratedNativeHardeningAudit
+                                .CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE)));
+    }
+
     private final GeneratedNativeHardeningAudit audit =
             new GeneratedNativeHardeningAudit();
 

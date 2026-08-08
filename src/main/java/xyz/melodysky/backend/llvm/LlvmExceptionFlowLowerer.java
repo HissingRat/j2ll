@@ -104,10 +104,10 @@ final class LlvmExceptionFlowLowerer {
                     : uniqueBlockName("j2ll.ex.clear." + suffix);
             String pendingFlag = "%j2ll.ex.pending." + suffix;
 
-            currentInstructions.add(LlvmInstruction.raw(
+            currentInstructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(site.exceptionValue().name()),
                     "call ptr @j2ll_rt_pending_exception(ptr %j2ll_env)"));
-            currentInstructions.add(LlvmInstruction.raw(
+            currentInstructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(pendingFlag),
                     "icmp ne ptr " + site.exceptionValue().name() + ", null"));
             blocks.add(new LlvmBasicBlock(
@@ -235,7 +235,7 @@ final class LlvmExceptionFlowLowerer {
         if (clearPendingException) {
             ArrayList<LlvmInstruction> entryInstructions =
                     new ArrayList<>();
-            entryInstructions.add(LlvmInstruction.raw(
+            entryInstructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.empty(),
                     "call void @j2ll_rt_clear_exception(ptr %j2ll_env)"));
             entryInstructions.addAll(protectedSiteCleanup);
@@ -272,14 +272,14 @@ final class LlvmExceptionFlowLowerer {
                 blocks.add(new LlvmBasicBlock(
                         check,
                         List.of(
-                                LlvmInstruction.raw(
+                                LlvmInstruction.rawProvenNoNativeUnwind(
                                         Optional.of(matchValue),
                                         "call i32 @" + matcher + "(ptr %j2ll_env, ptr "
                                                 + exception.name() + ")"),
-                                LlvmInstruction.raw(
+                                LlvmInstruction.rawProvenNoNativeUnwind(
                                         Optional.of(matcherException),
                                         "call ptr @j2ll_rt_pending_exception(ptr %j2ll_env)"),
-                                LlvmInstruction.raw(
+                                LlvmInstruction.rawProvenNoNativeUnwind(
                                         Optional.of(matcherFailed),
                                         "icmp ne ptr " + matcherException + ", null")),
                         LlvmTerminator.branch(matcherFailed, matchFailure, matchResult)));
@@ -289,7 +289,7 @@ final class LlvmExceptionFlowLowerer {
                         returnDefault(functionReturnType)));
                 blocks.add(new LlvmBasicBlock(
                         matchResult,
-                        List.of(LlvmInstruction.raw(
+                        List.of(LlvmInstruction.rawProvenNoNativeUnwind(
                                 Optional.of(matched),
                                 "icmp ne i32 " + matchValue + ", 0")),
                         LlvmTerminator.branch(matched, adapter, noMatch)));
@@ -345,7 +345,7 @@ final class LlvmExceptionFlowLowerer {
     }
 
     private LlvmInstruction rethrow(IrValue exception) {
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.empty(),
                 "call void @j2ll_rt_rethrow(ptr %j2ll_env, ptr " + exception.name() + ")");
     }

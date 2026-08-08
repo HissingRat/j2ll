@@ -11,12 +11,17 @@ import static org.objectweb.asm.Opcodes.AASTORE;
 import static org.objectweb.asm.Opcodes.ALOAD;
 import static org.objectweb.asm.Opcodes.ANEWARRAY;
 import static org.objectweb.asm.Opcodes.ARETURN;
-import static org.objectweb.asm.Opcodes.ARRAYLENGTH;
+import static org.objectweb.asm.Opcodes.ASTORE;
 import static org.objectweb.asm.Opcodes.DUP;
 import static org.objectweb.asm.Opcodes.GETSTATIC;
 import static org.objectweb.asm.Opcodes.ICONST_0;
 import static org.objectweb.asm.Opcodes.ICONST_1;
+import static org.objectweb.asm.Opcodes.ICONST_2;
+import static org.objectweb.asm.Opcodes.ICONST_M1;
+import static org.objectweb.asm.Opcodes.GOTO;
+import static org.objectweb.asm.Opcodes.IFLT;
 import static org.objectweb.asm.Opcodes.IFNE;
+import static org.objectweb.asm.Opcodes.ILOAD;
 import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
 import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
@@ -24,6 +29,8 @@ import static org.objectweb.asm.Opcodes.PUTSTATIC;
 import static org.objectweb.asm.Opcodes.RETURN;
 import static org.objectweb.asm.Opcodes.V17;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +48,7 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
+import xyz.melodysky.protection.audit.HashOnlyEvidence;
 import xyz.melodysky.testsupport.DifferentialHarness;
 import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.J2llHomeResolver;
@@ -54,7 +62,7 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
     Path temp;
 
     @Test
-    void referenceFieldAndArrayHelpersRunAfterFlatteningInRealHostJvm() throws Exception {
+    void scalarPrefixFlattensAroundOwnedAndExceptionBoundariesInRealHostJvm() throws Exception {
         Path j2llHome = realJ2llHome();
         assumeTrue(
                 j2llHome != null && Files.isRegularFile(zigExecutable(j2llHome)),
@@ -78,13 +86,19 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
         assertEquals(0, differential.originalRun().exitCode(), differential.originalRun().stderr());
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
-        assertEquals("fallback\nvalue\n", differential.outputRun().stdout());
+        assertEquals("fallback\nzero\nvalue\ncaught\n", differential.outputRun().stdout());
 
+        String methodKey = "pkg/CffReferenceOps#choose!(I[Ljava/lang/String;)Ljava/lang/Object;";
         String protection = Files.readString(workspace.resolve("reports/protection-report.json"));
-        assertTrue(protection.contains("\"passName\": \"CONTROL_FLOW_FLATTENING\""), protection);
-        assertTrue(protection.contains("\"status\": \"RAN\""), protection);
-        assertTrue(
-                protection.contains("pkg/CffReferenceOps#choose!([Ljava/lang/String;)Ljava/lang/Object;"),
+        JsonObject cffFact = cffFact(protection, methodKey);
+        assertEquals("IR", cffFact.get("layer").getAsString(), protection);
+        assertTrue(cffFact.get("requested").getAsBoolean(), protection);
+        assertEquals("applicable", cffFact.get("applicability").getAsString(), protection);
+        assertTrue(cffFact.get("affected").getAsBoolean(), protection);
+        assertEquals("RAN", cffFact.get("status").getAsString(), protection);
+        assertEquals(
+                "CONTROL_FLOW_FLATTENING",
+                cffFact.get("reasonCode").getAsString(),
                 protection);
 
         String llvm = emittedLlvm(workspace);
@@ -132,20 +146,27 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
         MethodVisitor choose = writer.visitMethod(
                 ACC_PUBLIC | ACC_STATIC,
                 "choose",
-                "([Ljava/lang/String;)Ljava/lang/Object;",
+                "(I[Ljava/lang/String;)Ljava/lang/Object;",
                 null,
                 null);
-        Label nonEmpty = new Label();
+        Label fallback = new Label();
+        Label indexed = new Label();
         choose.visitCode();
-        choose.visitVarInsn(ALOAD, 0);
-        choose.visitInsn(ARRAYLENGTH);
-        choose.visitJumpInsn(IFNE, nonEmpty);
-        choose.visitFieldInsn(GETSTATIC, OPS, "fallback", "Ljava/lang/Object;");
-        choose.visitInsn(ARETURN);
-        choose.visitLabel(nonEmpty);
-        choose.visitVarInsn(ALOAD, 0);
+        choose.visitVarInsn(ILOAD, 0);
+        choose.visitJumpInsn(IFLT, fallback);
+        choose.visitVarInsn(ILOAD, 0);
+        choose.visitJumpInsn(IFNE, indexed);
+        choose.visitVarInsn(ALOAD, 1);
         choose.visitInsn(ICONST_0);
         choose.visitInsn(AALOAD);
+        choose.visitInsn(ARETURN);
+        choose.visitLabel(indexed);
+        choose.visitVarInsn(ALOAD, 1);
+        choose.visitVarInsn(ILOAD, 0);
+        choose.visitInsn(AALOAD);
+        choose.visitInsn(ARETURN);
+        choose.visitLabel(fallback);
+        choose.visitFieldInsn(GETSTATIC, OPS, "fallback", "Ljava/lang/Object;");
         choose.visitInsn(ARETURN);
         choose.visitMaxs(0, 0);
         choose.visitEnd();
@@ -171,46 +192,101 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
                 "([Ljava/lang/String;)V",
                 null,
                 null);
+        Label tryStart = new Label();
+        Label tryEnd = new Label();
+        Label catchHandler = new Label();
+        Label afterCatch = new Label();
+        main.visitTryCatchBlock(
+                tryStart,
+                tryEnd,
+                catchHandler,
+                "java/lang/ArrayIndexOutOfBoundsException");
         main.visitCode();
+        emitChooseAndPrint(main, -1);
+        emitChooseAndPrint(main, 0, "zero");
+        emitChooseAndPrint(main, 1, "unused", "value");
+        main.visitLabel(tryStart);
+        emitChooseAndPrint(main, 2, "only");
+        main.visitLabel(tryEnd);
+        main.visitJumpInsn(GOTO, afterCatch);
+        main.visitLabel(catchHandler);
+        main.visitVarInsn(ASTORE, 1);
         main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        main.visitInsn(ICONST_0);
-        main.visitTypeInsn(ANEWARRAY, "java/lang/String");
-        main.visitMethodInsn(
-                INVOKESTATIC,
-                OPS,
-                "choose",
-                "([Ljava/lang/String;)Ljava/lang/Object;",
-                false);
+        main.visitLdcInsn("caught");
         main.visitMethodInsn(
                 INVOKEVIRTUAL,
                 "java/io/PrintStream",
                 "println",
-                "(Ljava/lang/Object;)V",
+                "(Ljava/lang/String;)V",
                 false);
-        main.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        main.visitInsn(ICONST_1);
-        main.visitTypeInsn(ANEWARRAY, "java/lang/String");
-        main.visitInsn(DUP);
-        main.visitInsn(ICONST_0);
-        main.visitLdcInsn("value");
-        main.visitInsn(AASTORE);
-        main.visitMethodInsn(
-                INVOKESTATIC,
-                OPS,
-                "choose",
-                "([Ljava/lang/String;)Ljava/lang/Object;",
-                false);
-        main.visitMethodInsn(
-                INVOKEVIRTUAL,
-                "java/io/PrintStream",
-                "println",
-                "(Ljava/lang/Object;)V",
-                false);
+        main.visitLabel(afterCatch);
         main.visitInsn(RETURN);
         main.visitMaxs(0, 0);
         main.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
+    }
+
+    private void emitChooseAndPrint(
+            MethodVisitor method,
+            int selector,
+            String... values) {
+        method.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+        pushSmallInt(method, selector);
+        pushSmallInt(method, values.length);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/String");
+        for (int index = 0; index < values.length; index++) {
+            method.visitInsn(DUP);
+            pushSmallInt(method, index);
+            method.visitLdcInsn(values[index]);
+            method.visitInsn(AASTORE);
+        }
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                OPS,
+                "choose",
+                "(I[Ljava/lang/String;)Ljava/lang/Object;",
+                false);
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/io/PrintStream",
+                "println",
+                "(Ljava/lang/Object;)V",
+                false);
+    }
+
+    private void pushSmallInt(MethodVisitor method, int value) {
+        int opcode = switch (value) {
+            case -1 -> ICONST_M1;
+            case 0 -> ICONST_0;
+            case 1 -> ICONST_1;
+            case 2 -> ICONST_2;
+            default -> throw new IllegalArgumentException("fixture integer is outside the small range: " + value);
+        };
+        method.visitInsn(opcode);
+    }
+
+    private JsonObject cffFact(String protection, String methodKey) {
+        JsonObject root = JsonParser.parseString(protection).getAsJsonObject();
+        JsonObject coverage = root.getAsJsonObject("coverage");
+        assertTrue(coverage != null, protection);
+        JsonArray facts = coverage.getAsJsonArray("facts");
+        assertTrue(facts != null, protection);
+        String subjectIdentityHash = HashOnlyEvidence.sha256(
+                "protection-report-method-subject",
+                methodKey);
+        List<JsonObject> matches = java.util.stream.StreamSupport.stream(
+                        facts.spliterator(),
+                        false)
+                .map(JsonElement::getAsJsonObject)
+                .filter(fact -> "IR".equals(fact.get("layer").getAsString()))
+                .filter(fact -> "CONTROL_FLOW_FLATTENING".equals(
+                        fact.get("passName").getAsString()))
+                .filter(fact -> subjectIdentityHash.equals(
+                        fact.get("subjectIdentityHash").getAsString()))
+                .toList();
+        assertEquals(1, matches.size(), protection);
+        return matches.get(0);
     }
 
     private ResolvedConfig config(Path inputJar) {
@@ -224,7 +300,7 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
                   "worldModel": "PARTIAL_WORLD",
                   "outputDirectory": "out",
                   "whiteList": [
-                    "pkg/CffReferenceOps#choose!([Ljava/lang/String;)Ljava/lang/Object;"
+                    "pkg/CffReferenceOps#choose!(I[Ljava/lang/String;)Ljava/lang/Object;"
                   ],
                   "blackList": [],
                   "target": %s,
@@ -270,7 +346,8 @@ class ControlFlowFlatteningNativeRuntimeE2eTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

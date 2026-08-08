@@ -15,6 +15,7 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
+import xyz.melodysky.analysis.field.ConstantDynamicFieldReferenceResolver;
 import xyz.melodysky.analysis.field.FieldId;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 
@@ -57,6 +58,7 @@ public final class InternalizedFieldArtifactVerifier {
                 for (AbstractInsnNode instruction : method.instructions) {
                     collectInstructionReferences(
                             instruction,
+                            node.name,
                             approved,
                             entry.getName(),
                             method.name + method.desc,
@@ -71,6 +73,7 @@ public final class InternalizedFieldArtifactVerifier {
 
     private void collectInstructionReferences(
             AbstractInsnNode instruction,
+            String currentOwner,
             Set<FieldId> approved,
             String entry,
             String method,
@@ -87,6 +90,7 @@ public final class InternalizedFieldArtifactVerifier {
         if (instruction instanceof LdcInsnNode ldc) {
             collectConstant(
                     ldc.cst,
+                    currentOwner,
                     approved,
                     location(entry, method, instructionIndex, "ldc"),
                     residuals);
@@ -101,6 +105,7 @@ public final class InternalizedFieldArtifactVerifier {
             for (Object argument : dynamic.bsmArgs) {
                 collectConstant(
                         argument,
+                        currentOwner,
                         approved,
                         location(entry, method, instructionIndex, "invokedynamic argument"),
                         residuals);
@@ -110,16 +115,31 @@ public final class InternalizedFieldArtifactVerifier {
 
     private void collectConstant(
             Object value,
+            String currentOwner,
             Set<FieldId> approved,
             String location,
             List<String> residuals) {
         if (value instanceof Handle handle) {
             collectHandle(handle, approved, location, residuals);
         } else if (value instanceof ConstantDynamic dynamic) {
+            ConstantDynamicFieldReferenceResolver.Resolution resolution =
+                    new ConstantDynamicFieldReferenceResolver().resolve(
+                            currentOwner,
+                            dynamic);
+            if (resolution.fieldBootstrap()) {
+                resolution.target().ifPresentOrElse(
+                        field -> addIfApproved(
+                                field,
+                                approved,
+                                location + " ConstantBootstraps field target",
+                                residuals),
+                        () -> residuals.add(unresolvedBootstrapResidual(location)));
+            }
             collectHandle(dynamic.getBootstrapMethod(), approved, location, residuals);
             for (int index = 0; index < dynamic.getBootstrapMethodArgumentCount(); index++) {
                 collectConstant(
                         dynamic.getBootstrapMethodArgument(index),
+                        currentOwner,
                         approved,
                         location,
                         residuals);
@@ -163,6 +183,12 @@ public final class InternalizedFieldArtifactVerifier {
         return "locationHash=" + FieldPrivacyHash.sha256(location)
                 + " kind=" + kind
                 + " fieldIdHash=" + FieldPrivacyHash.sha256(field.fieldKey());
+    }
+
+    private String unresolvedBootstrapResidual(String location) {
+        return "locationHash=" + FieldPrivacyHash.sha256(location)
+                + " kind=unresolved-field-bootstrap"
+                + " fieldIdHash=global";
     }
 
     private String location(

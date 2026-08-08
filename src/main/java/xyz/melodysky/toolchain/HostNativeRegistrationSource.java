@@ -8,9 +8,6 @@ import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
-import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
-import xyz.melodysky.toolchain.nativetext.NativeTextEncoding;
-import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
 /**
  * Orchestrates owner-local, transient JNI registration functions.
@@ -35,22 +32,12 @@ public final class HostNativeRegistrationSource {
         validatePlan(registrationPlan, hidingPlan);
         Objects.requireNonNull(buildKey, "buildKey");
         NativeTextCEmitter textEmitter = new NativeTextCEmitter();
-        NativeTextEncoding rollbackFailureText = new NativeTextEncoder().encode(
-                buildKey,
-                NativeTextPurpose.REGISTRATION_ERROR,
-                "aggregate-registration:rollback-failed",
-                "native registration rollback failed");
-        NativeTextEncoding exceptionRestoreFailureText =
-                new NativeTextEncoder().encode(
-                        buildKey,
-                        NativeTextPurpose.REGISTRATION_ERROR,
-                        "aggregate-registration:exception-restore-failed",
-                        "native registration exception restore failed");
         StringBuilder source = new StringBuilder(textEmitter.runtimeSource());
-        source.append(textEmitter.ciphertextDeclaration(rollbackFailureText))
-                .append(textEmitter.ciphertextDeclaration(
-                        exceptionRestoreFailureText))
-                .append('\n');
+        HostNativeRegistrationFailureLeafSource failureLeafSource =
+                new HostNativeRegistrationFailureLeafSource();
+        HostNativeRegistrationFailureLeafSource.Plan failureLeaves =
+                failureLeafSource.plan(buildKey);
+        source.append(failureLeafSource.emit(failureLeaves));
         HostNativeOwnerRegistrationSource ownerEmitter =
                 new HostNativeOwnerRegistrationSource();
         List<NativeRegistrationTextPlan.Owner> owners;
@@ -58,22 +45,20 @@ public final class HostNativeRegistrationSource {
             owners = physicalOwnerOrder(
                     NativeRegistrationTextPlan.hidden(hidingPlan, buildKey));
             for (NativeRegistrationTextPlan.Owner owner : owners) {
-                source.append(ownerEmitter.emit(owner));
+                source.append(ownerEmitter.emit(owner, failureLeaves));
             }
         } else {
             owners = physicalOwnerOrder(
                     NativeRegistrationTextPlan.ordinary(registrationPlan, buildKey));
             for (NativeRegistrationTextPlan.Owner owner : owners) {
-                source.append(ownerEmitter.emit(owner));
+                source.append(ownerEmitter.emit(owner, failureLeaves));
             }
         }
         appendRootRegistration(
                 source,
                 owners,
                 "j2ll_register_" + buildKey.hashHex().substring(0, 24),
-                textEmitter,
-                rollbackFailureText,
-                exceptionRestoreFailureText);
+                failureLeaves);
         return source.toString();
     }
 
@@ -118,9 +103,7 @@ public final class HostNativeRegistrationSource {
             StringBuilder source,
             List<NativeRegistrationTextPlan.Owner> owners,
             String aggregateSymbol,
-            NativeTextCEmitter textEmitter,
-            NativeTextEncoding rollbackFailureText,
-            NativeTextEncoding exceptionRestoreFailureText) {
+            HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
         source.append("static jint ")
                 .append(aggregateSymbol)
                 .append("(JavaVM* vm) {\n")
@@ -134,75 +117,62 @@ public final class HostNativeRegistrationSource {
             source.append("    jthrowable failure_exception = NULL;\n")
                     .append("    jthrowable rollback_exception = NULL;\n")
                     .append("    jthrowable observed_exception = NULL;\n")
+                    .append("    jclass rollback_owner = NULL;\n")
                     .append("    jboolean rollback_failed = JNI_FALSE;\n")
                     .append("    jint unregister_status = JNI_ERR;\n")
                     .append("    jint throw_status = JNI_ERR;\n")
-                    .append("    char rollback_failure_text[sizeof(")
-                    .append(rollbackFailureText.symbol())
-                    .append("_cipher)];\n")
-                    .append("    char exception_restore_failure_text[sizeof(")
-                    .append(exceptionRestoreFailureText.symbol())
-                    .append("_cipher)];\n");
-            for (int index = 0; index < owners.size(); index++) {
-                source.append("    jclass registered_owner_")
-                        .append(index)
-                        .append(" = NULL;\n");
-            }
+                    .append("    size_t registered_count = 0u;\n")
+                    .append("    jclass registered_owners[")
+                    .append(owners.size())
+                    .append("] = {NULL};\n");
         }
         for (int index = 0; index < owners.size(); index++) {
             NativeRegistrationTextPlan.Owner owner = owners.get(index);
             source.append("    if (j2ll_register_")
                     .append(HostNativeOwnerRegistrationSource.physicalSuffix(owner))
-                    .append("(env, &registered_owner_")
+                    .append("(env, &registered_owners[")
                     .append(index)
-                    .append(") != JNI_OK) {\n")
+                    .append("]) != JNI_OK) {\n")
                     .append("        goto rollback;\n")
-                    .append("    }\n");
+                    .append("    }\n")
+                    .append("    registered_count = ")
+                    .append(index + 1)
+                    .append("u;\n");
         }
         if (!owners.isEmpty()) {
-            for (int index = owners.size() - 1; index >= 0; index--) {
-                source.append("    (*env)->DeleteLocalRef(env, registered_owner_")
-                        .append(index)
-                        .append(");\n")
-                        .append("    registered_owner_")
-                        .append(index)
-                        .append(" = NULL;\n");
-            }
-            source.append("    return JNI_VERSION_1_8;\n")
+            source.append("    while (registered_count != 0u) {\n")
+                    .append("        registered_count--;\n")
+                    .append("        (*env)->DeleteLocalRef(env, registered_owners[registered_count]);\n")
+                    .append("        registered_owners[registered_count] = NULL;\n")
+                    .append("    }\n")
+                    .append("    return JNI_VERSION_1_8;\n")
                     .append("rollback:\n")
                     .append("    if ((*env)->ExceptionCheck(env)) {\n")
                     .append("        failure_exception = (*env)->ExceptionOccurred(env);\n")
                     .append("        (*env)->ExceptionClear(env);\n")
+                    .append("    }\n")
+                    .append("    while (registered_count != 0u) {\n")
+                    .append("        registered_count--;\n")
+                    .append("        rollback_owner = registered_owners[registered_count];\n")
+                    .append("        unregister_status = (*env)->UnregisterNatives(env, rollback_owner);\n")
+                    .append("        if (unregister_status != JNI_OK) {\n")
+                    .append("            rollback_failed = JNI_TRUE;\n")
+                    .append("        }\n")
+                    .append("        if ((*env)->ExceptionCheck(env)) {\n")
+                    .append("            rollback_failed = JNI_TRUE;\n")
+                    .append("            observed_exception = (*env)->ExceptionOccurred(env);\n")
+                    .append("            (*env)->ExceptionClear(env);\n")
+                    .append("            if (rollback_exception == NULL) {\n")
+                    .append("                rollback_exception = observed_exception;\n")
+                    .append("            } else {\n")
+                    .append("                (*env)->DeleteLocalRef(env, observed_exception);\n")
+                    .append("            }\n")
+                    .append("            observed_exception = NULL;\n")
+                    .append("        }\n")
+                    .append("        (*env)->DeleteLocalRef(env, rollback_owner);\n")
+                    .append("        registered_owners[registered_count] = NULL;\n")
+                    .append("        rollback_owner = NULL;\n")
                     .append("    }\n");
-            for (int index = owners.size() - 1; index >= 0; index--) {
-                source.append("    if (registered_owner_")
-                        .append(index)
-                        .append(" != NULL) {\n")
-                        .append("        unregister_status = (*env)->UnregisterNatives(env, registered_owner_")
-                        .append(index)
-                        .append(");\n")
-                        .append("        if (unregister_status != JNI_OK) {\n")
-                        .append("            rollback_failed = JNI_TRUE;\n")
-                        .append("        }\n")
-                        .append("        if ((*env)->ExceptionCheck(env)) {\n")
-                        .append("            rollback_failed = JNI_TRUE;\n")
-                        .append("            observed_exception = (*env)->ExceptionOccurred(env);\n")
-                        .append("            (*env)->ExceptionClear(env);\n")
-                        .append("            if (rollback_exception == NULL) {\n")
-                        .append("                rollback_exception = observed_exception;\n")
-                        .append("            } else {\n")
-                        .append("                (*env)->DeleteLocalRef(env, observed_exception);\n")
-                        .append("            }\n")
-                        .append("            observed_exception = NULL;\n")
-                        .append("        }\n")
-                        .append("        (*env)->DeleteLocalRef(env, registered_owner_")
-                        .append(index)
-                        .append(");\n")
-                        .append("        registered_owner_")
-                        .append(index)
-                        .append(" = NULL;\n")
-                        .append("    }\n");
-            }
             source.append("    if (rollback_failed) {\n")
                     .append("        if (failure_exception != NULL) {\n")
                     .append("            (*env)->DeleteLocalRef(env, failure_exception);\n")
@@ -212,12 +182,9 @@ public final class HostNativeRegistrationSource {
                     .append("            (*env)->DeleteLocalRef(env, rollback_exception);\n")
                     .append("            rollback_exception = NULL;\n")
                     .append("        }\n");
-            source.append(textEmitter.decodeInto(
-                    rollbackFailureText,
-                    "rollback_failure_text",
-                    "        "));
-            source.append("        (*env)->FatalError(env, rollback_failure_text);\n")
-                    .append("        j2ll_native_text_zero(rollback_failure_text, sizeof(rollback_failure_text));\n")
+            source.append("        ")
+                    .append(failureLeaves.aggregateRollback().symbol())
+                    .append("(env);\n")
                     .append("        return JNI_ERR;\n")
                     .append("    }\n")
                     .append("    if (failure_exception != NULL) {\n")
@@ -225,12 +192,9 @@ public final class HostNativeRegistrationSource {
                     .append("        (*env)->DeleteLocalRef(env, failure_exception);\n")
                     .append("        failure_exception = NULL;\n")
                     .append("        if (throw_status != JNI_OK || !(*env)->ExceptionCheck(env)) {\n");
-            source.append(textEmitter.decodeInto(
-                    exceptionRestoreFailureText,
-                    "exception_restore_failure_text",
-                    "            "));
-            source.append("            (*env)->FatalError(env, exception_restore_failure_text);\n")
-                    .append("            j2ll_native_text_zero(exception_restore_failure_text, sizeof(exception_restore_failure_text));\n")
+            source.append("            ")
+                    .append(failureLeaves.aggregateExceptionRestore().symbol())
+                    .append("(env);\n")
                     .append("            return JNI_ERR;\n")
                     .append("        }\n")
                     .append("    }\n")

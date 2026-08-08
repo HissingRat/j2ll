@@ -1194,7 +1194,8 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

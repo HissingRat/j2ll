@@ -52,6 +52,7 @@ public final class IrMethodValidator {
                         instruction.opcode(),
                         instruction.result().orElse(null),
                         instruction.operands(),
+                        instruction.symbol().orElse(null),
                         location,
                         diagnostics);
                 validateCallIndirection(instruction, location, diagnostics);
@@ -268,6 +269,7 @@ public final class IrMethodValidator {
             IrOpcode opcode,
             IrValue result,
             List<IrValue> operands,
+            String symbol,
             DiagnosticLocation location,
             List<Diagnostic> diagnostics) {
         if (opcode == IrOpcode.CLASS_OBJECT) {
@@ -288,12 +290,31 @@ public final class IrMethodValidator {
             }
             return;
         }
+        if (opcode == IrOpcode.CLASS_INIT_ACTIVE_USE) {
+            if (result != null
+                    || !operands.isEmpty()
+                    || !validFusedActiveUseClassSymbol(symbol)) {
+                diagnostics.add(classInitMismatch(
+                        location,
+                        "IR fused class active-use marker expects an exact class symbol and no result or operands"));
+            }
+            return;
+        }
         if (opcode == IrOpcode.CLASS_INIT_FAILED
                 && (operands.size() != 2
                         || operands.get(0).type() != IrType.REFERENCE
                         || operands.get(1).type() != IrType.REFERENCE)) {
             diagnostics.add(classInitMismatch(location, "IR class initialization failure helper expects class and exception references"));
         }
+    }
+
+    private boolean validFusedActiveUseClassSymbol(String symbol) {
+        return symbol != null
+                && symbol.startsWith("class:L")
+                && symbol.endsWith(";")
+                && symbol.length() > "class:L;".length()
+                && symbol.substring("class:L".length(), symbol.length() - 1)
+                        .indexOf(';') < 0;
     }
 
     private void validateCallIndirection(

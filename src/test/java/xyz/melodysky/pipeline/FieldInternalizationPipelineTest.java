@@ -16,6 +16,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+import xyz.melodysky.analysis.field.FieldId;
+import xyz.melodysky.analysis.field.FieldInternalizationReason;
 import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
@@ -296,6 +299,55 @@ class FieldInternalizationPipelineTest implements Opcodes {
                         .opcode());
     }
 
+    @Test
+    void preparationCoordinatorAnalyzesExactReflectionObserversForFieldPlanning()
+            throws Exception {
+        String constantOwner = "pkg/Constants";
+        String observerOwner = "pkg/Observer";
+        ParsedClass constants = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        constantOwner + ".class",
+                        constantClass(constantOwner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        ParsedClass observer = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        observerOwner + ".class",
+                        reflectionObserverClass(observerOwner, constantOwner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        ParsedProgram program = new ParsedProgram(List.of(constants, observer));
+
+        Path inputJar = temp.resolve("reflection-observer-input.jar");
+        try (JarOutputStream ignored =
+                new JarOutputStream(Files.newOutputStream(inputJar))) {
+            // A valid empty JAR is enough for multi-release entry discovery.
+        }
+        FieldInternalizationPipelineResult result =
+                new FieldInternalizationPreparationCoordinator(
+                                new NativeImplementationPlanner())
+                        .run(
+                                config(inputJar, temp.resolve("missing-reflection-dependency.jar")),
+                                program,
+                                Map.of(),
+                                new NativeRegistrationPlan(List.of()),
+                                List.of(),
+                                Set.of(),
+                                Map.of(),
+                                31L,
+                                WholeProgramAnalysisPolicy.currentJarOnly(
+                                        List.of(WholeProgramAnalysisFeature.FIELD_INTERNALIZATION)));
+
+        var decision = result.plan()
+                .decisionFor(new FieldId(constantOwner, "SECRET", "I"))
+                .orElseThrow();
+        assertFalse(decision.internalized());
+        assertTrue(decision.reasons().contains(
+                FieldInternalizationReason.REFLECTION_DYNAMIC_SURFACE));
+    }
+
     private ResolvedConfig config(Path inputJar, Path missingClasspath) {
         TargetConfig target = TargetConfig.single(TargetTriple.LINUX_X64);
         return new ResolvedConfig(
@@ -384,6 +436,46 @@ class FieldInternalizationPipelineTest implements Opcodes {
         method.visitFieldInsn(GETSTATIC, OWNER, "state", "I");
         method.visitInsn(IRETURN);
         method.visitMaxs(1, (methodAccess & ACC_STATIC) == 0 ? 1 : 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] constantClass(String owner) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, owner, null, "java/lang/Object", null);
+        writer.visitField(
+                        ACC_PRIVATE | ACC_STATIC | ACC_FINAL,
+                        "SECRET",
+                        "I",
+                        null,
+                        Integer.valueOf(41))
+                .visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] reflectionObserverClass(String owner, String targetOwner) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, owner, null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                ACC_PRIVATE | ACC_STATIC,
+                "observe",
+                "()V",
+                null,
+                null);
+        method.visitCode();
+        method.visitLdcInsn(Type.getObjectType(targetOwner));
+        method.visitLdcInsn("SECRET");
+        method.visitMethodInsn(
+                INVOKEVIRTUAL,
+                "java/lang/Class",
+                "getDeclaredField",
+                "(Ljava/lang/String;)Ljava/lang/reflect/Field;",
+                false);
+        method.visitInsn(POP);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
         method.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();

@@ -346,6 +346,48 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
     }
 
     @Test
+    void mergesSingleSitePureCalleeBeyondGeneralInliningSizeLimit() {
+        IrValue input = value("%wideInput", IrType.I32);
+        java.util.ArrayList<IrInstruction> instructions =
+                new java.util.ArrayList<>();
+        IrValue current = input;
+        for (int index = 0; index < 40; index++) {
+            IrValue one = value("%wideOne" + index, IrType.I32);
+            IrValue next = value("%wideSum" + index, IrType.I32);
+            instructions.add(IrInstruction.constInt(one, 1));
+            instructions.add(IrInstruction.binary(
+                    next,
+                    IrOpcode.ADD_I32,
+                    current,
+                    one));
+            current = next;
+        }
+        IrMethod callee = method(
+                "wideHelper",
+                "(I)I",
+                IrType.I32,
+                List.of(input),
+                new IrBlock(
+                        "entry",
+                        instructions,
+                        IrTerminator.returnValue(current)));
+        IrMethod caller = caller("wideEntry", callee, 1);
+
+        NativeOnlyMethodCoalescingResult result =
+                new NativeOnlyMethodCoalescingCoordinator().run(
+                        methods(caller, callee),
+                        internalization(caller, callee),
+                        implementationPlan(caller, callee, Map.of()),
+                        73L);
+
+        assertEquals(1, result.plan().coalescedCount());
+        assertFalse(result.methods().containsKey(callee.methodKey()));
+        assertFalse(hasReference(
+                result.methods().get(caller.methodKey()),
+                callee.methodKey()));
+    }
+
+    @Test
     void rejectsMultipleSitesAndExistingLocalReferencePlans() {
         IrMethod callee = increment("helper");
         IrMethod twoSites = caller("twoSites", callee, 2);
@@ -383,18 +425,24 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
     }
 
     @Test
-    void rejectsThreeLayerCandidateChainsFailClosed() {
+    void mergesFourLayerCandidateChainsIntoOneRootWithoutEmissionResiduals(
+            @TempDir Path workspace) throws Exception {
         IrMethod leaf = increment("leaf");
-        IrMethod middle = caller("middle", leaf, 1);
-        IrMethod entry = caller("entry", middle, 1);
+        IrMethod lowerMiddle = caller("lowerMiddle", leaf, 1);
+        IrMethod upperMiddle = caller("upperMiddle", lowerMiddle, 1);
+        IrMethod entry = caller("entry", upperMiddle, 1);
         NativeImplementationPlan implementations = new NativeImplementationPlan(
                 List.of(
                         implementation(
                                 entry,
                                 MethodRewriteStrategy.NATIVE_ORIGINAL,
-                                List.of(middle.methodKey())),
+                                List.of(upperMiddle.methodKey())),
                         implementation(
-                                middle,
+                                upperMiddle,
+                                MethodRewriteStrategy.INTERNAL_NATIVE_ONLY,
+                                List.of(lowerMiddle.methodKey())),
+                        implementation(
+                                lowerMiddle,
                                 MethodRewriteStrategy.INTERNAL_NATIVE_ONLY,
                                 List.of(leaf.methodKey())),
                         implementation(
@@ -408,30 +456,67 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                         true,
                         WholeProgramAnalysisScope.DECLARED_CLOSED_WORLD,
                         List.of(
-                                internalizationDecision(middle, entry),
-                                internalizationDecision(leaf, middle)));
+                                internalizationDecision(upperMiddle, entry),
+                                internalizationDecision(
+                                        lowerMiddle,
+                                        upperMiddle),
+                                internalizationDecision(leaf, lowerMiddle)));
 
         NativeOnlyMethodCoalescingResult result =
                 new NativeOnlyMethodCoalescingCoordinator().run(
-                        methods(entry, middle, leaf),
+                        methods(entry, upperMiddle, lowerMiddle, leaf),
                         internalization,
                         implementations,
                         73L);
 
-        assertEquals(0, result.plan().coalescedCount());
-        assertEquals(3, result.methods().size());
-        assertEquals(3, result.implementationPlan()
+        assertEquals(3, result.plan().coalescedCount());
+        assertEquals(
+                List.of(entry.methodKey()),
+                result.methods().keySet().stream().toList());
+        assertEquals(1, result.implementationPlan()
                 .emittedLlvmImplementations()
                 .size());
-        assertTrue(result.plan().decisions().stream().anyMatch(decision ->
-                decision.calleeMethodKey().equals(leaf.methodKey())
-                        && decision.reasonCode().equals(
-                                NativeOnlyMethodCoalescingReason
-                                        .CALLER_IS_COALESCING_CANDIDATE)));
-        assertTrue(result.plan().decisions().stream().anyMatch(decision ->
-                decision.calleeMethodKey().equals(middle.methodKey())
-                        && decision.reasonCode().equals(
-                                "METHOD_INLINING_CALL_OR_FIELD_SENSITIVE")));
+        assertEquals(
+                Optional.of(entry.methodKey()),
+                result.plan().coalescedInto(leaf.methodKey()));
+        assertEquals(
+                Optional.of(entry.methodKey()),
+                result.plan().coalescedInto(lowerMiddle.methodKey()));
+        assertEquals(
+                Optional.of(entry.methodKey()),
+                result.plan().coalescedInto(upperMiddle.methodKey()));
+        assertFalse(hasReference(
+                result.methods().get(entry.methodKey()),
+                leaf.methodKey()));
+        assertFalse(hasReference(
+                result.methods().get(entry.methodKey()),
+                lowerMiddle.methodKey()));
+        assertFalse(hasReference(
+                result.methods().get(entry.methodKey()),
+                upperMiddle.methodKey()));
+
+        var compilation = new NativeLlvmCompiler(
+                        new LlvmModuleLowerer(),
+                        new LlvmTextEmitter())
+                .compile(
+                        result.implementationPlan(),
+                        result.methods(),
+                        LlvmProtectionConfig.disabled(73L));
+        NativeOnlyMethodCoalescingEmissionVerifier verifier =
+                new NativeOnlyMethodCoalescingEmissionVerifier();
+        assertTrue(verifier.residuals(
+                result.plan(),
+                result.implementationPlan(),
+                compilation).isEmpty());
+        Path generated = workspace.resolve(
+                "native/zig-workspace/jni/chain.c");
+        Files.createDirectories(generated.getParent());
+        Files.writeString(generated, "void root_only(void) {}\n");
+        assertTrue(verifier.workspaceResiduals(
+                workspace,
+                result.plan(),
+                result.implementationPlan(),
+                compilation).isEmpty());
     }
 
     @Test

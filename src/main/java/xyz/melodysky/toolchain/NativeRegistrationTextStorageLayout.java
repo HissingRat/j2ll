@@ -1,8 +1,9 @@
 package xyz.melodysky.toolchain;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import xyz.melodysky.toolchain.nativetext.NativeTextEncoding;
 
 /** Owner-local decoded registration text layout with no cross-owner sharing. */
@@ -20,41 +21,52 @@ record NativeRegistrationTextStorageLayout(
     }
 
     static NativeRegistrationTextStorageLayout plan(
-            List<NativeRegistrationTextPlan.Binding> bindings) {
-        LinkedHashMap<String, Text> texts = new LinkedHashMap<>();
+            NativeRegistrationTextPlan.Owner owner) {
+        ArrayList<Text> texts = new ArrayList<>();
+        Map<String, Integer> absoluteMemberOffsets = new HashMap<>();
         ArrayList<Binding> offsets = new ArrayList<>();
         int nextOffset = 0;
-        for (NativeRegistrationTextPlan.Binding binding : bindings) {
-            Text name = texts.get(binding.nameText().symbol());
-            if (name == null) {
-                name = new Text(binding.nameText(), nextOffset);
-                texts.put(binding.nameText().symbol(), name);
-                nextOffset = Math.addExact(
-                        nextOffset,
-                        binding.nameText().decodedBufferLength());
+        for (NativeRegistrationTextPlan.TextGroup group
+                : owner.textGroups()) {
+            texts.add(new Text(group.encoding(), nextOffset));
+            for (Map.Entry<String, Integer> member
+                    : group.memberOffsets().entrySet()) {
+                Integer previous = absoluteMemberOffsets.put(
+                        member.getKey(),
+                        Math.addExact(nextOffset, member.getValue()));
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "registration text member appears in more than one owner-local group");
+                }
             }
-            Text descriptor = texts.get(
-                    binding.descriptorText().symbol());
-            if (descriptor == null) {
-                descriptor = new Text(
-                        binding.descriptorText(),
-                        nextOffset);
-                texts.put(
-                        binding.descriptorText().symbol(),
-                        descriptor);
-                nextOffset = Math.addExact(
-                        nextOffset,
-                        binding.descriptorText()
-                                .decodedBufferLength());
-            }
+            nextOffset = Math.addExact(
+                    nextOffset,
+                    group.encoding().decodedBufferLength());
+        }
+        for (NativeRegistrationTextPlan.Binding binding : owner.bindings()) {
             offsets.add(new Binding(
-                    name.offset(),
-                    descriptor.offset()));
+                    requiredOffset(
+                            absoluteMemberOffsets,
+                            binding.nameText().symbol()),
+                    requiredOffset(
+                            absoluteMemberOffsets,
+                            binding.descriptorText().symbol())));
         }
         return new NativeRegistrationTextStorageLayout(
-                List.copyOf(texts.values()),
+                texts,
                 offsets,
                 nextOffset);
+    }
+
+    private static int requiredOffset(
+            Map<String, Integer> offsets,
+            String identitySymbol) {
+        Integer offset = offsets.get(identitySymbol);
+        if (offset == null) {
+            throw new IllegalArgumentException(
+                    "registration text member is absent from its owner-local group");
+        }
+        return offset;
     }
 
     record Text(

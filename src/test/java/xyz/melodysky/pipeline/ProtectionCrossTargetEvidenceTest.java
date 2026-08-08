@@ -42,6 +42,8 @@ class ProtectionCrossTargetEvidenceTest {
             "pkg/NativeState",
             "inlineTarget",
             "indirectIntCaller",
+            "indirectPureIntCaller",
+            "indirectPureLongCaller",
             "splitCandidate",
             "branchCandidate",
             "getCounter",
@@ -134,7 +136,7 @@ class ProtectionCrossTargetEvidenceTest {
                 .getAsJsonObject("methodTableHiding");
         assertEquals("RAN", methodTable.get("status").getAsString());
         assertEquals(2, methodTable.get("ownerCount").getAsInt());
-        assertEquals(19, methodTable.get("bindingCount").getAsInt());
+        assertEquals(23, methodTable.get("bindingCount").getAsInt());
         assertEquals(
                 "ownerLocalTransientStraightLine",
                 methodTable.get("physicalStrategy").getAsString());
@@ -145,7 +147,8 @@ class ProtectionCrossTargetEvidenceTest {
                 .resolve(NativeLibraryName.derive(config.protection().seed()) + ".c");
         String source = Files.readString(generatedC);
         for (String marker : List.of(
-                "JNINativeMethod* methods = NULL",
+                "JNINativeMethod methods_storage[",
+                "JNINativeMethod* methods = methods_storage",
                 "j2ll_native_text_zero(methods",
                 "j2ll_native_field_state",
                 "j2ll_nfs_get_i32",

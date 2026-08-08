@@ -153,12 +153,62 @@ class ProgramProtectionNativeRuntimeE2eTest {
                         return 100 / value;
                     }
 
+                    public static int indirectPureIntTarget(int value, Object marker) {
+                        int result = value * 4;
+                        result += 1;
+                        result += 2;
+                        result += 3;
+                        result += 4;
+                        result += 5;
+                        result += 6;
+                        result += 7;
+                        result += 8;
+                        result -= 8;
+                        result -= 7;
+                        result -= 6;
+                        result -= 5;
+                        result -= 4;
+                        result -= 3;
+                        result -= 2;
+                        result -= 1;
+                        return marker == null ? result : result ^ 0x11111111;
+                    }
+
+                    public static int indirectPureIntCaller(int value) {
+                        return indirectPureIntTarget(value, null) ^ 0x2468ace;
+                    }
+
                     public static int indirectIntCaller(int value) {
                         return indirectIntTarget(value) * 2;
                     }
 
                     public static long indirectLongTarget(long value) {
                         return 120L / value;
+                    }
+
+                    public static long indirectPureLongTarget(long value, Object marker) {
+                        long result = value * 7L + 2L;
+                        result += 1L;
+                        result += 2L;
+                        result += 3L;
+                        result += 4L;
+                        result += 5L;
+                        result += 6L;
+                        result += 7L;
+                        result += 8L;
+                        result -= 8L;
+                        result -= 7L;
+                        result -= 6L;
+                        result -= 5L;
+                        result -= 4L;
+                        result -= 3L;
+                        result -= 2L;
+                        result -= 1L;
+                        return marker == null ? result : result ^ 0x1111111111111111L;
+                    }
+
+                    public static long indirectPureLongCaller(long value) {
+                        return indirectPureLongTarget(value, null) ^ 0x13579bdfL;
                     }
 
                     public static long indirectLongCaller(long value) {
@@ -343,8 +393,12 @@ class ProgramProtectionNativeRuntimeE2eTest {
                 "inlineCaller!(I)I",
                 "indirectIntTarget!(I)I",
                 "indirectIntCaller!(I)I",
+                "indirectPureIntTarget!(ILjava/lang/Object;)I",
+                "indirectPureIntCaller!(I)I",
                 "indirectLongTarget!(J)J",
                 "indirectLongCaller!(J)J",
+                "indirectPureLongTarget!(JLjava/lang/Object;)J",
+                "indirectPureLongCaller!(J)J",
                 "splitCandidate!(II)I",
                 "branchCandidate!(I)I").stream()
                 .map(method -> "pkg/PassOps#" + method)
@@ -417,7 +471,8 @@ class ProgramProtectionNativeRuntimeE2eTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

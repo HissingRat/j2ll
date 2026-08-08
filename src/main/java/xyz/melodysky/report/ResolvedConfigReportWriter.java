@@ -44,6 +44,10 @@ public final class ResolvedConfigReportWriter {
         root.add("targets", targets);
         root.addProperty("embeddedLibraryDirectory", config.embeddedLibraryDirectory());
         root.addProperty("signaturePolicy", config.signaturePolicy().wireName());
+        root.addProperty(
+                "retainUnwindInfoRequested",
+                config.protection().binary().retainUnwindInfo());
+        root.addProperty("debugMode", config.debugMode());
         root.addProperty("protectionSeedMode", config.protection().seedMode().wireName());
         root.addProperty(
                 "protectionSeedHash",

@@ -24,6 +24,8 @@ import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeBinaryPrivacyInspector;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
+import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspection;
+import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspector;
 import xyz.melodysky.toolchain.symbols.SymbolVisibilityPlanner;
 
 class ZigCrossTargetBuildTest {
@@ -45,6 +47,7 @@ class ZigCrossTargetBuildTest {
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
         Files.createDirectories(workspace.jniDirectory());
         Files.createDirectories(workspace.llvmDirectory());
+        Files.createDirectories(workspace.runtimeDirectory());
         Files.createDirectories(workspace.logsDirectory());
         Path wrapper = workspace.jniDirectory().resolve("probe.c");
         List<String> sensitiveMetadata = List.of(
@@ -175,8 +178,13 @@ class ZigCrossTargetBuildTest {
                 "__attribute__((noinline, used))"));
         assertFalse(wrapperSource.contains("optnone"));
         Files.writeString(wrapper, wrapperSource, StandardCharsets.UTF_8);
+        Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
+        Files.writeString(
+                runtime,
+                new HostWindowsDllEntryRuntimeSource().emit("j2ll_probe"),
+                StandardCharsets.UTF_8);
         Path llvm = workspace.llvmDirectory().resolve("probe.ll");
-        Files.writeString(llvm, """
+        String retainedLlvm = """
                 define hidden i32 @j2ll_hidden_llvm(
                         i32 %first,
                         i64 %second,
@@ -189,16 +197,51 @@ class ZigCrossTargetBuildTest {
                   %result = add i32 %partial, %third32
                   ret i32 %result
                 }
-                """, StandardCharsets.UTF_8);
+                """;
+        Files.writeString(llvm, retainedLlvm, StandardCharsets.UTF_8);
+        Path omissionDirectory = workspace.llvmDirectory().resolve("no-unwind");
+        Files.createDirectories(omissionDirectory);
+        Path omissionLlvm = omissionDirectory.resolve("probe.ll");
+        Files.writeString(
+                omissionLlvm,
+                retainedLlvm.replace(
+                        "ptr %fourth) {",
+                        "ptr %fourth) nounwind {"),
+                StandardCharsets.UTF_8);
 
         List<TargetTriple> targets = Arrays.asList(TargetTriple.values());
         NativeBuildPlan plan = new NativeBuildPlanner().plan(temp, "j2ll_probe", targets);
+        NativeLibcRequirementPlan libcRequirement =
+                NativeLibcRequirementPlan.inspectAll(List.of(
+                        wrapperSource,
+                        Files.readString(runtime, StandardCharsets.UTF_8)));
+        assertFalse(libcRequirement.required(), libcRequirement.reasons().toString());
+        List<Path> includeDirectories =
+                new ZigJniHeaderSet().prepare(workspace, libcRequirement);
         ZigSourceSet sources = new ZigSourceSet(
                 List.of(llvm),
-                List.of(wrapper),
+                List.of(wrapper, runtime),
                 List.of(),
-                new ZigJniHeaderSet().prepare(workspace));
-        new ZigBuildWriter().write(workspace, "j2ll_probe", plan, new ZigInputSet(sources));
+                includeDirectories,
+                libcRequirement,
+                new NativeLlvmSourcePlan(List.of(new NativeLlvmSource(
+                        "j2ll/probe",
+                        llvm,
+                        java.util.Optional.of(omissionLlvm),
+                        true,
+                        "LLVM_NATIVE_UNWIND_PROVEN_ABSENT"))));
+        new ZigBuildWriter().write(
+                workspace,
+                "j2ll_probe",
+                plan,
+                new ZigInputSet(sources),
+                true,
+                new NativeUnwindRetentionPolicy(false, false));
+        String manifest = Files.readString(workspace.manifest(), StandardCharsets.UTF_8);
+        assertTrue(manifest.contains(
+                "\"libcDependencyReason\": \"GENERATED_SOURCE_LIBC_FREE\""));
+        assertTrue(manifest.contains(
+                "\"libcDependencyReason\": \"MACOS_PLATFORM_LIBSYSTEM_REQUIRED\""));
         ManagedZig zig = new ManagedZig(
                 zigExecutable,
                 zigExecutable.getParent(),
@@ -224,6 +267,8 @@ class ZigCrossTargetBuildTest {
                 Set.copyOf(completedTargets));
 
         NativeSymbolInspector inspector = new NativeSymbolInspector();
+        NativeUnwindSectionInspector unwindInspector =
+                new NativeUnwindSectionInspector();
         NativeBinaryPrivacyInspector privacyInspector = new NativeBinaryPrivacyInspector();
         String workspacePath = workspace.workspaceRoot().toAbsolutePath().normalize().toString();
         List<String> forbiddenBinaryText = new java.util.ArrayList<>(sensitiveMetadata);
@@ -236,6 +281,7 @@ class ZigCrossTargetBuildTest {
             assertTrue(Files.isRegularFile(unit.outputPath()), unit.outputPath().toString());
             assertTrue(Files.size(unit.outputPath()) > 0, unit.outputPath().toString());
             byte[] binary = Files.readAllBytes(unit.outputPath());
+            assertLibcFree(binary, unit.target());
             for (String forbidden : forbiddenBinaryText.stream().distinct().toList()) {
                 assertEncodedTextAbsent(binary, forbidden, unit.target());
             }
@@ -253,6 +299,15 @@ class ZigCrossTargetBuildTest {
                     exports.stream().anyMatch(symbol -> symbol.startsWith(
                             "j2ll_lab_")),
                     unit.target().directoryName());
+            NativeUnwindSectionInspection unwind =
+                    unwindInspector.inspect(unit.target(), unit.outputPath());
+            if (!unit.target().isWindows()) {
+                assertFalse(
+                        unwind.hasNonEmptyUnwindSection(),
+                        unit.target().directoryName()
+                                + " unwind sections: "
+                                + unwind.sectionSizes());
+            }
             if (unit.target().isWindows()) {
                 NativeBinaryPrivacyInspector.PePrivacyInfo pe = privacyInspector.inspectPe(binary);
                 assertFalse(pe.hasCoffSymbolTable(), unit.target().directoryName() + " COFF symbol table");
@@ -262,6 +317,38 @@ class ZigCrossTargetBuildTest {
                 assertTrue(outputs.noneMatch(path -> path.getFileName().toString().endsWith(".pdb")),
                         unit.target().directoryName());
             }
+        }
+    }
+
+    private void assertLibcFree(byte[] binary, TargetTriple target) {
+        List<String> forbiddenDependencies = switch (target) {
+            case LINUX_X64, LINUX_ARM64 -> List.of("libc.so", "GLIBC_");
+            case WINDOWS_X64, WINDOWS_ARM64 -> List.of(
+                    "msvcrt.dll",
+                    "ucrtbase.dll",
+                    "api-ms-win-crt-");
+            case MACOS_X64, MACOS_ARM64 -> List.of(
+                    "_malloc",
+                    "_calloc",
+                    "_realloc",
+                    "_free",
+                    "_memcpy",
+                    "_memmove",
+                    "_memset");
+        };
+        for (String dependency : forbiddenDependencies) {
+            assertFalse(
+                    NativeBinaryPrivacyInspector.contains(
+                            binary,
+                            dependency.getBytes(StandardCharsets.US_ASCII)),
+                    target.directoryName() + " libc dependency: " + dependency);
+        }
+        if (target.zigOsTag().equals("macos")) {
+            assertTrue(
+                    NativeBinaryPrivacyInspector.contains(
+                            binary,
+                            "/usr/lib/libSystem.B.dylib".getBytes(StandardCharsets.US_ASCII)),
+                    target.directoryName() + " platform libSystem baseline");
         }
     }
 

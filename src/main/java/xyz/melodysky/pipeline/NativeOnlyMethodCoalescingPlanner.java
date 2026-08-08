@@ -5,7 +5,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import xyz.melodysky.analysis.method.NativeMethodInternalizationDecision;
 import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingDecision;
@@ -34,13 +33,6 @@ final class NativeOnlyMethodCoalescingPlanner {
         ArrayList<NativeOnlyMethodCoalescingDecision> kept = new ArrayList<>();
         LinkedHashMap<String, MethodInliningCandidate> candidates =
                 new LinkedHashMap<>();
-        Set<String> singleCallerInternalizedMethods = internalizationPlan
-                .decisions()
-                .stream()
-                .filter(NativeMethodInternalizationDecision::internalized)
-                .filter(decision -> decision.callerMethodKeys().size() == 1)
-                .map(decision -> decision.method().methodKey())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         for (NativeMethodInternalizationDecision decision
                 : internalizationPlan.decisions()) {
             if (!decision.internalized()) {
@@ -58,17 +50,13 @@ final class NativeOnlyMethodCoalescingPlanner {
                 continue;
             }
             String callerKey = onlyCaller.orElseThrow();
-            // Keep the physical owner stable: V1 never creates a
-            // callee -> coalesced caller -> caller chain.
-            if (singleCallerInternalizedMethods.contains(callerKey)) {
-                kept.add(kept(
-                        calleeKey,
-                        onlyCaller,
-                        NativeOnlyMethodCoalescingReason
-                                .CALLER_IS_COALESCING_CANDIDATE));
+            NativeMethodImplementation callee = implementations.get(calleeKey);
+            if (callee != null && callee.coalescedIntoMethodKey().isPresent()) {
+                // A previous bottom-up round already removed this body. The
+                // coordinator retains its decision and rehomes it if its
+                // current physical owner is merged again.
                 continue;
             }
-            NativeMethodImplementation callee = implementations.get(calleeKey);
             if (callee == null
                     || callee.path() != NativeImplementationPath.LLVM_NATIVE_PATH
                     || callee.decision().strategy()

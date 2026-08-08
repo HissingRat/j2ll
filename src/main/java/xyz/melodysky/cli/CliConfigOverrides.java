@@ -25,6 +25,7 @@ final class CliConfigOverrides {
                 config.signaturePolicy(),
                 config.signing(),
                 new IntermediatesConfig(true, true, true, true, true),
-                config.protection());
+                config.protection(),
+                true);
     }
 }

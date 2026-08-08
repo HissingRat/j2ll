@@ -317,7 +317,7 @@ public final class J2llCli {
 
                 options:
                   --config    config file path (default: Config.json)
-                  --debug     write CFG, runtime, SSA, LLVM, and C intermediate artifacts
+                  --debug     write CFG/runtime/SSA/LLVM/C intermediates and retain unwind info
 
                 whole-program features:
                   interactive build may request Y/N approval for current-input-JAR-only analysis;

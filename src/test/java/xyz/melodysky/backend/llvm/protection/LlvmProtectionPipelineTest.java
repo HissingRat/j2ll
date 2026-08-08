@@ -13,7 +13,9 @@ import xyz.melodysky.backend.llvm.model.LlvmFunction;
 import xyz.melodysky.backend.llvm.model.LlvmGlobal;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
+import xyz.melodysky.backend.llvm.model.LlvmModuleEmissionPlan;
 import xyz.melodysky.backend.llvm.model.LlvmModuleValidator;
+import xyz.melodysky.backend.llvm.model.LlvmNativeUnwindSemantics;
 import xyz.melodysky.backend.llvm.model.LlvmParameter;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.backend.llvm.model.LlvmTerminator;
@@ -73,6 +75,9 @@ class LlvmProtectionPipelineTest {
 
         assertTrue(validator.validate(module).isEmpty());
         assertTrue(validator.validate(protectedModule).isEmpty());
+        assertTrue(LlvmModuleEmissionPlan.create(protectedModule)
+                .proof()
+                .omissionSafe());
         assertEquals(
                 List.of("entry", "merge", "right", "left"),
                 protectedModule.functions().get(0).blocks().stream()
@@ -139,10 +144,12 @@ class LlvmProtectionPipelineTest {
                                 LlvmTerminator.gotoBlock("merge")),
                         new LlvmBasicBlock(
                                 "merge",
-                                List.of(xyz.melodysky.backend.llvm.model.LlvmInstruction.raw(
-                                        Optional.of("%selected"),
-                                        "phi i32 [ 1, %left ], [ 2, %right ]")),
-                                new LlvmTerminator(LlvmType.I32, Optional.of("%selected")))));
+                                List.of(xyz.melodysky.backend.llvm.model.LlvmInstruction
+                                        .rawProvenNoNativeUnwind(
+                                                Optional.of("%selected"),
+                                                "phi i32 [ 1, %left ], [ 2, %right ]")),
+                                new LlvmTerminator(LlvmType.I32, Optional.of("%selected")))),
+                LlvmNativeUnwindSemantics.PROVEN_ABSENT);
         return new LlvmModule(
                 "fixture.pipeline",
                 List.of(),

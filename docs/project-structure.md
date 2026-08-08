@@ -107,7 +107,7 @@ xyz.melodysky.toolchain.symbols
 - `CliMode` / `CliOptions`：表达 validate、dry-run 或默认 build，以及 config/debug flags；不承载 pipeline 实现。
 - `CliOptionsParser`：只负责解析 `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`，未传 config 时使用 `Config.json`，未传 mode 时选择 build。
 - `TimestampedWorkspaceAllocator`：为 dry-run/build 在 resolved `outputDirectory` 下原子分配 `build_yyyy-MM-dd_HH-mm-ss[-n]`；validate 不调用它。
-- `CliConfigOverrides`：把 `--debug` 映射为全部 intermediates 开关，不使用全局 system property，也不改变 native debug-symbol policy。
+- `CliConfigOverrides`：把 `--debug` 映射为全部 intermediates 开关和 invocation-level unwind retention override，不使用全局 system property，也不宣称开启 native debug symbols。
 - `CliOutput`：格式化用户可见输出。
 - `SkippedMethodNotice`：把 final plan 中的 skipped methods按 method identity/reason 稳定排序并格式化到 stderr。
 - `SkippedMethodGate`：只负责 invocation-level approval decision 与 lowering diagnostic；默认 programmatic policy fail closed。
@@ -145,7 +145,7 @@ xyz.melodysky.toolchain.symbols
 - `ProtectionConfig`：保护/混淆总配置。
 - `IrProtectionConfig`：SSA IR 保护配置。
 - `LlvmProtectionConfig`：LLVM module model 保护配置。
-- `BinaryProtectionConfig`：binary visibility/strip 配置。
+- `BinaryProtectionConfig`：binary visibility/strip 和 requested final-native unwind retention 配置。
 - `RewriteOptions`：rewrite-only 选项，例如 dumps。
 - `ResolvedConfig`：解析默认值、相对路径、seed、selector 后的稳定配置；`config.resolved.json` 只写 seed hash，不写 raw protection seed。
 
@@ -433,6 +433,16 @@ Program-level field-use facts and the strict `fieldInternalization` plan. This p
 Current classes:
 
 - `FieldUseAnalyzer` / `FieldUseIndex`：scan input and supplied classpath `FieldInsn`, LDC field Handle and invokedynamic/ConstantDynamic bootstrap values, and collect dynamic-observer boundaries.
+- `FieldDynamicObserverAnalyzer` / `FieldObserverMethodAnalyzer`：用独立ASM
+  `SourceValue` dataflow产生exact-field/known-owner/unknown-global观察计划；不回读
+  method-reflection resolver的mutable state。frame access、known-value解析和field provenance
+  分属小型组件，不合并回giant analyzer。无observer call的method不运行
+  frame analysis；source数与resolution step/depth均有有界fail-closed budget，避免大CFG或
+  diamond-copy DAG使producer union/递归无界增长。
+- `FieldBootstrapObserverGate` / `ConstantDynamicFieldReferenceResolver`：前者仅放行
+  exact closed JDK bootstrap tuple，未知/custom bootstrap target全局fail closed；后者
+  共用解析`getStaticFinal`/field-VarHandle目标，并同时为final artifact
+  residual audit提供证据。
 - `FieldDeclarationIndex`：resolve symbolic owner/name/descriptor to the actual JVM field declaration across class/super/interface facts.
 - `FieldAccessSite` / `FieldReferenceKind`：record read/write, direct/handle, method owner and code origin.
 - `FieldDynamicBoundaryDetector`：record reflection、Unsafe、VarHandle、MethodHandle、JNI/native loading、serialization、agent/instrumentation and dynamic-loading surfaces.
@@ -605,6 +615,14 @@ SSA IR 级保护/混淆 pass。完整策略见 `docs/protection-obfuscation.md`�
 - `ProtectionConfig`：enabled、seed，以及 schema v1 中每个 pass 的直接 boolean 开关。
 - `ProtectionRandom`：seeded deterministic random source。
 - `ControlFlowFlatteningPass`
+- `ControlFlowFlatteningRegionPlanner`：从稳定IR选择bounded single-entry/multi-exit、
+  互不重叠的safe regions，不直接改写method。
+- `ControlFlowFlatteningPlan`：一个method的immutable region选择与稳定skip outcome；
+  最多包含4个region。
+- `ControlFlowFlatteningRegion`：一个region的entry、2到32个原始member block与
+  region-local dense state map。
+- `ControlFlowFlatteningRegionRewriter`：保留region entry名称作为外部入口shim，只把
+  region内部edge编码为hash-only body/transition与local dispatcher。
 - `FakeBranchesPass`
 - `BasicBlockSplittingPass`
 - `BlockNameObfuscationPass`
@@ -628,10 +646,16 @@ SSA IR 级保护/混淆 pass。完整策略见 `docs/protection-obfuscation.md`�
 边界：
 
 - `FakeBranchesPass` 与 `BasicBlockSplittingPass` 是独立 pass；前者插入 predicate gate/detour，后者只拆分 eligible block。`BlockNameObfuscationPass` 使用独立、必填的 `blockNameObfuscation` boolean，并同步重映射 terminator、exception edge 和 exception-site handler。
-- `ControlFlowFlatteningPass` 只用 `ProtectionRandom` 对原 block 集生成
-  per-build/per-method dense state permutation，并独立派生 dispatcher default
-  target；`StateVariableAllocator` 不得用 sparse state、额外 table 或扩大状态空间
-  来制造多样性。
+- `ControlFlowFlatteningPass`只消费immutable plan。每个method最多4个互不重叠region，
+  每个region最多32个原始member block；region必须single-entry但可有多个直接进入原
+  region外target的exit。每个dispatcher使用`ProtectionRandom`派生per-build/per-method/
+  per-region dense state permutation与default target，状态范围固定为
+  `[0, regionMemberCount)`；`StateVariableAllocator`不得用sparse state、额外table、
+  跨region共享state或扩大状态空间制造多样性。
+- owned-reference producer、instruction exception site、exception edge/handler、monitor/JMM、
+  class-init敏感block、block parameter/target argument和无法由dispatcher携带的cross-block
+  SSA definition都留在region外并保持原对象/语义。只有至少一个region被真实改写且
+  validator接受时，producer才能为该method写CFF `affected=true`。
 - `FakeBranchesPass` 的无动态参数 constant form 在 protected IR 中有效，但 managed Zig `ReleaseSafe` 可能把它从 native artifact 中优化掉；包结构或报告不得把该形态扩大宣称为稳定 binary opaque branch。
 - 不直接生成 LLVM 文本。
 - 不处理最终 binary symbol strip。
@@ -703,12 +727,18 @@ LLVM IR lowering、LLVM module model、LLVM text emission。
 - `LlvmMetadata`
 - `LlvmModuleValidator`
 - `LlvmTextEmitter`
+- `LlvmNativeUnwindSemantics`
+- `LlvmNativeUnwindAnalyzer`
+- `LlvmNativeUnwindProof`
+- `LlvmModuleEmissionPlan`
+- `LlvmUnwindEmissionMode`
 
 边界：
 
 - model 只覆盖 j2ll 需要生成的 LLVM subset，不追求完整 LLVM parser。
 - text emitter 只打印 model。
 - model 必须支持 stable ordering 和 deterministic dumps。
+- native-unwind proof只遍历final canonical model；function/instruction遗漏evidence或使用opaque raw shape时默认`UNKNOWN`并保留unwind。`LlvmModuleEmissionPlan`必须把proof绑定到同一个model；retained/no-unwind dual text不得来自两份可漂移model或`.ll`文本后处理。
 
 ## backend.llvm.pass
 
@@ -927,6 +957,17 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `ZigBuildWriter`
 - `ZigNativeLibraryBuilder`
 - `ZigJniHeaderSet`
+- `ZigTargetBuildPolicy`
+- `NativeLibcRequirementPlan`
+- `NativeLibcTargetDecision`
+- `NativeUnwindRetentionPolicy`
+- `NativeUnwindRetentionDecision`
+- `NativeLlvmSource`
+- `NativeLlvmSourcePlan`
+- `NativeLlvmUnwindTargetSummary`
+- `NativeUnwindArtifactVerifier`
+- `NativeMachineOutlinerPolicy`
+- `HostWindowsDllEntryRuntimeSource`
 - `ZigBuildInvoker`
 - `ZigArtifactCollector`
 - `ZigSourceSet`
@@ -934,6 +975,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `ZigTargetMatrix`
 - `ZigBuildArtifact`
 - `HostNativeRegistrationSource`
+- `HostNativeRegistrationFailureLeafSource`
+- `NativeRegistrationTextPlan`
 - `NativeRegistrationTextStorageLayout`
 - `NativeRegistrationStoragePlan`
 - `RuntimeHelperReachabilityPlan`
@@ -960,7 +1003,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - target naming：`TargetTriple`。
 - selected/buildable/failed required target capability facts：`NativeBuildTargetPreflight`，包含 required、current host、Zig triple、expected library path/name、failure kind、required capability、platform SDK requirement 和 build log tail，并通过 `ToolchainDiagnostics.ZIG_TARGET_PREFLIGHT` 或 `ToolchainDiagnostics.ZIG_TARGET_UNBUILDABLE` 写入 diagnostics/report。
 - fixed cross-target capability policy：`ManagedZigTargetCapabilities` / `ZigTargetCapability`。Managed Zig `0.15.2` 当前支持 Windows GNU x86_64/AArch64、Linux GNU glibc 2.17 x86_64/AArch64、macOS 10.15 x86_64/11.0 AArch64；非 host 本身不是 failure reason。
-- portable JNI target headers：`ZigJniHeaderSet` 复用 JDK `jni.h` 并生成 target-neutral `jni_md.h`，避免把 host ABI header 带入交叉构建。
+- portable JNI target headers：`ZigJniHeaderSet` 复用 JDK `jni.h` 并生成 target-neutral `jni_md.h`，避免把 host ABI header 带入交叉构建。只有`NativeLibcRequirementPlan`证明最终generated source不需要libc时，才额外生成最小`stdio.h`/`stdlib.h`/`string.h`/`math.h` shadow；需要libc的source set继续使用常规header boundary。
 - workspace paths：`NativeBuildWorkspace`。
 - per-class intermediate paths and collision-safe class directory names：`IntermediateArtifactLayout` / `ClassArtifactPath`。
 - intermediate manifest generation：`IntermediateArtifactIndexWriter` writes `intermediates/intermediates-manifest.json` with config switches, class/method artifact ids and emitted intermediate file SHA-256; it obeys `includeDebugDumps` / `includePerClassIr` / `includePerClassLlvm` / `includePerClassC`.
@@ -969,8 +1012,10 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - Zig archive name/URL/checksum resolution：`ZigArchiveResolver`，固定 Zig `0.15.2`、`https://ziglang.org/download/0.15.2/` 和官方 archive SHA-256 metadata。
 - Zig archive download/extraction：`ZigDownloader` / `ZigArchiveExtractor`，先使用 `<j2ll-home>` 已存在 archive，没有才下载；`ZigArchiveVerifier` 必须在解压前校验 local/downloaded archive SHA-256，失败作为 native/toolchain error；解压后将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
 - Zig build manifest/source generation：`ZigBuildWriter`，为 selected target matrix 生成一个 `build.zig` 和一个 stable manifest；generated C compile unit使用`ReleaseSmall`，per-class LLVM input与final link module保持`ReleaseSafe`。`ZigBuildProgressPlan`将最多64个observable compile unit按source kind同质分组，避免C与LLVM混用optimization mode。`build.zig` 只为当前 preflight 判定 buildable 的 target 生成 install artifact，manifest/report 仍必须列出全部 selected/required target。当前 preflight 无法构建的 required target 进入 `failedTargets`，reason 使用 `ZIG_TARGET_UNBUILDABLE`，并使 pipeline failed。
+- generated-C target policy：`NativeLibcRequirementPlan`从最终C source闭包判定allocation/memory/string libc routine，`NativeLibcTargetDecision`再区分generated-source requirement与platform-effective dependency。libc-free路径使用`-ffreestanding -fno-builtin`、`.link_libc=false`与undefined-symbol fail-closed；Linux/Windows可无libc/CRT dependency，Windows由`HostWindowsDllEntryRuntimeSource`提供显式DLL entry，macOS则明确保留platform-required `libSystem`例外。manifest分开写requirement reasons与每target effective reason。
+- generated/native machine policy：`ZigTargetBuildPolicy`组合`NativeUnwindRetentionPolicy`和`NativeMachineOutlinerPolicy`。Windows因SEH强制保留unwind并禁用machine outliner；`--debug`与config requested retain也强制保留。Linux/macOS requested=false时，generated-C unit使用no-unwind flags；`NativeLlvmSourcePlan`只为final canonical module proof为`PROVEN_ABSENT`的source选择结构化`nounwind`变体，`REQUIRED`/`UNKNOWN`或unmodeled object input保留。C flags和Zig module option都不得被当作会改写`addObjectFile` `.ll`的证据。manifest逐target记录generated-C decision、LLVM omitted/retained counts、unmodeled object count、final omission expectation/reason与outliner policy。machine outliner仍只作用于Linux/macOS generated C，并使用16-byte最低收益阈值。
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。
-- registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextStorageLayout` only reuses equal method-name/descriptor text inside one owner and its purpose domain, never across owners. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB decoded text; larger owners retain heap allocation. Both paths zero the text scratch and `JNINativeMethod[]`, and the heap path then frees them.
+- registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationTextPlan` / `NativeRegistrationTextStorageLayout` reuse equal method-name/descriptor text only inside one owner and purpose domain, then form groups of at most 8 values and 512 decoded bytes; one oversize value owns one group, and no group crosses owner/purpose. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB total decoded text; larger owners retain heap allocation. Both paths zero text scratch and `JNINativeMethod[]`, and the heap path then frees them. `HostNativeRegistrationFailureLeafSource` owns four registration-domain hash-only `noinline,cold` failure leaves whose only argument is `JNIEnv*`; aggregate cleanup/rollback uses activation-local `jclass[]` plus `registered_count` instead of per-owner duplicated root control flow.
 - runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
 - generated-C fragment policy：`HostJniGeneratedCFragmentEmitter`统一执行
   fragment-local sensitive text rewrite，并让
@@ -986,11 +1031,13 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
   `NativeTextStoragePermutationPlanner`派生offset/coprime-stride affine
   bijection并按physical order存放；`NativeTextStoragePermutationCEmitter`只生成
   activation-local constant-size cursor，不生成permutation table、额外cipher byte
-  或副本。`NativeTextCodecCEmitter`只把site-bound family/schedule内联到owning
-  activation，不提供全局decoder。`GeneratedCSensitiveTextObfuscator`将普通
-  sensitive literal按C function和明文分组，在真实use-site首次解码到一个聚合
-  activation-local scratch slot；同一activation复用该slot，不跨function共享
-  encoding/plaintext cache，并通过统一cleanup hook清零所有exit。
+  或副本。`NativeTextCodecCEmitter`只把compact 32-bit site-bound family/schedule内联到
+  owning activation，不提供全局decoder。`NativeTextTupleEncoder`只为同一direct C call
+  argument list建立最多8项/512 decoded bytes的use-coherent tuple，并让每component的
+  derived lane真实参与cipher；单个超长值独占，不生成offset table。
+  `GeneratedCSensitiveTextObfuscator`在真实use-site首次解码，同函数同明文可共享singleton，
+  不同call/assignment/branch保持独立；它不跨function共享tuple/encoding/plaintext cache，
+  并通过统一cleanup hook清零所有exit。
   `NativeScratchZeroizerSource`可在translation unit内提供metadata-free
   `noinline` zeroizer/cleanup callback；它只接收scratch地址/长度，不拥有
   ciphertext/codec/JVM metadata，不能变成共享decoder或plaintext cache。
@@ -1024,6 +1071,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `SymbolVisibilityPlanner`
 - `SymbolAudit`
 - `NativeSymbolInspector`
+- `NativeUnwindSectionInspector`
+- `NativeUnwindSectionInspection`
 - `PeExportTable`
 - `ElfExportTable`
 - `MachOExportTable`
@@ -1044,6 +1093,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - macOS 使用 exported symbols list。
 - Windows 使用 `.def` 或 linker export list；release artifact 不生成或不打包 PDB，并清理 `.pdb`。
 - `NativeSymbolInspector` 按目标格式解析 PE export directory、ELF dynamic symbols 和 Mach-O export trie/symbol table，不依赖 host `nm` 去读取非 host artifact。
+- `NativeUnwindSectionInspector`严格解析ELF64的`.eh_frame`/`.eh_frame_hdr`、PE32+的`.pdata`/`.xdata`和Mach-O64的`__eh_frame`/`__unwind_info`，同时验证目标格式与架构；inspection进入artifact/report evidence。只有target plan证明应完全省略时，`NativeUnwindArtifactVerifier`才把非空section作为blocking failure；保留policy下section存在是合法结果。
 - symbol audit 必须验证每个最终动态库导出符号是对应 platform allowlist 子集，并同时验证 binary format/architecture 与 selected target 一致。
 
 ## Test Structure

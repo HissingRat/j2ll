@@ -2,6 +2,7 @@ package xyz.melodysky.report;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -34,5 +35,22 @@ class ResolvedConfigReportWriterTest {
         assertEquals(2, reported.size());
         assertEquals("fixture/PublicApi#zeta!()V", reported.get(0).getAsString());
         assertEquals("fixture/PublicApi#alpha!(I)I", reported.get(1).getAsString());
+    }
+
+    @Test
+    void recordsRequestedUnwindRetentionAndInvocationDebugMode() throws Exception {
+        Path example = Path.of("docs/examples/minimal-config.json");
+        JsonObject json = JsonParser.parseString(Files.readString(example))
+                .getAsJsonObject();
+        var loaded = new ConfigLoader().load(json, example.getParent());
+        assertFalse(loaded.hasErrors(), loaded.diagnostics().toString());
+
+        JsonObject reported = JsonParser.parseString(new ResolvedConfigReportWriter()
+                        .json(loaded.config().orElseThrow()))
+                .getAsJsonObject();
+
+        assertFalse(reported.get("retainUnwindInfoRequested").getAsBoolean());
+        assertFalse(reported.get("debugMode").getAsBoolean());
+        assertTrue(reported.has("protectionSeedHash"));
     }
 }

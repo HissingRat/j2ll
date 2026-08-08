@@ -153,12 +153,12 @@ public final class LlvmIrCallIndirectionPass {
                 String suffix = hash(function.name() + ":" + block.name() + ":" + siteIndex++, 16);
                 String slot = "%j2ll_irci_slot_" + suffix;
                 String callee = "%j2ll_irci_fn_" + suffix;
-                instructions.add(LlvmInstruction.raw(
+                instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(slot),
                         "getelementptr inbounds [" + group.entries().size()
                                 + " x ptr], ptr @" + group.tableSymbol()
                                 + ", i32 0, i32 " + entryIndex));
-                instructions.add(LlvmInstruction.raw(
+                instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(callee),
                         "load ptr, ptr " + slot));
                 instructions.add(indirectCall(instruction, callee));
@@ -175,7 +175,8 @@ public final class LlvmIrCallIndirectionPass {
                 function.visibility(),
                 function.returnType(),
                 function.parameters(),
-                blocks), true);
+                blocks,
+                function.nativeUnwindSemantics()), true);
     }
 
     private LlvmInstruction indirectCall(LlvmInstruction instruction, String callee) {
@@ -183,7 +184,10 @@ public final class LlvmIrCallIndirectionPass {
         int at = raw.indexOf('@');
         int open = raw.indexOf('(', at);
         String rewritten = raw.substring(0, at) + callee + raw.substring(open);
-        return LlvmInstruction.raw(instruction.result(), rewritten);
+        return LlvmInstruction.raw(
+                instruction.result(),
+                rewritten,
+                instruction.nativeUnwindSemantics());
     }
 
     private LlvmGlobal tableGlobal(GroupPlan group) {

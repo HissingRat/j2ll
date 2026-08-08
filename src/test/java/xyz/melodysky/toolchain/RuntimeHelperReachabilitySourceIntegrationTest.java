@@ -121,6 +121,9 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 "j2ll_var_handle_method_handle"));
         assertFalse(pruned.contains(
                 "j2ll_parameter_array_for_descriptor"));
+        assertFalse(
+                NativeLibcRequirementPlan.inspect(pruned).required(),
+                "the exact scalar production surface should not retain libc");
         assertTrue(pruned.contains("RegisterNatives"));
         assertTrue(pruned.contains("JNI_OnLoad"));
         assertTrue(pruned.contains(

@@ -66,6 +66,10 @@ final class HostJniReflectionRuntimeSourceTest {
                 "native local ABI integrity check failed"));
         assertFalse(generated.contains("getContextClassLoader"));
         assertFalse(generated.contains("currentThread"));
+        assertFalse(generated.contains("strlen("));
+        assertFalse(generated.contains("malloc("));
+        assertFalse(generated.contains("free("));
+        assertFalse(generated.contains("j2ll_dotted_class_name"));
         assertFalse(generated.contains("j2ll_reflection_method_table"));
         assertFalse(generated.contains("j2ll_reflection_field_table"));
         assertFalse(generated.contains("j2ll_find_reflection"));

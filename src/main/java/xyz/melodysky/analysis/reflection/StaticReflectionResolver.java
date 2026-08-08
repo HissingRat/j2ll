@@ -355,11 +355,11 @@ public final class StaticReflectionResolver implements Opcodes {
                     builder);
             return Optional.empty();
         }
-        Optional<FieldMetadata> target = metadataIndex.findClass(owner.orElseThrow()).stream()
+        List<FieldMetadata> targets = metadataIndex.findClass(owner.orElseThrow()).stream()
                 .flatMap(clazz -> clazz.fields().stream())
                 .filter(field -> field.name().equals(name.orElseThrow()))
-                .findFirst();
-        if (target.isEmpty()) {
+                .toList();
+        if (targets.isEmpty()) {
             recordUnsupportedSite(
                     currentMethod,
                     instructionIndex,
@@ -368,14 +368,17 @@ public final class StaticReflectionResolver implements Opcodes {
                     builder);
             return Optional.empty();
         }
-        FieldMetadata field = target.orElseThrow();
-        ReflectionFieldTarget fieldTarget = new ReflectionFieldTarget(
-                field.owner(),
-                field.name(),
-                field.descriptor(),
-                sourceSite(currentMethod, instructionIndex, "getDeclaredField"));
-        builder.fieldTargets.add(fieldTarget);
-        return Optional.of(ReflectionValue.fieldValue(fieldTarget));
+        List<ReflectionFieldTarget> fieldTargets = targets.stream()
+                .map(field -> new ReflectionFieldTarget(
+                        field.owner(),
+                        field.name(),
+                        field.descriptor(),
+                        sourceSite(currentMethod, instructionIndex, "getDeclaredField")))
+                .toList();
+        builder.fieldTargets.addAll(fieldTargets);
+        return fieldTargets.size() == 1
+                ? Optional.of(ReflectionValue.fieldValue(fieldTargets.get(0)))
+                : Optional.empty();
     }
 
     private Optional<ReflectionValue> handleGetDeclaredConstructor(
@@ -530,9 +533,12 @@ public final class StaticReflectionResolver implements Opcodes {
     }
 
     private void handleUnknownInstruction(int opcode, ArrayDeque<ReflectionValue> stack) {
-        if (opcode >= IRETURN && opcode <= RETURN) {
-            stack.clear();
-        }
+        // This resolver intentionally models only the small reflection-constant
+        // subset above. Retaining an abstract operand across any other opcode
+        // can misattribute a later Class/Field receiver after an unmodelled
+        // push, pop, or stack permutation. Losing precision is safe here;
+        // inventing an exact reflection target is not.
+        stack.clear();
     }
 
     private ReflectionValue popOrUnknown(ArrayDeque<ReflectionValue> stack) {

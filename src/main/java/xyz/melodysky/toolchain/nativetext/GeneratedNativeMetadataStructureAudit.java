@@ -27,6 +27,8 @@ final class GeneratedNativeMetadataStructureAudit {
             "ADJACENT_NATIVE_TEXT_SEED_CIPHER";
     static final String OPTIMIZER_FOLDABLE_NATIVE_TEXT =
             "OPTIMIZER_FOLDABLE_NATIVE_TEXT";
+    static final String CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE =
+            "CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE";
 
     private static final int BULK_DECODER_ARRAY_THRESHOLD = 8;
     private static final Pattern LEGACY_TABLE_NAME = Pattern.compile(
@@ -51,6 +53,8 @@ final class GeneratedNativeMetadataStructureAudit {
             "\\bstatic\\s+void\\s+"
                     + "(j2ll_gcf_(?:low_)?decode_[0-9a-f]+)"
                     + "\\s*\\([^)]*\\)\\s*\\{");
+    private static final Pattern TUPLE_USE = Pattern.compile(
+            "\\bj2ll_nt_use_([0-9a-f]{24})\\s*\\(\\s*\\)");
 
     List<GeneratedNativeHardeningFinding> inspect(String structural) {
         ArrayList<GeneratedNativeHardeningFinding> findings =
@@ -68,7 +72,47 @@ final class GeneratedNativeMetadataStructureAudit {
         inspectTokenStructs(structural, findings);
         inspectDecoders(structural, findings);
         inspectCodecStructure(structural, findings);
+        inspectTupleUseScope(structural, findings);
         return findings;
+    }
+
+    private void inspectTupleUseScope(
+            String structural,
+            List<GeneratedNativeHardeningFinding> findings) {
+        List<GeneratedCFragmentLexer.FunctionBody> functions;
+        try {
+            functions = new GeneratedCFragmentLexer()
+                    .scan(structural)
+                    .functionBodies();
+        } catch (IllegalArgumentException ignored) {
+            // Syntax/shape validation belongs to the generated-C compiler
+            // boundary. This audit only adds a finding when ownership can be
+            // proven from a structurally valid function layout.
+            return;
+        }
+        java.util.HashMap<String, Integer> ownerByTuple =
+                new java.util.HashMap<>();
+        for (int functionIndex = 0;
+                functionIndex < functions.size();
+                functionIndex++) {
+            GeneratedCFragmentLexer.FunctionBody function =
+                    functions.get(functionIndex);
+            Matcher uses = TUPLE_USE.matcher(structural);
+            uses.region(function.start(), function.end());
+            while (uses.find()) {
+                Integer previous = ownerByTuple.putIfAbsent(
+                        uses.group(1),
+                        functionIndex);
+                if (previous != null && previous != functionIndex) {
+                    findings.add(finding(
+                            CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE,
+                            structural,
+                            uses.start(),
+                            "one activation-local native-text tuple is referenced from multiple C functions"));
+                    return;
+                }
+            }
+        }
     }
 
     private void inspectCodecStructure(

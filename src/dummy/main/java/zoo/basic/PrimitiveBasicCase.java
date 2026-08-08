@@ -29,7 +29,11 @@ public final class PrimitiveBasicCase implements Case {
     }
 
     public static int simpleInt(int left, int right) {
-        return publicStaticLeaf(((left + right) * 3) - (7 << 2));
+        return publicStaticMiddle(((left + right) * 3) - (7 << 2));
+    }
+
+    public static int publicStaticMiddle(int value) {
+        return publicStaticLeaf(value);
     }
 
     public static int publicStaticLeaf(int value) {

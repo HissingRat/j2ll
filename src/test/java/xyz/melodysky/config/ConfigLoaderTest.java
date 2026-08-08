@@ -31,6 +31,7 @@ class ConfigLoaderTest {
         assertFalse(config.protection().ir().methodInternalization());
         assertTrue(config.protection().ir().publicMethodInternalizationAllowList().isEmpty());
         assertTrue(config.protection().ir().blockNameObfuscation());
+        assertFalse(config.protection().binary().retainUnwindInfo());
         assertNotNull(config.protection().seed());
         assertEquals(64, config.protection().seed().length());
         assertEquals(ProtectionSeedMode.RANDOMIZED, config.protection().seedMode());
@@ -113,6 +114,36 @@ class ConfigLoaderTest {
         assertTrue(result.diagnostics().stream()
                 .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
                         && diagnostic.message().contains("intermediates.includePerClassC")));
+    }
+
+    @Test
+    void rejectsMissingRequiredRetainUnwindInfo() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("binary")
+                .remove("retainUnwindInfo");
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.MISSING_REQUIRED_FIELD)
+                        && diagnostic.message().contains("protection.binary.retainUnwindInfo")));
+    }
+
+    @Test
+    void rejectsNonBooleanRetainUnwindInfo() {
+        JsonObject json = JsonParser.parseString(baseJson()).getAsJsonObject();
+        json.getAsJsonObject("protection")
+                .getAsJsonObject("binary")
+                .addProperty("retainUnwindInfo", "false");
+
+        ConfigLoadResult result = new ConfigLoader().load(json, Path.of("/cfg"));
+
+        assertTrue(result.hasErrors());
+        assertTrue(result.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.code().equals(ConfigDiagnostics.INVALID_FIELD_VALUE)
+                        && diagnostic.message().contains("protection.binary.retainUnwindInfo")));
     }
 
     @Test
@@ -494,7 +525,8 @@ class ConfigLoaderTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

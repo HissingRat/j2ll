@@ -39,13 +39,31 @@ public final class FieldUseAnalyzer {
         Objects.requireNonNull(inputProgram, "inputProgram");
         classpathPrograms = List.copyOf(Objects.requireNonNull(classpathPrograms, "classpathPrograms"));
         FieldDeclarationIndex declarations = FieldDeclarationIndex.create(inputProgram, classpathPrograms);
+        FieldObserverDeclarationIndex observerDeclarations =
+                FieldObserverDeclarationIndex.create(inputProgram, classpathPrograms);
         HashMap<FieldId, List<FieldAccessSite>> accesses = new HashMap<>();
         ArrayList<UnresolvedFieldReference> unresolved = new ArrayList<>();
         HashSet<FieldDynamicBoundary> boundaries = new HashSet<>();
+        ArrayList<FieldDynamicObservation> bootstrapObservations = new ArrayList<>();
 
         for (FieldDeclarationIndex.ClassFact classFact : declarations.allClasses()) {
-            scanClass(classFact, declarations, accesses, unresolved, boundaries);
+            scanClass(
+                    classFact,
+                    declarations,
+                    observerDeclarations,
+                    accesses,
+                    unresolved,
+                    boundaries,
+                    bootstrapObservations);
         }
+
+        ArrayList<FieldDynamicObservation> allObservations = new ArrayList<>(
+                new FieldDynamicObserverAnalyzer()
+                        .analyze(inputProgram, classpathPrograms)
+                        .observations());
+        allObservations.addAll(bootstrapObservations);
+        FieldDynamicObservationPlan observationPlan =
+                new FieldDynamicObservationPlan(allObservations);
 
         return new FieldUseIndex(
                 declarations.inputBaseFields(),
@@ -55,15 +73,18 @@ public final class FieldUseAnalyzer {
                 declarations.ownersWithClassInitializer(),
                 declarations.serializableOwners(),
                 List.copyOf(boundaries),
-                unresolved);
+                unresolved,
+                observationPlan);
     }
 
     private void scanClass(
             FieldDeclarationIndex.ClassFact classFact,
             FieldDeclarationIndex declarations,
+            FieldObserverDeclarationIndex observerDeclarations,
             Map<FieldId, List<FieldAccessSite>> accesses,
             List<UnresolvedFieldReference> unresolved,
-            Set<FieldDynamicBoundary> boundaries) {
+            Set<FieldDynamicBoundary> boundaries,
+            List<FieldDynamicObservation> bootstrapObservations) {
         ParsedClass parsedClass = classFact.parsedClass();
         for (ParsedMethod method : parsedClass.methods()) {
             if (method.accessFlags().isNative()) {
@@ -99,25 +120,34 @@ public final class FieldUseAnalyzer {
                     scanDynamicValue(
                             ldc.cst,
                             declarations,
+                            observerDeclarations,
                             accesses,
                             unresolved,
                             method,
                             classFact.origin(),
                             instructionIndex,
                             false,
-                            boundaries);
+                            boundaries,
+                            bootstrapObservations);
                 } else if (instruction instanceof InvokeDynamicInsnNode invokedynamic) {
+                    observeBootstrapTarget(
+                            invokedynamic.bsm,
+                            method,
+                            instructionIndex,
+                            bootstrapObservations);
                     for (Object bootstrapArgument : invokedynamic.bsmArgs) {
                         scanDynamicValue(
                                 bootstrapArgument,
                                 declarations,
+                                observerDeclarations,
                                 accesses,
                                 unresolved,
                                 method,
                                 classFact.origin(),
                                 instructionIndex,
                                 true,
-                                boundaries);
+                                boundaries,
+                                bootstrapObservations);
                     }
                 }
                 instructionIndex++;
@@ -128,15 +158,29 @@ public final class FieldUseAnalyzer {
     private void scanDynamicValue(
             Object value,
             FieldDeclarationIndex declarations,
+            FieldObserverDeclarationIndex observerDeclarations,
             Map<FieldId, List<FieldAccessSite>> accesses,
             List<UnresolvedFieldReference> unresolved,
             ParsedMethod method,
             FieldCodeOrigin origin,
             int instructionIndex,
             boolean bootstrapArgument,
-            Set<FieldDynamicBoundary> boundaries) {
+            Set<FieldDynamicBoundary> boundaries,
+            List<FieldDynamicObservation> bootstrapObservations) {
         if (value instanceof Handle handle) {
             if (!isFieldHandle(handle)) {
+                (bootstrapArgument
+                                ? new FieldBootstrapObserverGate()
+                                        .unsafeBootstrapArgument(handle, observerDeclarations)
+                                : new IndirectFieldObserverClassifier()
+                                        .classify(
+                                                handle.getOwner(),
+                                                handle.getName()))
+                        .ifPresent(kind -> bootstrapObservations.add(
+                                FieldDynamicObservation.global(
+                                        kind,
+                                        method.methodKey(),
+                                        instructionIndex)));
                 return;
             }
             boundaries.add(new FieldDynamicBoundary(
@@ -157,19 +201,108 @@ public final class FieldUseAnalyzer {
                     instructionIndex,
                     bootstrapArgument);
         } else if (value instanceof ConstantDynamic constantDynamic) {
+            observeBootstrapTarget(
+                    constantDynamic.getBootstrapMethod(),
+                    method,
+                    instructionIndex,
+                    bootstrapObservations);
+            scanConstantBootstrapField(
+                    constantDynamic,
+                    declarations,
+                    accesses,
+                    unresolved,
+                    method,
+                    origin,
+                    instructionIndex,
+                    bootstrapObservations);
             for (int index = 0; index < constantDynamic.getBootstrapMethodArgumentCount(); index++) {
                 scanDynamicValue(
                         constantDynamic.getBootstrapMethodArgument(index),
                         declarations,
+                        observerDeclarations,
                         accesses,
                         unresolved,
                         method,
                         origin,
                         instructionIndex,
                         true,
-                        boundaries);
+                        boundaries,
+                        bootstrapObservations);
             }
         }
+    }
+
+    private void scanConstantBootstrapField(
+            ConstantDynamic constantDynamic,
+            FieldDeclarationIndex declarations,
+            Map<FieldId, List<FieldAccessSite>> accesses,
+            List<UnresolvedFieldReference> unresolved,
+            ParsedMethod method,
+            FieldCodeOrigin origin,
+            int instructionIndex,
+            List<FieldDynamicObservation> observations) {
+        ConstantDynamicFieldReferenceResolver.Resolution resolution =
+                new ConstantDynamicFieldReferenceResolver().resolve(
+                        method.owner(),
+                        constantDynamic);
+        if (!resolution.fieldBootstrap()) {
+            return;
+        }
+        if (resolution.target().isEmpty()) {
+            observations.add(FieldDynamicObservation.global(
+                    resolution.observerKind(),
+                    method.methodKey(),
+                    instructionIndex));
+            return;
+        }
+
+        FieldId symbolicTarget = resolution.target().orElseThrow();
+        java.util.Optional<xyz.melodysky.frontend.classfile.ParsedField> resolved =
+                declarations.resolve(
+                        symbolicTarget.owner(),
+                        symbolicTarget.name(),
+                        symbolicTarget.descriptor());
+        recordReference(
+                declarations,
+                accesses,
+                unresolved,
+                method,
+                origin,
+                symbolicTarget.owner(),
+                symbolicTarget.name(),
+                symbolicTarget.descriptor(),
+                resolution.staticField()
+                        ? FieldReferenceKind.METHOD_HANDLE_STATIC_READ
+                        : FieldReferenceKind.METHOD_HANDLE_INSTANCE_READ,
+                instructionIndex,
+                true);
+        if (resolved.isPresent()) {
+            var field = resolved.orElseThrow();
+            observations.add(FieldDynamicObservation.exact(
+                    resolution.observerKind(),
+                    new FieldId(field.owner(), field.name(), field.descriptor()),
+                    method.methodKey(),
+                    instructionIndex));
+        } else {
+            observations.add(FieldDynamicObservation.owner(
+                    resolution.observerKind(),
+                    symbolicTarget.owner(),
+                    method.methodKey(),
+                    instructionIndex));
+        }
+    }
+
+    private void observeBootstrapTarget(
+            Handle bootstrap,
+            ParsedMethod method,
+            int instructionIndex,
+            List<FieldDynamicObservation> observations) {
+        new FieldBootstrapObserverGate()
+                .unsafeBootstrapTarget(bootstrap)
+                .ifPresent(kind -> observations.add(FieldDynamicObservation.global(
+                        kind,
+                        method.methodKey(),
+                        instructionIndex)));
     }
 
     private void detectBoundaries(
@@ -272,4 +405,5 @@ public final class FieldUseAnalyzer {
             return OTHER;
         }
     }
+
 }

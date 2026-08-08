@@ -2,7 +2,9 @@ package xyz.melodysky.toolchain;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
+import xyz.melodysky.backend.llvm.model.LlvmModuleEmissionPlan;
 import xyz.melodysky.backend.llvm.protection.LlvmBlockLayoutPerturbationResult;
 import xyz.melodysky.backend.llvm.protection.LlvmCallIndirectionResult;
 import xyz.melodysky.backend.llvm.protection.LlvmGlobalLayoutResult;
@@ -26,7 +28,9 @@ public record NativeLlvmModuleCompilation(
         LlvmIrCallIndirectionResult irCallIndirection,
         LlvmCallIndirectionResult llvmCallIndirection,
         LlvmGlobalLayoutResult globalLayout,
-        String llvmText) {
+        LlvmModuleEmissionPlan emissionPlan,
+        String llvmText,
+        Optional<String> llvmTextWithoutUnwind) {
     public NativeLlvmModuleCompilation {
         Objects.requireNonNull(owner, "owner");
         registeredMethods = List.copyOf(
@@ -39,7 +43,17 @@ public record NativeLlvmModuleCompilation(
         Objects.requireNonNull(irCallIndirection, "irCallIndirection");
         Objects.requireNonNull(llvmCallIndirection, "llvmCallIndirection");
         Objects.requireNonNull(globalLayout, "globalLayout");
+        Objects.requireNonNull(emissionPlan, "emissionPlan");
         Objects.requireNonNull(llvmText, "llvmText");
+        Objects.requireNonNull(llvmTextWithoutUnwind, "llvmTextWithoutUnwind");
+        if (emissionPlan.module() != globalLayout.module()) {
+            throw new IllegalArgumentException(
+                    "LLVM emission plan must bind the final global-layout module instance");
+        }
+        if (emissionPlan.proof().omissionSafe() != llvmTextWithoutUnwind.isPresent()) {
+            throw new IllegalArgumentException(
+                    "LLVM omission text must match the final module proof");
+        }
     }
 
     public NativeLlvmModuleCompilation(
@@ -62,10 +76,29 @@ public record NativeLlvmModuleCompilation(
                 irCallIndirection,
                 llvmCallIndirection,
                 globalLayout,
-                llvmText);
+                emissionPlan(globalLayout),
+                llvmText,
+                omissionText(globalLayout));
     }
 
     public LlvmModule module() {
         return globalLayout.module();
+    }
+
+    private static LlvmModuleEmissionPlan emissionPlan(
+            LlvmGlobalLayoutResult globalLayout) {
+        return LlvmModuleEmissionPlan.create(globalLayout.module());
+    }
+
+    private static Optional<String> omissionText(
+            LlvmGlobalLayoutResult globalLayout) {
+        LlvmModuleEmissionPlan plan = emissionPlan(globalLayout);
+        return plan.proof().omissionSafe()
+                ? Optional.of(new xyz.melodysky.backend.llvm.model.LlvmTextEmitter()
+                        .emit(
+                                plan,
+                                xyz.melodysky.backend.llvm.model.LlvmUnwindEmissionMode
+                                        .OMIT_PROVEN))
+                : Optional.empty();
     }
 }

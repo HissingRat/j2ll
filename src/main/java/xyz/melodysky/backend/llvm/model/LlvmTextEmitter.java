@@ -4,6 +4,21 @@ import java.util.stream.Collectors;
 
 public final class LlvmTextEmitter {
     public String emit(LlvmModule module) {
+        return emit(LlvmModuleEmissionPlan.create(module), LlvmUnwindEmissionMode.RETAIN);
+    }
+
+    public String emit(
+            LlvmModuleEmissionPlan plan,
+            LlvmUnwindEmissionMode unwindMode) {
+        java.util.Objects.requireNonNull(plan, "plan");
+        java.util.Objects.requireNonNull(unwindMode, "unwindMode");
+        if (unwindMode == LlvmUnwindEmissionMode.OMIT_PROVEN
+                && !plan.proof().omissionSafe()) {
+            throw new IllegalStateException(
+                    "cannot omit LLVM unwind information: "
+                            + plan.proof().reasonCode());
+        }
+        LlvmModule module = plan.module();
         StringBuilder output = new StringBuilder();
         output.append("; ModuleID = '").append(module.identifier()).append("'\n");
         for (LlvmDeclaration declaration : module.declarations()) {
@@ -37,7 +52,11 @@ public final class LlvmTextEmitter {
                     .append(function.parameters().stream()
                             .map(parameter -> parameter.type().text() + " " + parameter.name())
                             .collect(Collectors.joining(", ")))
-                    .append(") {\n");
+                    .append(')');
+            if (unwindMode == LlvmUnwindEmissionMode.OMIT_PROVEN) {
+                output.append(" nounwind");
+            }
+            output.append(" {\n");
             for (LlvmBasicBlock block : function.blocks()) {
                 output.append(block.name()).append(":\n");
                 for (LlvmInstruction instruction : block.instructions()) {

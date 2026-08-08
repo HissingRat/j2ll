@@ -157,7 +157,8 @@ public final class BasicBlockSplittingPass implements ProtectionPass {
                 || opcode == IrOpcode.CLASS_INIT_BEGIN
                 || opcode == IrOpcode.CLASS_INIT_END
                 || opcode == IrOpcode.CLASS_INIT_FAILED
-                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
+                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                || opcode == IrOpcode.CLASS_INIT_ACTIVE_USE;
     }
 
     private record SplitCandidate(IrBlock block, List<Integer> boundaries) {}

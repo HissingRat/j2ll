@@ -1,6 +1,7 @@
 package xyz.melodysky.toolchain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -22,6 +23,91 @@ import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 final class HostNativeRegistrationRollbackExecutionTest {
     @TempDir
     Path temp;
+
+    @Test
+    void zeroOwnerSourceCompilesAndOnLoadReturnsTheSupportedJniVersion()
+            throws Exception {
+        Path clang = findClang().orElse(null);
+        assumeTrue(clang != null, "clang is required for the zero-owner registration test");
+        assumeTrue(
+                Files.isRegularFile(
+                        Path.of(System.getProperty("java.home")).resolve("include/jni.h")),
+                "JDK JNI headers are required for the zero-owner registration test");
+
+        NativeRegistrationPlan plan = new NativeRegistrationPlan(List.of());
+        String registration = new HostNativeRegistrationSource().emit(
+                plan,
+                new MethodTableHidingPlanner().plan(plan, false, 0L),
+                NativeTextBuildKey.fromUtf8("zero-owner-registration"));
+        assertTrue(registration.contains("return JNI_VERSION_1_8;"));
+        assertFalse(registration.contains("registered_owners["));
+        assertFalse(registration.contains("UnregisterNatives(env"));
+
+        String harness = """
+                #include <jni.h>
+                #include <stdint.h>
+                #include <stdlib.h>
+
+                static JNIEnv fake_env = NULL;
+                static jint JNICALL fake_get_env(
+                        JavaVM* vm, void** result, jint version) {
+                    (void)vm;
+                    if (version != JNI_VERSION_1_8) {
+                        return JNI_EVERSION;
+                    }
+                    *result = (void*)&fake_env;
+                    return JNI_OK;
+                }
+                static struct JNIInvokeInterface_ fake_vm_table = {
+                    .GetEnv = fake_get_env,
+                };
+                static JavaVM fake_vm = &fake_vm_table;
+
+                """
+                + registration
+                + """
+
+                int main(void) {
+                    return JNI_OnLoad(&fake_vm, NULL) == JNI_VERSION_1_8
+                            ? 0
+                            : 1;
+                }
+                """;
+
+        Path include = new ZigJniHeaderSet()
+                .prepare(ZigBuildWorkspace.under(temp.resolve("zero-owner")))
+                .get(0);
+        Path source = temp.resolve("zero_owner_registration.c");
+        Path executable = temp.resolve(isWindows()
+                ? "zero_owner_registration.exe"
+                : "zero_owner_registration");
+        Files.writeString(source, harness, StandardCharsets.UTF_8);
+
+        Process compile = new ProcessBuilder(
+                        clang.toString(),
+                        "-std=c11",
+                        "-I",
+                        include.toString(),
+                        source.toString(),
+                        "-o",
+                        executable.toString())
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(compile.waitFor(45, TimeUnit.SECONDS), "clang compile timed out");
+        String compileOutput = new String(
+                compile.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertEquals(0, compile.exitValue(), compileOutput);
+
+        Process run = new ProcessBuilder(executable.toString())
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(run.waitFor(15, TimeUnit.SECONDS), "zero-owner harness timed out");
+        String runOutput = new String(
+                run.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertEquals(0, run.exitValue(), runOutput);
+    }
 
     @Test
     void rollbackChecksJniStatusAndFailsClosedWithoutAnException()

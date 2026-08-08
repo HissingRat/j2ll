@@ -70,6 +70,9 @@ public final class NativeFieldInternalizationPlanner {
             if (useIndex.hasUnresolvedReferenceForOwner(fieldId.owner())) {
                 reasons.add(FieldInternalizationReason.UNRESOLVED_FIELD_REFERENCE);
             }
+            addDynamicObservationReasons(
+                    useIndex.dynamicObserverKindsFor(fieldId),
+                    reasons);
             if (constantCandidate) {
                 addConstantDeclarationReasons(
                         useIndex,
@@ -316,6 +319,16 @@ public final class NativeFieldInternalizationPlanner {
             String owner,
             Set<FieldInternalizationReason> reasons) {
         for (FieldDynamicBoundary boundary : useIndex.dynamicBoundariesForOwner(owner)) {
+            if (boundary.kind() == FieldDynamicBoundaryKind.REFLECTION
+                    || boundary.kind() == FieldDynamicBoundaryKind.UNSAFE
+                    || boundary.kind() == FieldDynamicBoundaryKind.VAR_HANDLE
+                    || boundary.kind() == FieldDynamicBoundaryKind.METHOD_HANDLE
+                    || boundary.kind() == FieldDynamicBoundaryKind.NATIVE_JNI
+                    || boundary.kind() == FieldDynamicBoundaryKind.AGENT_INSTRUMENTATION) {
+                // Target precision and unknown/global fallback for these
+                // observer families comes from FieldDynamicObservationPlan.
+                continue;
+            }
             if (boundary.kind() == FieldDynamicBoundaryKind.DYNAMIC_CLASS_LOADING) {
                 // Loading or defining a class is not itself a field
                 // observation. Actual direct/handle field references and
@@ -336,6 +349,23 @@ public final class NativeFieldInternalizationPlanner {
         }
         if (useIndex.isSerializableOwner(owner)) {
             reasons.add(FieldInternalizationReason.OWNER_IS_SERIALIZABLE);
+        }
+    }
+
+    private void addDynamicObservationReasons(
+            Set<FieldDynamicBoundaryKind> observerKinds,
+            Set<FieldInternalizationReason> reasons) {
+        for (FieldDynamicBoundaryKind kind : observerKinds) {
+            reasons.add(switch (kind) {
+                case REFLECTION -> FieldInternalizationReason.REFLECTION_DYNAMIC_SURFACE;
+                case UNSAFE -> FieldInternalizationReason.UNSAFE_DYNAMIC_SURFACE;
+                case VAR_HANDLE -> FieldInternalizationReason.VAR_HANDLE_DYNAMIC_SURFACE;
+                case METHOD_HANDLE -> FieldInternalizationReason.METHOD_HANDLE_DYNAMIC_SURFACE;
+                case NATIVE_JNI -> FieldInternalizationReason.NATIVE_JNI_DYNAMIC_SURFACE;
+                case SERIALIZATION -> FieldInternalizationReason.SERIALIZATION_DYNAMIC_SURFACE;
+                case AGENT_INSTRUMENTATION -> FieldInternalizationReason.AGENT_INSTRUMENTATION_DYNAMIC_SURFACE;
+                case DYNAMIC_CLASS_LOADING -> FieldInternalizationReason.DYNAMIC_CLASS_LOADING_SURFACE;
+            });
         }
     }
 

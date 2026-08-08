@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
+import xyz.melodysky.protection.audit.HashOnlyEvidence;
 import xyz.melodysky.testsupport.FakeManagedZig;
 import xyz.melodysky.testsupport.dummy.DummyReportAsserter;
 import xyz.melodysky.toolchain.HostPlatform;
@@ -93,6 +94,12 @@ class DummyE2eTest {
             assertBigEndianIntFrameIntrinsicEvidence(
                     workspace.resolve("reports/lowering-report.json"),
                     failures);
+            assertControlFlowFlatteningEvidence(
+                    workspace.resolve("reports/protection-report.json"),
+                    failures,
+                    List.of(
+                            "zoo/basic/ControlFlowBasicCase#regionAroundOwnedBoundary!(I[Ljava/lang/String;)Ljava/lang/String;",
+                            "zoo/basic/ControlFlowBasicCase#regionAroundTypedCatch!(II)I"));
         }
         LoweringSummary loweringSummary = LoweringSummary.read(
                 workspace.resolve("reports/lowering-report.json"),
@@ -245,7 +252,8 @@ class DummyE2eTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }
@@ -294,6 +302,8 @@ class DummyE2eTest {
                 "zoo/basic/ControlFlowBasicCase#negate!(I)I",
                 "zoo/basic/ControlFlowBasicCase#table!(I)I",
                 "zoo/basic/ControlFlowBasicCase#lookup!(I)I",
+                "zoo/basic/ControlFlowBasicCase#regionAroundOwnedBoundary!(I[Ljava/lang/String;)Ljava/lang/String;",
+                "zoo/basic/ControlFlowBasicCase#regionAroundTypedCatch!(II)I",
                 "zoo/basic/ExceptionBasicCase#catchCode!()I",
                 "zoo/basic/StringJdkBasicCase#stableStringOps!()Ljava/lang/String;",
                 "zoo/basic/StringJdkBasicCase#bigEndianIntFrame!(I)[B",
@@ -344,6 +354,63 @@ class DummyE2eTest {
             failures.add("reports: bigEndianIntFrame is missing from lowering report");
         } catch (Exception exception) {
             failures.add("reports: failed to inspect bigEndianIntFrame evidence: "
+                    + exception.getMessage());
+        }
+    }
+
+    private void assertControlFlowFlatteningEvidence(
+            Path protectionReport,
+            List<String> failures,
+            List<String> methodKeys) {
+        if (!Files.isRegularFile(protectionReport)) {
+            failures.add("reports: protection report is missing");
+            return;
+        }
+        try {
+            JsonObject root = JsonParser.parseString(Files.readString(protectionReport))
+                    .getAsJsonObject();
+            JsonObject coverage = root.getAsJsonObject("coverage");
+            JsonArray facts = coverage == null ? null : coverage.getAsJsonArray("facts");
+            if (facts == null) {
+                failures.add("reports: protection report has no coverage facts");
+                return;
+            }
+            for (String methodKey : methodKeys) {
+                String subjectIdentityHash = HashOnlyEvidence.sha256(
+                        "protection-report-method-subject",
+                        methodKey);
+                List<JsonObject> matches = java.util.stream.StreamSupport.stream(
+                                facts.spliterator(),
+                                false)
+                        .map(JsonElement::getAsJsonObject)
+                        .filter(fact -> "IR".equals(string(fact, "layer")))
+                        .filter(fact -> "CONTROL_FLOW_FLATTENING".equals(string(fact, "passName")))
+                        .filter(fact -> subjectIdentityHash.equals(string(fact, "subjectIdentityHash")))
+                        .toList();
+                if (matches.size() != 1) {
+                    failures.add("reports: expected exactly one CFF coverage fact for "
+                            + methodKey + " but found " + matches.size());
+                    continue;
+                }
+                JsonObject fact = matches.get(0);
+                if (!"RAN".equals(string(fact, "status"))) {
+                    failures.add("reports: CFF status for " + methodKey + " was "
+                            + string(fact, "status") + " instead of RAN");
+                }
+                if (!fact.has("affected") || !fact.get("affected").getAsBoolean()) {
+                    failures.add("reports: CFF did not affect " + methodKey);
+                }
+                if (!"applicable".equals(string(fact, "applicability"))) {
+                    failures.add("reports: CFF applicability for " + methodKey + " was "
+                            + string(fact, "applicability") + " instead of applicable");
+                }
+                if (!"CONTROL_FLOW_FLATTENING".equals(string(fact, "reasonCode"))) {
+                    failures.add("reports: CFF reason for " + methodKey + " was "
+                            + string(fact, "reasonCode"));
+                }
+            }
+        } catch (Exception exception) {
+            failures.add("reports: failed to inspect CFF coverage evidence: "
                     + exception.getMessage());
         }
     }

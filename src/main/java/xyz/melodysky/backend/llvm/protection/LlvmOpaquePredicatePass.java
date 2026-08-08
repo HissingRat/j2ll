@@ -91,13 +91,13 @@ public final class LlvmOpaquePredicatePass implements LlvmModulePass {
             int constant = predicateConstant(random.token(name() + "Constant", site, 8));
 
             ArrayList<LlvmInstruction> instructions = new ArrayList<>(block.instructions());
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(prefix + "_mix"),
                     "xor i32 " + constant + ", " + constant));
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(prefix + "_true"),
                     "icmp eq i32 " + prefix + "_mix, 0"));
-            instructions.add(LlvmInstruction.raw(
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(prefix + "_condition"),
                     "and i1 "
                             + block.terminator().condition().orElseThrow()
@@ -121,7 +121,8 @@ public final class LlvmOpaquePredicatePass implements LlvmModulePass {
                 function.visibility(),
                 function.returnType(),
                 function.parameters(),
-                blocks);
+                blocks,
+                function.nativeUnwindSemantics());
     }
 
     private Set<String> collectValueNames(LlvmFunction function) {

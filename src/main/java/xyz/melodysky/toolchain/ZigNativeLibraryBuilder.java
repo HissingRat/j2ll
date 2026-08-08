@@ -25,6 +25,8 @@ import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
+import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspection;
+import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspector;
 
 public final class ZigNativeLibraryBuilder {
     private final HostJniCSourceGenerator sourceGenerator;
@@ -38,6 +40,7 @@ public final class ZigNativeLibraryBuilder {
     private final LlvmProtectionConfig protectionConfig;
     private final boolean methodTableHidingEnabled;
     private final boolean strip;
+    private final NativeUnwindRetentionPolicy unwindRetentionPolicy;
 
     public ZigNativeLibraryBuilder() {
         this(new LlvmNameMangler());
@@ -84,6 +87,20 @@ public final class ZigNativeLibraryBuilder {
             boolean methodTableHidingEnabled,
             boolean strip) {
         this(
+                llvmNameMangler,
+                protectionConfig,
+                methodTableHidingEnabled,
+                strip,
+                NativeUnwindRetentionPolicy.retaining());
+    }
+
+    public ZigNativeLibraryBuilder(
+            LlvmNameMangler llvmNameMangler,
+            LlvmProtectionConfig protectionConfig,
+            boolean methodTableHidingEnabled,
+            boolean strip,
+            NativeUnwindRetentionPolicy unwindRetentionPolicy) {
+        this(
                 new HostJniCSourceGenerator(),
                 new LlvmModuleLowerer(
                         llvmNameMangler,
@@ -97,7 +114,8 @@ public final class ZigNativeLibraryBuilder {
                 new J2llHomeResolver(),
                 protectionConfig,
                 methodTableHidingEnabled,
-                strip);
+                strip,
+                unwindRetentionPolicy);
     }
 
     private static BusinessStringSymbolMapper businessStringSymbols(
@@ -250,6 +268,34 @@ public final class ZigNativeLibraryBuilder {
             LlvmProtectionConfig protectionConfig,
             boolean methodTableHidingEnabled,
             boolean strip) {
+        this(
+                sourceGenerator,
+                llvmLowerer,
+                llvmEmitter,
+                zigLocator,
+                buildWriter,
+                buildInvoker,
+                symbolInspector,
+                homeResolver,
+                protectionConfig,
+                methodTableHidingEnabled,
+                strip,
+                NativeUnwindRetentionPolicy.retaining());
+    }
+
+    public ZigNativeLibraryBuilder(
+            HostJniCSourceGenerator sourceGenerator,
+            LlvmModuleLowerer llvmLowerer,
+            LlvmTextEmitter llvmEmitter,
+            ManagedZigLocator zigLocator,
+            ZigBuildWriter buildWriter,
+            ZigBuildInvoker buildInvoker,
+            NativeSymbolInspector symbolInspector,
+            J2llHomeResolver homeResolver,
+            LlvmProtectionConfig protectionConfig,
+            boolean methodTableHidingEnabled,
+            boolean strip,
+            NativeUnwindRetentionPolicy unwindRetentionPolicy) {
         this.sourceGenerator = sourceGenerator;
         this.llvmLowerer = llvmLowerer;
         this.llvmEmitter = llvmEmitter;
@@ -261,6 +307,9 @@ public final class ZigNativeLibraryBuilder {
         this.protectionConfig = Objects.requireNonNull(protectionConfig, "protectionConfig");
         this.methodTableHidingEnabled = methodTableHidingEnabled;
         this.strip = strip;
+        this.unwindRetentionPolicy = Objects.requireNonNull(
+                unwindRetentionPolicy,
+                "unwindRetentionPolicy");
     }
 
     public Optional<ZigNativeBuildResult> build(
@@ -441,19 +490,30 @@ public final class ZigNativeLibraryBuilder {
                 RuntimeHelperReachabilityPlan.from(
                         llvmCompilation));
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
-        Files.writeString(runtime, "/* runtime helper C inputs are helper-backed skeletons in this slice */\n", StandardCharsets.UTF_8);
-        List<Path> llvmSources = writeLlvmSources(workspace, llvmCompilation);
+        Files.writeString(
+                runtime,
+                new HostWindowsDllEntryRuntimeSource().emit(libraryName),
+                StandardCharsets.UTF_8);
+        NativeLlvmSourcePlan llvmSources =
+                writeLlvmSources(workspace, llvmCompilation);
+        NativeLibcRequirementPlan libcRequirement =
+                NativeLibcRequirementPlan.inspectAll(List.of(
+                        Files.readString(wrapper, StandardCharsets.UTF_8),
+                        Files.readString(runtime, StandardCharsets.UTF_8)));
         ZigSourceSet sources = new ZigSourceSet(
-                llvmSources,
+                llvmSources.retainedPaths(),
                 List.of(wrapper, runtime),
                 List.of(),
-                new ZigJniHeaderSet().prepare(workspace));
+                new ZigJniHeaderSet().prepare(workspace, libcRequirement),
+                libcRequirement,
+                llvmSources);
         buildWriter.write(
                 workspace,
                 libraryName,
                 buildPlan,
                 new ZigInputSet(sources),
-                strip);
+                strip,
+                unwindRetentionPolicy);
         ZigBuildInvocation invocation = buildInvoker.invocation(zig, workspace);
         try {
             buildInvoker.invoke(zig, workspace, buildPlan, sources, progressListener);
@@ -463,7 +523,8 @@ public final class ZigNativeLibraryBuilder {
         List<NativeLibraryArtifact> artifacts = collectArtifacts(
                 runtimeLoaderPlan.embeddedLibraryDirectory(),
                 buildPlan,
-                wrapper);
+                wrapper,
+                sources);
         return Optional.of(new ZigNativeBuildResult(
                 zig,
                 workspace.buildZig(),
@@ -603,36 +664,69 @@ public final class ZigNativeLibraryBuilder {
         Files.createDirectories(workspace.logsDirectory());
     }
 
-    private List<Path> writeLlvmSources(
+    private NativeLlvmSourcePlan writeLlvmSources(
             ZigBuildWorkspace workspace,
             NativeLlvmCompilation compilation) throws IOException {
-        ArrayList<Path> sources = new ArrayList<>();
+        ArrayList<NativeLlvmSource> sources = new ArrayList<>();
+        Path omissionDirectory = workspace.llvmDirectory().resolve("no-unwind");
         for (NativeLlvmModuleCompilation module : compilation.modules()) {
             Path llvmPath = workspace.llvmDirectory()
                     .resolve(NativeSourceName.llvmFileName(module.owner()));
             Files.writeString(llvmPath, module.llvmText(), StandardCharsets.UTF_8);
-            sources.add(llvmPath);
+            Optional<Path> omissionPath = Optional.empty();
+            if (module.llvmTextWithoutUnwind().isPresent()) {
+                Files.createDirectories(omissionDirectory);
+                Path path = omissionDirectory
+                        .resolve(NativeSourceName.llvmFileName(module.owner()));
+                Files.writeString(
+                        path,
+                        module.llvmTextWithoutUnwind().orElseThrow(),
+                        StandardCharsets.UTF_8);
+                omissionPath = Optional.of(path);
+            }
+            sources.add(new NativeLlvmSource(
+                    module.owner(),
+                    llvmPath,
+                    omissionPath,
+                    module.emissionPlan().proof().omissionSafe(),
+                    module.emissionPlan().proof().reasonCode()));
         }
-        return List.copyOf(sources);
+        return new NativeLlvmSourcePlan(sources);
     }
 
     private List<NativeLibraryArtifact> collectArtifacts(
             String embeddedLibraryDirectory,
             NativeBuildPlan buildPlan,
-            Path wrapper) throws IOException {
+            Path wrapper,
+            ZigSourceSet sources) throws IOException {
         EmbeddedLibraryLayout layout = new EmbeddedLibraryLayout();
+        NativeUnwindSectionInspector unwindInspector =
+                new NativeUnwindSectionInspector();
+        NativeUnwindArtifactVerifier unwindVerifier =
+                new NativeUnwindArtifactVerifier();
         ArrayList<NativeLibraryArtifact> artifacts = new ArrayList<>();
         for (NativeBuildUnit unit : buildPlan.units()) {
             if (!Files.exists(unit.outputPath())) {
                 throw new IOException("managed Zig did not produce selected target artifact: " + unit.outputPath());
             }
+            NativeLlvmUnwindTargetSummary unwindSummary =
+                    sources.llvmUnwindSources().summarize(
+                            unwindRetentionPolicy.resolve(unit.target()),
+                            sources.objectInputs().size());
+            NativeUnwindSectionInspection unwindInspection =
+                    unwindInspector.inspect(unit.target(), unit.outputPath());
+            unwindVerifier.verify(
+                    unwindSummary,
+                    unwindInspection,
+                    unit.outputPath());
             artifacts.add(new NativeLibraryArtifact(
                     unit.target(),
                     unit.outputPath(),
                     wrapper,
                     layout.jarPath(embeddedLibraryDirectory, unit.target()),
                     sha256(unit.outputPath()),
-                    symbolInspector.exportedSymbols(unit.target(), unit.outputPath())));
+                    symbolInspector.exportedSymbols(unit.target(), unit.outputPath()),
+                    Optional.of(unwindInspection)));
         }
         return List.copyOf(artifacts);
     }

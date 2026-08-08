@@ -10,21 +10,26 @@ final class ZigTargetBuildEmitter {
     private final String libraryName;
     private final ZigSourceSet sources;
     private final boolean strip;
+    private final NativeUnwindRetentionPolicy unwindRetentionPolicy;
 
     ZigTargetBuildEmitter(
             ZigBuildWorkspace workspace,
             String libraryName,
             ZigSourceSet sources,
-            boolean strip) {
+            boolean strip,
+            NativeUnwindRetentionPolicy unwindRetentionPolicy) {
         this.workspace = workspace;
         this.libraryName = libraryName;
         this.sources = sources;
         this.strip = strip;
+        this.unwindRetentionPolicy = unwindRetentionPolicy;
     }
 
     String emit(ZigBuildProgressPlan.TargetPlan targetPlan) {
         StringBuilder builder = new StringBuilder();
         TargetTriple target = targetPlan.target();
+        ZigTargetBuildPolicy targetPolicy =
+                ZigTargetBuildPolicy.resolve(target, unwindRetentionPolicy);
         String targetSymbol = target.safeSymbol();
         builder.append("\n")
                 .append("    const target_").append(targetSymbol).append(" = b.resolveTargetQuery(")
@@ -35,7 +40,7 @@ final class ZigTargetBuildEmitter {
         for (ZigBuildProgressPlan.CompileUnit compileUnit : targetPlan.compileUnits()) {
             String unitSymbol = targetSymbol + "_" + compileUnit.id().replace('-', '_');
             String compileLibrarySymbol =
-                    appendCompileUnit(builder, target, compileUnit, unitSymbol);
+                    appendCompileUnit(builder, target, targetPolicy, compileUnit, unitSymbol);
             compileLibrarySymbols.add(compileLibrarySymbol);
             compileMarkerSymbols.add(appendCompileMarker(
                     builder,
@@ -62,6 +67,7 @@ final class ZigTargetBuildEmitter {
     private String appendCompileUnit(
             StringBuilder builder,
             TargetTriple target,
+            ZigTargetBuildPolicy targetPolicy,
             ZigBuildProgressPlan.CompileUnit compileUnit,
             String unitSymbol) {
         builder.append("    const module_").append(unitSymbol).append(" = b.createModule(.{\n");
@@ -74,7 +80,7 @@ final class ZigTargetBuildEmitter {
                         : "optimize");
         builder.append("    });\n");
         for (ZigBuildProgressPlan.CompileInput compileInput : compileUnit.inputs()) {
-            appendCompileInput(builder, compileInput, unitSymbol);
+            appendCompileInput(builder, targetPolicy, compileInput, unitSymbol);
         }
         String compileLibrarySymbol = "compile_" + unitSymbol;
         builder.append("    const ").append(compileLibrarySymbol).append(" = b.addLibrary(.{\n")
@@ -89,6 +95,7 @@ final class ZigTargetBuildEmitter {
 
     private void appendCompileInput(
             StringBuilder builder,
+            ZigTargetBuildPolicy targetPolicy,
             ZigBuildProgressPlan.CompileInput compileInput,
             String unitSymbol) {
         if (compileInput.kind() == ZigBuildProgressPlan.CompileInputKind.C) {
@@ -97,13 +104,15 @@ final class ZigTargetBuildEmitter {
                     .append(quote(relative(workspace.buildDirectory(), compileInput.source())))
                     .append("),\n")
                     .append("        .flags = &.{ ");
-            appendCFlags(builder);
+            appendCFlags(builder, targetPolicy);
             builder.append(" },\n")
                     .append("        .language = .c,\n")
                     .append("    });\n");
         } else {
+            Path selectedSource = sources.llvmUnwindSources()
+                    .select(compileInput.source(), targetPolicy.unwindRetention());
             builder.append("    module_").append(unitSymbol).append(".addObjectFile(b.path(")
-                    .append(quote(relative(workspace.buildDirectory(), compileInput.source())))
+                    .append(quote(relative(workspace.buildDirectory(), selectedSource)))
                     .append("));\n");
         }
     }
@@ -190,12 +199,26 @@ final class ZigTargetBuildEmitter {
                 .append("    });\n")
                 .append("    lib_").append(targetSymbol)
                 .append(".link_gc_sections = true;\n");
+        if (!sources.libcRequirement().required()) {
+            builder.append("    lib_").append(targetSymbol)
+                    .append(".linker_allow_shlib_undefined = false;\n");
+        }
+        if (target.isWindows() && !sources.libcRequirement().required()) {
+            builder.append("    lib_").append(targetSymbol)
+                    .append(".entry = .{ .symbol_name = ")
+                    .append(quote(HostWindowsDllEntryRuntimeSource.symbol(libraryName)))
+                    .append(" };\n");
+        }
         appendForcedEntryPoints(builder, target, targetSymbol);
         builder
                 .append("    lib_").append(targetSymbol).append(".step.dependOn(&")
                 .append(linkingMarkerSymbol).append(".step);\n");
         if (target.zigOsTag().equals("macos")) {
             builder.append("    lib_").append(targetSymbol).append(".discard_local_symbols = true;\n");
+            if (!sources.libcRequirement().required()) {
+                builder.append("    lib_").append(targetSymbol)
+                        .append(".dead_strip_dylibs = true;\n");
+            }
         }
         builder.append("    const install_").append(targetSymbol)
                 .append(" = b.addInstallArtifact(lib_").append(targetSymbol).append(", .{\n")
@@ -244,10 +267,14 @@ final class ZigTargetBuildEmitter {
                 .append(",\n")
                 .append("        .strip = ").append(strip).append(",\n")
                 .append("        .pic = true,\n")
-                .append("        .link_libc = true,\n");
+                .append("        .link_libc = ")
+                .append(sources.libcRequirement().required())
+                .append(",\n");
     }
 
-    private void appendCFlags(StringBuilder builder) {
+    private void appendCFlags(
+            StringBuilder builder,
+            ZigTargetBuildPolicy targetPolicy) {
         ArrayList<String> flags = new ArrayList<>(List.of(
                 "-g0",
                 "-fvisibility=hidden",
@@ -255,6 +282,11 @@ final class ZigTargetBuildEmitter {
                 "-fdata-sections",
                 "-ffile-compilation-dir=.",
                 "-fdebug-compilation-dir=."));
+        if (!sources.libcRequirement().required()) {
+            flags.add("-ffreestanding");
+            flags.add("-fno-builtin");
+        }
+        flags.addAll(targetPolicy.generatedCCompilerFlags());
         for (Path include : sources.includeDirectories()) {
             flags.add("-I" + include.toAbsolutePath().normalize());
         }

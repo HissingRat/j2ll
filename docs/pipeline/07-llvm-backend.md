@@ -12,7 +12,7 @@
 ## 输出
 
 - per-class LLVM module model
-- per-class LLVM text
+- per-class retained LLVM text，以及proof允许时的target-selectable no-unwind text
 - Zig toolchain LLVM input manifest
 - runtime stub C sources
 - final native implementation/registration/retention plans
@@ -43,6 +43,10 @@ xyz.melodysky.backend.llvm.protection
 - `LlvmTypeLowerer`
 - `LlvmNameMangler`
 - `LlvmHelperDeclarationCollector`
+- `LlvmNativeUnwindAnalyzer`
+- `LlvmNativeUnwindProof`
+- `LlvmModuleEmissionPlan`
+- `LlvmUnwindEmissionMode`
 - `LlvmModulePassPipeline`
 - `LlvmProtectionPipeline`
 
@@ -53,11 +57,12 @@ IrProgram
   -> PerClassIrPartitioner
   -> LlvmModuleLowerer
   -> LlvmModulePassPipeline
-  -> LlvmTextEmitter
+  -> LlvmModuleEmissionPlan / native-unwind proof
+  -> LlvmTextEmitter (retained + optional proven no-unwind variant)
   -> ZigToolchain native build
 ```
 
-`LlvmModuleLowerer` 必须按原始 class 生成 LLVM module；`LlvmTextEmitter` 只负责打印 module model。LLVM-level name obfuscation、opaque predicates、indirect calls、global layout 和 visibility pass 都应操作 module model。
+`LlvmModuleLowerer` 必须按原始 class 生成 LLVM module；`LlvmTextEmitter` 只负责打印 module model。LLVM-level name obfuscation、opaque predicates、indirect calls、global layout 和 visibility pass 都应操作 module model。Native-unwind omission同样只能消费final canonical model上的结构化evidence，不能扫描或替换已经序列化的`.ll`。
 
 ## Zig Toolchain Contract
 
@@ -70,6 +75,67 @@ LLVM backend 的正式 native build handoff 面向 managed Zig toolchain。Schem
 - backend 可以输出 object-ready metadata，但不能直接调用 host `cc`、platform linker、`clang`、`zig cc` 或 `llc` 作为公开契约。
 - 如果 Zig 当前 target 不支持某种 `.ll` / `.o` 输入能力，必须在 preflight 阶段给出明确 diagnostic，不能静默退回其他 linker。
 - Java method 对应 LLVM function 默认 `internal` / hidden；需要被 C wrapper 跨 object 调用的 native build artifact 可使用 `external hidden`，但 symbol audit 仍必须证明它不进入 dynamic export list。JNI wrapper 和 bootstrap symbols 才能进入 export allowlist。
+
+### Generated-C Target Policy
+
+`NativeLibcRequirementPlan`对最终generated-C source set执行保守的closed-set调用
+检查。只要仍存在allocation、memory或string libc routine，就保留
+libc linkage并记录reason；仅在所有generated source都不需要这些routine时，
+generated-C compile unit才加`-ffreestanding -fno-builtin`、使用只补齐JNI include
+形状的libc-free header，并设置`.link_libc = false`。该路径同时启用
+`-Werror=implicit-function-declaration`与`linker_allow_shlib_undefined = false`；新增外部
+routine如果没有先进入requirement plan，必须在compile/link阶段fail closed，不得产出
+带意外undefined import的动态库。Windows libc-free路径使用generated DLL entry
+取代CRT startup；Linux与Windows因此可形成无libc/CRT dependency的library。macOS
+是明确的platform例外：generated source可以是libc-free，但Mach-O动态库仍必须
+保留platform `libSystem`；manifest分开记录`generatedSourceRequiresLibc=false`与
+`libcDependencyEffective=true/MACOS_PLATFORM_LIBSYSTEM_REQUIRED`，不将它误报为
+真正dependency-free。
+
+`ZigTargetBuildPolicy`解析generated-C `ReleaseSmall` unit的machine-code policy，
+并与final LLVM source plan共同形成target unwind decision。`retainUnwindInfo=false`在
+Linux/macOS generated C上添加`-fno-unwind-tables -fno-asynchronous-unwind-tables`；
+Windows因SEH必须强制保留，`--debug`和config requested retention也强制effective
+retention。LLVM input不会继承C compile flags：只有下述final-model proof完整时，
+Linux/macOS target才选择对应的no-unwind LLVM text variant。该开关不等价于生成native
+debug symbols。machine outliner在Linux/macOS generated C上使用
+`-mllvm -enable-machine-outliner=always -mllvm -outliner-benefit-threshold=16`；最低
+收益阈值阻止只节省少量字节的短片段被共享为新的静态分析锚点。Windows路径因
+Zig/LLVM的SEH directive边界
+保守禁用并记录`MACHINE_OUTLINER_WINDOWS_SEH_UNSUPPORTED`。outliner不作用于
+per-class LLVM input，也不改变JNI/export ABI。manifest按target记录enabled、
+minimum-benefit threshold与reason。
+
+### LLVM native-unwind proof 与 target variant
+
+Final protection/global-layout完成后，每个`LlvmFunction`和`LlvmInstruction`都必须携带
+闭集`LlvmNativeUnwindSemantics`：`PROVEN_ABSENT`、`REQUIRED`或`UNKNOWN`。兼容构造、
+opaque raw instruction和遗漏metadata默认`UNKNOWN`；这样新producer忘记声明evidence时
+会保留unwind，而不是静默生成不安全的`nounwind`。
+
+`LlvmNativeUnwindAnalyzer`只遍历final canonical `LlvmModule`，不读取emitted text。
+只有module内全部function/instruction都为`PROVEN_ABSENT`，proof才允许省略；任一
+`REQUIRED`表示真实native EH需要保留，任一`UNKNOWN`表示proof不完整并fail closed到
+retained variant。`LlvmModuleEmissionPlan`把proof与被分析的同一个module绑定：
+
+- `LlvmUnwindEmissionMode.RETAIN`始终可用，并保持正常definition文本；
+- `OMIT_PROVEN`只在proof安全时为function definition结构化发出`nounwind`；
+- 两种文本共享一份authoritative module/pass result，不能克隆成两个可漂移的model，
+  也不能用`.ll` regex补属性。
+
+`NativeLlvmSourcePlan`把每个retained source与可选proof-gated variant绑定。
+Linux/macOS且requested=false时逐module选择no-unwind variant；Windows、`--debug`、
+requested=true、`REQUIRED`/`UNKNOWN` module以及无法建模的`.o`输入都选择或导致effective
+retention。不能依赖Zig module的`unwind_tables`设置来处理经`addObjectFile`加入的`.ll`；
+实测该设置和C侧no-unwind flags都不会替这些LLVM definitions补上`nounwind`。
+
+Manifest逐target记录generated-C retention、LLVM module总数、omitted/retained数、
+unmodeled object input数、最终是否预期完全省略以及稳定reason。只有generated C与全部
+LLVM module都选择omit、且没有opaque object input时，`finalUnwindOmissionExpected=true`。
+链接后`NativeUnwindSectionInspector`严格按目标格式读取ELF64、PE32+或Mach-O64 section
+table；当完全省略被预期时，Linux的`.eh_frame`/`.eh_frame_hdr`或macOS的
+`__eh_frame`/`__unwind_info`任一非空都会由`NativeUnwindArtifactVerifier`阻断构建。
+Windows的`.pdata`/`.xdata`也进入结构化inspection/report，但SEH policy从不要求其删除。
 
 ## Current Implemented Slice
 
@@ -96,7 +162,18 @@ LLVM backend 的正式 native build handoff 面向 managed Zig toolchain。Schem
 - String content operations beyond the listed helper subset、无法安全分割的constructor pre-init prefix、无法形成一致throw-site frame/block arguments的exception state、复杂monitor/finally interaction、reflection shapes beyond the JVM bridge matrix、raw/off-heap Unsafe/VarHandle、complex MethodHandle / full `altMetafactory` runtime semantics 和更复杂 virtual/interface dispatch 只有在 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH` 或 JNI helper 提供完整 native implementation 时才可标记为 `nativeLowered`；否则整 method `skipped` 并保留原 Code。
 - JNI helper产生的owned local reference只会在registered native method返回时由JVM自动回收，helper返回、internal LLVM callee返回和loop iteration本身不会释放它。当前per-method ownership-aware release planning在frozen native IR上跟踪reference origin、dynamic ownership、last use与唯一ownership transfer；site-sensitive fixed point把instruction handler requirement回传到block live-in但不污染normal live-out，从而在异常路径保留并在protected call正常完成后及时释放。对可证明的普通路径、parallel edge adapter、loop/backedge重定义、typed/catch-all handler transfer/exit与显式`athrow`发出`DeleteLocalRef`。重复transfer、handler live-set不一致或其他无法证明所有路径有界释放的shape，由final native coverage以`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`整方法跳过。返回reference或内部产生owned/pending-exception reference的registered native callee通过JVM/JNI bridge建立嵌套native activation；direct LLVM call只用于不产生这些reference的callee，无法桥接的compiler-internal shape在Zig前fail closed。
 - JNI bridge的`jvalue[]`临时参数区由独立scratch planner按function内最大arity规划，并只在registered activation prologue执行一次固定`alloca`；loop/catch/backedge block只复用该stack slot并执行GEP/store。不得在循环内重复`alloca`，也不得改用native heap长期保存Java reference。
-- CFF的dispatcher会人为引入synthetic cycle。对其余structural条件原本可应用、但会产生owned JNI local ref的方法，`ControlFlowFlatteningPass`保持输入IR并以`CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE`记录pass-level `SKIPPED`；其他适用pass与native implementation planning继续执行。该protection结果不把原本可安全释放local ref的方法改成method-level `skipped`。
+- CFF只为immutable plan中的bounded region发出dispatcher；每个method最多4个region、每个
+  region最多32个原始member block。每个dispatcher只携带自己的I32 state，state范围是
+  `[0, regionMemberCount)`的dense permutation，不存在method-global CFF state或跨region
+  lookup table。region内部edge进入该dispatcher，multi-exit edge直接lower到原region外
+  target。
+- dispatcher会为member blocks人为引入synthetic cycle，因此owned JNI local-reference
+  producer、instruction exception site、exception edge/handler、monitor/JMM和class-init
+  敏感block不得成为member。它们在region外继续使用原ownership release plan、pending-
+  exception transfer和LLVM lowering；backend不得把region exit重新接回dispatcher而延长
+  reference lifetime。没有safe region是pass-level`SKIPPED`，不会把本来可native lowering
+  的method改成method-level`skipped`。只有至少一个region的合法改写进入最终validated IR，
+  CFF coverage才可标记`affected=true`。
 
 ## 边界
 
@@ -128,7 +205,7 @@ Planner只接受exception-semantics分类器认可、拥有exception value、非
 
 `fieldInternalization` 的 final-plan validator 对可变字段只接受状态为 `nativeLowered`、且真实使用合格 native storage ABI 的 accessor；对compile-time constant路径则要求每个显式读取已由获准SSA constant rewrite完整替换且不生成slot。任何 `skipped`、缺失 implementation 或残余 JVM field access 都使该 field 保留在 classfile。
 
-`methodInternalization` 的 final-plan validator要求approved target仍存在于logical LLVM user-method closure、rewrite strategy为`internalNativeOnly`、registration plan中不存在该binding，且每个caller route有对应direct/dispatch implementation。public instance的每个route必须携带same-owner exact-target evidence；validator不得重新引入final method/class或override-slot blanket限制。已解析exact observer应已在analysis阶段阻断，unsupported/unbounded动态observer则只携带用户接受的warning/report evidence，backend不得把两者混为一谈。reference result与pending exception必须能从nested local frame promote；证据不完整时保留普通`nativeOriginal`与registration，而不是生成不完整native call。若coalescing plan批准callee，emission validator另要求caller仍在编译closure中且callee standalone body、declaration、call metadata、C binding与workspace symbol均为零。
+`methodInternalization` 的 final-plan validator要求approved target仍存在于logical LLVM user-method closure、rewrite strategy为`internalNativeOnly`、registration plan中不存在该binding，且每个caller route有对应direct/dispatch implementation。public instance的每个route必须携带same-owner exact-target evidence；validator不得重新引入final method/class或override-slot blanket限制。已解析exact observer应已在analysis阶段阻断，unsupported/unbounded动态observer则只携带用户接受的warning/report evidence，backend不得把两者混为一谈。reference result与pending exception必须能从nested local frame promote；证据不完整时保留普通`nativeOriginal`与registration，而不是生成不完整native call。coalescing按bottom-up轮次把多层chain全部重定向到最终physical root；若plan批准callee，emission validator要求该root仍在编译closure中，且所有descendant的standalone body、declaration、call metadata、C binding与workspace symbol均为零。
 
 ## 测试
 
@@ -140,10 +217,12 @@ Planner只接受exception-semantics分类器认可、拥有exception value、非
 - per-class LLVM module emission。
 - runtime stub generator 与 backend declaration 对齐。
 - LLVM module model -> text golden test。
+- final-model native-unwind proof、`UNKNOWN`/`REQUIRED` fail-closed和dual-emission golden test。
+- Linux/macOS/Windows final binary unwind-section inspector，以及expected-omission blocking audit test。
 - LLVM protection pass deterministic seed test。
 - symbol visibility preflight test。
 - `LLVM_NATIVE_PATH` child JVM differential test，确认 JNI wrapper 调用 LLVM-generated hidden function 而不是模板化 C body。
 - constructor verifier-prefix/post-init split、`<clinit>` native helper与`Object.getClass()` ABI/runtime parity。
 - internal-only direct/static/instance descriptor bridge、nested-local-frame exception/reference promotion与wrapper reachability。
-- single-call-site native-only coalescing的eligible/rejected shape、caller ABI重算、standalone LLVM/C/workspace residual audit。
+- single-call-site native-only coalescing的eligible/rejected shape、四层bottom-up chain physical-root重定向、caller ABI重算、standalone LLVM/C/workspace residual audit。
 - exact `ByteBuffer.allocate(4).putInt(i).array()` helper ABI、异常site顺序、JVM byte-array parity与escaping/cross-block no-op boundary。

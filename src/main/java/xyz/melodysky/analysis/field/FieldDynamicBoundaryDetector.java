@@ -51,8 +51,11 @@ final class FieldDynamicBoundaryDetector {
                 || name.equals("findSetter")
                 || name.equals("findStaticGetter")
                 || name.equals("findStaticSetter")
+                || name.equals("findVarHandle")
+                || name.equals("findStaticVarHandle")
                 || name.equals("unreflectGetter")
-                || name.equals("unreflectSetter");
+                || name.equals("unreflectSetter")
+                || name.equals("unreflectVarHandle");
     }
 
     private boolean isNativeLoadingMethod(String owner, String name) {

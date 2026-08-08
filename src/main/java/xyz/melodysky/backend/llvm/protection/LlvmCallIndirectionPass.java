@@ -17,6 +17,7 @@ import xyz.melodysky.backend.llvm.model.LlvmGlobal;
 import xyz.melodysky.backend.llvm.model.LlvmInstruction;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmModule;
+import xyz.melodysky.backend.llvm.model.LlvmNativeUnwindSemantics;
 import xyz.melodysky.backend.llvm.model.LlvmParameter;
 import xyz.melodysky.backend.llvm.model.LlvmSwitchCase;
 import xyz.melodysky.backend.llvm.model.LlvmTerminator;
@@ -162,7 +163,8 @@ public final class LlvmCallIndirectionPass {
                 function.visibility(),
                 function.returnType(),
                 function.parameters(),
-                blocks), changed);
+                blocks,
+                function.nativeUnwindSemantics()), changed);
     }
 
     private Optional<String> directCallTarget(
@@ -214,7 +216,8 @@ public final class LlvmCallIndirectionPass {
                 + (arguments.isEmpty() ? "" : ", " + arguments);
         return LlvmInstruction.raw(
                 instruction.result(),
-                beforeAt + "@" + dispatcher.symbol() + "(" + rewrittenArguments + ")" + extra);
+                beforeAt + "@" + dispatcher.symbol() + "(" + rewrittenArguments + ")" + extra,
+                instruction.nativeUnwindSemantics());
     }
 
     private List<LlvmInstruction> rewriteTableCall(
@@ -233,13 +236,17 @@ public final class LlvmCallIndirectionPass {
         String slot = "%j2ll_indirect_slot_" + suffix;
         String callee = "%j2ll_indirect_fn_" + suffix;
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
-        instructions.add(LlvmInstruction.raw(Optional.of(slot),
+        instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
+                Optional.of(slot),
                 "getelementptr inbounds [" + table.tableSize() + " x ptr], ptr @"
                         + table.symbol() + ", i32 0, i32 " + table.indexOrSelector()));
-        instructions.add(LlvmInstruction.raw(Optional.of(callee), "load ptr, ptr " + slot));
+        instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
+                Optional.of(callee),
+                "load ptr, ptr " + slot));
         instructions.add(LlvmInstruction.raw(
                 instruction.result(),
-                beforeAt + table.signature().parameterList() + " " + callee + "(" + arguments + ")" + extra));
+                beforeAt + table.signature().parameterList() + " " + callee + "(" + arguments + ")" + extra,
+                instruction.nativeUnwindSemantics()));
         return instructions;
     }
 
@@ -270,7 +277,8 @@ public final class LlvmCallIndirectionPass {
                 LlvmVisibility.HIDDEN,
                 signature.returnType(),
                 parameters,
-                blocks);
+                blocks,
+                LlvmNativeUnwindSemantics.PROVEN_ABSENT);
     }
 
     private LlvmGlobal tableGlobal(
@@ -297,11 +305,13 @@ public final class LlvmCallIndirectionPass {
         ArrayList<LlvmInstruction> instructions = new ArrayList<>();
         LlvmTerminator terminator;
         if (signature.returnType() == LlvmType.VOID) {
-            instructions.add(LlvmInstruction.raw(Optional.empty(),
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
+                    Optional.empty(),
                     "call void @" + targetName + "(" + typedArguments + ")"));
             terminator = new LlvmTerminator(LlvmType.VOID, Optional.empty());
         } else {
-            instructions.add(LlvmInstruction.raw(Optional.of("%j2ll_indirect_result"),
+            instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
+                    Optional.of("%j2ll_indirect_result"),
                     "call " + signature.returnType().text() + " @" + targetName + "(" + typedArguments + ")"));
             terminator = new LlvmTerminator(signature.returnType(), Optional.of("%j2ll_indirect_result"));
         }

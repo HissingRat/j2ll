@@ -306,6 +306,21 @@ public final class PackagingReportWriter {
                     object.add("exportedSymbols", artifact
                             .map(value -> stringArray(value.exportedSymbols()))
                             .orElseGet(JsonArray::new));
+                    object.add("unwindSections", artifact
+                            .flatMap(value -> value.unwindSectionInspection())
+                            .<com.google.gson.JsonElement>map(inspection -> {
+                                JsonObject sections = new JsonObject();
+                                inspection.sectionSizes().forEach(
+                                        sections::addProperty);
+                                return sections;
+                            })
+                            .orElse(com.google.gson.JsonNull.INSTANCE));
+                    object.add("unwindSectionBytes", artifact
+                            .flatMap(value -> value.unwindSectionInspection())
+                            .<com.google.gson.JsonElement>map(inspection ->
+                                    new com.google.gson.JsonPrimitive(
+                                            inspection.totalSize()))
+                            .orElse(com.google.gson.JsonNull.INSTANCE));
                     object.addProperty("status", artifact.isPresent()
                             ? "built"
                             : preflight.status());

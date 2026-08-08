@@ -190,6 +190,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 #include <jni.h>
                 #include <limits.h>
                 #include <math.h>
+                #include <stddef.h>
                 #include <stdarg.h>
                 #include <stdatomic.h>
                 #include <stdint.h>
@@ -981,6 +982,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             case PUT_FIELD -> appendGenericPutField(builder, binding, values, instruction);
             case PUT_STATIC -> appendGenericPutStatic(builder, binding, values, instruction);
             case CALL_SPECIAL, CLASS_OBJECT, CLASS_INIT_BEGIN, CLASS_INIT_END, CLASS_INIT_HAPPENS_BEFORE,
+                    CLASS_INIT_ACTIVE_USE,
                     FINAL_FIELD_PUBLICATION -> {
                 builder.append("    /* ").append(instruction.opcode()).append(" is preserved by the Java stub/JVM helper boundary. */\n");
             }

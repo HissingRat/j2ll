@@ -95,6 +95,8 @@ final class HostJniLambdaRuntimeSourceTest {
                 "const char* caller_owner = \"plugin/Caller\";"));
         assertTrue(generated.contains(
                 "entry.caller_owner = caller_owner;"));
+        assertTrue(generated.contains("entry.impl_is_platform = 0;"));
+        assertFalse(generated.contains("strncmp("));
         assertFalse(generated.contains("j2ll_lambda_table"));
         assertFalse(generated.contains("j2ll_find_lambda_entry"));
         assertFalse(generated.contains("int64_t token;"));

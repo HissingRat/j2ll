@@ -51,6 +51,28 @@ final class BinaryData {
         return new String(bytes, offset, end - offset, StandardCharsets.UTF_8);
     }
 
+    String fixedAsciiString(int offset, int size) throws IOException {
+        require(offset, size);
+        int end = offset;
+        int limit = offset + size;
+        while (end < limit && bytes[end] != 0) {
+            int value = Byte.toUnsignedInt(bytes[end]);
+            if (value < 0x20 || value > 0x7e) {
+                throw new IOException(
+                        "native binary fixed string contains a non-ASCII byte at " + end);
+            }
+            end++;
+        }
+        for (int index = end; index < limit; index++) {
+            if (bytes[index] != 0) {
+                throw new IOException(
+                        "native binary fixed string has non-zero bytes after its terminator at "
+                                + index);
+            }
+        }
+        return new String(bytes, offset, end - offset, StandardCharsets.US_ASCII);
+    }
+
     int checkedOffset(long value, String label) throws IOException {
         if (value < 0 || value > Integer.MAX_VALUE) {
             throw new IOException(label + " is outside the supported binary size: " + value);

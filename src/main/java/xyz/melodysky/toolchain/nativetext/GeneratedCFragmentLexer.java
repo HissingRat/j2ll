@@ -21,6 +21,7 @@ final class GeneratedCFragmentLexer {
         int braceDepth = 0;
         int parenthesisDepth = 0;
         int bracketDepth = 0;
+        ArrayList<Integer> parenthesisStarts = new ArrayList<>();
         int activeFunctionStart = -1;
         boolean lineStart = true;
 
@@ -57,16 +58,28 @@ final class GeneratedCFragmentLexer {
             if (ch == '"') {
                 rejectPrefixedLiteral(source, index);
                 int end = skipQuoted(source, index, '"');
+                LiteralUse use = classifyLiteralUse(
+                        source,
+                        index,
+                        end,
+                        parenthesisDepth,
+                        bracketDepth);
+                int argumentListStart = use == LiteralUse.POINTER_ARGUMENT
+                        ? directCallArgumentListStart(
+                                source,
+                                parenthesisStarts)
+                        : -1;
+                if (use == LiteralUse.POINTER_ARGUMENT
+                        && argumentListStart < 0) {
+                    throw new IllegalArgumentException(
+                            "generated C pointer argument is not in a direct call argument list");
+                }
                 strings.add(new StringLiteral(
                         index,
                         end,
                         decodeString(source.substring(index + 1, end - 1)),
-                        classifyLiteralUse(
-                                source,
-                                index,
-                                end,
-                                parenthesisDepth,
-                                bracketDepth)));
+                        use,
+                        argumentListStart));
                 if (braceDepth == 0) {
                     topLevelTokens.add(new Token(TokenKind.STRING, "\"\""));
                 }
@@ -113,6 +126,7 @@ final class GeneratedCFragmentLexer {
                 continue;
             }
             if (ch == '(') {
+                parenthesisStarts.add(index);
                 parenthesisDepth++;
             } else if (ch == ')') {
                 if (parenthesisDepth == 0) {
@@ -120,6 +134,7 @@ final class GeneratedCFragmentLexer {
                             "generated C fragment has an unmatched closing parenthesis");
                 }
                 parenthesisDepth--;
+                parenthesisStarts.remove(parenthesisStarts.size() - 1);
             } else if (ch == '[') {
                 bracketDepth++;
             } else if (ch == ']') {
@@ -217,6 +232,30 @@ final class GeneratedCFragmentLexer {
         }
         throw new IllegalArgumentException(
                 "generated C string literal is not a verified pointer expression");
+    }
+
+    private int directCallArgumentListStart(
+            String source,
+            List<Integer> parenthesisStarts) {
+        if (parenthesisStarts.isEmpty()) {
+            return -1;
+        }
+        int opening = parenthesisStarts.get(parenthesisStarts.size() - 1);
+        int previous = previousSignificant(source, opening - 1);
+        if (previous < 0 || !isIdentifierPart(source.charAt(previous))) {
+            return -1;
+        }
+        int end = previous + 1;
+        while (previous >= 0 && isIdentifierPart(source.charAt(previous))) {
+            previous--;
+        }
+        String callee = source.substring(previous + 1, end);
+        return isControlKeyword(callee)
+                        || callee.equals("sizeof")
+                        || callee.equals("_Alignof")
+                        || callee.equals("alignof")
+                ? -1
+                : opening;
     }
 
     private boolean isSizeOrAlignmentOperator(String source, int previous) {
@@ -474,7 +513,15 @@ final class GeneratedCFragmentLexer {
             int start,
             int end,
             String value,
-            LiteralUse use) {
+            LiteralUse use,
+            int argumentListStart) {
+        StringLiteral {
+            if ((use == LiteralUse.POINTER_ARGUMENT)
+                    != (argumentListStart >= 0)) {
+                throw new IllegalArgumentException(
+                        "generated C literal argument-list identity is inconsistent");
+            }
+        }
     }
 
     record ScanResult(

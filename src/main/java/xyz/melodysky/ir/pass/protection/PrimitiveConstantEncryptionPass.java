@@ -187,6 +187,7 @@ public final class PrimitiveConstantEncryptionPass implements ProtectionPass {
                 || opcode == IrOpcode.VOLATILE_WRITE_BARRIER
                 || opcode == IrOpcode.FINAL_FIELD_PUBLICATION
                 || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE
-                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
+                || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                || opcode == IrOpcode.CLASS_INIT_ACTIVE_USE;
     }
 }

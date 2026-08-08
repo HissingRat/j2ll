@@ -76,16 +76,16 @@ final class NativeFieldLlvmLowering {
 
     List<LlvmInstruction> referenceSidecarCacheInitialization() {
         return List.of(
-                LlvmInstruction.raw(
+                LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.of(REFERENCE_SIDECAR_CACHE),
                         "alloca ptr"),
-                LlvmInstruction.raw(
+                LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.empty(),
                         "store ptr null, ptr " + REFERENCE_SIDECAR_CACHE));
     }
 
     LlvmInstruction referenceSidecarCleanup() {
-        return LlvmInstruction.raw(
+        return LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.empty(),
                 "call void @j2ll_nfs_release_reference_sidecar("
                         + "ptr %j2ll_env, ptr " + REFERENCE_SIDECAR_CACHE + ")");
@@ -112,16 +112,16 @@ final class NativeFieldLlvmLowering {
                 String bits = instruction.result().orElseThrow().name()
                         + ".nfs.bits." + uniqueSuffix;
                 return List.of(
-                        LlvmInstruction.raw(
+                        LlvmInstruction.rawProvenNoNativeUnwind(
                                 Optional.of(bits),
                                 "call " + integerType + " @" + helper
                                         + "(ptr %j2ll_env, ptr %j2ll_owner, " + token + ")"),
-                        LlvmInstruction.raw(
+                        LlvmInstruction.rawProvenNoNativeUnwind(
                                 Optional.of(instruction.result().orElseThrow().name()),
                                 "bitcast " + integerType + " " + bits + " to " + floatType));
             }
             String type = slot.kind() == NativeFieldStorageKind.LONG ? "i64" : "i32";
-            return List.of(LlvmInstruction.raw(
+            return List.of(LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "call " + type + " @" + helper
                             + "(ptr %j2ll_env, ptr %j2ll_owner, " + token + ")"));
@@ -133,17 +133,17 @@ final class NativeFieldLlvmLowering {
             String floatType = slot.kind() == NativeFieldStorageKind.FLOAT ? "float" : "double";
             String bits = "%j2ll.nfs.put.bits." + uniqueSuffix;
             return List.of(
-                    LlvmInstruction.raw(
+                    LlvmInstruction.rawProvenNoNativeUnwind(
                             Optional.of(bits),
                             "bitcast " + floatType + " " + value.name() + " to " + integerType),
-                    LlvmInstruction.raw(
+                    LlvmInstruction.rawProvenNoNativeUnwind(
                             Optional.empty(),
                             "call void @" + helper
                                     + "(ptr %j2ll_env, ptr %j2ll_owner, " + token
                                     + ", " + integerType + " " + bits + ")"));
         }
         String type = slot.kind() == NativeFieldStorageKind.LONG ? "i64" : "i32";
-        return List.of(LlvmInstruction.raw(
+        return List.of(LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.empty(),
                 "call void @" + helper
                         + "(ptr %j2ll_env, ptr %j2ll_owner, " + token
@@ -156,7 +156,7 @@ final class NativeFieldLlvmLowering {
             String uniqueSuffix) {
         String index = "i32 " + slot.referenceIndex();
         String sidecar = "%j2ll.nfs.sidecar." + uniqueSuffix;
-        LlvmInstruction lookup = LlvmInstruction.raw(
+        LlvmInstruction lookup = LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(sidecar),
                 "call ptr @j2ll_nfs_reference_sidecar_cached("
                         + "ptr %j2ll_env, ptr %j2ll_owner, ptr "
@@ -164,14 +164,14 @@ final class NativeFieldLlvmLowering {
         if (instruction.opcode() == IrOpcode.GET_NATIVE_STATIC) {
             return List.of(
                     lookup,
-                    LlvmInstruction.raw(
+                    LlvmInstruction.rawProvenNoNativeUnwind(
                             Optional.of(instruction.result().orElseThrow().name()),
                             "call ptr @j2ll_nfs_get_ref(ptr %j2ll_env, ptr "
                                     + sidecar + ", " + index + ")"));
         }
         return List.of(
                 lookup,
-                LlvmInstruction.raw(
+                LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.empty(),
                         "call void @j2ll_nfs_put_ref(ptr %j2ll_env, ptr "
                                 + sidecar + ", " + index

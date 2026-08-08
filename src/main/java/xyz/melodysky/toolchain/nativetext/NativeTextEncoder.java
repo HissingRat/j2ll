@@ -128,7 +128,7 @@ public final class NativeTextEncoder {
         int rotation1 = 5 + Byte.toUnsignedInt(derivation[57]) % 54;
         int shift0 = 7 + Byte.toUnsignedInt(derivation[58]) % 23;
         int shift1 = 7 + Byte.toUnsignedInt(derivation[59]) % 23;
-        int outputShift = (Byte.toUnsignedInt(derivation[60]) & 7) * 8;
+        int outputShift = (Byte.toUnsignedInt(derivation[60]) & 3) * 8;
         return new NativeTextCodecPlan(
                 family,
                 schedule,

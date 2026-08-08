@@ -148,7 +148,8 @@ Config.json
       "hideInternalSymbols": true,
       "strip": true,
       "removePdb": true,
-      "symbolAudit": true
+      "symbolAudit": true,
+      "retainUnwindInfo": false
     }
   }
 }
@@ -204,7 +205,7 @@ CLI commands:
 - `j2ll --version`
 - `j2ll [--config <config.json>] [--validate|--dry-run] [--debug]`
 
-`--config` selects the config file; without it the CLI reads `Config.json` from the current directory. `--validate` only checks config and does not create a workspace or pipeline artifacts. `--dry-run` writes reports for config, selector expansion and target preflight, but never invokes managed Zig/native build and never writes a final JAR. With neither mode flag, the CLI runs the full build pipeline. `--debug` enables all five effective intermediate switches for the run (`enabled`, debug dumps, per-class IR, per-class LLVM and per-class C); it does not request native debug symbols.
+`--config` selects the config file; without it the CLI reads `Config.json` from the current directory. `--validate` only checks config and does not create a workspace or pipeline artifacts. `--dry-run` writes reports for config, selector expansion and target preflight, but never invokes managed Zig/native build and never writes a final JAR. With neither mode flag, the CLI runs the full build pipeline. `--debug` enables all five effective intermediate switches for the run (`enabled`, debug dumps, per-class IR, per-class LLVM and per-class C) and forces effective unwind retention; it does not request native debug symbols.
 
 The default build mode and `--dry-run` allocate a workspace automatically at `<resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/`. `--validate` allocates none. The build mode and failure-producing commands use stable exit codes:
 
@@ -481,7 +482,7 @@ Fields:
 - `includePerClassLlvm`: write class-aligned LLVM IR files.
 - `includePerClassC`: write class-aligned C wrapper/runtime glue files where applicable.
 
-The CLI `--debug` flag overrides all five switches to `true` for that run. This is an intermediate-artifact diagnostic mode; native libraries are still release-style builds without native debug symbols.
+The CLI `--debug` flag overrides all five switches to `true` and forces effective unwind retention for that run. This is an intermediate-artifact diagnostic mode; native libraries are still release-style builds without native debug symbols.
 
 `protection`
 
@@ -558,7 +559,7 @@ Enabling this field explicitly accepts that an approved method is absent from `C
 - Exact-allowlisted public support includes public static and same-owner exact public instance. Public instance does not require a final method or final defining class, and a potentially overridable slot is not itself a rejection reason. Under declared `CLOSED_WORLD`, the pipeline parses input plus every configured classPath entry; each public-instance call site must still resolve exactly to the candidate and every caller must be same-owner. An actual override that makes dispatch non-exact prevents removal.
 - Every observed caller must itself have a final `LLVM_NATIVE_PATH` implementation and a validated native direct/dispatch route. Zero callers, an unselected/skipped/template caller, non-exact target, a resolved exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic observer, `EnclosingMethod` reference, launcher/agent entry, or a closed-catalog JVM/JDK callback entry keeps the Java method. The callback catalog covers exact Object virtual, Runnable/Callable, Thread/TimerTask, serialization, Comparator, common `java.util.function` and primitive-function contracts only when the declaring owner really implements or inherits the catalog type and the descriptor matches exactly; it is not a blanket override-slot veto. Third-party framework callbacks outside that closed catalog and unsupported or unbounded reflection/JNI/agent observation remain user-accepted risk and must not be reported as proven absent. For current-JAR-only public static, configured classpath and every JAR-external caller/observer remain explicitly outside the analysis scope.
 - Approved static/instance reference-returning or JNI-sensitive calls use a nested JNI local frame. Pending exceptions are promoted out of that frame and restored before returning to the outer native activation. Cross-owner static calls resolve the defining `jclass`; native code never reads a Java object layout directly.
-- Final-plan validation removes the binding from `NativeRegistrationPlan` and retains the logical native implementation. A subsequent immutable physical-retention plan may merge a bounded pure-scalar/non-throwing target with exactly one direct call site into its caller; otherwise it retains the hidden implementation and any internal-call wrapper actually needed by callers. Packaging atomically removes the exact `MethodNode`; artifact audit rejects any residual declaration, `MethodInsn`, method `Handle`, bootstrap/ConstantDynamic or `EnclosingMethod` reference. For `coalescedNativeOnly`, audit additionally rejects a standalone callee LLVM function/declaration/reference, generated-C wrapper or workspace symbol.
+- Final-plan validation removes the binding from `NativeRegistrationPlan` and retains the logical native implementation. A subsequent immutable physical-retention plan may merge a bounded pure-scalar/non-throwing target with exactly one direct call site into its caller; multi-layer chains are processed bottom-up and every descendant is rehomed to the final physical root. Otherwise it retains the hidden implementation and any internal-call wrapper actually needed by callers. Packaging atomically removes the exact `MethodNode`; artifact audit rejects any residual declaration, `MethodInsn`, method `Handle`, bootstrap/ConstantDynamic or `EnclosingMethod` reference. For `coalescedNativeOnly`, audit additionally rejects a standalone callee LLVM function/declaration/reference, generated-C wrapper or workspace symbol.
 
 A `KEPT` decision is an exact no-op: the existing `nativeOriginal` rewrite and `RegisterNatives` behavior remains in force.
 
@@ -600,6 +601,16 @@ Fields:
 - `strip`: strip unneeded symbols in release artifacts.
 - `removePdb`: do not package Windows PDB files and remove accidental `.pdb` outputs.
 - `symbolAudit`: request binary-hardening audit reporting; the final export allowlist audit remains a mandatory success gate and cannot be disabled by this field or `protection.binary.enabled`.
+- `retainUnwindInfo`: request final-native unwind retention. When `false`, Linux/macOS generated C is compiled with `-fno-unwind-tables` and `-fno-asynchronous-unwind-tables`; each final canonical LLVM module is also analyzed structurally, and only a module whose function/instruction evidence is entirely `PROVEN_ABSENT` receives a target-selectable `nounwind` text variant. `REQUIRED`、`UNKNOWN`、proof-incomplete modules and unmodeled `.o` inputs retain unwind metadata. Windows always selects retention for SEH correctness. `--debug` forces effective retention without mutating the requested JSON value. The build does not rely on a Zig module flag or C compile flags to rewrite `.ll` files supplied through `addObjectFile`.
+
+The target manifest records generated-C retention, LLVM module/omitted/retained counts,
+unmodeled object input count, final omission expectation and the effective reason. When a
+Linux/macOS target is proven to expect complete omission, the linked artifact must pass a
+blocking section audit: non-empty ELF `.eh_frame`/`.eh_frame_hdr` or Mach-O
+`__eh_frame`/`__unwind_info` fails the native build. PE `.pdata`/`.xdata` is also inspected
+and reported, but Windows never requests its removal. A config value of `false` therefore
+means “omit wherever the final proof permits”, not “silently delete unwind information even
+when native EH or an opaque object input is present”.
 
 ## Output Workspace
 
@@ -708,7 +719,7 @@ Deterministic opcode/category/status/reason/test coverage matrix used by release
 
 `reports/packaging-report.json`
 
-Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. Each rewritten-method entry records `javaMethodPresent` and `registrationPresent`; an `internalNativeOnly` entry has both false and is absent from registered-native groups. When method-table hiding is enabled, the report also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and report-only binding tokens, plus `physicalStrategy=ownerLocalTransientStraightLine`, `runtimeTokenTableEmitted=false`, `runtimeFunctionTableEmitted=false` and temporary-table zeroization evidence. It does not write raw owner/member mapping in that object.
+Manifest/resource/signature handling, the generated runtime loader, native registration summary and output jar validation result. Each rewritten-method entry records `javaMethodPresent` and `registrationPresent`; an `internalNativeOnly` entry has both false and is absent from registered-native groups. Each built target also records the strict final-binary unwind section inspection as `unwindSections` (section name to byte size); the Zig manifest separately records `generatedCUnwindInfoRetained`, `llvmUnwindModuleCount`, `llvmUnwindOmittedModuleCount`, `llvmUnwindRetainedModuleCount`, `unmodeledObjectInputCount`, `finalUnwindOmissionExpected` and the effective retention reason. When method-table hiding is enabled, the report also records hash/token-only `methodTableHiding` evidence: enabled/status, opaque plan id, owner/binding counts, owner hashes and report-only binding tokens, plus `physicalStrategy=ownerLocalTransientStraightLine`, `runtimeTokenTableEmitted=false`, `runtimeFunctionTableEmitted=false` and temporary-table zeroization evidence. It does not write raw owner/member mapping in that object.
 
 `reports/protection-report.json`
 

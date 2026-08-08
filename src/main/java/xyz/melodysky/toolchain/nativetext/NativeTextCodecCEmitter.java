@@ -2,15 +2,44 @@ package xyz.melodysky.toolchain.nativetext;
 
 import java.util.Locale;
 
-/**
- * Emits one site-bound codec schedule directly into its owning function.
- */
+/** Emits one compact, site-bound 32-bit codec directly into its owner. */
 final class NativeTextCodecCEmitter {
     private final NativeTextStoragePermutationCEmitter storageEmitter =
             new NativeTextStoragePermutationCEmitter();
 
     String decodeInto(
             NativeTextEncoding encoding,
+            String cipherExpression,
+            String lengthExpression,
+            String destinationExpression,
+            String indent) {
+        return decodeInto(
+                encoding,
+                null,
+                cipherExpression,
+                lengthExpression,
+                destinationExpression,
+                indent);
+    }
+
+    String decodeTupleInto(
+            NativeTextTupleEncoding tuple,
+            String cipherExpression,
+            String lengthExpression,
+            String destinationExpression,
+            String indent) {
+        return decodeInto(
+                tuple.record(),
+                tuple,
+                cipherExpression,
+                lengthExpression,
+                destinationExpression,
+                indent);
+    }
+
+    private String decodeInto(
+            NativeTextEncoding encoding,
+            NativeTextTupleEncoding tuple,
             String cipherExpression,
             String lengthExpression,
             String destinationExpression,
@@ -31,83 +60,173 @@ final class NativeTextCodecCEmitter {
                 .append(");\n")
                 .append(constant(inner, "k0", plan.key0()))
                 .append(constant(inner, "step", plan.step()));
-        if (plan.family() != NativeTextCodecFamily.FEISTEL_32) {
-            source.append(constant(inner, "k1", plan.key1()))
-                    .append(constant(inner, "k2", plan.key2()))
-                    .append(constant(
-                            inner,
-                            "m0",
-                            plan.multiplier0()))
-                    .append(constant(
-                            inner,
-                            "m1",
-                            plan.multiplier1()));
-        }
+        appendFamilyConstants(source, plan, inner);
         source.append(storageEmitter.cursorDeclaration(
                         encoding,
                         token,
                         inner))
                 .append(inner)
-                .append("for (size_t i = 0u; i")
-                .append(" < ")
+                .append("for (size_t i = 0u; i < ")
                 .append(lengthExpression)
                 .append("; i++) {\n")
                 .append(loop)
-                .append("const size_t p")
-                .append(" = ");
+                .append("const size_t p = ");
         if (plan.reverseTraversal()) {
             source.append('(')
                     .append(lengthExpression)
-                    .append(" - 1u - i")
-                    .append(");\n");
+                    .append(" - 1u - i);\n");
         } else {
             source.append("i;\n");
         }
         source.append(loop)
-                .append("const uint64_t n")
-                .append(" = (uint64_t)(p")
-                .append(" + 1u);\n");
+                .append("const uint32_t n = (uint32_t)(p + 1u);\n");
         switch (plan.family()) {
             case WEYL_ARX -> emitWeyl(source, plan, token, loop);
             case DUAL_LANE_ARX -> emitDualLane(source, plan, token, loop);
             case FEISTEL_32 -> emitFeistel(source, plan, token, loop);
             case FOLD_ROTATE -> emitFoldRotate(source, plan, token, loop);
         }
+        if (tuple != null) {
+            emitTupleLaneMask(source, tuple, token, loop);
+        }
         source.append(loop)
                 .append(destination)
-                .append("[p")
-                .append("] = (unsigned char)(")
-                .append("((const volatile unsigned char*)(")
+                .append("[p] = (unsigned char)(((const volatile unsigned char*)(")
                 .append(cipherExpression)
                 .append("))[j2ll_nt_s_")
                 .append(token)
-                .append("]")
-                .append(" ^ (unsigned char)(j2ll_nt_word_")
+                .append("] ^ (unsigned char)(j2ll_nt_word_")
                 .append(token)
                 .append(" >> ")
                 .append(plan.outputShift())
-                .append("u));\n");
-        source.append(storageEmitter.cursorAdvance(
-                encoding,
-                token,
-                lengthExpression,
-                loop));
-        source.append(inner)
+                .append("u)");
+        if (tuple != null) {
+            source.append(" ^ (unsigned char)j2ll_nt_lane_")
+                    .append(token);
+        }
+        source.append(");\n")
+                .append(storageEmitter.cursorAdvance(
+                        encoding,
+                        token,
+                        lengthExpression,
+                        loop))
+                .append(inner)
                 .append("}\n")
                 .append(indent)
                 .append("}\n");
         return source.toString();
     }
 
-    private String constant(
-            String indent,
-            String name,
-            long value) {
+    private void emitTupleLaneMask(
+            StringBuilder source,
+            NativeTextTupleEncoding tuple,
+            String token,
+            String indent) {
+        String mask = "j2ll_nt_lane_" + token;
+        source.append(indent)
+                .append("uint32_t ")
+                .append(mask)
+                .append(" = UINT32_C(0);\n");
+        boolean first = true;
+        for (int componentIndex = 0;
+                componentIndex < tuple.componentCount();
+                componentIndex++) {
+            NativeTextTupleEncoding.Slice slice =
+                    tuple.slice(componentIndex);
+            if (slice.length() == 0) {
+                continue;
+            }
+            NativeTextTupleEncoding.LanePlan lane = slice.lanePlan();
+            source.append(indent)
+                    .append(first ? "if" : "else if")
+                    .append(" (p >= ")
+                    .append(slice.offset())
+                    .append("u && p < ")
+                    .append(slice.offset() + slice.length())
+                    .append("u) {\n")
+                    .append(indent)
+                    .append("    const uint32_t q = (uint32_t)(p - ")
+                    .append(slice.offset())
+                    .append("u + 1u);\n")
+                    .append(indent)
+                    .append("    uint32_t lane = UINT32_C(0x")
+                    .append(hex32(lane.seed()))
+                    .append(") + UINT32_C(0x")
+                    .append(hex32(lane.step()))
+                    .append(") * q;\n")
+                    .append(indent)
+                    .append("    lane ^= lane >> ")
+                    .append(lane.shift0())
+                    .append("u;\n")
+                    .append(indent)
+                    .append("    lane *= UINT32_C(0x")
+                    .append(hex32(lane.multiplier()))
+                    .append(");\n")
+                    .append(indent)
+                    .append("    lane ^= lane >> ")
+                    .append(lane.shift1())
+                    .append("u;\n")
+                    .append(indent)
+                    .append("    ")
+                    .append(mask)
+                    .append(" = lane >> ")
+                    .append(lane.outputShift())
+                    .append("u;\n")
+                    .append(indent)
+                    .append("}\n");
+            first = false;
+        }
+    }
+
+    private void appendFamilyConstants(
+            StringBuilder source,
+            NativeTextCodecPlan plan,
+            String indent) {
+        if (plan.family() == NativeTextCodecFamily.FEISTEL_32) {
+            source.append(constant(indent, "m0", plan.multiplier0()));
+            return;
+        }
+        if (plan.family() == NativeTextCodecFamily.DUAL_LANE_ARX) {
+            source.append(constant(indent, "k1", plan.key1()))
+                    .append(constant(indent, "k2", plan.key2()))
+                    .append(constant(indent, "m0", plan.multiplier0()));
+            return;
+        }
+        switch (plan.schedule()) {
+            case 0 -> source.append(constant(indent, "k1", plan.key1()))
+                    .append(constant(indent, "m0", plan.multiplier0()));
+            case 1 -> source.append(constant(indent, "k2", plan.key2()))
+                    .append(constant(
+                            indent,
+                            plan.family() == NativeTextCodecFamily.WEYL_ARX
+                                    ? "m0"
+                                    : "m1",
+                            plan.family() == NativeTextCodecFamily.WEYL_ARX
+                                    ? plan.multiplier0()
+                                    : plan.multiplier1()));
+            case 2 -> source.append(constant(indent, "k1", plan.key1()));
+            default -> throw new IllegalStateException(
+                    "unreachable native-text schedule");
+        }
+        if (plan.schedule() == 0
+                && plan.family() == NativeTextCodecFamily.WEYL_ARX) {
+            source.append(constant(indent, "m1", plan.multiplier1()));
+        }
+        if (plan.schedule() == 2) {
+            if (plan.family() == NativeTextCodecFamily.WEYL_ARX) {
+                source.append(constant(indent, "k2", plan.key2()));
+            } else {
+                source.append(constant(indent, "m0", plan.multiplier0()));
+            }
+        }
+    }
+
+    private String constant(String indent, String name, long value) {
         return indent
-                + "const uint64_t "
+                + "const uint32_t "
                 + name
-                + " = UINT64_C(0x"
-                + hex(value)
+                + " = UINT32_C(0x"
+                + hex32((int) value)
                 + ");\n";
     }
 
@@ -117,109 +236,59 @@ final class NativeTextCodecCEmitter {
             String token,
             String indent) {
         String lane = "j2ll_nt_w_" + token;
-        String companion = "wc";
         source.append(indent)
-                .append("uint64_t ")
+                .append("uint32_t ")
                 .append(lane)
-                .append(" = k0")
-                .append(" + step")
-                .append(" * n")
-                .append(";\n")
-                .append(indent)
-                .append("uint64_t ")
-                .append(companion)
-                .append(" = k1")
-                .append(" ^ (k2")
-                .append(" + m0")
-                .append(" * n")
-                .append(");\n");
+                .append(" = k0 + step * n;\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
                     .append(lane)
                     .append(" ^= ")
-                    .append(rotl64(companion, plan.rotation0()))
+                    .append(rotl32("(k1 + m0 * n)", rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(lane)
-                    .append(" = (")
-                    .append(lane)
-                    .append(" ^ (")
-                    .append(lane)
-                    .append(" >> ")
-                    .append(plan.shift0())
-                    .append("u)) * m1")
-                    .append(";\n")
+                    .append(" *= m1;\n")
                     .append(indent)
                     .append(lane)
                     .append(" ^= ")
                     .append(lane)
                     .append(" >> ")
-                    .append(plan.shift1())
+                    .append(shift(plan.shift0()))
                     .append("u;\n");
             case 1 -> source.append(indent)
                     .append(lane)
                     .append(" += ")
-                    .append(rotr64(companion, plan.rotation0()))
+                    .append(rotr32("(k2 ^ n)", rotation(plan.rotation1())))
                     .append(";\n")
                     .append(indent)
                     .append(lane)
                     .append(" ^= ")
                     .append(lane)
                     .append(" >> ")
-                    .append(plan.shift1())
+                    .append(shift(plan.shift1()))
                     .append("u;\n")
                     .append(indent)
                     .append(lane)
-                    .append(" *= m1")
-                    .append(";\n")
-                    .append(indent)
-                    .append(lane)
-                    .append(" ^= ")
-                    .append(rotl64(
-                            "(" + lane + " + k2)",
-                            plan.rotation1()))
-                    .append(";\n");
+                    .append(" *= m0;\n");
             case 2 -> source.append(indent)
                     .append(lane)
                     .append(" ^= ")
-                    .append(rotl64(
-                            "(" + companion + " + k2)",
-                            plan.rotation1()))
+                    .append(rotl32("(k1 ^ n)", rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(lane)
-                    .append(" += ")
-                    .append(rotr64(
-                            "(" + lane + " ^ k1)",
-                            plan.rotation0()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(lane)
-                    .append(" = (")
-                    .append(lane)
-                    .append(" ^ (")
-                    .append(lane)
-                    .append(" >> ")
-                    .append(plan.shift0())
-                    .append("u)) * m1")
-                    .append(";\n")
+                    .append(" += k2;\n")
                     .append(indent)
                     .append(lane)
                     .append(" ^= ")
                     .append(lane)
                     .append(" >> ")
-                    .append(plan.shift1())
+                    .append(shift(plan.shift0()))
                     .append("u;\n");
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
-        source.append(indent)
-                .append("const uint64_t j2ll_nt_word_")
-                .append(token)
-                .append(" = ")
-                .append(lane)
-                .append(" ^ ")
-                .append(rotr64(companion, plan.rotation1()))
-                .append(";\n");
+        appendWord(source, token, lane, indent);
     }
 
     private void emitDualLane(
@@ -230,95 +299,58 @@ final class NativeTextCodecCEmitter {
         String first = "j2ll_nt_d0_" + token;
         String second = "d1";
         source.append(indent)
-                .append("uint64_t ")
+                .append("uint32_t ")
                 .append(first)
-                .append(" = k0")
-                .append(" + step")
-                .append(" * n")
-                .append(";\n")
+                .append(" = k0 + step * n;\n")
                 .append(indent)
-                .append("uint64_t ")
+                .append("uint32_t ")
                 .append(second)
-                .append(" = k1")
-                .append(" ^ (m0")
-                .append(" * n")
-                .append(" + k2")
-                .append(");\n");
+                .append(" = k1 ^ (m0 * n + k2);\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
                     .append(first)
                     .append(" += ")
-                    .append(rotl64(second, plan.rotation0()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(second)
-                    .append(" ^= ")
-                    .append(rotr64(first, plan.rotation1()))
+                    .append(rotl32(second, rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(first)
                     .append(" ^= ")
-                    .append(second)
-                    .append(" + m1")
+                    .append(rotr32(
+                            "(" + first + " + " + second + ")",
+                            rotation(plan.rotation1())))
                     .append(";\n");
             case 1 -> source.append(indent)
                     .append(second)
                     .append(" += ")
-                    .append(rotr64(first, plan.rotation1()))
+                    .append(rotr32(first, rotation(plan.rotation1())))
                     .append(";\n")
                     .append(indent)
                     .append(first)
                     .append(" ^= ")
-                    .append(rotl64(second, plan.rotation0()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(second)
-                    .append(" += ")
-                    .append(first)
-                    .append(" ^ m1")
+                    .append(rotl32(second, rotation(plan.rotation0())))
                     .append(";\n");
             case 2 -> source.append(indent)
                     .append(first)
                     .append(" ^= ")
-                    .append(rotr64(
-                            "(" + second + " + k2)",
-                            plan.rotation0()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(second)
-                    .append(" += ")
-                    .append(rotl64(first, plan.rotation1()))
+                    .append(rotr32("(" + second + " + k2)", rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(first)
                     .append(" += ")
-                    .append(second)
-                    .append(" ^ m1")
+                    .append(rotl32(second, rotation(plan.rotation1())))
                     .append(";\n");
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
         source.append(indent)
-                .append(first)
-                .append(" ^= ")
-                .append(first)
-                .append(" >> ")
-                .append(plan.shift0())
-                .append("u;\n")
-                .append(indent)
-                .append(second)
-                .append(" ^= ")
-                .append(second)
-                .append(" >> ")
-                .append(plan.shift1())
-                .append("u;\n")
-                .append(indent)
-                .append("const uint64_t j2ll_nt_word_")
+                .append("const uint32_t j2ll_nt_word_")
                 .append(token)
                 .append(" = ")
                 .append(first)
-                .append(" ^ ")
-                .append(rotl64(second, plan.rotation1()))
-                .append(";\n");
+                .append(" ^ (")
+                .append(first)
+                .append(" >> ")
+                .append(shift(plan.shift0()))
+                .append("u);\n");
     }
 
     private void emitFeistel(
@@ -326,58 +358,37 @@ final class NativeTextCodecCEmitter {
             NativeTextCodecPlan plan,
             String token,
             String indent) {
-        String base = "fb";
         String left = "j2ll_nt_fl_" + token;
         String right = "fr";
-        String mixed = "fm";
-        String next = "fn";
         source.append(indent)
-                .append("const uint64_t ")
-                .append(base)
-                .append(" = k0")
-                .append(" + step")
-                .append(" * n")
-                .append(";\n")
+                .append("const uint32_t fb = k0 + step * n;\n")
                 .append(indent)
                 .append("uint32_t ")
                 .append(left)
-                .append(" = (uint32_t)(")
-                .append(base)
-                .append(" >> 32u);\n")
+                .append(" = fb >> 16u;\n")
                 .append(indent)
                 .append("uint32_t ")
                 .append(right)
-                .append(" = (uint32_t)")
-                .append(base)
-                .append(";\n");
-        for (int round = 0; round < 4; round++) {
-            int rotation = plan.feistelRotation(round);
+                .append(" = fb & UINT32_C(0xffff);\n");
+        for (int round = 0; round < 2; round++) {
             source.append(indent)
-                    .append("const uint32_t ")
-                    .append(mixed)
-                    .append('_')
+                    .append("const uint32_t fm_")
                     .append(round)
                     .append(" = ")
                     .append(rotl32(
                             "(" + right + " ^ UINT32_C(0x"
-                                    + hex32(plan.feistelRoundKey(round))
+                                    + hex32(plan.feistelRoundKey(round) & 0xffff)
                                     + "))",
-                            rotation))
-                    .append(" * UINT32_C(0x")
-                    .append(hex32((int) plan.multiplier0()))
-                    .append(");\n")
+                            plan.feistelRotation(round)))
+                    .append(" * m0;\n")
                     .append(indent)
-                    .append("const uint32_t ")
-                    .append(next)
-                    .append('_')
+                    .append("const uint32_t fn_")
                     .append(round)
-                    .append(" = ")
+                    .append(" = (")
                     .append(left)
-                    .append(" ^ ")
-                    .append(mixed)
-                    .append('_')
+                    .append(" ^ fm_")
                     .append(round)
-                    .append(";\n")
+                    .append(") & UINT32_C(0xffff);\n")
                     .append(indent)
                     .append(left)
                     .append(" = ")
@@ -385,18 +396,16 @@ final class NativeTextCodecCEmitter {
                     .append(";\n")
                     .append(indent)
                     .append(right)
-                    .append(" = ")
-                    .append(next)
-                    .append('_')
+                    .append(" = fn_")
                     .append(round)
                     .append(";\n");
         }
         source.append(indent)
-                .append("const uint64_t j2ll_nt_word_")
+                .append("const uint32_t j2ll_nt_word_")
                 .append(token)
-                .append(" = ((uint64_t)")
+                .append(" = (")
                 .append(left)
-                .append(" << 32u) | (uint64_t)")
+                .append(" << 16u) | ")
                 .append(right)
                 .append(";\n");
     }
@@ -408,110 +417,67 @@ final class NativeTextCodecCEmitter {
             String indent) {
         String value = "j2ll_nt_r_" + token;
         source.append(indent)
-                .append("uint64_t ")
+                .append("uint32_t ")
                 .append(value)
-                .append(" = k0")
-                .append(" ^ (step")
-                .append(" * n")
-                .append(");\n");
+                .append(" = k0 ^ (step * n);\n");
         switch (plan.schedule()) {
             case 0 -> source.append(indent)
                     .append(value)
                     .append(" = ")
-                    .append(rotl64(
-                            "(" + value + " + k1)",
-                            plan.rotation0()))
+                    .append(rotl32("(" + value + " + k1)", rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" *= m0")
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" ^= ")
-                    .append(rotr64(
-                            "(" + value + " + k2)",
-                            plan.rotation1()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" += m1")
-                    .append(" * n")
-                    .append(";\n");
+                    .append(" *= m0;\n");
             case 1 -> source.append(indent)
                     .append(value)
                     .append(" ^= ")
-                    .append(rotr64(
-                            "(" + value + " + k2)",
-                            plan.rotation1()))
+                    .append(rotr32("(" + value + " + k2)", rotation(plan.rotation1())))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" *= m1")
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" = ")
-                    .append(rotl64(
-                            "(" + value + " + k1)",
-                            plan.rotation0()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" ^= m0")
-                    .append(" * n")
-                    .append(";\n");
+                    .append(" *= m1;\n");
             case 2 -> source.append(indent)
                     .append(value)
                     .append(" += ")
-                    .append(rotl64(
-                            "(k1 ^ n)",
-                            plan.rotation0()))
+                    .append(rotl32("(k1 ^ n)", rotation(plan.rotation0())))
                     .append(";\n")
                     .append(indent)
                     .append(value)
-                    .append(" ^= ")
-                    .append(value)
-                    .append(" >> ")
-                    .append(plan.shift0())
-                    .append("u;\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" *= m0")
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" = ")
-                    .append(rotr64(
-                            "(" + value + " ^ k2)",
-                            plan.rotation1()))
-                    .append(";\n")
-                    .append(indent)
-                    .append(value)
-                    .append(" += m1")
-                    .append(";\n");
+                    .append(" *= m0;\n");
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
         source.append(indent)
-                .append("const uint64_t j2ll_nt_word_")
+                .append("const uint32_t j2ll_nt_word_")
                 .append(token)
                 .append(" = ")
                 .append(value)
                 .append(" ^ (")
                 .append(value)
                 .append(" >> ")
-                .append(plan.shift1())
+                .append(shift(plan.shift1()))
                 .append("u);\n");
     }
 
-    private String rotl64(String expression, int rotation) {
-        return "((" + expression + " << " + rotation + "u) | ("
-                + expression + " >> " + (64 - rotation) + "u))";
+    private void appendWord(
+            StringBuilder source,
+            String token,
+            String value,
+            String indent) {
+        source.append(indent)
+                .append("const uint32_t j2ll_nt_word_")
+                .append(token)
+                .append(" = ")
+                .append(value)
+                .append(";\n");
     }
 
-    private String rotr64(String expression, int rotation) {
-        return "((" + expression + " >> " + rotation + "u) | ("
-                + expression + " << " + (64 - rotation) + "u))";
+    private int rotation(int value) {
+        return 1 + Math.floorMod(value, 31);
+    }
+
+    private int shift(int value) {
+        return 1 + Math.floorMod(value, 31);
     }
 
     private String rotl32(String expression, int rotation) {
@@ -519,8 +485,9 @@ final class NativeTextCodecCEmitter {
                 + expression + " >> " + (32 - rotation) + "u))";
     }
 
-    private String hex(long value) {
-        return String.format(Locale.ROOT, "%016x", value);
+    private String rotr32(String expression, int rotation) {
+        return "((" + expression + " >> " + rotation + "u) | ("
+                + expression + " << " + (32 - rotation) + "u))";
     }
 
     private String hex32(int value) {

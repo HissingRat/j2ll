@@ -16,6 +16,7 @@ public enum IrOpcode {
     CLASS_INIT_END,
     CLASS_INIT_FAILED,
     CLASS_INIT_HAPPENS_BEFORE,
+    CLASS_INIT_ACTIVE_USE,
     ADD_I32,
     SUB_I32,
     MUL_I32,

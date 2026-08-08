@@ -69,6 +69,22 @@ public final class NativeTextCEmitter {
                 indent);
     }
 
+    String decodeTupleInto(
+            NativeTextTupleEncoding tuple,
+            String destination,
+            String indent) {
+        Objects.requireNonNull(tuple, "tuple");
+        requireCValue(destination);
+        requireNonAliasingDestination(tuple.record(), destination);
+        requireIndent(indent);
+        return codecEmitter.decodeTupleInto(
+                tuple,
+                cipherSymbol(tuple.record()),
+                "sizeof(" + cipherSymbol(tuple.record()) + ")",
+                destination,
+                indent);
+    }
+
     public String decodeIntoOffset(
             NativeTextEncoding encoding,
             String byteBuffer,

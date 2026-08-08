@@ -28,8 +28,29 @@ class ZigJniHeaderSetTest {
         assertTrue(header.contains("#define JNIEXPORT __declspec(dllexport)"));
         assertTrue(header.contains("#define JNIEXPORT __attribute__((visibility(\"default\")))"));
         assertTrue(header.contains("typedef int jint;"));
+        assertTrue(header.contains("#ifndef JNICALL\n#define JNICALL\n#endif"));
         assertFalse(includes.stream().anyMatch(path -> path.endsWith("win32")
                 || path.endsWith("linux")
                 || path.endsWith("darwin")));
+    }
+
+    @Test
+    void libcFreeSurfaceGetsCompileOnlyHeadersWithoutChangingTheJniAbi()
+            throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp.resolve("libc-free"));
+
+        List<Path> includes = new ZigJniHeaderSet().prepare(
+                workspace,
+                new NativeLibcRequirementPlan(false, java.util.Set.of()));
+
+        Path portableInclude = workspace.jniDirectory().resolve("include");
+        Path libcFree = portableInclude.resolve("libc-free");
+        assertEquals(List.of(portableInclude, libcFree), includes);
+        assertTrue(Files.readString(libcFree.resolve("stdio.h"))
+                .contains("jni.h includes stdio.h"));
+        assertTrue(Files.readString(libcFree.resolve("math.h"))
+                .contains("__builtin_isnan"));
+        assertTrue(Files.isRegularFile(libcFree.resolve("stdlib.h")));
+        assertTrue(Files.isRegularFile(libcFree.resolve("string.h")));
     }
 }

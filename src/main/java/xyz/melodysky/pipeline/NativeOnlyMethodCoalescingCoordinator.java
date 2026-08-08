@@ -31,39 +31,72 @@ import xyz.melodysky.toolchain.NativeMethodImplementation;
 public final class NativeOnlyMethodCoalescingCoordinator {
     private static final String PASS =
             "NATIVE_ONLY_SINGLE_CALLER_COALESCING";
+    private static final int MAX_COALESCED_CALLEE_INSTRUCTIONS = 96;
 
     public NativeOnlyMethodCoalescingResult run(
             Map<String, IrMethod> inputMethods,
             NativeMethodInternalizationPlan internalizationPlan,
             NativeImplementationPlan implementationPlan,
             long seed) {
-        NativeOnlyMethodCoalescingPlanner.Draft draft =
-                new NativeOnlyMethodCoalescingPlanner().plan(
-                        inputMethods,
-                        internalizationPlan,
-                        implementationPlan);
-        var inlining = new MethodInliningPass().run(
-                program(inputMethods),
-                draft.inliningPlan(),
-                new MethodInliningOptions(true, seed, 24, 64));
-        LinkedHashMap<String, IrMethod> methods = methodMap(inlining.program());
-        ArrayList<NativeOnlyMethodCoalescingDecision> decisions =
-                new ArrayList<>(draft.keptDecisions());
+        LinkedHashMap<String, IrMethod> methods =
+                new LinkedHashMap<>(inputMethods);
         LinkedHashMap<String, NativeMethodImplementation> implementations =
                 implementationMap(implementationPlan);
-
-        draft.candidatesByCallee().entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> finalizeCandidate(
-                        entry.getKey(),
-                        entry.getValue().callerMethodKey(),
-                        inlining.decisions(),
-                        methods,
-                        implementations,
-                        decisions));
+        LinkedHashMap<String, NativeOnlyMethodCoalescingDecision>
+                decisionsByCallee = new LinkedHashMap<>();
+        NativeImplementationPlan currentImplementationPlan = implementationPlan;
+        int roundLimit = Math.max(1, internalizationPlan.decisions().size());
+        for (int round = 0; round < roundLimit; round++) {
+            NativeOnlyMethodCoalescingPlanner.Draft draft =
+                    new NativeOnlyMethodCoalescingPlanner().plan(
+                            methods,
+                            internalizationPlan,
+                            currentImplementationPlan);
+            draft.keptDecisions().forEach(decision ->
+                    decisionsByCallee.put(
+                            decision.calleeMethodKey(),
+                            decision));
+            if (draft.candidatesByCallee().isEmpty()) {
+                break;
+            }
+            var inlining = new MethodInliningPass().run(
+                    program(methods),
+                    draft.inliningPlan(),
+                    new MethodInliningOptions(
+                            true,
+                            seed,
+                            MAX_COALESCED_CALLEE_INSTRUCTIONS,
+                            64));
+            LinkedHashMap<String, IrMethod> rewrittenMethods =
+                    methodMap(inlining.program());
+            int coalescedBefore = (int) decisionsByCallee.values().stream()
+                    .filter(NativeOnlyMethodCoalescingDecision::coalesced)
+                    .count();
+            draft.candidatesByCallee().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> finalizeCandidate(
+                            entry.getKey(),
+                            entry.getValue().callerMethodKey(),
+                            inlining.decisions(),
+                            rewrittenMethods,
+                            implementations,
+                            decisionsByCallee));
+            methods = rewrittenMethods;
+            currentImplementationPlan = new NativeImplementationPlan(
+                    List.copyOf(implementations.values()),
+                    implementationPlan.unavailableReasonCodes(),
+                    implementationPlan.localReferencePlans());
+            int coalescedAfter = (int) decisionsByCallee.values().stream()
+                    .filter(NativeOnlyMethodCoalescingDecision::coalesced)
+                    .count();
+            if (coalescedAfter == coalescedBefore) {
+                break;
+            }
+        }
 
         NativeOnlyMethodCoalescingPlan plan =
-                new NativeOnlyMethodCoalescingPlan(decisions);
+                new NativeOnlyMethodCoalescingPlan(
+                        List.copyOf(decisionsByCallee.values()));
         NativeImplementationPlan finalImplementationPlan =
                 new NativeImplementationPlan(
                         List.copyOf(implementations.values()),
@@ -82,7 +115,8 @@ public final class NativeOnlyMethodCoalescingCoordinator {
             List<MethodInliningDecision> inliningDecisions,
             LinkedHashMap<String, IrMethod> methods,
             Map<String, NativeMethodImplementation> implementations,
-            List<NativeOnlyMethodCoalescingDecision> decisions) {
+            Map<String, NativeOnlyMethodCoalescingDecision>
+                    decisionsByCallee) {
         List<MethodInliningDecision> edgeDecisions = inliningDecisions.stream()
                 .filter(decision -> decision.callerMethodKey().equals(callerKey)
                         && decision.calleeMethodKey().equals(calleeKey))
@@ -94,27 +128,30 @@ public final class NativeOnlyMethodCoalescingCoordinator {
         if (edgeDecisions.size() != 1 || failure.isPresent()) {
             String reason = failure.map(MethodInliningDecision::reasonCode)
                     .orElse(NativeOnlyMethodCoalescingReason.CALL_SITE_NOT_UNIQUE);
-            decisions.add(NativeOnlyMethodCoalescingDecision.kept(
-                    calleeKey,
-                    Optional.of(callerKey),
-                    reason));
+            decisionsByCallee.put(calleeKey,
+                    NativeOnlyMethodCoalescingDecision.kept(
+                            calleeKey,
+                            Optional.of(callerKey),
+                            reason));
             return;
         }
         if (hasResidualReference(methods, calleeKey, calleeKey)) {
-            decisions.add(NativeOnlyMethodCoalescingDecision.kept(
-                    calleeKey,
-                    Optional.of(callerKey),
-                    NativeOnlyMethodCoalescingReason.RESIDUAL_REFERENCE));
+            decisionsByCallee.put(calleeKey,
+                    NativeOnlyMethodCoalescingDecision.kept(
+                            calleeKey,
+                            Optional.of(callerKey),
+                            NativeOnlyMethodCoalescingReason.RESIDUAL_REFERENCE));
             return;
         }
         IrMethod callerBody = methods.get(callerKey);
         NativeMethodImplementation caller = implementations.get(callerKey);
         NativeMethodImplementation callee = implementations.get(calleeKey);
         if (callerBody == null || caller == null || callee == null) {
-            decisions.add(NativeOnlyMethodCoalescingDecision.kept(
-                    calleeKey,
-                    Optional.of(callerKey),
-                    NativeOnlyMethodCoalescingReason.IR_BODY_MISSING));
+            decisionsByCallee.put(calleeKey,
+                    NativeOnlyMethodCoalescingDecision.kept(
+                            calleeKey,
+                            Optional.of(callerKey),
+                            NativeOnlyMethodCoalescingReason.IR_BODY_MISSING));
             return;
         }
         methods.remove(calleeKey);
@@ -134,10 +171,27 @@ public final class NativeOnlyMethodCoalescingCoordinator {
                         callerBody,
                         calleeKey,
                         updatedAbi));
+        implementations.replaceAll((methodKey, implementation) ->
+                !methodKey.equals(calleeKey)
+                                && implementation.coalescedIntoMethodKey()
+                                        .filter(calleeKey::equals)
+                                        .isPresent()
+                        ? implementation.coalescedInto(callerKey)
+                        : implementation);
         implementations.put(calleeKey, callee.coalescedInto(callerKey));
-        decisions.add(NativeOnlyMethodCoalescingDecision.coalesced(
-                calleeKey,
-                callerKey));
+        decisionsByCallee.replaceAll((methodKey, decision) ->
+                decision.coalesced()
+                                && decision.callerMethodKey()
+                                        .filter(calleeKey::equals)
+                                        .isPresent()
+                        ? NativeOnlyMethodCoalescingDecision.coalesced(
+                                methodKey,
+                                callerKey)
+                        : decision);
+        decisionsByCallee.put(calleeKey,
+                NativeOnlyMethodCoalescingDecision.coalesced(
+                        calleeKey,
+                        callerKey));
     }
 
     private boolean hasResidualReference(

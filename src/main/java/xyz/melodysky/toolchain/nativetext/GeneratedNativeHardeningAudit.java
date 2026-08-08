@@ -66,6 +66,9 @@ public final class GeneratedNativeHardeningAudit {
     public static final String INVALID_AFFINE_CIPHERTEXT_STORAGE =
             GeneratedNativeAffineStorageAudit
                     .INVALID_AFFINE_CIPHERTEXT_STORAGE;
+    public static final String CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE =
+            GeneratedNativeMetadataStructureAudit
+                    .CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE;
 
     public static final String EVIDENCE_CALL_LOCAL_TEXT_SCRATCH =
             "CALL_LOCAL_TEXT_SCRATCH";

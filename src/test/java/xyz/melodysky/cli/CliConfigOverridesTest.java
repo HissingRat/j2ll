@@ -8,6 +8,9 @@ import com.google.gson.JsonParser;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.config.ConfigLoader;
+import xyz.melodysky.toolchain.NativeUnwindRetentionPolicy;
+import xyz.melodysky.toolchain.NativeUnwindRetentionReason;
+import xyz.melodysky.toolchain.TargetTriple;
 
 class CliConfigOverridesTest {
     @Test
@@ -22,11 +25,21 @@ class CliConfigOverridesTest {
         var overridden = new CliConfigOverrides().applyDebug(original, true);
 
         assertFalse(original.intermediates().enabled());
+        assertFalse(original.debugMode());
+        assertFalse(original.protection().binary().retainUnwindInfo());
         assertTrue(overridden.intermediates().enabled());
         assertTrue(overridden.intermediates().includeDebugDumps());
         assertTrue(overridden.intermediates().includePerClassIr());
         assertTrue(overridden.intermediates().includePerClassLlvm());
         assertTrue(overridden.intermediates().includePerClassC());
+        assertTrue(overridden.debugMode());
+        assertFalse(overridden.protection().binary().retainUnwindInfo());
+        var unwind = new NativeUnwindRetentionPolicy(
+                        overridden.protection().binary().retainUnwindInfo(),
+                        overridden.debugMode())
+                .resolve(TargetTriple.LINUX_X64);
+        assertTrue(unwind.effective());
+        assertTrue(unwind.reason() == NativeUnwindRetentionReason.DEBUG_MODE);
     }
 
     @Test

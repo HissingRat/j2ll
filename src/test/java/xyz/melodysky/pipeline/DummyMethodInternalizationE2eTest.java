@@ -48,6 +48,8 @@ class DummyMethodInternalizationE2eTest {
             throws Exception {
         String target =
                 "zoo/basic/PrimitiveBasicCase#publicStaticLeaf!(I)I";
+        String middle =
+                "zoo/basic/PrimitiveBasicCase#publicStaticMiddle!(I)I";
         Path inputJar = dummyJar();
         ChildRun original = runJar(inputJar, "basic");
         Path workspace = temp.resolve("public-static-workspace");
@@ -60,8 +62,9 @@ class DummyMethodInternalizationE2eTest {
                             "PARTIAL_WORLD",
                             List.of(
                                     "zoo/basic/PrimitiveBasicCase#simpleInt!(II)I",
+                                    middle,
                                     target),
-                            List.of(target)),
+                            List.of(middle, target)),
                     workspace,
                     xyz.melodysky.progress.BuildProgressListener.none(),
                     WholeProgramAnalysisPolicy.currentJarOnly(List.of(
@@ -77,6 +80,11 @@ class DummyMethodInternalizationE2eTest {
                 pipeline.outputJar(),
                 "zoo/basic/PrimitiveBasicCase",
                 "publicStaticLeaf",
+                "(I)I"));
+        assertFalse(jarContainsMethod(
+                pipeline.outputJar(),
+                "zoo/basic/PrimitiveBasicCase",
+                "publicStaticMiddle",
                 "(I)I"));
         assertFalse(jarContainsField(
                 pipeline.outputJar(),
@@ -96,7 +104,7 @@ class DummyMethodInternalizationE2eTest {
                 0,
                 internalNativeOnlyCount(workspace));
         assertEquals(
-                1,
+                2,
                 coalescedNativeOnlyCount(workspace));
         String lowering = Files.readString(workspace.resolve(
                 "reports/lowering-report.json"));
@@ -278,7 +286,8 @@ class DummyMethodInternalizationE2eTest {
                       "hideInternalSymbols": true,
                       "strip": true,
                       "removePdb": true,
-                      "symbolAudit": true
+                      "symbolAudit": true,
+                      "retainUnwindInfo": false
                     }
                   }
                 }

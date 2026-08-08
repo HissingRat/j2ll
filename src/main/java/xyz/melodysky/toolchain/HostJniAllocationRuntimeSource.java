@@ -89,7 +89,10 @@ final class HostJniAllocationRuntimeSource {
         if (!classForNameKeys.isEmpty()) {
             builder.append("""
                     static jclass j2ll_class_for_name_with_init(
-                            JNIEnv* env, const char* internal_name, int initialize);
+                            JNIEnv* env,
+                            const char* internal_name,
+                            const char* dotted_name,
+                            int initialize);
 
                     """);
         }
@@ -107,6 +110,8 @@ final class HostJniAllocationRuntimeSource {
                     .append("(JNIEnv* env, int32_t initialize) {\n")
                     .append("    return j2ll_class_for_name_with_init(env, \"")
                     .append(escapeCString(parts.jniName()))
+                    .append("\", \"")
+                    .append(escapeCString(parts.jniName().replace('/', '.')))
                     .append("\", initialize);\n")
                     .append("}\n\n");
         }

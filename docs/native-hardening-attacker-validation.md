@@ -249,7 +249,7 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - `CLOSED_WORLD`或显式current-JAR-only Y授权只是分析scope声明，不是对外部agent/JNI hook不可见的安全承诺。
 - implementation symbol仍存在于native code，攻击者可以通过native call graph和动态trace恢复；本项目标是减少稳定metadata与批量mapping，不是隐藏可执行语义。
 
-在logical method internalization之上已加入第一个physical coalescing切片：若一个internal-only小方法恰有一个direct native call site，并能证明pure scalar、non-throwing、无field/nested-call/monitor/JNI-owned-reference、非递归且不超过bounded instruction budget，则直接复用严格inlining proof把callee合并进caller。lowering report改写为`coalescedNativeOnly`并记录stable caller method key；LLVM compiler、generated-C binding filter与artifact audit共同要求callee function/declaration/reference/wrapper/workspace symbol全部消失。A→B→C chain当前显式fail closed，避免nested coalescing产生悬空physical target；initializer-plan caller也暂不合并，防止caller IR变化后继续消费旧initializer plan。inline rewrite必须逐instruction保留未替换call的call-indirection metadata。reference/helper-backed target暂不为了覆盖率放宽。
+在logical method internalization之上已加入bounded physical coalescing：若一个internal-only方法恰有一个direct native call site，并能证明pure scalar、non-throwing、无field/nested-call/monitor/JNI-owned-reference、非递归且不超过96条callee instruction，则复用严格inlining proof把callee合并进caller。planner按bottom-up轮次处理A→B→C chain；B继续合并进C时，A/B的implementation与report physical root同时重定向到C，不保留中间callee surface。每个caller最多处理64个site，轮数不超过internalized method数。lowering report改写为`coalescedNativeOnly`并记录最终stable physical root；LLVM compiler、generated-C binding filter与artifact audit共同要求所有coalesced callee function/declaration/reference/wrapper/workspace symbol消失。initializer-plan caller仍暂不合并，防止caller IR变化后继续消费旧initializer plan。inline rewrite必须逐instruction保留未替换call的call-indirection metadata。reference/helper-backed target暂不为了覆盖率放宽。
 
 验收：
 
@@ -311,8 +311,15 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - 不允许 `JNI_OnLoad` 或 aggregate registration 一次性解码所有 domain。
 - registration metadata 至少按 owner 临时解码；business string 按实际 token/call site 解码。
 - generated-C 高敏感 metadata 的普通 literal 只在真实 use-site 首次到达时解码；
-  同一 C function 内的同明文共享一个 activation-local slot，并在该 activation
-  内最多解码一次。不同 function 不得共享 slot、明文 cache 或 encoding identity。
+  同一C function内同明文共享singleton slot。distinct literal只有在同一direct C call
+  argument list、保证共同求值时才组成最多8项/512 decoded bytes的tuple；单个超长文本
+  独占一组，不同call/assignment/branch保持独立。
+- tuple的每个component先使用独立build/purpose/use-derived lane mask参与真实cipher
+  bytes，再进入单一affine record codec；offset只是use-site常量，不产生目录。不同function
+  不得共享tuple、slot、明文cache或encoding identity，反向fanout audit阻断复用。
+- 每个record必须具有显式use-count/lifetime plan。单次use与同一direct-call参数组走
+  guardless fast path；后者只在一个参数表达式内解码，其余参数只取同一scratch的
+  compile-time offset。只有跨call/assignment复用允许生成`ready` guard。
 - 每个 function 使用聚合 scratch 与统一 cleanup hook，在 normal/early/failure
   return 时清零全部 slot；owner/table 等可明确界定更短 use window 的路径继续
   使用显式 decode/use/zero。只有低敏感普通 runtime error 文案可显式选择
@@ -338,10 +345,12 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
   `HostJniCSourceGenerator`/Zig builder 以三个显式 key 传递，兼容 overload
   不进入 mainline。扰动一个 text domain 不会复用另外两个 domain 的 key。
 - native text 不再使用一个固定 SplitMix decoder，也不再把两个 XOR seed share
-  与 ciphertext 相邻存放。每个 use identity 从 build key 派生 codec family、
-  schedule、遍历方向、rotate/shift 和常量；当前四个 family 为 `WEYL_ARX`、
-  `DUAL_LANE_ARX`、`FEISTEL_32`、`FOLD_ROTATE`。解码逻辑直接内联到拥有该
-  scratch 的调用点，不生成一个可覆盖多个 ciphertext 的通用 decoder。
+  与 ciphertext 相邻存放。每个 use identity 从 build key 派生compact 32-bit codec
+  family、schedule、遍历方向、rotate/shift 和常量；当前四个 family 为 `WEYL_ARX`、
+  `DUAL_LANE_ARX`、`FEISTEL_32`、`FOLD_ROTATE`。Weyl/dual-lane/fold的schedule会改变
+  指令序列；Feistel schedule主要改变round material/rotation，不能把12个family/schedule
+  组合都描述为结构独立。解码逻辑直接内联到拥有该scratch的调用点，不生成一个可覆盖
+  多个ciphertext的通用decoder。这仍是at-rest obfuscation而非密码学强度声明。
 - 四种 codec family 的公共 ciphertext indexed read 必须通过 volatile-qualified
   lvalue 执行；仅清零使用 volatile 不足以阻止优化器反推出明文。审计同时拒绝
   “先做一次 dummy volatile read、真实解码仍 direct read”的 mixed shape。
@@ -386,21 +395,32 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
   才算成功；任何 status/exception failure 都进入显式 fail-closed `FatalError`，避免
   native function pointer 部分保留后继续运行。
 - ordinary 模式的 owner-local method order 也由 build identity 派生；hidden 模式继续使用 method-table-hiding plan 自己的 metadata/function physical order。
-- rollback 与 exception-restore 的三条低敏感错误文案也不再作为稳定 native
-  明文/xref 锚点；aggregate/owner 各自使用 registration-domain、
-  build-scoped encoding，只在对应 `FatalError` 路径的 local scratch 中恢复。
+- rollback 与 exception-restore 的四种低敏感失败文案也不再作为稳定 native
+  明文/xref 锚点；它们各自由registration-domain、build-scoped、hash-only
+  `noinline,cold` leaf拥有，leaf只接收`JNIEnv*`，并只在对应`FatalError`路径恢复。
   generated-C hardening gate 对旧稳定文案 fail closed。
-- method name/descriptor 同值只在同一 owner 与各自 purpose domain 内复用；
-  不跨 owner 共享 encoding 或 decoded scratch。去重后的 owner-local layout
-  在 `bindings <= 64` 且 `textScratch <= 16 KiB` 时使用有界栈 storage，
-  任一上限超出时使用 heap；两条路径都清零 `JNINativeMethod[]` 与明文 scratch，
-  heap 路径随后释放。
+- method name/descriptor 同值只在同一 owner 与各自 purpose domain 内复用；去重文本
+  进一步按最多8项且最多512 decoded bytes组成bounded group，每group只生成一个
+  encoding/decoder，单个超限文本独占一组。不得跨owner或跨purpose共享encoding或
+  decoded scratch。完整owner layout在`bindings <= 64`且`textScratch <= 16 KiB`时使用
+  有界栈storage，任一上限超出时使用heap；两条路径都清零`JNINativeMethod[]`与明文
+  scratch，heap路径随后释放。
+- aggregate root使用activation-local `jclass[]`和`registered_count`统一执行成功清理与
+  失败逆序rollback，不再为每个owner展开重复控制流；每个unregister的status/pending-
+  exception检查与原异常恢复合同保持不变。
 
 验收：
 
 - focused C-source/fake-JNI test 覆盖成功、class lookup failure、token mismatch、当前 owner 部分 `RegisterNatives` failure、后续 owner failure、当前与外层逆序 rollback 的 status/pending-exception failure、原异常恢复和对应 owner local-ref 清理路径。
+- zero-owner generated C由fake `JavaVM/GetEnv` + Clang真实编译运行，证明不会生成零长
+  `registered_owners[]`或rollback路径且`JNI_OnLoad`直接返回`JNI_VERSION_1_8`。
 - real Zig/child-JVM fixture 由 child-first `URLClassLoader` 加载独立 JAR，并把 TCCL 设为 `null`，验证 `JNI_OnLoad` 的 `FindClass` 仍解析 defining-loader 中的 owner。
 - ASan/host integration 不出现 use-after-free、double-free 或明文 lifetime 回归。
+
+32-binding、单owner、相同build key的Clang `-Oz` micro A/B中，registration source由
+162,919 B降到42,700 B（-73.79%），cipher/decoder site由69降到13，COFF object由
+23,015 B降到8,365 B（-63.65%）。该结果只归因于bounded owner-local text group、四个
+cold failure leaf与aggregate loop，不扩大跨owner/purpose恢复单位。
 
 ### H4 — 默认 per-build 多样性
 
@@ -409,9 +429,9 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - `seed: null` 使用 `SecureRandom` 生成 build root。
 - 显式 seed 保留 reproducible 模式。
 - build identity 参与 metadata bytes/symbol、owner order、method-table order、wrapper/internal ordering以及适用的 IR/LLVM pass。
-- CFF 的 block-to-state 与 default target 使用 per-build/per-method 派生的 dense
-  permutation；状态集合始终为 `[0, blockCount)`，不增加 table、状态空间或
-  transition work。
+- CFF 的block-to-state与default target按per-build/per-method/per-region材料派生；
+  每个bounded region独立使用`[0, regionMemberCount)`的dense permutation，不增加
+  table、状态空间或每次transition的查表工作。
 - 同一次 multi-target build 共享语义 plan，不能为每个平台生成不同 Java/native binding 语义。
 
 验收：
@@ -474,12 +494,13 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - JNI 创建 `String` 后立即清零临时明文。
 - registration metadata 与业务字符串不共用 codec 或 lookup。
 - 高敏感 metadata（class/member/descriptor/reflection target）优先按调用点/owner 拆分；普通日志文本不以牺牲稳定性为代价做过度变换。
-- 通用 generated-C literal rewriter 默认采用 function-local 聚合 scratch，并把
-  decode 推迟到真实 use-site；同一 function 的同明文复用一个 slot、每个
-  activation 最多解码一次。compiler-supported 统一 cleanup hook 覆盖所有函数
-  退出。该 lifetime 仍宽于单次 JNI call；需要更短窗口的 owner/member/table
-  generator 必须直接使用 per-use native-text emitter。不同 function 之间不共享
-  slot、明文 cache 或 encoding identity。
+- 通用 generated-C literal rewriter 默认采用function-local聚合scratch，并把decode
+  推迟到真实use-site；同一function的同明文复用singleton slot。distinct literal只在
+  同一direct call参数列表内组成bounded 8-item/512-byte tuple，component-specific lane
+  真实参与cipher，分支和不同call不会相互提前解码。compiler-supported统一cleanup hook
+  覆盖所有函数退出。该lifetime仍宽于单次JNI call；需要更短窗口的owner/member/table
+  generator必须直接使用per-use native-text emitter。不同function之间不共享tuple、slot、
+  明文cache或encoding identity。
 
 验收：
 
@@ -658,6 +679,112 @@ token resolver。
   wall-clock 只作为方向性证据，不宣称跨机器/平台稳定比例。两边 method outcome
   均为 57 `nativeLowered` / 14 `skipped`，artifact/readiness audit 均通过。
 
+#### 2026-08-03 focused target-policy 复验
+
+当前tree使用managed Zig 0.15.2完成一次真实六目标matrix cross-target
+compile/link，同时开启libc-free source plan、`retainUnwindInfo=false`以及
+Linux/macOS generated-C machine outliner，结果为`SUCCESS`。该证据证明六目标
+build graph与链接policy可共存；它不等价于在五个non-host OS/JVM上都完成
+runtime E2E。
+
+在确定最低收益阈值前，focused generated-C object/fixture使用LLVM默认收益阈值的
+machine-outliner候选A/B结果为：
+
+| target | object/fixture delta |
+| --- | ---: |
+| Linux x64 | -9.36% |
+| Linux arm64 | -14.06% |
+| macOS x64 | -11.49% |
+| macOS arm64 | -16.66% |
+
+Windows因SEH directive边界保持outliner禁用，不使用Linux/macOS结果
+估算Windows收益。当前生产policy进一步使用
+`-outliner-benefit-threshold=16`，优先抑制只共享少量机器指令、却可能成为
+native-text跨function静态分析锚点的低收益outline；上表只作为选择该方向的候选证据，
+不冒充当前阈值的体积收益。unwind/libc的同轮focused binary evidence为：
+
+- Linux在`retainUnwindInfo=false`时从1,992 B降到1,704 B（-288 B），
+  `.eh_frame`/`.eh_frame_hdr`消失，且`NeededLibraries=[]`。
+- macOS从16,643 B降到12,547 B（-4,096 B），`__unwind_info`/
+  `__eh_frame`消失；但Mach-O仍保留强制的
+  `/usr/lib/libSystem.B.dylib`，所以不宣称dependency-free。
+- Windows的effective unwind retention仍为`true`，3,072 B fixture保留`.pdata`，
+  同时COFF `Imports=[]`；这证明SEH例外与libc/CRT-free是两个独立决策。
+
+native-text single-use guardless fast path在同focused fixture中将generated source从
+5,075 B降到4,856 B（-4.32%），object从1,503 B降到1,479 B（-1.60%）。
+Windows real-Zig/child-JVM active-use fixture另外验证：失败的`<clinit>`首次
+active use得到`ExceptionInInitializerError`，第二次得到
+`NoClassDefFoundError`，初始化尝试计数为1，运行结果`SUCCESS`。这证明
+carrier fusion的post-operation acquire没有把异常路径误当成成功active use。
+
+同一tree另生成只含Linux x64 target的Dummy output JAR，并在Debian WSL2上直接
+检查其4,576 B ELF：`readelf -d`没有`NEEDED`项，`ldd`报告`statically linked`，
+dynamic symbol表除空项外只导出`JNI_OnLoad`，Python `ctypes.CDLL`实际`dlopen`
+成功。其generated-C实际带有16-byte outliner最低收益阈值。该历史产物仍有来自
+per-class LLVM input的`.eh_frame`/`.eh_frame_hdr`；它证明了旧实现“开关只作用于
+generated C”的边界，也证明仅靠generated-C flag不能消除`.ll`输入产生的unwind
+section。该WSL当时没有安装Linux Java，因此这条证据不冒充Linux child-JVM
+registration/runtime E2E。
+
+#### 2026-08-08 proof-based LLVM unwind omission contract
+
+上述旧边界现在由final-model proof取代。实验确认：Zig module的
+`unwind_tables=.none`以及generated-C的`-fno-unwind-tables`/
+`-fno-asynchronous-unwind-tables`都不会改写经`addObjectFile`输入的LLVM `.ll`；只有在
+对应LLVM function definition结构化带有`nounwind`时，Linux目标才会消除该输入产生的
+`.eh_frame`。因此生产实现不依赖toolchain side effect，也不做`.ll` regex：
+
+- Final canonical `LlvmModule`中的每个function/instruction都携带闭集
+  `PROVEN_ABSENT`、`REQUIRED`或`UNKNOWN`。兼容/raw producer默认`UNKNOWN`。
+- `LlvmNativeUnwindAnalyzer`在所有LLVM protection/global-layout完成后分析同一model；
+  只有全部为`PROVEN_ABSENT`才允许省略。`REQUIRED`和`UNKNOWN`都fail closed到retained。
+- `LlvmModuleEmissionPlan`绑定model与proof；emitter从这一份authoritative model生成
+  retained text，以及proof允许时为definitions添加`nounwind`的可选variant。
+- Linux/macOS在`retainUnwindInfo=false`时才可能选择omit variant；Windows、`--debug`、
+  config requested retain、proof不完整或unmodeled `.o`输入都保留。
+- Manifest分别记录generated-C decision、LLVM module总数、omitted/retained数、opaque
+  object input数和`finalUnwindOmissionExpected`，避免只看config布尔值误判成品。
+- 链接后按目标格式解析section table。当完全省略被预期时，ELF
+  `.eh_frame`/`.eh_frame_hdr`或Mach-O`__eh_frame`/`__unwind_info`非空会阻断构建；
+  PE`.pdata`/`.xdata`也被记录，但Windows SEH policy不会要求删除。
+
+这项优化不改变Java/JNI exception语义：这里证明的是“native stack不会沿该LLVM
+definition展开”，不是删掉JVM pending-exception、typed catch、monitor cleanup或
+`<clinit>` failure路径。
+
+同日的真实验收使用managed Zig 0.15.2构建只含Linux x64 target的Dummy output。输入
+`zoo/Main`是classfile 69，因此在WSL中使用从Adoptium官方API下载并按API SHA-256校验的
+Temurin 25.0.4+7 portable JRE；另行校验的Temurin 17能启动，但按JVM规则拒绝该Java 25
+输入，不能充当运行证据。有效差分结果为：
+
+- 原JAR与output JAR退出码均为0，stdout均为1,425 bytes且SHA-256同为
+  `6870dcaf09f353751dccb2992158e5eb2030b54fed9a5ae5330866539505e783`。
+- stderr只多出`native0.Loader`调用`System.load`的Java 25 native-access warning，且
+  Unsafe warning中的JAR location按预期不同；移除这组Loader warning并归一化JAR path后
+  stderr逐字节相同。该运行实际覆盖Loader extraction/checksum/load、`JNI_OnLoad`、
+  `RegisterNatives`和native-lowered `simpleInt`。
+- 最终`x64-linux.so`为4,248 bytes；manifest记录1个LLVM module、1个omitted、0个
+  retained、0个unmodeled object input和`finalUnwindOmissionExpected=true`。
+  Packaging report的`unwindSections={}`、`unwindSectionBytes=0`与独立`readelf`一致；
+  `readelf -d`无`NEEDED`，`nm -D --defined-only`只见`JNI_OnLoad`，`ldd -r`报告
+  `statically linked`。
+- 同一Config追加`--debug`的反向构建记录`retainUnwindInfoEffective=true`、
+  reason=`DEBUG_MODE`、0个omitted/1个retained module和
+  `finalUnwindOmissionExpected=false`；5,072-byte SO实际记录`.eh_frame=492`、
+  `.eh_frame_hdr=116`，合计608 bytes。由此验证debug override确实选择retained variant，
+  而不是只改manifest文案。
+- 真实六目标fixture也在同一matrix invocation中通过；Linux/macOS四个产物均无目标
+  unwind section，Windows继续走SEH retained policy，既有libc/export/plaintext断言保持
+  通过。arm64首次审计曾发现84 bytes `.eh_frame*`：来源不是LLVM body，而是native-text
+  scratch聚合零初始化触发的隐式`memset` compiler-rt helper。生产prologue现只初始化
+  `length`与真实需要的`ready`字节，decoder仍完整写入payload且cleanup仍覆盖全部exit；
+  修正后六目标复测通过。
+
+上述数字全部是focused fixture evidence，不是v2全量动态库A/B，不用于
+宣称各项对真实业务产物的固定收益。正式release仍需要六目标artifact/
+plaintext/export audit与更新后的攻击者回归。
+
 已完成的低敏感错误冷路径共享切片：
 
 - `HostJniGeneratedCFragmentEmitter`在fragment text protection前应用显式
@@ -703,12 +830,52 @@ ByteBuffer native object model，也没有把Java对象复制到native heap。
 `MelodyPlugin`的3个digest数组也继续消失。71个selected method保持
 `nativeLowered`、0个`skipped`，最终artifact audit通过。
 
-native-only coalescing在dummy real-Zig路径已有实际命中与standalone callee residual
-为零的证据；本次v2的14个`internalNativeOnly`目标则0命中。逐目标reason为5个
-`METHOD_INLINING_EXCEPTION_SENSITIVE`、4个非single-caller、2个callee-too-large，
-以及各1个caller-chain、local-reference和invoke-kind边界。这里不为追求数字放宽
-reference/helper/exception语义；下一切片必须先提供exception transfer与owned local-ref
-remap proof。
+2026-08-02 14:44的observer-soundness重跑取代上述字段命中数作为当前
+保守边界：样本在`LaoShuUtils`中直接调用`Lookup.defineHiddenClass`与
+`MethodHandle.invokeExact`，在`xyz.Melody.b`中另有来源未知的
+`MethodHandle.invokeExact`。独立observer analysis因此对1710/1710个字段都写入
+`DYNAMIC_CLASS_LOADING_SURFACE`/`METHOD_HANDLE_DYNAMIC_SURFACE`并保留JVM声明，
+包括原本可折叠的177个ConstantValue与6个可变slot。这是soundness修正，
+不是回归；要恢复覆盖必须证明hidden-class bytes/lookup和MethodHandle target
+provenance，不能删除global fail-closed gate。最终仍为71/71 `nativeLowered`、
+0 `skipped`，五目标artifact audit通过。
+
+首次实样本跑还暴露ASM `SourceInterpreter` producer-set在大CFG上无界合并：
+主线程超过10分钟仍停在`SourceInterpreter.merge`。修正后无observer call的
+method不建立frame，source lattice最多8个producer并降级到canonical unknown，
+嵌套resolver共享4096-step/128-depth budget。4096-way merge与24层diamond-copy
+回归分别在约40ms/31ms完成并global fail closed；实v2五目标重跑在232s
+完成，抽样thread dump已进入既有generated-C hardening audit，不再出现该热点。
+
+native-only coalescing在dummy与real-Zig路径已有单层及A→B→C bottom-up命中、最终root
+重定向和standalone callee residual为零的证据；本次v2的14个`internalNativeOnly`目标仍
+为0命中。逐目标reason为6个exception-sensitive、4个非single-caller、2个local-reference-
+sensitive、1个invoke-kind unsupported和1个callee-too-large。唯一instance候选
+`TreeHelper$Buffer#bytes([B)V`同时含helper/field/call语义，即使单独放宽virtual-self
+也不能安全coalesce。这里不为追求数字放宽reference/helper/exception语义；下一切片
+必须先提供exception transfer与owned local-ref remap proof。
+
+2026-08-02对同一v2 workload/config执行动态库before/after复验，基线为
+`build_2026-08-02_14-44-03`，最终为`build_2026-08-02_21-25-38`：
+
+| target library | baseline | final | delta |
+| --- | ---: | ---: | ---: |
+| `arm64-linux.so` | 529,248 B | 417,920 B | -21.04% |
+| `arm64-macos.dylib` | 575,360 B | 476,864 B | -17.12% |
+| `x64-linux.so` | 499,800 B | 392,416 B | -21.49% |
+| `x64-macos.dylib` | 471,518 B | 365,022 B | -22.59% |
+| `x64-windows.dll` | 498,688 B | 392,192 B | -21.36% |
+| total | 2,574,614 B | 2,044,414 B | -20.59% |
+
+五个平台的code section下降23.95%–24.98%，readonly data只下降3.10%–7.04%；
+generated C由4,745,384 B降到3,711,244 B（-21.79%），11个LLVM `.ll`合计仅由
+2,173,808 B变为2,173,649 B。最终仍为71个`nativeLowered`、0个`skipped`，五目标
+artifact audit通过。由于正式build使用随机build identity，这不是bit-identical
+reproducible A/B；但下降量远大于既有dual-random-build噪声。当前v2 coalescing为0命中，
+所以本次实样本缩减只能归因于bounded tuple/compact site codec、registration text
+group/cold leaf和aggregate registration control flow，不能归因于删除LLVM方法体或放宽
+method-splitting/protection policy。
+
 第三轮双构建中 57/57 wrapper 的 coarse shape 分类仍相同：地址/RVA 提取器
 已无法直接复用，但高层 wrapper classifier 仍可 100% 复用；只有 normalized
 resolution fingerprint 降到 7/57。第四种branched topology接入后的两份更新
@@ -772,11 +939,32 @@ Windows上的 child-JVM parity fixture因现有
 
 - Fake branch gate 不再因原 body 含普通 helper/call/field/reference 或 exception metadata 整体跳过；原 body 与 exception evidence 原对象保留。
 - Basic-block splitting 已支持普通 helper/call/field/reference 和 instruction-level exception site；原 block terminator/exception edge 只归 suffix。
-- CFF 对支持 shape 的 dispatcher state 使用 build/method-scoped dense
-  permutation，并独立派生 default target；状态数量与原实现一致，不以 sparse
-  state、查表或额外 transition 换取多样性。
-- handler、monitor、volatile/final publication、monitor happens-before、initializer 与危险 class-init 邻接继续保守跳过。
-- focused IR validator/backend tests 覆盖 protected body preservation、显式 throw edge、parameterized prefix/LLVM phi 与各保守边界。
+- CFF扩大覆盖时采用bounded single-entry/multi-exit region，而不是把含敏感边界的整method
+  强塞进一个dispatcher。每个method最多4个互不重叠region，每个region最多32个原始
+  member block；每个region独立使用build/method/region-scoped dense permutation并派生
+  default target，不以sparse state、查表或额外transition换取多样性。
+- owned local-reference producer、instruction exception site、exception edge/handler、
+  monitor、volatile/final publication、thread/monitor happens-before与class-init敏感block
+  不进入region；它们及其exception/ownership evidence在region外保持。region内部edge才
+  进入local dispatcher，multi-exit直接进入原region外target。
+- CFF report只有在至少一个region真实改写并通过validator时写`affected=true`；候选被
+  预算或语义边界排除时继续写稳定`SKIPPED` reason。region-level后的固定样本覆盖数字必须
+  等真实v2重跑和攻击者回归完成后再记录，本节不预报未验证数字。
+- focused IR validator/backend tests 覆盖 protected body preservation、显式 throw edge、parameterized prefix/LLVM phi 与各保守边界；真实Windows host Zig/child-JVM E2E另覆盖scalar prefix region绕开owned array access与pending-exception边界后的输出/异常parity。
+- 2026-08-02 14:44固定v2重跑中，CFF从历史0/71 affected提升到1/71：
+  `xyz/Melody/System/LaoShu/LaoShu#onClose!(ILjava/lang/String;Z)V`真实写入
+  两个region-local dispatcher，protected LLVM中有2个`switch i32 %j2ll_cff_*`，
+  region member数分别为2和3。剩70个中20个因owned-local-reference边界、36个
+  无安全shape、14个为constructor/class-initializer stub而pass-level skip。最终DLL已strip且
+  无symbol table，本次只声称validated LLVM retention；未做Ghidra machine-code
+  dispatcher识别前不扩大为“最终二进制switch必然保留”。
+
+相对`build_2026-08-02_10-45-42`的随机identity构建，新五库总计
+2,574,614 B，增加33,856 B（+1.33%）；JAR从3,826,106 B增至
+3,850,232 B（+24,126 B，+0.63%）。分目标为Linux arm64 +8,880 B、
+Linux x64 +8,080 B、macOS x64 +8,192 B、Windows x64 +8,704 B、macOS arm64
+名义尺寸不变。因build identity与字段保留策略同时改变，该delta仅为
+方向性样本证据，不归因为CFF单项成本。
 - method inlining 不再被 frontend 为所有 direct call 添加的无 handler
   pending-exception evidence 一刀切禁用。只有 pure callee、无 handler 且
   synthetic exception value 完全无 use 的 site 才删除该 evidence；protected

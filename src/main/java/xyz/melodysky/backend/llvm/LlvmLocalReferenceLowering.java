@@ -41,7 +41,7 @@ final class LlvmLocalReferenceLowering {
                 .filter(Objects::nonNull)
                 .distinct()
                 .sorted()
-                .forEach(value -> instructions.add(LlvmInstruction.raw(
+                .forEach(value -> instructions.add(LlvmInstruction.rawProvenNoNativeUnwind(
                         Optional.empty(),
                         "call void @"
                                 + RELEASE_HELPER
@@ -73,7 +73,7 @@ final class LlvmLocalReferenceLowering {
                         + value.predecessorBlock()
                         + " ]")
                 .toList();
-        return Optional.of(LlvmInstruction.raw(
+        return Optional.of(LlvmInstruction.rawProvenNoNativeUnwind(
                 Optional.of(ownershipValueName(parameter)),
                 "phi i32 " + String.join(", ", operands)));
     }

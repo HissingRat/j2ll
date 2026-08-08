@@ -5,11 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import xyz.melodysky.backend.llvm.model.LlvmNativeUnwindProof;
 
 class ZigBuildWriterTest {
     @TempDir
@@ -44,6 +49,15 @@ class ZigBuildWriterTest {
         assertTrue(buildZig.contains("lib_windows_x64.link_gc_sections = true"));
         assertTrue(buildZig.contains("\"-ffunction-sections\""));
         assertTrue(buildZig.contains("\"-fdata-sections\""));
+        assertEquals(6, countOccurrences(
+                buildZig,
+                "\"-Werror=implicit-function-declaration\""));
+        assertEquals(4, countOccurrences(
+                buildZig,
+                "\"-enable-machine-outliner=always\""));
+        assertEquals(4, countOccurrences(
+                buildZig,
+                "\"-outliner-benefit-threshold=16\""));
         for (TargetTriple target : List.of(
                 TargetTriple.LINUX_ARM64,
                 TargetTriple.MACOS_X64,
@@ -57,6 +71,13 @@ class ZigBuildWriterTest {
         assertTrue(manifest.contains("\"target\": \"linux-arm64\""));
         assertTrue(manifest.contains("\"target\": \"macos-x64\""));
         assertTrue(manifest.contains("\"target\": \"windows-x64\""));
+        assertTrue(manifest.contains("\"machineOutlinerEnabled\": true"));
+        assertTrue(manifest.contains(
+                "\"machineOutlinerMinimumBenefitThreshold\": 16"));
+        assertTrue(manifest.contains(
+                "\"machineOutlinerMinimumBenefitThreshold\": 0"));
+        assertTrue(manifest.contains(
+                "\"machineOutlinerReason\": \"MACHINE_OUTLINER_WINDOWS_SEH_UNSUPPORTED\""));
     }
 
     @Test
@@ -214,6 +235,205 @@ class ZigBuildWriterTest {
     }
 
     @Test
+    void unwindPolicyOnlyAddsNoUnwindFlagsToEligibleGeneratedCUnits() throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(
+                unit(TargetTriple.WINDOWS_X64),
+                unit(TargetTriple.LINUX_X64),
+                unit(TargetTriple.MACOS_ARM64)));
+        ZigSourceSet sources = new ZigSourceSet(
+                List.of(workspace.llvmDirectory().resolve("input.ll")),
+                List.of(workspace.jniDirectory().resolve("input.c")),
+                List.of(),
+                List.of());
+        NativeUnwindRetentionPolicy policy =
+                new NativeUnwindRetentionPolicy(false, false);
+
+        String buildZig = new ZigBuildWriter().buildZig(
+                workspace,
+                "j2lltest",
+                plan,
+                sources,
+                true,
+                policy);
+        new ZigBuildWriter().write(
+                workspace,
+                "j2lltest",
+                plan,
+                new ZigInputSet(sources),
+                true,
+                policy);
+
+        assertEquals(2, countOccurrences(buildZig, "\"-fno-unwind-tables\""));
+        assertEquals(2, countOccurrences(
+                buildZig,
+                "\"-fno-asynchronous-unwind-tables\""));
+        String windowsCUnit = sourceBlock(buildZig, "module_windows_x64_c_0.addCSourceFile");
+        assertFalse(windowsCUnit.contains("-fno-unwind-tables"));
+        String linuxCUnit = sourceBlock(buildZig, "module_linux_x64_c_0.addCSourceFile");
+        assertTrue(linuxCUnit.contains("-fno-unwind-tables"));
+
+        String manifest = Files.readString(workspace.manifest());
+        assertTrue(manifest.contains("\"retainUnwindInfoRequested\": false"));
+        assertTrue(manifest.contains("\"generatedCUnwindInfoRetained\": false"));
+        assertTrue(manifest.contains(
+                "\"retainUnwindInfoReason\": \"LLVM_MODULE_PROOF_RETAINED\""));
+        assertTrue(manifest.contains("\"retainUnwindInfoReason\": \"WINDOWS_SEH_REQUIRED\""));
+    }
+
+    @Test
+    void targetSelectsTheProvenLlvmVariantAndReportsItsEffectiveUnwindPlan()
+            throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        Path retained = workspace.llvmDirectory().resolve("pkg_A.ll");
+        Path omission = workspace.llvmDirectory().resolve("pkg_A.no-unwind.ll");
+        NativeLlvmSourcePlan llvmPlan = new NativeLlvmSourcePlan(List.of(
+                new NativeLlvmSource(
+                        "pkg/A",
+                        retained,
+                        Optional.of(omission),
+                        true,
+                        LlvmNativeUnwindProof.PROVEN_ABSENT)));
+        ZigSourceSet sources = new ZigSourceSet(
+                List.of(retained),
+                List.of(),
+                List.of(),
+                List.of(),
+                NativeLibcRequirementPlan.retaining(),
+                llvmPlan);
+        NativeBuildPlan plan = new NativeBuildPlan(List.of(
+                unit(TargetTriple.LINUX_X64),
+                unit(TargetTriple.WINDOWS_X64)));
+        NativeUnwindRetentionPolicy policy =
+                new NativeUnwindRetentionPolicy(false, false);
+
+        new ZigBuildWriter().write(
+                workspace,
+                "j2lltest",
+                plan,
+                new ZigInputSet(sources),
+                true,
+                policy);
+
+        String buildZig = Files.readString(workspace.buildZig());
+        assertTrue(buildZig.contains(
+                "module_linux_x64_llvm_0.addObjectFile(b.path(\"llvm/pkg_A.no-unwind.ll\"));"));
+        assertTrue(buildZig.contains(
+                "module_windows_x64_llvm_0.addObjectFile(b.path(\"llvm/pkg_A.ll\"));"));
+        assertFalse(buildZig.contains(
+                "module_linux_x64_llvm_0.addObjectFile(b.path(\"llvm/pkg_A.ll\"));"));
+        assertFalse(buildZig.contains(
+                "module_windows_x64_llvm_0.addObjectFile(b.path(\"llvm/pkg_A.no-unwind.ll\"));"));
+
+        JsonObject manifest = JsonParser.parseString(
+                        Files.readString(workspace.manifest()))
+                .getAsJsonObject();
+        JsonArray unwindSources = manifest.getAsJsonArray("llvmUnwindSources");
+        assertEquals(1, unwindSources.size());
+        JsonObject source = unwindSources.get(0).getAsJsonObject();
+        assertEquals("llvm/pkg_A.ll", source.get("retainedPath").getAsString());
+        assertEquals("llvm/pkg_A.no-unwind.ll", source.get("omissionPath").getAsString());
+        assertTrue(source.get("omissionSafe").getAsBoolean());
+        assertEquals(
+                LlvmNativeUnwindProof.PROVEN_ABSENT,
+                source.get("proofReasonCode").getAsString());
+
+        JsonObject linux = targetManifest(manifest, "linux-x64");
+        assertFalse(linux.get("retainUnwindInfoEffective").getAsBoolean());
+        assertEquals("CONFIG_DISABLED", linux.get("retainUnwindInfoReason").getAsString());
+        assertEquals(1, linux.get("llvmUnwindModuleCount").getAsInt());
+        assertEquals(1, linux.get("llvmUnwindOmittedModuleCount").getAsInt());
+        assertEquals(0, linux.get("llvmUnwindRetainedModuleCount").getAsInt());
+        assertTrue(linux.get("finalUnwindOmissionExpected").getAsBoolean());
+
+        JsonObject windows = targetManifest(manifest, "windows-x64");
+        assertTrue(windows.get("retainUnwindInfoEffective").getAsBoolean());
+        assertEquals(
+                "WINDOWS_SEH_REQUIRED",
+                windows.get("retainUnwindInfoReason").getAsString());
+        assertEquals(1, windows.get("llvmUnwindModuleCount").getAsInt());
+        assertEquals(0, windows.get("llvmUnwindOmittedModuleCount").getAsInt());
+        assertEquals(1, windows.get("llvmUnwindRetainedModuleCount").getAsInt());
+        assertFalse(windows.get("finalUnwindOmissionExpected").getAsBoolean());
+    }
+
+    @Test
+    void exactGeneratedCSurfaceCanOmitLibcWhileCompatibilityInputsRetainIt()
+            throws Exception {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildPlan plan = new NativeBuildPlan(
+                List.of(unit(TargetTriple.LINUX_X64)));
+        Path source = workspace.jniDirectory().resolve("input.c");
+        ZigSourceSet libcFree = new ZigSourceSet(
+                List.of(),
+                List.of(source),
+                List.of(),
+                List.of(),
+                NativeLibcRequirementPlan.inspect(
+                        "static int helper(int value) { return value + 1; }"));
+
+        String buildZig = new ZigBuildWriter().buildZig(
+                workspace,
+                "j2lltest",
+                plan,
+                libcFree,
+                true);
+        new ZigBuildWriter().write(
+                workspace,
+                "j2lltest",
+                plan,
+                new ZigInputSet(libcFree));
+
+        assertFalse(buildZig.contains(".link_libc = true"));
+        assertEquals(2, countOccurrences(buildZig, ".link_libc = false"));
+        assertTrue(buildZig.contains(".linker_allow_shlib_undefined = false"));
+        assertTrue(buildZig.contains("\"-ffreestanding\""));
+        assertTrue(buildZig.contains("\"-fno-builtin\""));
+        String manifest = Files.readString(workspace.manifest());
+        assertTrue(manifest.contains("\"linkLibc\": false"));
+        assertTrue(manifest.contains("\"libcRequirementReasons\": []"));
+        assertTrue(manifest.contains("\"generatedSourceRequiresLibc\": false"));
+        assertTrue(manifest.contains("\"libcDependencyEffective\": false"));
+        assertTrue(manifest.contains(
+                "\"libcDependencyReason\": \"GENERATED_SOURCE_LIBC_FREE\""));
+
+        ZigSourceSet compatibility =
+                new ZigSourceSet(List.of(), List.of(source), List.of(), List.of());
+        String compatibilityBuild = new ZigBuildWriter().buildZig(
+                workspace,
+                "j2lltest",
+                plan,
+                compatibility,
+                true);
+        assertTrue(compatibilityBuild.contains(".link_libc = true"));
+    }
+
+    @Test
+    void windowsLibcFreeLibraryDisablesTheCrtEntryPoint() {
+        ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
+        NativeBuildPlan plan = new NativeBuildPlan(
+                List.of(unit(TargetTriple.WINDOWS_X64)));
+        Path source = workspace.jniDirectory().resolve("input.c");
+        ZigSourceSet libcFree = new ZigSourceSet(
+                List.of(),
+                List.of(source),
+                List.of(),
+                List.of(),
+                NativeLibcRequirementPlan.inspect("int helper(void) { return 1; }"));
+
+        String buildZig = new ZigBuildWriter().buildZig(
+                workspace,
+                "j2lltest",
+                plan,
+                libcFree,
+                true);
+
+        assertTrue(buildZig.contains(
+                "lib_windows_x64.entry = .{ .symbol_name = \"j2lltest_entry\" };"));
+        assertTrue(buildZig.contains(".link_libc = false"));
+    }
+
+    @Test
     void rejectsLibraryNameThatCouldInjectAPathOrZigSource() {
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
         NativeBuildPlan plan = new NativeBuildPlan(List.of(unit(TargetTriple.LINUX_X64)));
@@ -299,6 +519,24 @@ class ZigBuildWriterTest {
             offset += needle.length();
         }
         return count;
+    }
+
+    private String sourceBlock(String buildZig, String startNeedle) {
+        int start = buildZig.indexOf(startNeedle);
+        assertTrue(start >= 0, startNeedle);
+        int end = buildZig.indexOf("});", start);
+        assertTrue(end >= start, startNeedle);
+        return buildZig.substring(start, end + 3);
+    }
+
+    private JsonObject targetManifest(JsonObject manifest, String targetName) {
+        for (var element : manifest.getAsJsonArray("targets")) {
+            JsonObject target = element.getAsJsonObject();
+            if (targetName.equals(target.get("target").getAsString())) {
+                return target;
+            }
+        }
+        throw new AssertionError("missing target manifest: " + targetName);
     }
 
     private NativeBuildUnit unit(TargetTriple target) {

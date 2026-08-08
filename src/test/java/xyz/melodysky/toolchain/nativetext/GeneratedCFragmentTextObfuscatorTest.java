@@ -53,6 +53,11 @@ final class GeneratedCFragmentTextObfuscatorTest {
                         + NativeScratchZeroizerSource
                                 .CLEANUP_FUNCTION_NAME
                         + ")))"));
+        assertFalse(output.contains(
+                "__attribute__((cleanup("
+                        + NativeScratchZeroizerSource
+                                .CLEANUP_FUNCTION_NAME
+                        + "))) = {"));
         assertFalse(output.contains("j2ll_native_text_decode("));
         assertTrue(output.contains("j2ll_nt_word_"));
         assertFalse(output.contains("static void j2ll_nt_cleanup_"));
@@ -61,6 +66,13 @@ final class GeneratedCFragmentTextObfuscatorTest {
                         + NativeScratchZeroizerSource
                                 .CLEANUP_FUNCTION_NAME));
         assertEquals(2, occurrences(output, "_cipher[] = {"));
+        assertEquals(0, occurrences(output, ".ready == 0u"));
+        assertEquals(0, occurrences(output, ".ready = 0u;"));
+        assertEquals(2, useInvocationCount(output));
+        assertEquals(
+                2,
+                new NativeTextSourceScanner().scan(output)
+                        .siteBoundCodecCount());
         assertFalse(output.contains("_Atomic int"));
         assertFalse(output.contains("j2ll_gcf_low_once_"));
     }
@@ -94,11 +106,45 @@ final class GeneratedCFragmentTextObfuscatorTest {
                                 + NativeScratchZeroizerSource
                                         .CLEANUP_FUNCTION_NAME
                                 + ")))"));
-        assertEquals(3, occurrences(output, "(const char*)j2ll_nt_use_"));
+        assertEquals(3, occurrences(output, "(const char*)(j2ll_nt_use_"));
         assertEquals(2, occurrences(output, "#define j2ll_nt_use_"));
-        assertTrue(output.contains(".ready == 0u"));
+        assertEquals(1, occurrences(output, ".ready == 0u"));
+        assertEquals(1, occurrences(output, ".ready = 0u;"));
         assertFalse(output.substring(output.indexOf("static int first"))
                 .contains("j2ll_nt_word_"));
+    }
+
+    @Test
+    void onlyDirectArgumentsFromOneCallShareARecord() {
+        String fragment = """
+                static int pair(const char*, const char*);
+                static int evaluate(int branch) {
+                    const char* assigned = "assignment-only";
+                    if (branch) {
+                        return pair("first-owner", "first-name");
+                    }
+                    return pair("second-owner", "second-name")
+                            + assigned[0];
+                }
+                """;
+
+        String output = obfuscator.obfuscate(
+                NativeTextBuildKey.fromUtf8("use-coherent-build"),
+                "use-coherent-scope",
+                fragment);
+
+        assertEquals(3, occurrences(output, "_cipher[] = {"));
+        assertEquals(0, occurrences(output, ".ready == 0u"));
+        assertEquals(3, useInvocationCount(output));
+        assertEquals(
+                2,
+                occurrences(output, ".value + "),
+                "each two-component call must decode once and use one raw tuple offset");
+        assertEquals(
+                3,
+                new NativeTextSourceScanner().scan(output)
+                        .siteBoundCodecCount());
+        assertTrue(new GeneratedNativeHardeningAudit().audit(output).passed());
     }
 
     @Test
@@ -182,7 +228,7 @@ final class GeneratedCFragmentTextObfuscatorTest {
         assertTrue(output.contains("/* block \"comment-only-too\" */"));
         assertTrue(output.contains("static const char quote = '\"';"));
         assertFalse(output.contains("\"line\\nquote="));
-        assertTrue(output.contains("(const char*)j2ll_nt_use_"));
+        assertTrue(output.contains("(const char*)(j2ll_nt_use_"));
     }
 
     @Test
@@ -292,8 +338,21 @@ final class GeneratedCFragmentTextObfuscatorTest {
                     }
                     return strcmp(owner, "different") == 0 ? 2 : 0;
                 }
+                static int verify_bytes(void) {
+                    const char* unicode = "秘密";
+                    const char* embedded = "left\\0ignored";
+                    const char* empty = "";
+                    return (unsigned char)unicode[0] != 0xe7u
+                            || (unsigned char)unicode[1] != 0xa7u
+                            || (unsigned char)unicode[2] != 0x98u
+                            || embedded[4] != 0
+                            || embedded[5] != 'i'
+                            || empty[0] != 0;
+                }
                 int main(void) {
-                    return evaluate(0) != 0 || evaluate(1) != 0;
+                    return evaluate(0) != 0
+                            || evaluate(1) != 0
+                            || verify_bytes() != 0;
                 }
                 """;
         String generated = """
@@ -336,6 +395,61 @@ final class GeneratedCFragmentTextObfuscatorTest {
         assertEquals(0, run.exitValue(), runOutput);
     }
 
+    @Test
+    void singleUseTupleHasSourceAndObjectSizeEvidence(
+            @TempDir Path temp) throws Exception {
+        Path clang = findClang().orElse(null);
+        assumeTrue(clang != null, "clang is required for native-text size evidence");
+        NativeTextBuildKey key = NativeTextBuildKey.fromUtf8(
+                "single-use-object-size");
+        String fragment = """
+                static __attribute__((noinline)) int consume(
+                        const char* first,
+                        const char* second) {
+                    return (unsigned char)first[0]
+                            + (unsigned char)second[0];
+                }
+                static __attribute__((used, noinline)) int binding(void) {
+                    return consume("owner/Secret", "(Ljava/lang/String;)V");
+                }
+                """;
+        String prefix = """
+                #include <stddef.h>
+                #include <stdint.h>
+                """ + new NativeTextCEmitter().runtimeSource();
+        String fast = prefix + obfuscator.obfuscate(
+                key,
+                "single-use:fast",
+                fragment);
+        String guarded = prefix + guardedTupleSourceProbe(key);
+        String independent = prefix + independentSiteDecoderProbe(key);
+
+        assertTrue(
+                fast.length() < guarded.length(),
+                "single-use source budget: fast="
+                        + fast.length()
+                        + ", guarded="
+                        + guarded.length());
+
+        long fastBytes = compileObject(
+                clang,
+                temp,
+                "single-use-fast",
+                fast);
+        long independentBytes = compileObject(
+                clang,
+                temp,
+                "independent-sites",
+                independent);
+
+        assertTrue(
+                fastBytes < independentBytes,
+                "single-use tuple object budget: fast="
+                        + fastBytes
+                        + ", independent="
+                        + independentBytes);
+    }
+
     private String firstTextSymbol(String source) {
         java.util.regex.Matcher matcher = Pattern
                 .compile("static const unsigned char (j2ll_nt_[0-9a-f]{24})_cipher\\[\\]")
@@ -352,6 +466,147 @@ final class GeneratedCFragmentTextObfuscatorTest {
             offset += needle.length();
         }
         return count;
+    }
+
+    private int useInvocationCount(String source) {
+        java.util.regex.Matcher matcher = Pattern
+                .compile("(?m)^(?!#define j2ll_nt_use_).*\\bj2ll_nt_use_")
+                .matcher(source);
+        int count = 0;
+        while (matcher.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    private String independentSiteDecoderProbe(NativeTextBuildKey key) {
+        NativeTextEncoder encoder = new NativeTextEncoder();
+        NativeTextCEmitter emitter = new NativeTextCEmitter();
+        NativeTextEncoding owner = encoder.encode(
+                key,
+                NativeTextPurpose.GENERATED_C_FRAGMENT,
+                "single-use:independent:owner",
+                "owner/Secret");
+        NativeTextEncoding descriptor = encoder.encode(
+                key,
+                NativeTextPurpose.GENERATED_C_FRAGMENT,
+                "single-use:independent:descriptor",
+                "(Ljava/lang/String;)V");
+        return emitter.ciphertextDeclaration(owner)
+                + emitter.ciphertextDeclaration(descriptor)
+                + """
+                static __attribute__((noinline)) int consume(
+                        const char* first,
+                        const char* second) {
+                    return (unsigned char)first[0]
+                            + (unsigned char)second[0];
+                }
+                static __attribute__((used, noinline)) int binding(void) {
+                """
+                + emitter.scratchDeclarationAndDecode(owner, "owner_value")
+                + emitter.scratchDeclarationAndDecode(
+                        descriptor,
+                        "descriptor_value")
+                + "    int result = consume(owner_value, descriptor_value);\n"
+                + "    "
+                + emitter.scratchCleanup(owner, "owner_value")
+                + "    "
+                + emitter.scratchCleanup(descriptor, "descriptor_value")
+                + "    return result;\n}\n";
+    }
+
+    private String guardedTupleSourceProbe(NativeTextBuildKey key) {
+        NativeTextTupleEncoding tuple = new NativeTextTupleEncoder().encode(
+                key,
+                NativeTextPurpose.GENERATED_C_FRAGMENT,
+                "single-use:guarded",
+                List.of("owner/Secret", "(Ljava/lang/String;)V"));
+        NativeTextEncoding record = tuple.record();
+        NativeTextCEmitter emitter = new NativeTextCEmitter();
+        String token = record.symbol().substring("j2ll_nt_".length());
+        String scratch = "j2ll_nt_local_" + token;
+        String slot = scratch + ".slot_" + token;
+        String decode = emitter.decodeTupleInto(
+                tuple,
+                slot + ".value",
+                "            ");
+        String macro = "#define j2ll_nt_use_" + token + "() \\\n"
+                + "    __extension__ ({ \\\n"
+                + "        if (" + slot + ".ready == 0u) { \\\n"
+                + continuationLines(decode)
+                + "            " + slot + ".ready = 1u; \\\n"
+                + "        } \\\n"
+                + "        " + slot + ".value; \\\n"
+                + "    })\n";
+        return emitter.ciphertextDeclaration(record)
+                + macro
+                + """
+                static __attribute__((noinline)) int consume(
+                        const char* first,
+                        const char* second) {
+                    return (unsigned char)first[0]
+                            + (unsigned char)second[0];
+                }
+                static __attribute__((used, noinline)) int binding(void) {
+                    struct {
+                        size_t length;
+                        struct {
+                            unsigned char ready;
+                            char value[sizeof(%s_cipher)];
+                        } slot_%s;
+                    } %s __attribute__((cleanup(%s))) = {
+                        .length = sizeof(%s) - sizeof(size_t)
+                    };
+                    return consume(
+                            (const char*)(j2ll_nt_use_%s() + %du),
+                            (const char*)(j2ll_nt_use_%s() + %du));
+                }
+                """.formatted(
+                        record.symbol(),
+                        token,
+                        scratch,
+                        NativeScratchZeroizerSource.CLEANUP_FUNCTION_NAME,
+                        scratch,
+                        token,
+                        tuple.slice(0).offset(),
+                        token,
+                        tuple.slice(1).offset());
+    }
+
+    private String continuationLines(String source) {
+        StringBuilder result = new StringBuilder();
+        for (String line : source.split("\\n")) {
+            result.append(line).append(" \\\n");
+        }
+        return result.toString();
+    }
+
+    private long compileObject(
+            Path clang,
+            Path temp,
+            String name,
+            String sourceText) throws Exception {
+        Path source = temp.resolve(name + ".c");
+        Path object = temp.resolve(name + ".o");
+        Files.writeString(source, sourceText, StandardCharsets.UTF_8);
+        Process compile = new ProcessBuilder(
+                        clang.toString(),
+                        "-std=gnu11",
+                        "-Oz",
+                        "-c",
+                        source.toString(),
+                        "-o",
+                        object.toString())
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(
+                compile.waitFor(45, TimeUnit.SECONDS),
+                name + " object compile timed out");
+        String output = new String(
+                compile.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertEquals(0, compile.exitValue(), output);
+        return Files.size(object);
     }
 
     private Optional<Path> findClang() {

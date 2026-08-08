@@ -64,38 +64,8 @@ public final class ProtectionPipeline {
             }
             return new ProtectionPipelineResult(method, diagnostics, reports);
         }
-        if (config.enabled() && isMonitorSensitive(method)) {
-            Diagnostic diagnostic = Diagnostic.warning(
-                            DiagnosticStage.PROTECTION,
-                            PassDiagnostics.PROTECTION_MONITOR_SENSITIVE_SKIP,
-                            "IR protection skipped monitor-sensitive method: " + method.methodKey())
-                    .at(DiagnosticLocation.methodLocation(method.owner(), method.name(), method.descriptor()));
-            diagnostics.add(diagnostic);
-            for (ProtectionPass pass : passes) {
-                if (!pass.enabled(config)) {
-                    reports.add(report(
-                            pass.name(),
-                            "SKIPPED",
-                            "PROTECTION_PASS_DISABLED",
-                            method,
-                            config,
-                            false,
-                            ProtectionApplicability.UNKNOWN,
-                            false));
-                } else {
-                    reports.add(report(
-                            pass.name(),
-                            "SKIPPED",
-                            "PROTECTION_MONITOR_SENSITIVE_SKIP",
-                            method,
-                            config,
-                            true,
-                            ProtectionApplicability.NOT_APPLICABLE,
-                            false));
-                }
-            }
-            return new ProtectionPipelineResult(method, diagnostics, reports);
-        }
+        boolean monitorSensitive = config.enabled() && isMonitorSensitive(method);
+        boolean monitorDiagnosticRecorded = false;
         IrMethod current = method;
         for (ProtectionPass pass : passes) {
             if (!pass.enabled(config)) {
@@ -108,6 +78,28 @@ public final class ProtectionPipeline {
                         false,
                         ProtectionApplicability.UNKNOWN,
                         false));
+                continue;
+            }
+            if (monitorSensitive && !pass.canRunAroundMonitorSensitiveBlocks()) {
+                reports.add(report(
+                        pass.name(),
+                        "SKIPPED",
+                        "PROTECTION_MONITOR_SENSITIVE_SKIP",
+                        current,
+                        config,
+                        true,
+                        ProtectionApplicability.NOT_APPLICABLE,
+                        false));
+                if (!monitorDiagnosticRecorded) {
+                    diagnostics.add(Diagnostic.warning(
+                                    DiagnosticStage.PROTECTION,
+                                    PassDiagnostics.PROTECTION_MONITOR_SENSITIVE_SKIP,
+                                    "IR protection skipped monitor-sensitive pass set: "
+                                            + method.methodKey())
+                            .at(DiagnosticLocation.methodLocation(
+                                    method.owner(), method.name(), method.descriptor())));
+                    monitorDiagnosticRecorded = true;
+                }
                 continue;
             }
             if (!pass.applicable(current)) {

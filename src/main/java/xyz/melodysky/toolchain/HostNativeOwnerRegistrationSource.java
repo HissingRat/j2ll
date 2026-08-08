@@ -8,10 +8,12 @@ import xyz.melodysky.toolchain.nativetext.NativeTextEncoding;
 final class HostNativeOwnerRegistrationSource {
     private final NativeTextCEmitter textEmitter = new NativeTextCEmitter();
 
-    String emit(NativeRegistrationTextPlan.Owner owner) {
+    String emit(
+            NativeRegistrationTextPlan.Owner owner,
+            HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
         NativeRegistrationTextStorageLayout textLayout =
                 NativeRegistrationTextStorageLayout.plan(
-                        owner.bindings());
+                        owner);
         StringBuilder source = new StringBuilder();
         appendCiphertextDeclarations(
                 source,
@@ -20,7 +22,8 @@ final class HostNativeOwnerRegistrationSource {
         appendRegistrationFunction(
                 source,
                 owner,
-                textLayout);
+                textLayout,
+                failureLeaves);
         return source.toString();
     }
 
@@ -34,15 +37,14 @@ final class HostNativeOwnerRegistrationSource {
             source.append(textEmitter.ciphertextDeclaration(
                     text.encoding()));
         }
-        source.append(textEmitter.ciphertextDeclaration(owner.rollbackFailureText()));
-        source.append(textEmitter.ciphertextDeclaration(owner.exceptionRestoreFailureText()));
         source.append('\n');
     }
 
     private void appendRegistrationFunction(
             StringBuilder source,
             NativeRegistrationTextPlan.Owner owner,
-            NativeRegistrationTextStorageLayout textLayout) {
+            NativeRegistrationTextStorageLayout textLayout,
+            HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
         String suffix = physicalSuffix(owner);
         int textScratchSize = textLayout.textBytes();
         NativeRegistrationStoragePlan storage =
@@ -69,12 +71,6 @@ final class HostNativeOwnerRegistrationSource {
                 storage);
         source.append("    char owner_text[sizeof(")
                 .append(owner.ownerText().symbol())
-                .append("_cipher)];\n")
-                .append("    char rollback_failure_text[sizeof(")
-                .append(owner.rollbackFailureText().symbol())
-                .append("_cipher)];\n")
-                .append("    char exception_restore_failure_text[sizeof(")
-                .append(owner.exceptionRestoreFailureText().symbol())
                 .append("_cipher)];\n")
                 .append("    if (registered_owner == NULL) {\n")
                 .append("        return JNI_ERR;\n")
@@ -146,12 +142,9 @@ final class HostNativeOwnerRegistrationSource {
                 .append("                (*env)->DeleteLocalRef(env, rollback_exception);\n")
                 .append("                rollback_exception = NULL;\n")
                 .append("            }\n");
-        source.append(textEmitter.decodeInto(
-                owner.rollbackFailureText(),
-                "rollback_failure_text",
-                "            "));
-        source.append("            (*env)->FatalError(env, rollback_failure_text);\n")
-                .append("            j2ll_native_text_zero(rollback_failure_text, sizeof(rollback_failure_text));\n")
+        source.append("            ")
+                .append(failureLeaves.ownerRollback().symbol())
+                .append("(env);\n")
                 .append("            return JNI_ERR;\n")
                 .append("        }\n")
                 .append("        if (registration_exception != NULL) {\n")
@@ -159,12 +152,9 @@ final class HostNativeOwnerRegistrationSource {
                 .append("            (*env)->DeleteLocalRef(env, registration_exception);\n")
                 .append("            registration_exception = NULL;\n")
                 .append("            if (throw_status != JNI_OK || !(*env)->ExceptionCheck(env)) {\n");
-        source.append(textEmitter.decodeInto(
-                owner.exceptionRestoreFailureText(),
-                "exception_restore_failure_text",
-                "                "));
-        source.append("                (*env)->FatalError(env, exception_restore_failure_text);\n")
-                .append("                j2ll_native_text_zero(exception_restore_failure_text, sizeof(exception_restore_failure_text));\n")
+        source.append("                ")
+                .append(failureLeaves.ownerExceptionRestore().symbol())
+                .append("(env);\n")
                 .append("                return JNI_ERR;\n")
                 .append("            }\n")
                 .append("        }\n")
@@ -179,10 +169,10 @@ final class HostNativeOwnerRegistrationSource {
         if (storage.usesStack()) {
             source.append("    JNINativeMethod methods_storage[")
                     .append(storage.bindingCount())
-                    .append("] = {{0}};\n")
+                    .append("];\n")
                     .append("    unsigned char text_scratch_storage[")
                     .append(storage.textBytes())
-                    .append("] = {0};\n")
+                    .append("];\n")
                     .append("    JNINativeMethod* methods = methods_storage;\n")
                     .append("    unsigned char* text_scratch = text_scratch_storage;\n");
             return;

@@ -221,7 +221,12 @@ public final class IrCallIndirectionValidator {
                 return true;
             }
         }
-        return false;
+        return callInstructionIndex + 1 < block.instructions().size()
+                && block.instructions().get(callInstructionIndex + 1).opcode()
+                        == IrOpcode.CLASS_INIT_ACTIVE_USE
+                && block.instructions().get(callInstructionIndex + 1).symbol()
+                        .filter(expectedPrefix::equals)
+                        .isPresent();
     }
 
     private Map<String, IrMethod> methodsByKey(IrProgram program) {

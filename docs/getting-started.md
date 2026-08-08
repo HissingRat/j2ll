@@ -45,7 +45,7 @@ java -jar build/dist/j2ll/j2ll.jar --config docs/examples/minimal-config.json
 java -jar <resolved-outputDirectory>/build_yyyy-MM-dd_HH-mm-ss[-n]/input.jar example.Main
 ```
 
-Build is the default mode. Add `--debug` to enable every intermediate output switch for the run: debug dumps, per-class SSA IR, LLVM IR, and generated C. This retains compiler diagnostics; it does not enable native debug symbols.
+Build is the default mode. Add `--debug` to enable every intermediate output switch for the run—debug dumps, per-class SSA IR, LLVM IR, and generated C—and to force effective native unwind retention. This is a diagnostic mode; it does not enable native debug symbols.
 
 If `fieldInternalization` is enabled outside `CLOSED_WORLD`, a build asks `fieldInternalization requires CLOSED_WORLD, continue? (Y/N)`. Y keeps the configured world unchanged and authorizes only this run to analyze field references in the input JAR; configured classpath entries and external observers remain out of scope and are recorded in `field-internalization-report.json`. N or EOF exits with code `2` before a workspace is created. Ordinary terminals and PTYs are detected, a pre-supplied piped answer is accepted, and unattended runs with no input fail immediately instead of hanging. Validate and dry-run do not consume stdin; they report that the real build still needs confirmation.
 

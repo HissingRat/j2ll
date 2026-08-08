@@ -468,6 +468,10 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
         assertEquals(2, index.accessesFor(INT_FIELD).stream().filter(FieldAccessSite::bootstrapArgument).count());
         assertReason(decision, FieldInternalizationReason.METHOD_HANDLE_FIELD_REFERENCE);
         assertReason(decision, FieldInternalizationReason.METHOD_HANDLE_DYNAMIC_SURFACE);
+        assertTrue(index.dynamicObservationPlan().hasGlobalObservation());
+        assertTrue(index.dynamicObservationPlan().observations().stream().anyMatch(observation ->
+                observation.scope() == FieldObservationScope.GLOBAL
+                        && observation.observerKind() == FieldDynamicBoundaryKind.METHOD_HANDLE));
     }
 
     @Test
@@ -668,6 +672,55 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
     }
 
     @Test
+    void wholeProgramDynamicObserversBlockCrossOwnerFields() {
+        String observerOwner = "pkg/Observer";
+        List<BoundaryCase> cases = List.of(
+                new BoundaryCase(
+                        new MethodInsnNode(
+                                INVOKEVIRTUAL,
+                                "sun/misc/Unsafe",
+                                "getInt",
+                                "(Ljava/lang/Object;J)I",
+                                false),
+                        FieldInternalizationReason.UNSAFE_DYNAMIC_SURFACE),
+                new BoundaryCase(
+                        new MethodInsnNode(
+                                INVOKEVIRTUAL,
+                                "java/lang/invoke/VarHandle",
+                                "get",
+                                "([Ljava/lang/Object;)Ljava/lang/Object;",
+                                false),
+                        FieldInternalizationReason.VAR_HANDLE_DYNAMIC_SURFACE),
+                new BoundaryCase(
+                        new MethodInsnNode(
+                                INVOKEVIRTUAL,
+                                "java/lang/invoke/MethodHandles$Lookup",
+                                "findStaticVarHandle",
+                                "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/invoke/VarHandle;",
+                                false),
+                        FieldInternalizationReason.METHOD_HANDLE_DYNAMIC_SURFACE));
+
+        for (BoundaryCase boundaryCase : cases) {
+            ParsedMethod observer = method(
+                    observerOwner,
+                    "observe",
+                    boundaryCase.instruction(),
+                    new InsnNode(RETURN));
+            FieldUseIndex index = analyzer.analyze(program(
+                    candidateClass(),
+                    parsedClass(observerOwner, List.of(), List.of(observer))));
+            NativeFieldInternalizationDecision decision = decision(plan(
+                    index,
+                    AnalysisWorld.CLOSED_WORLD,
+                    true,
+                    1L,
+                    llvmOnly()));
+
+            assertReason(decision, boundaryCase.reason());
+        }
+    }
+
+    @Test
     void dynamicClassLoadingAloneDoesNotObserveAnOtherwiseEligibleField() {
         ParsedClass candidate = candidateClass(new MethodInsnNode(
                 INVOKEVIRTUAL,
@@ -689,7 +742,7 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
     }
 
     @Test
-    void dynamicBoundaryInAnotherOwnerDoesNotPolluteCandidate() {
+    void unresolvedFieldScanInAnotherOwnerFailsClosedGlobally() {
         String unrelatedOwner = "pkg/DynamicUser";
         ParsedMethod reflectionMethod = method(
                 unrelatedOwner,
@@ -710,7 +763,8 @@ class NativeFieldInternalizationPlannerTest implements Opcodes {
                 plan(index, AnalysisWorld.CLOSED_WORLD, true, 1L, llvmOnly()));
 
         assertEquals(1, index.dynamicBoundaries().size());
-        assertTrue(decision.internalized(), decision.reasons().toString());
+        assertFalse(decision.internalized());
+        assertReason(decision, FieldInternalizationReason.REFLECTION_DYNAMIC_SURFACE);
     }
 
     @Test

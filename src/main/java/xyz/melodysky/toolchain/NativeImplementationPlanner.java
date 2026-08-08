@@ -820,7 +820,8 @@ public final class NativeImplementationPlanner {
                 || instruction.opcode() == IrOpcode.VOLATILE_WRITE_BARRIER
                 || instruction.opcode() == IrOpcode.FINAL_FIELD_PUBLICATION
                 || instruction.opcode() == IrOpcode.MONITOR_HAPPENS_BEFORE
-                || instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE;
+                || instruction.opcode() == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                || instruction.opcode() == IrOpcode.CLASS_INIT_ACTIVE_USE;
     }
 
     private boolean isArrayHelperInstruction(IrInstruction instruction) {

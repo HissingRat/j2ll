@@ -26,7 +26,8 @@ public final class LlvmNameObfuscationPass implements LlvmModulePass {
                     function.visibility(),
                     function.returnType(),
                     function.parameters(),
-                    function.blocks()));
+                    function.blocks(),
+                    function.nativeUnwindSemantics()));
         }
         return new LlvmModule(module.identifier(), module.declarations(), module.globals(), functions);
     }

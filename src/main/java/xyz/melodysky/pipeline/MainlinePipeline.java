@@ -53,6 +53,7 @@ import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrMethod;
+import xyz.melodysky.ir.pass.ActiveUseCarrierFusionPass;
 import xyz.melodysky.ir.pass.JdkPureNativeIntrinsicPipeline;
 import xyz.melodysky.ir.pass.OptimizationPipeline;
 import xyz.melodysky.ir.pass.PassContext;
@@ -127,6 +128,7 @@ import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeImplementationPlanner;
 import xyz.melodysky.toolchain.NativeImplementationPath;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
+import xyz.melodysky.toolchain.NativeUnwindRetentionPolicy;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 import xyz.melodysky.toolchain.NativeLibraryArtifact;
@@ -467,6 +469,24 @@ public final class MainlinePipeline {
             optimized = intrinsicResult.artifact().orElse(optimized);
             optimizedIr.put(method.methodKey(), optimized);
         }
+        Set<String> possibleDirectNativeCalls = Set.copyOf(optimizedIr.keySet());
+        OptimizationPipeline activeUseCarrierFusionPipeline =
+                new OptimizationPipeline(List.of(
+                        new ActiveUseCarrierFusionPass(possibleDirectNativeCalls)));
+        LinkedHashMap<String, IrMethod> fusedActiveUses = new LinkedHashMap<>();
+        optimizedIr.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    var fusionResult = activeUseCarrierFusionPipeline.run(
+                            entry.getValue(),
+                            PassContext.empty());
+                    diagnostics.addAll(fusionResult.diagnostics());
+                    fusedActiveUses.put(
+                            entry.getKey(),
+                            fusionResult.artifact().orElse(entry.getValue()));
+                });
+        optimizedIr.clear();
+        optimizedIr.putAll(fusedActiveUses);
         buildProgress.methodLoweringComplete(requestedMethodCount);
 
         List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(program, selection.requestedMethods(), ssaResults);
@@ -774,7 +794,10 @@ public final class MainlinePipeline {
                             && config.protection().ir().methodTableHiding(),
                     config.protection().enabled()
                             && config.protection().binary().enabled()
-                            && config.protection().binary().strip()).build(
+                            && config.protection().binary().strip(),
+                    new NativeUnwindRetentionPolicy(
+                            config.protection().binary().retainUnwindInfo(),
+                            config.debugMode())).build(
                     workspaceRoot,
                     runtimeLoaderPlan,
                     nativeBuildPlan,

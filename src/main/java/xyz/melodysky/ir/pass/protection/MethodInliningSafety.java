@@ -135,7 +135,8 @@ final class MethodInliningSafety {
                         || opcode == IrOpcode.MONITOR_HAPPENS_BEFORE
                         || opcode == IrOpcode.THREAD_START_HAPPENS_BEFORE
                         || opcode == IrOpcode.THREAD_JOIN_HAPPENS_BEFORE
-                        || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE);
+                        || opcode == IrOpcode.CLASS_INIT_HAPPENS_BEFORE
+                        || opcode == IrOpcode.CLASS_INIT_ACTIVE_USE);
     }
 
     private boolean hasCallOrFieldShape(IrMethod method) {

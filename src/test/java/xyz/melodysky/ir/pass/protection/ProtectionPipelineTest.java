@@ -126,6 +126,57 @@ class ProtectionPipelineTest {
     }
 
     @Test
+    void defaultPipelineFlattensSafeRegionAroundMonitorBoundary() {
+        IrValue monitor = new IrValue("%p0", IrType.REFERENCE);
+        IrValue condition = new IrValue("%p1", IrType.I1);
+        IrValue yes = new IrValue("%yes", IrType.I32);
+        IrValue no = new IrValue("%no", IrType.I32);
+        IrMethod method = new IrMethod(
+                "pkg/Locky",
+                "choose",
+                "(Ljava/lang/Object;Z)I",
+                IrType.I32,
+                List.of(monitor, condition),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(IrInstruction.operation(
+                                        java.util.Optional.empty(),
+                                        IrOpcode.MONITOR_ENTER,
+                                        List.of(monitor),
+                                        "monitor")),
+                                IrTerminator.gotoBlock("choose")),
+                        new IrBlock(
+                                "choose",
+                                List.of(),
+                                IrTerminator.branch(condition, "yes", "no")),
+                        new IrBlock(
+                                "yes",
+                                List.of(IrInstruction.constInt(yes, 1)),
+                                IrTerminator.returnValue(yes)),
+                        new IrBlock(
+                                "no",
+                                List.of(IrInstruction.constInt(no, 0)),
+                                IrTerminator.returnValue(no))));
+
+        var result = ProtectionPipeline.defaultPipeline()
+                .runDetailed(method, ProtectionConfig.enabled(17));
+
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("CONTROL_FLOW_FLATTENING")
+                        && report.status().equals("RAN")
+                        && report.coverageFacts().stream()
+                                .anyMatch(fact -> fact.affected())));
+        assertTrue(result.reports().stream().anyMatch(report ->
+                report.passName().equals("BASIC_BLOCK_SPLITTING")
+                        && report.status().equals("SKIPPED")
+                        && report.reasonCode().equals("PROTECTION_MONITOR_SENSITIVE_SKIP")));
+        assertTrue(result.method().blocks().stream().anyMatch(block ->
+                block.terminator().kind() == IrTerminatorKind.SWITCH));
+        assertTrue(new IrMethodValidator().validate(result.method()).isEmpty());
+    }
+
+    @Test
     void stringEncryptionRewritesOnlyStringConstantCarrier() {
         IrValue token = new IrValue("%token", IrType.I64);
         IrValue value = new IrValue("%value", IrType.REFERENCE);
@@ -295,9 +346,11 @@ class ProtectionPipelineTest {
         assertTrue(result.method().blocks().stream()
                 .anyMatch(block -> block.terminator().kind() == xyz.melodysky.ir.model.IrTerminatorKind.SWITCH));
         assertTrue(result.method().blocks().stream()
-                .anyMatch(block -> block.parameters().stream().anyMatch(parameter -> parameter.name().contains("_state"))));
+                .anyMatch(block -> block.parameters().stream().anyMatch(parameter ->
+                        parameter.type() == IrType.I32
+                                && parameter.name().startsWith("%j2ll_cff_"))));
         assertTrue(result.method().blocks().stream()
-                .anyMatch(block -> block.name().startsWith("cff_true_")));
+                .anyMatch(block -> block.name().startsWith("cff_t_")));
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
                 && report.status().equals("RAN")
                 && report.reasonCode().equals("CONTROL_FLOW_FLATTENING")));
@@ -804,7 +857,7 @@ class ProtectionPipelineTest {
         assertEquals(method.blocks(), result.method().blocks());
         assertTrue(result.reports().stream().anyMatch(report -> report.passName().equals("CONTROL_FLOW_FLATTENING")
                 && report.status().equals("SKIPPED")
-                && report.reasonCode().equals("PROTECTION_MONITOR_SENSITIVE_SKIP")));
+                && report.reasonCode().equals("CONTROL_FLOW_FLATTENING_UNSUPPORTED_SHAPE")));
     }
 
     @Test
@@ -1484,13 +1537,10 @@ class ProtectionPipelineTest {
                         == IrTerminatorKind.SWITCH)
                 .findFirst()
                 .orElseThrow();
-        String token = dispatcher.name().substring(
-                "cff_dispatch_".length());
-        String bodyPrefix = "cff_body_" + token + "_";
         LinkedHashMap<String, Integer> states = new LinkedHashMap<>();
         dispatcher.terminator().switchCases().forEach(switchCase ->
                 states.put(
-                        switchCase.target().substring(bodyPrefix.length()),
+                        switchCase.target(),
                         switchCase.key()));
         Set<Integer> assigned = new HashSet<>(states.values());
         int defaultState = IntStream.range(
@@ -1501,9 +1551,7 @@ class ProtectionPipelineTest {
                 .orElseThrow();
         String defaultTarget =
                 dispatcher.terminator().defaultTarget().orElseThrow();
-        states.put(
-                defaultTarget.substring(bodyPrefix.length()),
-                defaultState);
+        states.put(defaultTarget, defaultState);
         return Map.copyOf(states);
     }
 }

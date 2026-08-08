@@ -10,8 +10,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
+import xyz.melodysky.backend.llvm.model.LlvmModuleEmissionPlan;
+import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.backend.llvm.model.LlvmVisibility;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrClass;
@@ -51,6 +52,7 @@ class LlvmModuleLowererTest {
         String text = new LlvmTextEmitter().emit(module);
 
         assertEquals("pkg/Mathy", module.identifier());
+        assertTrue(LlvmModuleEmissionPlan.create(module).proof().omissionSafe());
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
         assertFalse(text.contains("pkg_Mathy"));
         assertTrue(text.contains("%sum = add i32 %p0, %p1"));

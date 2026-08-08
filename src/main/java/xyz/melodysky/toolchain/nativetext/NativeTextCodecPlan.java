@@ -48,9 +48,9 @@ public final class NativeTextCodecPlan {
         requireRotation(rotation1);
         requireShift(shift0);
         requireShift(shift1);
-        if (outputShift < 0 || outputShift > 56 || outputShift % 8 != 0) {
+        if (outputShift < 0 || outputShift > 24 || outputShift % 8 != 0) {
             throw new IllegalArgumentException(
-                    "native-text output shift must select one 64-bit byte lane");
+                    "native-text output shift must select one 32-bit byte lane");
         }
         this.schedule = schedule;
         this.reverseTraversal = reverseTraversal;
@@ -83,19 +83,32 @@ public final class NativeTextCodecPlan {
      * A non-secret shape label suitable for focused diversity tests.
      */
     public String shapeId() {
+        if (family == NativeTextCodecFamily.FEISTEL_32) {
+            return family.name()
+                    + ':'
+                    + schedule
+                    + ':'
+                    + (reverseTraversal ? "reverse" : "forward")
+                    + ':'
+                    + feistelRotation(0)
+                    + ':'
+                    + feistelRotation(1)
+                    + ':'
+                    + outputShift;
+        }
         return family.name()
                 + ':'
                 + schedule
                 + ':'
                 + (reverseTraversal ? "reverse" : "forward")
                 + ':'
-                + rotation0
+                + compactRotation(rotation0)
                 + ':'
-                + rotation1
+                + compactRotation(rotation1)
                 + ':'
-                + shift0
+                + compactShift(shift0)
                 + ':'
-                + shift1
+                + compactShift(shift1)
                 + ':'
                 + outputShift;
     }
@@ -188,8 +201,8 @@ public final class NativeTextCodecPlan {
     }
 
     int feistelRoundKey(int round) {
-        if (round < 0 || round >= 4) {
-            throw new IllegalArgumentException("native-text Feistel round must be in [0, 3]");
+        if (round < 0 || round >= 2) {
+            throw new IllegalArgumentException("native-text Feistel round must be in [0, 1]");
         }
         int keyIndex = feistelKeyIndex(round);
         return switch (keyIndex) {
@@ -202,96 +215,95 @@ public final class NativeTextCodecPlan {
     }
 
     int feistelRotation(int round) {
-        if (round < 0 || round >= 4) {
-            throw new IllegalArgumentException("native-text Feistel round must be in [0, 3]");
+        if (round < 0 || round >= 2) {
+            throw new IllegalArgumentException("native-text Feistel round must be in [0, 1]");
         }
         return 1 + Math.floorMod(
                 rotation0 + round * (schedule + 5),
-                31);
+                15);
     }
 
     int streamByte(int index) {
         if (index < 0) {
             throw new IllegalArgumentException("native-text stream index must not be negative");
         }
-        long word = switch (family) {
+        int word = switch (family) {
             case WEYL_ARX -> weylArx(index);
             case DUAL_LANE_ARX -> dualLaneArx(index);
             case FEISTEL_32 -> feistel32(index);
             case FOLD_ROTATE -> foldRotate(index);
         };
-        return (int) ((word >>> outputShift) & 0xffL);
+        return (word >>> outputShift) & 0xff;
     }
 
-    private long weylArx(int index) {
-        long ordinal = index + 1L;
-        long lane = key0 + step * ordinal;
-        long companion = key1 ^ (key2 + multiplier0 * ordinal);
+    private int weylArx(int index) {
+        int ordinal = index + 1;
+        int lane = (int) key0 + (int) step * ordinal;
         switch (schedule) {
             case 0 -> {
-                lane ^= Long.rotateLeft(companion, rotation0);
-                lane = (lane ^ (lane >>> shift0)) * multiplier1;
-                lane ^= lane >>> shift1;
+                lane ^= Integer.rotateLeft(
+                        (int) key1 + (int) multiplier0 * ordinal,
+                        compactRotation(rotation0));
+                lane *= (int) multiplier1;
+                lane ^= lane >>> compactShift(shift0);
             }
             case 1 -> {
-                lane += Long.rotateRight(companion, rotation0);
-                lane ^= lane >>> shift1;
-                lane *= multiplier1;
-                lane ^= Long.rotateLeft(lane + key2, rotation1);
+                lane += Integer.rotateRight(
+                        (int) key2 ^ ordinal,
+                        compactRotation(rotation1));
+                lane ^= lane >>> compactShift(shift1);
+                lane *= (int) multiplier0;
             }
             case 2 -> {
-                lane ^= Long.rotateLeft(companion + key2, rotation1);
-                lane += Long.rotateRight(lane ^ key1, rotation0);
-                lane = (lane ^ (lane >>> shift0)) * multiplier1;
-                lane ^= lane >>> shift1;
+                lane ^= Integer.rotateLeft(
+                        (int) key1 ^ ordinal,
+                        compactRotation(rotation0));
+                lane += (int) key2;
+                lane ^= lane >>> compactShift(shift0);
             }
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
-        return lane ^ Long.rotateRight(companion, rotation1);
+        return lane;
     }
 
-    private long dualLaneArx(int index) {
-        long ordinal = index + 1L;
-        long first = key0 + step * ordinal;
-        long second = key1 ^ (multiplier0 * ordinal + key2);
+    private int dualLaneArx(int index) {
+        int ordinal = index + 1;
+        int first = (int) key0 + (int) step * ordinal;
+        int second = (int) key1 ^ ((int) multiplier0 * ordinal + (int) key2);
         switch (schedule) {
             case 0 -> {
-                first += Long.rotateLeft(second, rotation0);
-                second ^= Long.rotateRight(first, rotation1);
-                first ^= second + multiplier1;
+                first += Integer.rotateLeft(second, compactRotation(rotation0));
+                first ^= Integer.rotateRight(first + second, compactRotation(rotation1));
             }
             case 1 -> {
-                second += Long.rotateRight(first, rotation1);
-                first ^= Long.rotateLeft(second, rotation0);
-                second += first ^ multiplier1;
+                second += Integer.rotateRight(first, compactRotation(rotation1));
+                first ^= Integer.rotateLeft(second, compactRotation(rotation0));
             }
             case 2 -> {
-                first ^= Long.rotateRight(second + key2, rotation0);
-                second += Long.rotateLeft(first, rotation1);
-                first += second ^ multiplier1;
+                first ^= Integer.rotateRight(
+                        second + (int) key2,
+                        compactRotation(rotation0));
+                first += Integer.rotateLeft(second, compactRotation(rotation1));
             }
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
-        first ^= first >>> shift0;
-        second ^= second >>> shift1;
-        return first ^ Long.rotateLeft(second, rotation1);
+        return first ^ (first >>> compactShift(shift0));
     }
 
-    private long feistel32(int index) {
-        long base = key0 + step * (index + 1L);
-        int left = (int) (base >>> 32);
-        int right = (int) base;
-        for (int round = 0; round < 4; round++) {
+    private int feistel32(int index) {
+        int base = (int) key0 + (int) step * (index + 1);
+        int left = base >>> 16;
+        int right = base & 0xffff;
+        for (int round = 0; round < 2; round++) {
             int mixed = Integer.rotateLeft(
-                            right ^ feistelRoundKey(round),
+                            right ^ (feistelRoundKey(round) & 0xffff),
                             feistelRotation(round))
-                    * (int) multiplier0;
-            int next = left ^ mixed;
+                    * ((int) multiplier0 | 1);
+            int next = (left ^ mixed) & 0xffff;
             left = right;
             right = next;
         }
-        return (Integer.toUnsignedLong(left) << 32)
-                | Integer.toUnsignedLong(right);
+        return (left << 16) | right;
     }
 
     private int feistelKeyIndex(int round) {
@@ -302,32 +314,39 @@ public final class NativeTextCodecPlan {
         return (round + offset) & 3;
     }
 
-    private long foldRotate(int index) {
-        long ordinal = index + 1L;
-        long value = key0 ^ (step * ordinal);
+    private int foldRotate(int index) {
+        int ordinal = index + 1;
+        int value = (int) key0 ^ ((int) step * ordinal);
         switch (schedule) {
             case 0 -> {
-                value = Long.rotateLeft(value + key1, rotation0);
-                value *= multiplier0;
-                value ^= Long.rotateRight(value + key2, rotation1);
-                value += multiplier1 * ordinal;
+                value = Integer.rotateLeft(
+                        value + (int) key1,
+                        compactRotation(rotation0));
+                value *= (int) multiplier0;
             }
             case 1 -> {
-                value ^= Long.rotateRight(value + key2, rotation1);
-                value *= multiplier1;
-                value = Long.rotateLeft(value + key1, rotation0);
-                value ^= multiplier0 * ordinal;
+                value ^= Integer.rotateRight(
+                        value + (int) key2,
+                        compactRotation(rotation1));
+                value *= (int) multiplier1;
             }
             case 2 -> {
-                value += Long.rotateLeft(key1 ^ ordinal, rotation0);
-                value ^= value >>> shift0;
-                value *= multiplier0;
-                value = Long.rotateRight(value ^ key2, rotation1);
-                value += multiplier1;
+                value += Integer.rotateLeft(
+                        (int) key1 ^ ordinal,
+                        compactRotation(rotation0));
+                value *= (int) multiplier0;
             }
             default -> throw new IllegalStateException("unreachable native-text schedule");
         }
-        return value ^ (value >>> shift1);
+        return value ^ (value >>> compactShift(shift1));
+    }
+
+    private int compactRotation(int value) {
+        return 1 + Math.floorMod(value, 31);
+    }
+
+    private int compactShift(int value) {
+        return 1 + Math.floorMod(value, 31);
     }
 
     private static void requireRotation(int value) {

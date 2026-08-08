@@ -48,7 +48,10 @@ final class HostJniReflectionRuntimeSource {
         if (!needsReflection) {
             return;
         }
-        appendCommon(builder);
+        appendCommon(
+                builder,
+                !classKeys.isEmpty(),
+                !methodKeys.isEmpty() || !constructorKeys.isEmpty());
         for (String key : runtimeTokens.physicalOrder(
                 RuntimeTokenDomain.REFLECTION_METHOD,
                 List.copyOf(methodKeys),
@@ -148,21 +151,17 @@ final class HostJniReflectionRuntimeSource {
         return separator < 0 ? symbol : symbol.substring(0, separator);
     }
 
-    private static void appendCommon(StringBuilder builder) {
-        builder.append("""
-                static char* j2ll_dotted_class_name(const char* internal_name) {
-                    size_t length = strlen(internal_name);
-                    char* dotted = (char*)malloc(length + 1);
-                    if (dotted == NULL) return NULL;
-                    for (size_t index = 0; index < length; index++) {
-                        dotted[index] = internal_name[index] == '/' ? '.' : internal_name[index];
-                    }
-                    dotted[length] = '\\0';
-                    return dotted;
-                }
-
+    private static void appendCommon(
+            StringBuilder builder,
+            boolean classForName,
+            boolean parameterArray) {
+        if (classForName) {
+            builder.append("""
                 static jclass j2ll_class_for_name_with_init(
-                        JNIEnv* env, const char* internal_name, int initialize) {
+                        JNIEnv* env,
+                        const char* internal_name,
+                        const char* dotted_name,
+                        int initialize) {
                     /*
                      * FindClass executes in the registered native caller's
                      * defining-loader context. It is intentionally not
@@ -170,15 +169,8 @@ final class HostJniReflectionRuntimeSource {
                      */
                     jclass target = (*env)->FindClass(env, internal_name);
                     if (target == NULL || !initialize) return target;
-                    char* dotted = j2ll_dotted_class_name(internal_name);
-                    if (dotted == NULL) {
-                        j2ll_throw_new(env, "java/lang/OutOfMemoryError", "class name allocation failed");
-                        (*env)->DeleteLocalRef(env, target);
-                        return NULL;
-                    }
                     jclass cls = (*env)->FindClass(env, "java/lang/Class");
                     if (cls == NULL) {
-                        free(dotted);
                         (*env)->DeleteLocalRef(env, target);
                         return NULL;
                     }
@@ -188,8 +180,9 @@ final class HostJniReflectionRuntimeSource {
                     jmethodID get_loader = (*env)->GetMethodID(
                             env, cls, "getClassLoader",
                             "()Ljava/lang/ClassLoader;");
-                    jstring name = method == NULL ? NULL : (*env)->NewStringUTF(env, dotted);
-                    free(dotted);
+                    jstring name = method == NULL
+                            ? NULL
+                            : (*env)->NewStringUTF(env, dotted_name);
                     if (method == NULL || get_loader == NULL || name == NULL) {
                         (*env)->DeleteLocalRef(env, cls);
                         (*env)->DeleteLocalRef(env, target);
@@ -214,6 +207,11 @@ final class HostJniReflectionRuntimeSource {
                     return result;
                 }
 
+                """);
+        }
+        if (parameterArray) {
+            builder.append("""
+
                 static jobjectArray j2ll_parameter_array_for_descriptor(
                         JNIEnv* env, const char* descriptor, jobject loader) {
                     jclass method_type_class =
@@ -229,23 +227,7 @@ final class HostJniReflectionRuntimeSource {
                         (*env)->DeleteLocalRef(env, method_type_class);
                         return NULL;
                     }
-                    size_t length = strlen(descriptor);
-                    char* normalized = NULL;
-                    const char* input = descriptor;
-                    if (length > 0 && descriptor[length - 1] == ')') {
-                        normalized = (char*)malloc(length + 2);
-                        if (normalized == NULL) {
-                            (*env)->DeleteLocalRef(env, method_type_class);
-                            j2ll_throw_new(env, "java/lang/OutOfMemoryError", "descriptor allocation failed");
-                            return NULL;
-                        }
-                        memcpy(normalized, descriptor, length);
-                        normalized[length] = 'V';
-                        normalized[length + 1] = '\\0';
-                        input = normalized;
-                    }
-                    jstring value = (*env)->NewStringUTF(env, input);
-                    if (normalized != NULL) free(normalized);
+                    jstring value = (*env)->NewStringUTF(env, descriptor);
                     jobject method_type = value == NULL
                             ? NULL : (*env)->CallStaticObjectMethod(
                                     env, method_type_class, parse, value, loader);
@@ -262,6 +244,7 @@ final class HostJniReflectionRuntimeSource {
                 }
 
                 """);
+        }
     }
 
     private static void appendMethodLookup(
@@ -296,7 +279,8 @@ final class HostJniReflectionRuntimeSource {
                 .append("    jobject loader = get_loader == NULL ? NULL : (*env)->CallObjectMethod(env, owner, get_loader);\n")
                 .append("    if (get_loader == NULL || (*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, class_class); (*env)->DeleteLocalRef(env, owner); if (loader != NULL) (*env)->DeleteLocalRef(env, loader); return NULL; }\n")
                 .append("    jobjectArray parameters = j2ll_parameter_array_for_descriptor(env, \"")
-                .append(CSourceEscaper.stringContents(parts.descriptor()))
+                .append(CSourceEscaper.stringContents(
+                        normalizedMethodDescriptor(parts.descriptor())))
                 .append("\", loader);\n")
                 .append("    if (loader != NULL) (*env)->DeleteLocalRef(env, loader);\n")
                 .append("    if (parameters == NULL) { (*env)->DeleteLocalRef(env, class_class); (*env)->DeleteLocalRef(env, owner); return NULL; }\n");
@@ -328,6 +312,10 @@ final class HostJniReflectionRuntimeSource {
                 }
 
                 """);
+    }
+
+    private static String normalizedMethodDescriptor(String descriptor) {
+        return descriptor.endsWith(")") ? descriptor + "V" : descriptor;
     }
 
     private static void appendFieldLookup(

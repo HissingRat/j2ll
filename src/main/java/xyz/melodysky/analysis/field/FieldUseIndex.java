@@ -23,6 +23,7 @@ public final class FieldUseIndex {
     private final Set<String> serializableOwners;
     private final List<FieldDynamicBoundary> dynamicBoundaries;
     private final List<UnresolvedFieldReference> unresolvedReferences;
+    private final FieldDynamicObservationPlan dynamicObservationPlan;
 
     FieldUseIndex(
             List<ParsedField> inputBaseFields,
@@ -32,7 +33,8 @@ public final class FieldUseIndex {
             Set<String> ownersWithClassInitializer,
             Set<String> serializableOwners,
             List<FieldDynamicBoundary> dynamicBoundaries,
-            List<UnresolvedFieldReference> unresolvedReferences) {
+            List<UnresolvedFieldReference> unresolvedReferences,
+            FieldDynamicObservationPlan dynamicObservationPlan) {
         ArrayList<ParsedField> sortedFields = new ArrayList<>(Objects.requireNonNull(inputBaseFields, "inputBaseFields"));
         sortedFields.sort(Comparator.comparing(FieldUseIndex::id));
         this.inputBaseFields = List.copyOf(sortedFields);
@@ -54,6 +56,9 @@ public final class FieldUseIndex {
         this.serializableOwners = immutableSortedSet(serializableOwners);
         this.dynamicBoundaries = dynamicBoundaries.stream().filter(Objects::nonNull).sorted().toList();
         this.unresolvedReferences = unresolvedReferences.stream().filter(Objects::nonNull).sorted().toList();
+        this.dynamicObservationPlan = Objects.requireNonNull(
+                dynamicObservationPlan,
+                "dynamicObservationPlan");
     }
 
     public List<ParsedField> inputBaseFields() {
@@ -125,6 +130,15 @@ public final class FieldUseIndex {
                 .anyMatch(reference -> reference.symbolicOwner().equals(owner));
     }
 
+    public FieldDynamicObservationPlan dynamicObservationPlan() {
+        return dynamicObservationPlan;
+    }
+
+    public Set<FieldDynamicBoundaryKind> dynamicObserverKindsFor(FieldId field) {
+        return dynamicObservationPlan.observerKindsFor(
+                Objects.requireNonNull(field, "field"));
+    }
+
     public FieldUseIndex withAdditionalMultiReleaseOwners(Set<String> owners) {
         TreeSet<String> combined = new TreeSet<>(multiReleaseOwners);
         combined.addAll(Objects.requireNonNull(owners, "owners"));
@@ -139,7 +153,8 @@ public final class FieldUseIndex {
                 ownersWithClassInitializer,
                 serializableOwners,
                 dynamicBoundaries,
-                unresolvedReferences);
+                unresolvedReferences,
+                dynamicObservationPlan);
     }
 
     private static FieldId id(ParsedField field) {

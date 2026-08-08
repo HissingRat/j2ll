@@ -16,8 +16,13 @@ import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import xyz.melodysky.analysis.field.FieldId;
+import xyz.melodysky.analysis.field.ConstantDynamicFieldReferenceResolver;
 import xyz.melodysky.analysis.field.FieldInternalizationReason;
 import xyz.melodysky.analysis.field.FieldInternalizationStatus;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
@@ -42,6 +47,43 @@ class InternalizedFieldArtifactVerifierTest implements Opcodes {
             "constant",
             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
                     + "Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;",
+            false);
+    private static final Handle GET_STATIC_FINAL_SELF_BOOTSTRAP = new Handle(
+            H_INVOKESTATIC,
+            "java/lang/invoke/ConstantBootstraps",
+            "getStaticFinal",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                    + "Ljava/lang/Class;)Ljava/lang/Object;",
+            false);
+    private static final Handle GET_STATIC_FINAL_OWNER_BOOTSTRAP = new Handle(
+            H_INVOKESTATIC,
+            "java/lang/invoke/ConstantBootstraps",
+            "getStaticFinal",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                    + "Ljava/lang/Class;Ljava/lang/Class;)Ljava/lang/Object;",
+            false);
+    private static final Handle STATIC_FIELD_VAR_HANDLE_BOOTSTRAP = new Handle(
+            H_INVOKESTATIC,
+            "java/lang/invoke/ConstantBootstraps",
+            "staticFieldVarHandle",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                    + "Ljava/lang/Class;Ljava/lang/Class;Ljava/lang/Class;)"
+                    + "Ljava/lang/invoke/VarHandle;",
+            false);
+    private static final Handle MALFORMED_GET_STATIC_FINAL_BOOTSTRAP = new Handle(
+            H_INVOKESTATIC,
+            "java/lang/invoke/ConstantBootstraps",
+            "getStaticFinal",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                    + "Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;",
+            false);
+    private static final Handle FIELD_VAR_HANDLE_BOOTSTRAP = new Handle(
+            H_INVOKESTATIC,
+            "java/lang/invoke/ConstantBootstraps",
+            "fieldVarHandle",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                    + "Ljava/lang/Class;Ljava/lang/Class;Ljava/lang/Class;)"
+                    + "Ljava/lang/invoke/VarHandle;",
             false);
 
     @TempDir
@@ -99,6 +141,97 @@ class InternalizedFieldArtifactVerifierTest implements Opcodes {
     }
 
     @Test
+    void detectsImplicitOwnerGetStaticFinalConstantDynamic() throws Exception {
+        ConstantDynamic dynamic = new ConstantDynamic(
+                APPROVED.name(),
+                APPROVED.descriptor(),
+                GET_STATIC_FINAL_SELF_BOOTSTRAP);
+        List<String> residuals = residuals(classWithMethod(
+                OWNER,
+                method -> method.visitLdcInsn(dynamic)));
+
+        assertEquals(1, residuals.size());
+        assertTrue(residuals.get(0).contains("kind=reference"));
+    }
+
+    @Test
+    void detectsExplicitOwnerGetStaticFinalConstantDynamic() throws Exception {
+        ConstantDynamic dynamic = new ConstantDynamic(
+                APPROVED.name(),
+                APPROVED.descriptor(),
+                GET_STATIC_FINAL_OWNER_BOOTSTRAP,
+                Type.getObjectType(OWNER));
+        List<String> residuals = residuals(classWithMethod(method ->
+                method.visitLdcInsn(dynamic)));
+
+        assertEquals(1, residuals.size());
+        assertTrue(residuals.get(0).contains("kind=reference"));
+    }
+
+    @Test
+    void detectsStaticFieldVarHandleConstantDynamic() throws Exception {
+        ConstantDynamic dynamic = new ConstantDynamic(
+                APPROVED.name(),
+                "Ljava/lang/invoke/VarHandle;",
+                STATIC_FIELD_VAR_HANDLE_BOOTSTRAP,
+                Type.getObjectType(OWNER),
+                Type.INT_TYPE);
+        assertEquals(
+                Optional.of(APPROVED),
+                new ConstantDynamicFieldReferenceResolver()
+                        .resolve("pkg/Carrier", dynamic)
+                        .target());
+        ConstantDynamic roundTripped = roundTripConstantDynamic(
+                classWithMethod(method -> method.visitLdcInsn(dynamic)));
+        assertEquals(
+                Optional.of(APPROVED),
+                new ConstantDynamicFieldReferenceResolver()
+                        .resolve("pkg/Carrier", roundTripped)
+                        .target());
+        List<String> residuals = residuals(classWithMethod(method ->
+                method.visitLdcInsn(dynamic)));
+
+        assertEquals(1, residuals.size());
+        assertTrue(residuals.get(0).contains("kind=reference"));
+    }
+
+    @Test
+    void detectsFieldVarHandleConstantDynamic() throws Exception {
+        ConstantDynamic dynamic = new ConstantDynamic(
+                APPROVED.name(),
+                "Ljava/lang/invoke/VarHandle;",
+                FIELD_VAR_HANDLE_BOOTSTRAP,
+                Type.getObjectType(OWNER),
+                Type.INT_TYPE);
+        assertEquals(
+                Optional.of(APPROVED),
+                new ConstantDynamicFieldReferenceResolver()
+                        .resolve("pkg/Carrier", dynamic)
+                        .target());
+        List<String> residuals = residuals(classWithMethod(method ->
+                method.visitLdcInsn(dynamic)));
+
+        assertEquals(1, residuals.size());
+        assertTrue(residuals.get(0).contains("kind=reference"));
+    }
+
+    @Test
+    void unresolvedFieldBootstrapFailsClosedWithoutLeakingFieldIdentity() throws Exception {
+        ConstantDynamic dynamic = new ConstantDynamic(
+                APPROVED.name(),
+                APPROVED.descriptor(),
+                MALFORMED_GET_STATIC_FINAL_BOOTSTRAP,
+                "unknown-owner-shape");
+        List<String> residuals = residuals(classWithMethod(method ->
+                method.visitLdcInsn(dynamic)));
+
+        assertEquals(1, residuals.size());
+        assertTrue(residuals.get(0).contains("kind=unresolved-field-bootstrap"));
+        assertTrue(residuals.get(0).contains("fieldIdHash=global"));
+        assertTrue(!residuals.get(0).contains(APPROVED.fieldKey()));
+    }
+
+    @Test
     void acceptsJarWithNoApprovedDeclarationOrReference() throws Exception {
         Handle unrelated = new Handle(H_GETSTATIC, "pkg/Other", "counter", "I", false);
         byte[] clean = classWithMethod(method -> {
@@ -133,8 +266,14 @@ class InternalizedFieldArtifactVerifierTest implements Opcodes {
     }
 
     private byte[] classWithMethod(java.util.function.Consumer<MethodVisitor> body) {
+        return classWithMethod("pkg/Carrier", body);
+    }
+
+    private byte[] classWithMethod(
+            String owner,
+            java.util.function.Consumer<MethodVisitor> body) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-        writer.visit(V17, ACC_PUBLIC, "pkg/Carrier", null, "java/lang/Object", null);
+        writer.visit(V17, ACC_PUBLIC, owner, null, "java/lang/Object", null);
         MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "run", "()V", null, null);
         method.visitCode();
         body.accept(method);
@@ -143,6 +282,22 @@ class InternalizedFieldArtifactVerifierTest implements Opcodes {
         method.visitEnd();
         writer.visitEnd();
         return writer.toByteArray();
+    }
+
+    private ConstantDynamic roundTripConstantDynamic(byte[] classBytes) {
+        ClassNode node = new ClassNode();
+        new ClassReader(classBytes).accept(node, 0);
+        return node.methods.stream()
+                .flatMap(method -> java.util.stream.StreamSupport.stream(
+                        method.instructions.spliterator(),
+                        false))
+                .filter(LdcInsnNode.class::isInstance)
+                .map(LdcInsnNode.class::cast)
+                .map(ldc -> ldc.cst)
+                .filter(ConstantDynamic.class::isInstance)
+                .map(ConstantDynamic.class::cast)
+                .findFirst()
+                .orElseThrow();
     }
 
     private NativeFieldInternalizationPlan approvedPlan() {

@@ -71,7 +71,12 @@ public final class ConfigLoader {
             "indirectCalls",
             "globalLayout");
     private static final Set<String> BINARY_FIELDS = Set.of(
-            "enabled", "hideInternalSymbols", "strip", "removePdb", "symbolAudit");
+            "enabled",
+            "hideInternalSymbols",
+            "strip",
+            "removePdb",
+            "symbolAudit",
+            "retainUnwindInfo");
 
     public ConfigLoadResult load(Path configPath) throws IOException {
         try (Reader reader = Files.newBufferedReader(configPath)) {
@@ -245,7 +250,28 @@ public final class ConfigLoader {
             validateBoolean(llvm, "indirectCalls", "protection.llvm.indirectCalls", diagnostics);
             validateBoolean(llvm, "globalLayout", "protection.llvm.globalLayout", diagnostics);
         }
-        validateObject(protection, "binary", BINARY_FIELDS, "protection.binary", diagnostics);
+        JsonObject binary = validateObject(
+                protection,
+                "binary",
+                BINARY_FIELDS,
+                "protection.binary",
+                diagnostics);
+        if (binary != null) {
+            validateBoolean(binary, "enabled", "protection.binary.enabled", diagnostics);
+            validateBoolean(
+                    binary,
+                    "hideInternalSymbols",
+                    "protection.binary.hideInternalSymbols",
+                    diagnostics);
+            validateBoolean(binary, "strip", "protection.binary.strip", diagnostics);
+            validateBoolean(binary, "removePdb", "protection.binary.removePdb", diagnostics);
+            validateBoolean(binary, "symbolAudit", "protection.binary.symbolAudit", diagnostics);
+            validateBoolean(
+                    binary,
+                    "retainUnwindInfo",
+                    "protection.binary.retainUnwindInfo",
+                    diagnostics);
+        }
     }
 
     private void validateFields(JsonObject object, Set<String> expected, String path, List<Diagnostic> diagnostics) {
@@ -561,7 +587,8 @@ public final class ConfigLoader {
                 binary.get("hideInternalSymbols").getAsBoolean(),
                 binary.get("strip").getAsBoolean(),
                 binary.get("removePdb").getAsBoolean(),
-                binary.get("symbolAudit").getAsBoolean());
+                binary.get("symbolAudit").getAsBoolean(),
+                binary.get("retainUnwindInfo").getAsBoolean());
     }
 
     private List<Path> classPath(Path baseDirectory, JsonArray entries) {

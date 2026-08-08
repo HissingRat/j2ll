@@ -87,7 +87,8 @@
 - `fieldInternalization`已进入 schema，默认 `false`；只在 declared `CLOSED_WORLD`或本次 build明确 Y授权 current-input-JAR-only scope时分析。
 - Current-JAR-only授权不改写 configured `worldModel`、不解析 configured `classPath`，必须进入 diagnostics/report。N/EOF在 workspace/pipeline/Zig前退出；validate/dry-run只记录 `confirmationRequired`。
 - 可变候选仅限 input-base `private static` primitive/reference/array field；instance field、volatile/final、field-owning `<clinit>` access、multi-release与 reflection/serialization/JNI/Unsafe/VarHandle/MethodHandles Lookup/agent observation边界保留 JVM field。
-- 另支持 `private static final` classfile `ConstantValue`：`Z/B/S/C/I/J/F/D`的显式same-owner LLVM-native `GETSTATIC`在普通IR protection前精确折叠为SSA常量，使新常量仍进入constant-protection/coverage；float/double必须按raw bits发出integer constant + bitcast以保留NaN payload与negative zero。已经没有任何field reference的primitive/String declaration可直接删除。该路径没有native slot、sidecar或运行时storage。显式String `GETSTATIC`必须保留字段，直到存在能证明保持JVM intern/object-identity语义的helper；任意write、cross-owner、non-LLVM accessor或dynamic observer同样fail closed。
+- 另支持 `private static final` classfile `ConstantValue`：`Z/B/S/C/I/J/F/D`的显式same-owner LLVM-native `GETSTATIC`在普通IR protection前精确折叠为SSA常量，使新常量仍进入constant-protection/coverage；float/double必须按raw bits发出integer constant + bitcast以保留NaN payload与negative zero。已经没有任何field reference的primitive/String declaration可直接删除。该路径没有native slot、sidecar或运行时storage。显式String `GETSTATIC`必须保留字段，直到存在能证明保持JVM intern/object-identity语义的helper；任意write、cross-owner、non-LLVM accessor或dynamic observer同样fail closed。字段观察按exact field、known owner、unknown global三级收敛；覆盖reflection/Field、MethodHandle/VarHandle、Unsafe、JNI/agent、ConstantDynamic字段bootstrap与bootstrap arguments。所有非exact closed-JDK allowlist的custom bootstrap target和运行时`defineClass`/hidden-class/Unsafe define入口必须global fail closed；不能只按observer caller owner判断字段可见性。
+- Dynamic-observer dataflow只对含observer call的method建立frame；producer lattice最多保留8个source，超限使用per-slot canonical unknown。每次provenance query另有4096-step/128-depth共享预算，包括Handle→VarHandle和Unsafe→Field嵌套路径；超限必须global/null fail closed，不得让ASM `SourceInterpreter` producer set或resolver DAG无界增长。
 - 每个真实 accessor必须是same-owner static或instance method，最终为`nativeLowered`且 final implementation path为支持对应storage ABI的`LLVM_NATIVE_PATH`。任一cross-owner、unselected、`skipped`或non-LLVM accessor都保留JVM field；不存在bytecode-accessor rewrite path。
 - Primitive使用 per-defining-`jclass` weak-keyed relaxed atomic raw bits，按 descriptor执行 boolean low-bit、窄整数截断/扩展和 float/double bitcast。
 - Reference/array始终留在 JVM heap，由唯一 Loader按需加入 `ClassValue<Object[]>` sidecar强持有。`ClassValue`是跨调用 cache；native activation首次实际访问时惰性获取 local ref、复用并在退出时释放，不建立 native strong global ref。
@@ -99,7 +100,7 @@
 - `methodInternalization`是直接boolean，默认`false`；declared `CLOSED_WORLD`可分析private/protected和exact allowlisted public候选，本次build明确Y授权的current-input-JAR-only scope可分析private/protected及exact allowlisted public static。授权是feature-scoped，不改写`worldModel`；current-JAR-only不读取configured `classPath`，并把JAR外caller/subclass/reflection/JNI/agent observer明确记为用户接受的范围外风险。
 - `publicMethodInternalizationAllowList`是required `array<string>`、示例默认`[]`；每项必须是无wildcard、无重复的exact `<owner>#<name>!<descriptor>`。public static可使用declared `CLOSED_WORLD`或本次Y授权；public instance只允许configured world为declared `CLOSED_WORLD`且input+全部configured classPath形成parse-complete hierarchy/call world时分析。combined world缺失任一superclass/interface时，该public instance候选以`METHOD_INTERNALIZATION_PUBLIC_INSTANCE_ANALYSIS_WORLD_INCOMPLETE`保留；不得因此整批禁用public static/private/protected候选。
 - V1候选仅限已有final `LLVM_NATIVE_PATH`的ordinary Code-bearing method：支持private/protected static（static caller可cross-owner）和same-owner exact private/protected instance；exact allowlist另可授权public static及same-owner exact public instance。public instance不要求method/class为final，也不因存在可覆写slot本身拒绝，但scope内每个调用点都必须exact解析到候选且caller仍须same-owner；实际导致non-exact dispatch的override会拒绝该候选。已解析的exact reflection/MethodHandle/Handle/bootstrap/ConstantDynamic/EnclosingMethod observer、launcher/agent entry，以及closed exact catalog识别到的JVM/JDK callback（包括Object虚方法、Runnable/Callable、线程/定时器、序列化和常见`java.util.function`合同）一律保留Java method；catalog只按真实hierarchy subtype/implements关系与exact descriptor匹配，不恢复blanket override-slot veto。catalog外第三方framework callback与无法穷举的reflection/JNI/agent动态观察面仍是allowlist加world授权显式接受并进入warning/report的风险。cross-owner instance、interface、constructor、class initializer、synchronized、bridge/synthetic、multi-release、零native caller或任一非LLVM caller同样保留。
-- Approved method仍是`nativeLowered`，rewrite strategy为`internalNativeOnly`；output class删除整个method_info，且不进入`RegisterNatives`。默认retention为独立hidden LLVM body；若随后满足唯一直接call site、纯标量/non-throwing、无field/call/monitor/JNI-owned-reference、非递归和validated inline边界，则自动合并进唯一caller，retention报告为`coalescedNativeOnly`并完全不发出callee的LLVM function/declaration/reference或generated-C wrapper。initializer-plan caller当前显式保留standalone body，直到initializer plan与rewritten caller能作为一个atomic artifact重建；任一证明失败都保留独立hidden body。inline rewrite必须保留caller中所有未被替换call的call-indirection metadata。所有ordinary Java/Handle/bootstrap/EnclosingMethod residual必须在final JAR audit中为零。
+- Approved method仍是`nativeLowered`，rewrite strategy为`internalNativeOnly`；output class删除整个method_info，且不进入`RegisterNatives`。默认retention为独立hidden LLVM body；若随后满足唯一直接call site、纯标量/non-throwing、无field/call/monitor/JNI-owned-reference、非递归和validated inline边界，则按bottom-up顺序自动合并进唯一caller，retention报告为`coalescedNativeOnly`并完全不发出callee的LLVM function/declaration/reference或generated-C wrapper。coalescing使用独立的96-instruction callee budget和每caller最多64个site；A→B→C这类chain必须逐轮重定向所有已合并成员的physical owner，直到稳定或达到internalized-method数上限。initializer-plan caller当前显式保留standalone body，直到initializer plan与rewritten caller能作为一个atomic artifact重建；任一证明失败都保留独立hidden body。inline rewrite必须保留caller中所有未被替换call的call-indirection metadata。所有ordinary Java/Handle/bootstrap/EnclosingMethod residual必须在final JAR audit中为零。
 - same-owner direct scalar call继续使用validated LLVM direct ABI。cross-owner static和exact same-owner instance dispatch使用binding-local internal bridge；bridge不得执行`GetMethodID`/`Call*MethodA`，而是进入hash-only internal wrapper。reference/owned/pending-exception target必须使用nested JNI local frame：`PushLocalFrame`，descriptor-aware参数解包，normal reference result经`PopLocalFrame(result)`提升；pending exception需清除、跨frame提升并严格恢复，失败`FatalError`。
 - Analysis、final-plan validator、registration filter、generated-C bridge、MethodNode removal、lowering/packaging report与artifact residual audit必须消费同一immutable approved plan并fail closed。Coalescing另有immutable physical-retention plan；LLVM compiler、host-C binding filter、lowering report与workspace/source audit必须共同证明callee standalone surface为零且caller仍被编译。
 
@@ -121,7 +122,7 @@
 - Typed catch、exception edge、显式 `athrow`和 implicit exception sites必须显式建模。Unprotected JNI pending exception立即走descriptor-safe return并保留pending state；protected site先清除pending state，再按classfile顺序dispatch typed/catch-all handler。缺少pending/handler-transfer evidence、复杂 finally/state merge/monitor interaction未支持时跳过整个 method，不能继续执行 pending exception。
 - Method inlining 只能删除 direct-call 的无 handler synthetic pending-exception evidence：callee 必须已证明为 pure/non-throwing，site 没有 handler，exception value 没有任何 use。protected edge、specific exception kind或observable exception value必须保留并跳过该 inline candidate。
 - Monitor/synchronized/volatile/final/thread happens-before使用 JVM/JNI helper/marker；`Thread.sleep(J)V`通过JVM-backed helper执行并保留`InterruptedException`语义。不伪造 scheduler或 monitor queue，未支持的其他Thread/wait-notify caller为 `skipped`。
-- Class init active-use guard与 `<clinit>` begin/end/failed helper必须保持 JVM ordering。
+- Class init active-use guard与 `<clinit>` begin/end/failed helper必须保持 JVM ordering。普通optimization/intrinsic后可把exact same-block `CONST_LONG -> CLASS_OBJECT -> CLASS_INIT_GUARD -> CLASS_INIT_HAPPENS_BEFORE -> active operation` carrier融合进same-owner `GET_STATIC`/`PUT_STATIC`或仍走JVM dispatch的`CALL_STATIC`；operation必须完整保留，只有normal continuation随后发出acquire。`NEW_OBJECT`、可能direct-native的static call、额外carrier use、owner或exception-frame不一致一律不融合；任何后续field/call rewrite仍须证明active-use语义不丢失。
 - JDK/reflection/MethodHandle/lambda/Unsafe/VarHandle只有 validated direct/helper/dispatch matrix算 `nativeLowered`；超出 matrix的 selected caller为 `skipped`。
 - Exact `ByteBuffer.allocate(4).putInt(i).array()`且allocate/putInt中间值same-block、unique-use、不逃逸时，在普通optimization后、protection前改写为三个JNI-native frame helper。它必须保持原三个call-site exception boundary和求值顺序，通过`NewByteArray`创建真实JVM `byte[]`，只用4-byte native stack scratch写big-endian内容；其他capacity、escaping/aliased、跨block或indirected shape保持普通JVM dispatch。
 - JNI helper返回的owned local ref必须有可证明的activation/last-use lifetime。backend消费per-method ownership/release plan；site-sensitive liveness必须区分normal live-out与instruction exceptional needs，并在普通边、parallel edge adapter、loop/backedge、typed/catch-all handler与显式`athrow`路径发出`DeleteLocalRef`。重复ownership transfer、handler live-set不一致或其他无法证明有界释放的shape将整方法`skipped`并记录`UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME`。registered native callee只要返回reference或内部产生owned/pending-exception reference，就必须走JVM/JNI bridge获得嵌套local frame；只允许不产生这类reference的callee直接LLVM调用，compiler-internal callee无法安全桥接时fail closed。JNI bridge的`jvalue[]` scratch按function最大arity只在activation prologue分配一次，loop/backedge只复用；不能依赖helper/internal callee返回、递归展开或循环迭代自动释放local ref。
@@ -136,13 +137,19 @@
   mainline通过集中derived-material plan消费IR method/program、field、business string、
   method table、wrapper、LLVM symbol/pass、native text与registration独立域。
 - `fakeBranches`、`basicBlockSplitting`、`blockNameObfuscation`是独立 pass。LLVM visibility/configurable hardening与 mandatory hidden linkage/export audit分开。
-- `ControlFlowFlatteningPass` 的 dispatcher state 使用 per-build、per-method 派生的
-  dense permutation，状态集合始终为 `[0, blockCount)`；不得为了多样性扩张状态空间、
-  引入查表或增加运行时 transition work。
-- CFF会引入synthetic dispatcher cycle，因此对其余structural条件原本可应用、但会产生
-  owned JNI local ref的方法必须pass-level `SKIPPED`并记录
-  `CONTROL_FLOW_FLATTENING_OWNED_LOCAL_REFERENCE`，保留该pass输入IR供后续native lowering；
-  这个protection skip不得改变method outcome。不得为了提高CFF覆盖而绕过ownership/release proof。
+- `ControlFlowFlatteningPass` 使用 bounded single-entry/multi-exit region plan：每个method
+  最多选择4个互不重叠region，每个region包含2到32个原始member block。每个region拥有
+  独立dispatcher，state使用per-build/per-method/per-region派生的dense permutation，
+  状态集合始终为`[0, regionMemberCount)`；不得扩大状态空间、引入permutation table或
+  增加每次transition的查表工作。
+- CFF dispatcher会为自己的member blocks引入synthetic cycle。产生owned JNI local ref、
+  instruction exception site、exception edge/handler、monitor/JMM marker或class-init敏感
+  操作的block不得进入region；block parameter、edge target argument和跨block
+  instruction-defined SSA value不能由当前dispatcher ABI携带时同样留在region外。
+  region外block及其exception/ownership语义保持原样，region exit直接进入原region外
+  target，不能经dispatcher延长local-ref lifetime。只有至少一个region真实改写且通过
+  validator时该method的CFF coverage才写`affected=true`；没有safe region只产生
+  pass-level `SKIPPED`，不得改变method outcome或绕过ownership/release proof。
 - Final `LLVM_NATIVE_PATH`与 compiler-internal helper只由 `NativeLlvmCompiler`编译一次；reports、intermediates和 Zig writer共用同一 validated module/pass result。
 - Protection pass对单 method不适用只记录 pass `SKIPPED` reason，不自动改变 method outcome；compiler/runtime implementation无法保持语义才产生 method `skipped`。
 - Protection coverage必须由producer逐method或真实module subject显式写`requested/applicability/affected/status/reasonCode`；function pass只按`affectedFunctions`映射，module/global pass不得把一个global变化扩写成所有method affected，validation failure无法确定逐method applicability时写`unknown`。collector不得从汇总`SKIPPED`或旧`affectedMethods`推断。
@@ -151,23 +158,32 @@
   encrypted-payload key绑定，token SSA名称与数值都由build/method/site材料派生；
   `enc:v1`只允许作为compiler-internal兼容读取边界，不能重新成为生产emission。
 - 通用 runtime metadata、business string与registration text分别消费独立
-  build material。Native text按build/purpose/use派生site-bound codec family与
-  schedule并内联到owning activation；不得恢复统一decoder、固定全局codec shape
-  或相邻XOR seed-share/cipher。Generated-C gate必须阻断decoder fanout、
-  fixed-shape和adjacent-seed回归。
+  build material。Native text按build/purpose/use派生compact 32-bit site-bound
+  codec family与schedule并内联到owning activation；不得恢复统一decoder、固定
+  全局codec shape或相邻XOR seed-share/cipher。Generated-C gate
+  必须阻断decoder fanout、fixed-shape和adjacent-seed回归。
 - 多字节native-text ciphertext按build/purpose/use派生的affine bijection物理存放：
   logical index只通过activation-local cursor映射到physical index；不得新增
   permutation table或ciphertext padding/副本。Generated-C gate必须以
   `AFFINE_CIPHERTEXT_STORAGE`验证该结构，并以
   `INVALID_AFFINE_CIPHERTEXT_STORAGE`阻断identity/direct-index回归；空/单字节
   identity是不可避免的窄例外。
-- Sensitive generated-C text只在真实use-site首次到达时解码；同一C function内的同
-  明文共享一个activation-local slot并在该activation内最多解码一次，不得跨function
-  共享slot、plaintext cache或encoding identity。函数内slot使用聚合scratch与统一
-  cleanup hook覆盖normal/early/failure exit；能明确更短use window的owner/table
-  metadata继续优先显式decode/use/zero。只有低敏感普通runtime error文本可显式选择
-  lazy-once；generic/global decoder、集中text-pointer目录和单decoder批量覆盖必须被
-  source audit阻断。允许translation-unit内共享一个metadata-free `noinline`
+- Sensitive generated-C text只在真实use-site首次到达时解码。同一C function内同明文
+  可共享一个singleton slot；distinct literal只有在lexer证明它们是同一个direct C call
+  argument list、因此必然共同求值时才可合并为tuple。每个tuple最多8个component且最多
+  512 decoded bytes，单个超长component只能独占一组；不同call、assignment或分支不得
+  互相提前解码。tuple使用一个affine ciphertext，但每个component必须先使用独立的
+  build/purpose/use-derived lane mask参与真实cipher bytes，不能只影响排序/identity。
+  component offset只作为compile-time literal进入use-site，不生成pointer/offset table；
+  tuple在该activation内最多解码一次。single-use和同一direct-call argument list的tuple
+  使用guardless单decode fast path；同一call里的其他argument只计算scratch+常量offset，
+  不读取未初始化明文，跨call/assignment复用才允许`ready` guard。不得跨function共享tuple、slot、plaintext cache或
+  encoding identity，source audit必须以`CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE`阻断
+  回归。函数内slot使用聚合scratch与统一cleanup hook覆盖normal/early/failure exit；能
+  明确更短use window的owner/table metadata继续优先显式decode/use/zero。只有低敏感普通
+  runtime error文本可显式选择lazy-once；generic/global decoder、集中text-pointer目录和
+  单decoder批量覆盖必须被source audit阻断。允许translation-unit内共享一个
+  metadata-free `noinline`
   zeroizer/cleanup callback；它只能接收scratch地址/长度，不能接收或解析
   ciphertext、codec、owner/member/descriptor、token，也不能成为shared decoder或
   plaintext cache。
@@ -181,10 +197,14 @@
   `STABLE_REGISTRATION_DIAGNOSTIC`阻断稳定明文xref锚点与任意direct/adjacent
   `FatalError` C string literal。Emitted LLVM中的
   string-token SSA value name也必须是build-scoped hash-only identifier。
-- Registration method name/descriptor只允许在同一owner、同一purpose domain内复用
-  decoded scratch；禁止跨owner复用。owner不超过64个bindings且去重后的text scratch
-  不超过16KiB时使用有界栈storage，任一上限超出时使用heap；两条路径都必须清零
-  text scratch与`JNINativeMethod[]`，heap路径随后释放。
+- Registration method name/descriptor只允许在同一owner、同一purpose domain内复用。
+  去重后的文本按最多8项且最多512 decoded bytes组成bounded group，每group只保留一个
+  encoding/decoder；禁止跨owner或跨purpose复用。单个超512-byte文本允许独占一组。
+  owner不超过64个bindings且全部decoded text scratch不超过16KiB时使用有界栈storage，
+  任一上限超出时使用heap；两条路径都必须清零text scratch与`JNINativeMethod[]`，heap
+  路径随后释放。固定registration rollback/exception-restore文案仅通过四个build-local
+  hash-only `noinline,cold` leaf发出，leaf只接收`JNIEnv*`。`JNI_OnLoad`使用activation-
+  local `jclass[]`与`registered_count`逆序cleanup/rollback，不展开per-owner重复控制流。
 - `LLVM_NATIVE_PATH` JNI wrapper 与规范 LLVM body 之间使用 build-scoped local ABI topology。final native ABI传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用bounded branched参数重排；pure-native scalar binding仍从direct canonical、单层、双层与branched四种形态中派生，以保留较低成本的build diversity。branched形态只在wrapper activation内从两条最多双层的local route中选择，并用最多三个`static __attribute__((noinline, used))` bridge控制代码膨胀；不得使用`optnone`阻止正常size optimization。只允许重排真实原生参数，不得添加cookie、持久function-pointer data slot，bridge不得执行JNI、改变reference lifetime或观察/清除pending exception。该变换只提高静态分类成本，不是安全边界。
 - 静态分析难度优先于产物大小，但每个加固必须有明确size budget：优先选择
   table-free、bounded topology和同值组内复用；攻击者回归记录final native与
@@ -200,6 +220,19 @@
 - 缺失/版本不对时先复用同目录 official archive，否则从 Zig 0.15.2 official URL下载；local/downloaded archive必须先按内置官方 SHA-256验证再解压。Signature状态明确为 `notVerifiedBoundary`。
 - 一个 generated `build.zig`和一次 matrix-wide invocation编排 per-class `.ll`、Zig-managed `.o`、JNI wrapper C和 runtime helper C。Source set不得含 selected method bytecode carrier。
 - Generated C compile unit使用`ReleaseSmall`；per-class LLVM input与final link module保持`ReleaseSafe`。Observable compile unit必须按source kind同质分组，不能把C与LLVM混入同一unit后共用错误的optimization mode；总数仍以每target最多64个为界。
+- `protection.binary.retainUnwindInfo=false`对Linux/macOS generated-C加no-unwind
+  flags，并只在final canonical LLVM module model的function/instruction native-unwind
+  evidence全部为`PROVEN_ABSENT`时，为该module生成target-selectable的`nounwind`文本
+  变体。`REQUIRED`、`UNKNOWN`、证明不完整或未建模`.o`输入一律保留；Windows因SEH、
+  `--debug`或config requested retain也始终选择retained变体。canonical model只有一份，
+  proof绑定该model，dual emission不得用`.ll` regex；不能假设Zig module unwind flag或C
+  compile flag会改写经`addObjectFile`输入的`.ll`。manifest按target写generated-C
+  decision、LLVM omitted/retained counts、unmodeled object count、final omission
+  expectation与reason；若Linux/macOS预期完全省略，final ELF的`.eh_frame`/
+  `.eh_frame_hdr`或Mach-O的`__eh_frame`/`__unwind_info`仍非空必须阻断构建。
+  Linux/macOS generated-C另启用最低收益阈值为16的bounded machine outliner，避免为
+  少量字节收益共享native-text短片段；Windows因SEH directive边界禁用。
+- Final generated-C surface经`NativeLibcRequirementPlan`闭集检查；无libc调用时使用freestanding/minimal compile-only headers、禁止implicit call和shared-library undefined、`.link_libc=false`。Windows使用minimal DLL entry，Linux/Windows最终库不得有libc/CRT dependency。macOS无业务libc调用时仍有平台强制`libSystem`，manifest必须以`MACOS_PLATFORM_LIBSYSTEM_REQUIRED`区分source requirement与effective dependency；新增/漏扫外部routine必须fail closed。
 - Production Zig source generation从final validated LLVM module model的真实symbol
   references计算runtime-helper family reachability，只发出闭包所需family；仅有
   declaration不能成为reachability root。classifier只接受精确已知stable symbol或
