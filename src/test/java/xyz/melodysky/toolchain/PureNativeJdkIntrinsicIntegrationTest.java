@@ -192,7 +192,15 @@ final class PureNativeJdkIntrinsicIntegrationTest {
         assertTrue(cSource.contains(
                 "(*env)->SetByteArrayRegion(env, (jbyteArray)frame, 0, 4, encoded)"));
         assertFalse(cSource.contains("java/nio/ByteBuffer"));
-        assertFalse(cSource.contains("GetMethodID"));
+        assertEquals(
+                1L,
+                java.util.regex.Pattern
+                        .compile("\\(\\*env\\)->GetMethodID\\(")
+                        .matcher(cSource)
+                        .results()
+                        .count(),
+                "the only GetMethodID use is the Loader defining-class resolver; "
+                        + "the ByteBuffer intrinsic must not add JVM method lookup");
     }
 
     @Test

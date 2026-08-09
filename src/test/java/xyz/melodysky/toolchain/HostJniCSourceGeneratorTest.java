@@ -1,10 +1,12 @@
 package xyz.melodysky.toolchain;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -26,12 +28,77 @@ import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.progress.NativePreparationProgress;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningAudit;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 
 class HostJniCSourceGeneratorTest {
+    @Test
+    void buildGenerationReportsSourceAndHardeningAsSeparateRealWork() {
+        ParsedClass parsedClass = parse(
+                "pkg/Progress.class",
+                AsmFixtureBuilder.classWithStaticFieldRead("pkg/Progress"));
+        MethodRewriteDecision decision = decision(parsedClass, "getValue");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+        NativeImplementationPlan implementationPlan =
+                new NativeImplementationPlanner().plan(
+                        registrationPlan,
+                        List.of(decision),
+                        Map.of(
+                                decision.method().methodKey(),
+                                irMethod(parsedClass, "getValue")));
+        ArrayList<NativePreparationProgress> events = new ArrayList<>();
+        NativeBuildProgressListener progress = new NativeBuildProgressListener() {
+            @Override
+            public void targetCompleted(
+                    TargetTriple target,
+                    int completedTargets,
+                    int totalTargets) {
+            }
+
+            @Override
+            public void preparationProgress(NativePreparationProgress progress) {
+                events.add(progress);
+            }
+        };
+        NativeTextBuildKey key = NativeTextBuildKey.fromUtf8(
+                "native-generation-progress-test");
+
+        String source = new HostJniCSourceGenerator().generate(
+                implementationPlan,
+                RuntimeLoaderPlan.create("native0", 0),
+                MethodTableHidingPlan.disabled(),
+                key,
+                key,
+                key,
+                RuntimeHelperReachabilityPlan.conservative(),
+                progress);
+
+        assertFalse(source.isBlank());
+        List<NativePreparationProgress> generation = events.stream()
+                .filter(event -> event.step()
+                        == NativePreparationStep.GENERATE_NATIVE_C)
+                .toList();
+        assertEquals(List.of(0L, 1L), generation.stream()
+                .map(NativePreparationProgress::completed)
+                .toList());
+        assertTrue(generation.stream().allMatch(event -> event.total() == 1L));
+        List<NativePreparationProgress> audit = events.stream()
+                .filter(event -> event.step()
+                        == NativePreparationStep.AUDIT_NATIVE_C)
+                .toList();
+        assertFalse(audit.isEmpty());
+        assertEquals(0L, audit.getFirst().completed());
+        assertEquals(audit.getFirst().total(), audit.getLast().completed());
+        assertEquals(audit.getFirst().total(), audit.getLast().total());
+        assertTrue(audit.stream().allMatch(event ->
+                event.total() == audit.getFirst().total()));
+    }
+
     @Test
     void runtimeHelperFamiliesKeepDependencyOrder() {
         ParsedClass parsedClass = parse(

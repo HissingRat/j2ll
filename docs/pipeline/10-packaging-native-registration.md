@@ -151,10 +151,10 @@ Registration rules：
 - `internalNativeOnly` methods不进入registration plan；其owner/name/descriptor不会因该target单独进入`JNINativeMethod[]`。
 - tables 按 registration owner 分组；同一 build identity 保持 deterministic，正式 randomized build 对 ordinary owner-local method order 和 owner order 做 build-scoped 重排，hidden 模式遵从其独立 protection physical order。
 - `skipped` 和 no-Code declarations 都没有 binding。
-- owner lookup 不得在 helper 注册前触发 selected owner `<clinit>`；`JNI_OnLoad` 直接以 slash internal name 调用 JNI `FindClass`，依赖发起 `System.load` 的 defining-loader context，不以 TCCL 作为 registration resolver。
+- owner lookup不得在helper注册前触发selected owner `<clinit>`。`JNI_OnLoad`只对唯一generated Loader anchor调用JNI `FindClass`，从它取得exact defining `ClassLoader`；business owner的slash name在activation scratch内原位转为binary name，再由`Class.forName(name, false, definingLoader)`解析。不得对business owner调用`FindClass`，也不得回退TCCL或system loader。
 - owner name 在 defining-loader class lookup 返回后立即清零；method/descriptor scratch 只存活到该 owner 的 `RegisterNatives` 完成。多 owner 注册必须是原子的；任一后续 `RegisterNatives` 失败时逆序 `UnregisterNatives` 已成功 owner，清理 retained local refs/scratch。只有每次 unregister 都返回 `JNI_OK` 且没有 pending exception，而且恢复原异常的 `Throw` 返回 `JNI_OK` 并形成 pending exception时，才返回普通 `JNI_ERR`；rollback 或 exception-restore 的 status/evidence failure 通过编码错误文案的 `FatalError` fail closed，避免保留悬空 native binding或静默丢失原异常。
 
-loader state 是 per classloader；extract/load/register 必须幂等且线程安全。失败抛出包含 target/class context 的 `UnsatisfiedLinkError`。
+loader state是per classloader的四态fail-closed状态机：`UNLOADED`在调用`System.load`前先转为`LOADING`；只有`System.load`及其中的`JNI_OnLoad`完整返回才转为`READY`。同线程重入看到`LOADING`时必须在第二次load前失败；任何Throwable把状态转为`FAILED`并原样向首次调用方传播，后续调用不重试、不伪装ready。并发线程仍由Loader monitor串行化。失败抛出包含稳定load-state或target/class context的`UnsatisfiedLinkError`。
 
 ## Field Internalization
 

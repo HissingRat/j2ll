@@ -23,6 +23,8 @@ import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.progress.NativePreparationProgress;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.runtime.RuntimeTokenDomain;
 import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.runtime.jni.JniMethodDescriptor;
@@ -30,6 +32,7 @@ import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
 import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningAudit;
 import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningAuditResult;
+import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningProgressListener;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
 import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
@@ -156,6 +159,26 @@ public final class HostJniCSourceGenerator implements Opcodes {
             NativeTextBuildKey businessBuildKey,
             NativeTextBuildKey registrationBuildKey,
             RuntimeHelperReachabilityPlan runtimeReachability) {
+        return generate(
+                implementationPlan,
+                runtimeLoaderPlan,
+                methodTablePlan,
+                buildKey,
+                businessBuildKey,
+                registrationBuildKey,
+                runtimeReachability,
+                NativeBuildProgressListener.none());
+    }
+
+    String generate(
+            NativeImplementationPlan implementationPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey buildKey,
+            NativeTextBuildKey businessBuildKey,
+            NativeTextBuildKey registrationBuildKey,
+            RuntimeHelperReachabilityPlan runtimeReachability,
+            NativeBuildProgressListener progressListener) {
         List<Binding> bindings = bindings(implementationPlan);
         java.util.Objects.requireNonNull(buildKey, "buildKey");
         java.util.Objects.requireNonNull(
@@ -167,6 +190,9 @@ public final class HostJniCSourceGenerator implements Opcodes {
         java.util.Objects.requireNonNull(
                 runtimeReachability,
                 "runtimeReachability");
+        java.util.Objects.requireNonNull(
+                progressListener,
+                "progressListener");
         BusinessStringSymbolMapper businessStringSymbols =
                 BusinessStringSymbolMapper.fromBytes(
                         businessBuildKey.bytes());
@@ -177,11 +203,17 @@ public final class HostJniCSourceGenerator implements Opcodes {
             throw new IllegalArgumentException(
                     "runtime Loader reference sidecar capability does not match native implementation plan");
         }
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.GENERATE_NATIVE_C,
+                0L,
+                1L,
+                "JNI wrapper source"));
         NativeRegistrationPlan supportedPlan = implementationPlan.registrationPlan();
         String registrationSource =
                 new HostNativeRegistrationSource().emit(
                         supportedPlan,
                         methodTablePlan,
+                        runtimeLoaderPlan,
                         registrationBuildKey);
         GeneratedCFragmentTextObfuscator fragmentTextObfuscator =
                 new GeneratedCFragmentTextObfuscator();
@@ -289,7 +321,21 @@ public final class HostJniCSourceGenerator implements Opcodes {
         HostJniLocalReferenceRuntimeSource.appendIfNeeded(
                 builder,
                 implementationPlan);
-        return requireHardenedGeneratedSource(builder.toString());
+        String source = builder.toString();
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.GENERATE_NATIVE_C,
+                1L,
+                1L,
+                "done"));
+        return requireHardenedGeneratedSource(
+                source,
+                (completed, total, detail) ->
+                        progressListener.preparationProgress(
+                                new NativePreparationProgress(
+                                        NativePreparationStep.AUDIT_NATIVE_C,
+                                        completed,
+                                        total,
+                                        detail)));
     }
 
     private List<Binding> physicalBindingOrder(
@@ -326,8 +372,18 @@ public final class HostJniCSourceGenerator implements Opcodes {
     }
 
     static String requireHardenedGeneratedSource(String source) {
+        return requireHardenedGeneratedSource(
+                source,
+                GeneratedNativeHardeningProgressListener.none());
+    }
+
+    static String requireHardenedGeneratedSource(
+            String source,
+            GeneratedNativeHardeningProgressListener progressListener) {
         GeneratedNativeHardeningAuditResult audit =
-                new GeneratedNativeHardeningAudit().audit(source);
+                new GeneratedNativeHardeningAudit().audit(
+                        source,
+                        progressListener);
         if (audit.passed()) {
             return source;
         }

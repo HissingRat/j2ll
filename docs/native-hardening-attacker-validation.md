@@ -389,7 +389,8 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - 最终 C/native 不保留 token table、function-pointer array 或 nested runtime join。每个 owner
   由 build identity 派生物理 method 顺序，在注册窗口内以 straight-line assignment
   构造唯一临时 `JNINativeMethod[]`。
-- `JNI_OnLoad` 中的 registration owner lookup 直接以 slash internal name 调用 `FindClass`，利用发起 `System.load` 的 defining-loader context；TCCL 不参与 registration resolution。
+- `JNI_OnLoad`只对唯一generated Loader anchor调用`FindClass`并取得它的exact defining `ClassLoader`；business owner的slash name只在activation scratch中转为binary name，再由`Class.forName(name, false, definingLoader)`非初始化解析。business owner不得走`FindClass`，TCCL/system loader也不参与registration resolution。
+- Loader使用per-classloader四态fail-closed状态机。`LOADING`在`System.load`前写入，`READY`只在`JNI_OnLoad`全部注册完成并返回后写入；同线程重入在第二次load前失败，首次load的任何Throwable把状态转为`FAILED`并原样传播，后续调用不重试。
 - multi-owner registration 是原子的：单个 owner 的 `RegisterNatives` 可能在失败前已完成部分 method 绑定，因此 owner helper 必须先保存并清除 pending exception、对当前 owner 调用 `UnregisterNatives` 并严格验证回滚；成功后恢复原异常并把失败交给外层。外层再按逆序仅对此前已成功 owner 调用 `UnregisterNatives`，释放 owner local refs，最后恢复原始 exception 并返回 `JNI_ERR`。
 - rollback 只有在每次 `UnregisterNatives` 都返回 `JNI_OK` 且没有 pending exception 时
   才算成功；任何 status/exception failure 都进入显式 fail-closed `FatalError`，避免
@@ -411,10 +412,10 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 
 验收：
 
-- focused C-source/fake-JNI test 覆盖成功、class lookup failure、token mismatch、当前 owner 部分 `RegisterNatives` failure、后续 owner failure、当前与外层逆序 rollback 的 status/pending-exception failure、原异常恢复和对应 owner local-ref 清理路径。
+- focused C-source/fake-JNI test 覆盖成功、class lookup failure、token mismatch、当前 owner 部分 `RegisterNatives` failure、后续 owner failure、当前与外层逆序 rollback 的 status/pending-exception failure、原异常恢复和对应 owner local-ref 清理路径。Loader anchor、Class meta-object、defining loader、owner name与owner class的每个JNI获取点另覆盖`non-null result + pending exception`，证明调用立即截断、所有已创建local ref精确释放、原pending exception保留且不会继续`RegisterNatives`。
 - zero-owner generated C由fake `JavaVM/GetEnv` + Clang真实编译运行，证明不会生成零长
   `registered_owners[]`或rollback路径且`JNI_OnLoad`直接返回`JNI_VERSION_1_8`。
-- real Zig/child-JVM fixture 由 child-first `URLClassLoader` 加载独立 JAR，并把 TCCL 设为 `null`，验证 `JNI_OnLoad` 的 `FindClass` 仍解析 defining-loader 中的 owner。
+- 2026-08-10 real Zig/child-JVM fixture直接嵌入由`NativeLoaderClassGenerator`生成的生产`Loader.class`及真实SHA-256动态库resource，并把TCCL设为`null`。测试不预加载Loader，而是先初始化business owner；该owner正在执行的`<clinit>`首条调用为`Loader.ensureLoaded()`，`JNI_OnLoad`以`Class.forName(..., false, definingLoader)`取回这个in-progress owner并完成全部binding，随后同一个`<clinit>`成功调用native helper。第二个未初始化owner的constructor helper同样通过。该链路已在Java 17和Java 25分别真实运行通过。
 - ASan/host integration 不出现 use-after-free、double-free 或明文 lifetime 回归。
 
 32-binding、单owner、相同build key的Clang `-Oz` micro A/B中，registration source由

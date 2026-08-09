@@ -16,7 +16,12 @@ import java.util.Locale;
  * physical Loader.class entry.
  */
 public final class LoaderTemplate {
-    private static volatile boolean loaded;
+    private static final int UNLOADED = 0;
+    private static final int LOADING = 1;
+    private static final int READY = 2;
+    private static final int FAILED = 3;
+
+    private static volatile int loadState;
 
     private LoaderTemplate() {
     }

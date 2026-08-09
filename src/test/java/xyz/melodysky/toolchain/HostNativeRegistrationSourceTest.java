@@ -11,7 +11,10 @@ import org.junit.jupiter.api.Test;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
+import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
+import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
 final class HostNativeRegistrationSourceTest {
     private final NativeRegistrationPlan registrations = new NativeRegistrationPlan(List.of(
@@ -88,7 +91,7 @@ final class HostNativeRegistrationSourceTest {
         assertTrue(source.contains("goto cleanup;"));
         assertTrue(source.contains("j2ll_native_text_zero(owner_text, sizeof(owner_text));"));
         int ownerLookup = source.indexOf(
-                "owner_class = j2ll_class_for_registration(env, owner_text);");
+                "owner_class = j2ll_class_for_registration(env, resolver, owner_text);");
         int immediateOwnerClear = source.indexOf(
                 "j2ll_native_text_zero(owner_text, sizeof(owner_text));",
                 ownerLookup);
@@ -130,7 +133,7 @@ final class HostNativeRegistrationSourceTest {
                 NativeTextBuildKey.fromUtf8(
                         "owner-local-registration-text-dedup"));
 
-        assertEquals(7, occurrences(source, "_cipher[] = {"));
+        assertEquals(8, occurrences(source, "_cipher[] = {"));
         java.util.regex.Matcher signatures = java.util.regex.Pattern
                 .compile("\\.signature = \\(char\\*\\)"
                         + "\\(text_scratch \\+ ([0-9]+)\\)")
@@ -184,9 +187,9 @@ final class HostNativeRegistrationSourceTest {
                         false,
                         77L),
                 key);
-        // Four build-local failure leaves, one owner, and eight bounded text
-        // groups replace 64 independent name/descriptor decoder bodies.
-        assertEquals(13, occurrences(source, "_cipher[] = {"));
+        // Four build-local failure leaves, one Loader anchor, one owner, and
+        // eight bounded text groups replace 64 independent decoder bodies.
+        assertEquals(14, occurrences(source, "_cipher[] = {"));
         assertTrue(source.length() < 120_000, () ->
                 "registration source exceeded its bounded grouping budget: "
                         + source.length());
@@ -415,15 +418,15 @@ final class HostNativeRegistrationSourceTest {
                 NativeTextBuildKey.fromUtf8("atomic-owner-registration"));
 
         assertTrue(source.contains(
-                "(JNIEnv* env, jclass* registered_owner)"));
+                "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner)"));
         assertTrue(source.contains("*registered_owner = owner_class;"));
         assertTrue(source.contains("owner_class = NULL;"));
         assertTrue(source.contains(
-                "(env, &registered_owners[0]) != JNI_OK"));
+                "(env, &resolver, &registered_owners[0]) != JNI_OK"));
         assertTrue(source.contains(
-                "(env, &registered_owners[1]) != JNI_OK"));
+                "(env, &resolver, &registered_owners[1]) != JNI_OK"));
         assertTrue(source.contains(
-                "(env, &registered_owners[2]) != JNI_OK"));
+                "(env, &resolver, &registered_owners[2]) != JNI_OK"));
         assertEquals(3, occurrences(source, "goto rollback;"));
 
         int rollback = source.indexOf("rollback:");
@@ -468,10 +471,79 @@ final class HostNativeRegistrationSourceTest {
         assertRegistrationPlaintextAbsent(source);
     }
 
+    @Test
+    void explicitLoaderAnchorIsEncodedAndResolverLifetimeCoversOnlyOnLoad() {
+        NativeTextBuildKey key = NativeTextBuildKey.fromUtf8(
+                "registration-loader-anchor-contract");
+        RuntimeLoaderPlan loaderPlan = new RuntimeLoaderPlan(
+                "registration/fixture",
+                "registration/fixture/Bootstrap",
+                0);
+        HostNativeRegistrationSource emitter =
+                new HostNativeRegistrationSource();
+
+        String source = emitter.emit(
+                registrations,
+                new MethodTableHidingPlanner().plan(
+                        registrations,
+                        false,
+                        77L),
+                loaderPlan,
+                key);
+        NativeRegistrationResolverPlan resolverPlan =
+                NativeRegistrationResolverPlan.create(
+                        loaderPlan,
+                        key,
+                        1);
+
+        assertEquals(
+                NativeTextPurpose.REGISTRATION_LOADER_ANCHOR,
+                resolverPlan.loaderAnchorText().purpose());
+        assertEquals(
+                loaderPlan.internalName(),
+                new NativeTextEncoder().decodeUtf8(
+                        resolverPlan.loaderAnchorText()));
+        assertFalse(source.contains(loaderPlan.internalName()));
+        assertFalse(source.contains("native0/Loader"));
+        assertTrue(source.contains("(*env)->EnsureLocalCapacity(env, 9)"));
+        assertTrue(source.contains(
+                "j2ll_registration_resolver resolver = {NULL, NULL, NULL, NULL};"));
+        assertTrue(source.contains(
+                "jint resolver_status = j2ll_registration_resolver_open("));
+        assertTrue(source.contains(
+                "j2ll_native_text_zero(loader_anchor_text, sizeof(loader_anchor_text));"));
+        assertEquals(
+                4,
+                occurrences(
+                        source,
+                        "j2ll_registration_resolver_close(env, &resolver);"));
+
+        int aggregate = source.lastIndexOf("static jint j2ll_register_");
+        int open = source.indexOf(
+                "jint resolver_status = j2ll_registration_resolver_open(",
+                aggregate);
+        int ownerCall = source.indexOf(
+                "(env, &resolver, &registered_owners[0]) != JNI_OK",
+                open);
+        int successClose = source.indexOf(
+                "j2ll_registration_resolver_close(env, &resolver);",
+                ownerCall);
+        int rollback = source.indexOf("rollback:", successClose);
+        int rollbackClose = source.indexOf(
+                "j2ll_registration_resolver_close(env, &resolver);",
+                rollback);
+        assertTrue(aggregate >= 0);
+        assertTrue(open > aggregate);
+        assertTrue(ownerCall > open);
+        assertTrue(successClose > ownerCall);
+        assertTrue(rollback > successClose);
+        assertTrue(rollbackClose > rollback);
+    }
+
     private String registrationCallOrder(String source) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern
                 .compile("if \\(j2ll_register_(h_[0-9a-f]{32})"
-                        + "\\(env, &registered_owners\\[[0-9]+\\]\\)")
+                        + "\\(env, &resolver, &registered_owners\\[[0-9]+\\]\\)")
                 .matcher(source);
         StringBuilder order = new StringBuilder();
         while (matcher.find()) {

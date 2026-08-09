@@ -6,6 +6,7 @@ import xyz.melodysky.packaging.MethodTableHidingEntry;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
 
@@ -22,14 +23,42 @@ public final class HostNativeRegistrationSource {
     public String emit(
             NativeRegistrationPlan registrationPlan,
             MethodTableHidingPlan hidingPlan) {
-        return emit(registrationPlan, hidingPlan, COMPATIBILITY_BUILD_KEY);
+        return emit(
+                registrationPlan,
+                hidingPlan,
+                RuntimeLoaderPlan.create("native0"),
+                COMPATIBILITY_BUILD_KEY);
     }
 
     public String emit(
             NativeRegistrationPlan registrationPlan,
             MethodTableHidingPlan hidingPlan,
             NativeTextBuildKey buildKey) {
+        return emit(
+                registrationPlan,
+                hidingPlan,
+                RuntimeLoaderPlan.create("native0"),
+                buildKey);
+    }
+
+    public String emit(
+            NativeRegistrationPlan registrationPlan,
+            MethodTableHidingPlan hidingPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan) {
+        return emit(
+                registrationPlan,
+                hidingPlan,
+                runtimeLoaderPlan,
+                COMPATIBILITY_BUILD_KEY);
+    }
+
+    public String emit(
+            NativeRegistrationPlan registrationPlan,
+            MethodTableHidingPlan hidingPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeTextBuildKey buildKey) {
         validatePlan(registrationPlan, hidingPlan);
+        Objects.requireNonNull(runtimeLoaderPlan, "runtimeLoaderPlan");
         Objects.requireNonNull(buildKey, "buildKey");
         NativeTextCEmitter textEmitter = new NativeTextCEmitter();
         StringBuilder source = new StringBuilder(textEmitter.runtimeSource());
@@ -40,6 +69,8 @@ public final class HostNativeRegistrationSource {
         source.append(failureLeafSource.emit(failureLeaves));
         HostNativeOwnerRegistrationSource ownerEmitter =
                 new HostNativeOwnerRegistrationSource();
+        HostNativeRegistrationResolverSource resolverEmitter =
+                new HostNativeRegistrationResolverSource();
         List<NativeRegistrationTextPlan.Owner> owners;
         if (hidingPlan.changed()) {
             owners = physicalOwnerOrder(
@@ -54,11 +85,22 @@ public final class HostNativeRegistrationSource {
                 source.append(ownerEmitter.emit(owner, failureLeaves));
             }
         }
+        NativeRegistrationResolverPlan resolverPlan = owners.isEmpty()
+                ? null
+                : NativeRegistrationResolverPlan.create(
+                        runtimeLoaderPlan,
+                        buildKey,
+                        owners.size());
+        if (resolverPlan != null) {
+            source.append(resolverEmitter.ciphertextDeclaration(resolverPlan));
+        }
         appendRootRegistration(
                 source,
                 owners,
                 "j2ll_register_" + buildKey.hashHex().substring(0, 24),
-                failureLeaves);
+                failureLeaves,
+                resolverPlan,
+                resolverEmitter);
         return source.toString();
     }
 
@@ -103,7 +145,9 @@ public final class HostNativeRegistrationSource {
             StringBuilder source,
             List<NativeRegistrationTextPlan.Owner> owners,
             String aggregateSymbol,
-            HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
+            HostNativeRegistrationFailureLeafSource.Plan failureLeaves,
+            NativeRegistrationResolverPlan resolverPlan,
+            HostNativeRegistrationResolverSource resolverEmitter) {
         source.append("static jint ")
                 .append(aggregateSymbol)
                 .append("(JavaVM* vm) {\n")
@@ -114,6 +158,7 @@ public final class HostNativeRegistrationSource {
         if (owners.isEmpty()) {
             source.append("    return JNI_VERSION_1_8;\n");
         } else {
+            resolverEmitter.appendOpen(source, resolverPlan);
             source.append("    jthrowable failure_exception = NULL;\n")
                     .append("    jthrowable rollback_exception = NULL;\n")
                     .append("    jthrowable observed_exception = NULL;\n")
@@ -129,8 +174,8 @@ public final class HostNativeRegistrationSource {
         for (int index = 0; index < owners.size(); index++) {
             NativeRegistrationTextPlan.Owner owner = owners.get(index);
             source.append("    if (j2ll_register_")
-                    .append(HostNativeOwnerRegistrationSource.physicalSuffix(owner))
-                    .append("(env, &registered_owners[")
+                     .append(HostNativeOwnerRegistrationSource.physicalSuffix(owner))
+                    .append("(env, &resolver, &registered_owners[")
                     .append(index)
                     .append("]) != JNI_OK) {\n")
                     .append("        goto rollback;\n")
@@ -144,8 +189,9 @@ public final class HostNativeRegistrationSource {
                     .append("        registered_count--;\n")
                     .append("        (*env)->DeleteLocalRef(env, registered_owners[registered_count]);\n")
                     .append("        registered_owners[registered_count] = NULL;\n")
-                    .append("    }\n")
-                    .append("    return JNI_VERSION_1_8;\n")
+                    .append("    }\n");
+            resolverEmitter.appendClose(source, "    ");
+            source.append("    return JNI_VERSION_1_8;\n")
                     .append("rollback:\n")
                     .append("    if ((*env)->ExceptionCheck(env)) {\n")
                     .append("        failure_exception = (*env)->ExceptionOccurred(env);\n")
@@ -173,6 +219,7 @@ public final class HostNativeRegistrationSource {
                     .append("        registered_owners[registered_count] = NULL;\n")
                     .append("        rollback_owner = NULL;\n")
                     .append("    }\n");
+            resolverEmitter.appendClose(source, "    ");
             source.append("    if (rollback_failed) {\n")
                     .append("        if (failure_exception != NULL) {\n")
                     .append("            (*env)->DeleteLocalRef(env, failure_exception);\n")

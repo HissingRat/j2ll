@@ -3,40 +3,36 @@ package xyz.melodysky.toolchain;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.objectweb.asm.Opcodes.ACC_NATIVE;
-import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
-import static org.objectweb.asm.Opcodes.ACC_STATIC;
-import static org.objectweb.asm.Opcodes.ACC_SUPER;
-import static org.objectweb.asm.Opcodes.ALOAD;
-import static org.objectweb.asm.Opcodes.IRETURN;
-import static org.objectweb.asm.Opcodes.V17;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
-import xyz.melodysky.packaging.NativeRegistrationEntry;
+import xyz.melodysky.packaging.NativeLoaderClassGenerator;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.testsupport.RegistrationDefiningLoaderFixture;
 import xyz.melodysky.testsupport.RegistrationDefiningLoaderHarness;
 import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
+import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
 
 final class RegistrationDefiningLoaderNativeIntegrationTest {
     @TempDir
     Path temp;
 
     @Test
-    void jniOnLoadFindClassUsesTheSystemLoadDefiningLoaderWhenTcclIsNull()
+    void inProgressOwnerClinitLoadsRegistersThenInvokesItsNativeHelper()
             throws Exception {
         Path zigExecutable = realZigExecutable();
         assumeTrue(
@@ -56,18 +52,16 @@ final class RegistrationDefiningLoaderNativeIntegrationTest {
         NativeTextBuildKey buildKey =
                 NativeTextBuildKey.fromUtf8("registration-loader-fixture");
         NativeRegistrationPlan registrationPlan =
-                new NativeRegistrationPlan(List.of(
-                        new NativeRegistrationEntry(
-                                "registration/fixture/Owner",
-                                "value",
-                                "()I",
-                                "j2ll_registration_fixture_value")));
+                RegistrationDefiningLoaderFixture.registrationPlan();
+        RuntimeLoaderPlan loaderPlan = RuntimeLoaderPlan.create(
+                RegistrationDefiningLoaderFixture.PACKAGE_INTERNAL_NAME);
         String registration = new HostNativeRegistrationSource().emit(
                 registrationPlan,
                 new MethodTableHidingPlanner().plan(
                         registrationPlan,
                         false,
                         0L),
+                loaderPlan,
                 buildKey);
         String runtime = new GeneratedCFragmentTextObfuscator().obfuscate(
                 buildKey,
@@ -82,14 +76,50 @@ final class RegistrationDefiningLoaderNativeIntegrationTest {
                 #include <string.h>
 
                 """
+                + new NativeTextCEmitter().runtimeSource()
                 + runtime
                 + """
-                static jint j2ll_registration_fixture_value(
+                static jint j2ll_registration_fixture_clinit_body_calls = 0;
+                static jint j2ll_registration_fixture_constructor_body_calls = 0;
+
+                static void j2ll_registration_fixture_clinit_body(
                         JNIEnv* env,
                         jclass owner) {
                     (void)env;
                     (void)owner;
-                    return 42;
+                    j2ll_registration_fixture_clinit_body_calls++;
+                }
+
+                static jint j2ll_registration_fixture_clinit_calls(
+                        JNIEnv* env,
+                        jclass owner) {
+                    (void)env;
+                    (void)owner;
+                    return j2ll_registration_fixture_clinit_body_calls;
+                }
+
+                static void j2ll_registration_fixture_constructor_body(
+                        JNIEnv* env,
+                        jclass owner,
+                        jobject self,
+                        jint value) {
+                    jfieldID value_field = (*env)->GetFieldID(env, owner, "value", "I");
+                    if (value_field == NULL) {
+                        return;
+                    }
+                    (*env)->SetIntField(env, self, value_field, value);
+                    if ((*env)->ExceptionCheck(env)) {
+                        return;
+                    }
+                    j2ll_registration_fixture_constructor_body_calls++;
+                }
+
+                static jint j2ll_registration_fixture_constructor_calls(
+                        JNIEnv* env,
+                        jclass owner) {
+                    (void)env;
+                    (void)owner;
+                    return j2ll_registration_fixture_constructor_body_calls;
                 }
 
                 """
@@ -127,13 +157,28 @@ final class RegistrationDefiningLoaderNativeIntegrationTest {
                 sourceSet,
                 NativeBuildProgressListener.none());
 
-        Path fixtureJar = temp.resolve("registration-owner.jar");
-        writeJar(
-                fixtureJar,
-                "registration/fixture/Owner.class",
-                ownerClass());
         NativeBuildUnit unit = buildPlan.units().get(0);
         assertTrue(Files.isRegularFile(unit.outputPath()));
+        String libraryResource = RegistrationDefiningLoaderFixture.PACKAGE_INTERNAL_NAME
+                + "/"
+                + unit.target().libraryFileName();
+        NativeLibraryArtifact artifact = new NativeLibraryArtifact(
+                unit.target(),
+                unit.outputPath(),
+                wrapper,
+                libraryResource,
+                sha256(unit.outputPath()),
+                List.of("JNI_OnLoad"));
+        byte[] loaderClass = new NativeLoaderClassGenerator().generate(
+                loaderPlan,
+                List.of(artifact));
+        Map<String, byte[]> fixtureEntries = new TreeMap<>(
+                RegistrationDefiningLoaderFixture.classEntries(loaderClass));
+        fixtureEntries.put(
+                libraryResource,
+                Files.readAllBytes(unit.outputPath()));
+        Path fixtureJar = temp.resolve("registration-owner.jar");
+        writeJar(fixtureJar, fixtureEntries);
 
         String javaExecutable = Path.of(
                         System.getProperty("java.home"),
@@ -145,8 +190,7 @@ final class RegistrationDefiningLoaderNativeIntegrationTest {
                         "-cp",
                         System.getProperty("java.class.path"),
                         RegistrationDefiningLoaderHarness.class.getName(),
-                        fixtureJar.toString(),
-                        unit.outputPath().toString())
+                        fixtureJar.toString())
                 .redirectErrorStream(false)
                 .start();
         String stdout = new String(
@@ -158,64 +202,27 @@ final class RegistrationDefiningLoaderNativeIntegrationTest {
         int exitCode = process.waitFor();
 
         assertEquals(0, exitCode, stderr);
-        assertEquals("42", stdout.trim());
+        assertEquals("clinit=1,constructor=1,value=7", stdout.trim());
     }
 
-    private byte[] ownerClass() {
-        ClassWriter writer = new ClassWriter(
-                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-        writer.visit(
-                V17,
-                ACC_PUBLIC | ACC_SUPER,
-                "registration/fixture/Owner",
-                null,
-                "java/lang/Object",
-                null);
-        MethodVisitor value = writer.visitMethod(
-                ACC_PUBLIC | ACC_STATIC | ACC_NATIVE,
-                "value",
-                "()I",
-                null,
-                null);
-        value.visitEnd();
-        MethodVisitor loadAndValue = writer.visitMethod(
-                ACC_PUBLIC | ACC_STATIC,
-                "loadAndValue",
-                "(Ljava/lang/String;)I",
-                null,
-                null);
-        loadAndValue.visitCode();
-        loadAndValue.visitVarInsn(ALOAD, 0);
-        loadAndValue.visitMethodInsn(
-                Opcodes.INVOKESTATIC,
-                "java/lang/System",
-                "load",
-                "(Ljava/lang/String;)V",
-                false);
-        loadAndValue.visitMethodInsn(
-                Opcodes.INVOKESTATIC,
-                "registration/fixture/Owner",
-                "value",
-                "()I",
-                false);
-        loadAndValue.visitInsn(IRETURN);
-        loadAndValue.visitMaxs(0, 0);
-        loadAndValue.visitEnd();
-        writer.visitEnd();
-        return writer.toByteArray();
+    private String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
     }
 
     private void writeJar(
             Path jar,
-            String entryName,
-            byte[] bytes) throws Exception {
+            Map<String, byte[]> entries) throws Exception {
         try (JarOutputStream output =
                 new JarOutputStream(Files.newOutputStream(jar))) {
-            JarEntry entry = new JarEntry(entryName);
-            entry.setTime(0L);
-            output.putNextEntry(entry);
-            output.write(bytes);
-            output.closeEntry();
+            for (Map.Entry<String, byte[]> fixtureEntry
+                    : new TreeMap<>(entries).entrySet()) {
+                JarEntry entry = new JarEntry(fixtureEntry.getKey());
+                entry.setTime(0L);
+                output.putNextEntry(entry);
+                output.write(fixtureEntry.getValue());
+                output.closeEntry();
+            }
         }
     }
 

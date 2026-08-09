@@ -1,6 +1,7 @@
 package xyz.melodysky.cli.progress;
 
 import java.io.PrintStream;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -12,6 +13,8 @@ import org.fusesource.jansi.AnsiPrintStream;
 import org.fusesource.jansi.AnsiType;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativePreparationProgress;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.progress.NativeTargetProgress;
 import xyz.melodysky.progress.NativeTargetState;
 
@@ -36,7 +39,12 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
     private long workTotal;
     private LegacyProgressLayout.Work methodWork = LegacyProgressLayout.Work.unknown();
     private LegacyProgressLayout.Work llvmWork = LegacyProgressLayout.Work.unknown();
+    private final EnumMap<NativePreparationStep, LegacyProgressLayout.Work>
+            nativePreparationWork = new EnumMap<>(NativePreparationStep.class);
     private final LinkedHashMap<String, NativeTargetProgress> nativeTargets = new LinkedHashMap<>();
+    private boolean managedZigPreparation;
+    private NativePreparationStep activeNativePreparation;
+    private String nativePreparationDetail = "";
     private long lastRenderAtNanos = Long.MIN_VALUE;
     private boolean renderedWorkForCurrentStage;
     private boolean finished;
@@ -82,12 +90,63 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
         renderedWorkForCurrentStage = false;
         if (stage == BuildStage.NATIVE_BUILD) {
             nativeTargets.clear();
+            nativePreparationWork.clear();
+            managedZigPreparation = true;
+            activeNativePreparation = null;
+            nativePreparationDetail = "";
         }
 
         if (interactive) {
             renderInteractive(nanoTime.getAsLong());
         } else {
             output.println(plainStageLine(stage, this.detail));
+        }
+    }
+
+    @Override
+    public synchronized void managedZigPreparationStarted() {
+        if (finished || currentStage != BuildStage.NATIVE_BUILD) {
+            return;
+        }
+        managedZigPreparation = true;
+        activeNativePreparation = null;
+        nativePreparationDetail = "";
+        if (interactive) {
+            renderInteractive(nanoTime.getAsLong());
+        }
+    }
+
+    @Override
+    public synchronized void nativePreparationProgress(
+            NativePreparationProgress progress) {
+        if (finished || currentStage != BuildStage.NATIVE_BUILD || progress == null) {
+            return;
+        }
+        LegacyProgressLayout.Work current = nativePreparationWork.get(progress.step());
+        if (current != null
+                && (progress.total() != current.total()
+                        || progress.completed() < current.completed())) {
+            return;
+        }
+        String sanitizedDetail = TerminalText.sanitize(progress.detail());
+        nativePreparationWork.put(
+                progress.step(),
+                LegacyProgressLayout.Work.unknown().update(
+                        progress.completed(),
+                        progress.total(),
+                        sanitizedDetail));
+        managedZigPreparation = false;
+        activeNativePreparation = progress.step();
+        nativePreparationDetail = sanitizedDetail;
+        if (interactive) {
+            long now = nanoTime.getAsLong();
+            boolean firstUpdate = current == null;
+            boolean completed = progress.completed() >= progress.total();
+            if (firstUpdate
+                    || completed
+                    || now - lastRenderAtNanos >= MIN_RENDER_INTERVAL_NANOS) {
+                renderInteractive(now);
+            }
         }
     }
 
@@ -107,6 +166,9 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
                 }
             }
         }
+        managedZigPreparation = false;
+        activeNativePreparation = null;
+        nativePreparationDetail = "";
         if (interactive) {
             renderInteractive(nanoTime.getAsLong());
         }
@@ -169,6 +231,10 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
         workCompleted = 0L;
         workTotal = 0L;
         nativeTargets.clear();
+        nativePreparationWork.clear();
+        managedZigPreparation = false;
+        activeNativePreparation = null;
+        nativePreparationDetail = "";
         lastRenderAtNanos = Long.MIN_VALUE;
         renderedWorkForCurrentStage = false;
         output.flush();
@@ -237,6 +303,10 @@ public final class LegacyProgressRenderer implements BuildProgressListener {
                 detail,
                 methodWork,
                 llvmWork,
+                nativePreparationWork,
+                managedZigPreparation,
+                activeNativePreparation,
+                nativePreparationDetail,
                 List.copyOf(nativeTargets.values()));
     }
 

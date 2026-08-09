@@ -53,7 +53,7 @@ final class HostNativeOwnerRegistrationSource {
                         textScratchSize);
         source.append("static jint j2ll_register_")
                 .append(suffix)
-                .append("(JNIEnv* env, jclass* registered_owner) {\n")
+                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) {\n")
                 .append("    const int count = ")
                 .append(owner.bindings().size())
                 .append(";\n")
@@ -77,7 +77,7 @@ final class HostNativeOwnerRegistrationSource {
                 .append("    }\n")
                 .append("    *registered_owner = NULL;\n");
         appendDecode(source, owner.ownerText(), "owner_text");
-        source.append("    owner_class = j2ll_class_for_registration(env, owner_text);\n")
+        source.append("    owner_class = j2ll_class_for_registration(env, resolver, owner_text);\n")
                 .append("    j2ll_native_text_zero(owner_text, sizeof(owner_text));\n")
                 .append("    if (owner_class == NULL) {\n")
                 .append("        goto cleanup;\n")

@@ -7,6 +7,7 @@ package xyz.melodysky.toolchain.nativetext;
  * reuse an encoding stream merely because their plaintext happens to match.</p>
  */
 public enum NativeTextPurpose {
+    REGISTRATION_LOADER_ANCHOR("registration-loader-anchor"),
     REGISTRATION_OWNER("registration-owner"),
     REGISTRATION_METHOD_NAME("registration-method-name"),
     REGISTRATION_DESCRIPTOR("registration-descriptor"),

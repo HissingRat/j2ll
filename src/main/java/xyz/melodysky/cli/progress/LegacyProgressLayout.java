@@ -3,7 +3,9 @@ package xyz.melodysky.cli.progress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.progress.NativeTargetProgress;
 import xyz.melodysky.progress.NativeTargetState;
 
@@ -38,12 +40,25 @@ final class LegacyProgressLayout {
             String detail,
             Work methodWork,
             Work llvmWork,
+            Map<NativePreparationStep, Work> nativePreparationWork,
+            boolean managedZigPreparation,
+            NativePreparationStep activeNativePreparation,
+            String nativePreparationDetail,
             List<NativeTargetProgress> nativeTargets) {
         View {
             detail = TerminalText.sanitize(detail);
             methodWork = methodWork == null ? Work.unknown() : methodWork;
             llvmWork = llvmWork == null ? Work.unknown() : llvmWork;
+            nativePreparationWork = nativePreparationWork == null
+                    ? Map.of()
+                    : Map.copyOf(nativePreparationWork);
+            nativePreparationDetail = TerminalText.sanitize(
+                    nativePreparationDetail);
             nativeTargets = nativeTargets == null ? List.of() : List.copyOf(nativeTargets);
+        }
+
+        Work nativePreparationWork(NativePreparationStep step) {
+            return nativePreparationWork.getOrDefault(step, Work.unknown());
         }
     }
 
@@ -110,28 +125,97 @@ final class LegacyProgressLayout {
     }
 
     private List<String> nativeLines(View view, int width, boolean completed) {
+        ArrayList<String> lines = new ArrayList<>();
+        appendNativePreparationLines(lines, view, width, completed);
         if (completed) {
-            return List.of(completedNativeLine(view, width));
+            lines.add(completedNativeLine(view, width));
+            return List.copyOf(lines);
         }
         BuildStage stage = view.stage();
         if (stage == BuildStage.NATIVE_BUILD && !view.nativeTargets().isEmpty()) {
-            return activeNativeTargetLines(view, width);
+            lines.addAll(activeNativeTargetLines(view, width));
+            return List.copyOf(lines);
         }
-        String state = switch (stage) {
-            case INTERMEDIATE_WRITING -> "preparing";
-            case TARGET_PREFLIGHT -> "checking";
-            case NATIVE_BUILD -> "preparing";
-            default -> "waiting";
-        };
+        String state = nativeStageState(view);
         String buildDetail = stage == BuildStage.NATIVE_BUILD
                 ? view.detail()
                 : "waiting";
-        String stageDetail = stage == BuildStage.NATIVE_BUILD
-                ? "managed Zig toolchain"
-                : stageDetail(stage, view.detail());
-        return List.of(
-                indeterminateLine("Build native", buildDetail, width, false),
-                stageLine(state, stageDetail, width));
+        lines.add(indeterminateLine("Build native", buildDetail, width, false));
+        lines.add(stageLine(state, nativeStageDetail(view), width));
+        return List.copyOf(lines);
+    }
+
+    private void appendNativePreparationLines(
+            List<String> lines,
+            View view,
+            int width,
+            boolean completedPhase) {
+        for (NativePreparationStep step : NativePreparationStep.values()) {
+            Work work = view.nativePreparationWork(step);
+            if (completedPhase && !work.known()) {
+                continue;
+            }
+            String label = nativePreparationLabel(step);
+            if (!work.known()) {
+                lines.add(indeterminateLine(label, "waiting", width, false));
+            } else if (work.completed() >= work.total()) {
+                lines.add(doneWorkLine(label, work, width, false));
+            } else {
+                lines.add(workLine(label, work, width, true));
+            }
+        }
+    }
+
+    private String nativePreparationLabel(NativePreparationStep step) {
+        return switch (step) {
+            case GENERATE_NATIVE_C -> "Generate C";
+            case AUDIT_NATIVE_C -> "Audit native";
+            case WRITE_NATIVE_IR -> "Write LLVM";
+            case PREPARE_ZIG_BUILD -> "Prepare Zig";
+        };
+    }
+
+    private String nativeStageState(View view) {
+        if (view.stage() != BuildStage.NATIVE_BUILD) {
+            return switch (view.stage()) {
+                case INTERMEDIATE_WRITING -> "preparing";
+                case TARGET_PREFLIGHT -> "checking";
+                default -> "waiting";
+            };
+        }
+        if (view.managedZigPreparation()) {
+            return "preparing";
+        }
+        if (view.activeNativePreparation() == null) {
+            return "preparing";
+        }
+        return switch (view.activeNativePreparation()) {
+            case GENERATE_NATIVE_C -> "generating";
+            case AUDIT_NATIVE_C -> "auditing";
+            case WRITE_NATIVE_IR -> "writing";
+            case PREPARE_ZIG_BUILD -> "preparing";
+        };
+    }
+
+    private String nativeStageDetail(View view) {
+        if (view.stage() != BuildStage.NATIVE_BUILD) {
+            return stageDetail(view.stage(), view.detail());
+        }
+        if (view.managedZigPreparation()) {
+            return "managed Zig toolchain";
+        }
+        if (view.activeNativePreparation() == null) {
+            return view.detail();
+        }
+        if (!view.nativePreparationDetail().isBlank()) {
+            return view.nativePreparationDetail();
+        }
+        return switch (view.activeNativePreparation()) {
+            case GENERATE_NATIVE_C -> "native C source";
+            case AUDIT_NATIVE_C -> "native hardening";
+            case WRITE_NATIVE_IR -> "native LLVM modules";
+            case PREPARE_ZIG_BUILD -> "Zig build graph";
+        };
     }
 
     private List<String> activeNativeTargetLines(View view, int width) {

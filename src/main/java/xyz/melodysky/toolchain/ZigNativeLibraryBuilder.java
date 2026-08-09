@@ -23,6 +23,8 @@ import xyz.melodysky.packaging.EmbeddedLibraryLayout;
 import xyz.melodysky.packaging.MethodTableHidingPlan;
 import xyz.melodysky.packaging.MethodTableHidingPlanner;
 import xyz.melodysky.packaging.RuntimeLoaderPlan;
+import xyz.melodysky.progress.NativePreparationProgress;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.symbols.NativeSymbolInspector;
 import xyz.melodysky.toolchain.symbols.NativeUnwindSectionInspection;
@@ -474,6 +476,7 @@ public final class ZigNativeLibraryBuilder {
             throw new IOException(
                     "precompiled LLVM input does not match the final native implementation plan");
         }
+        progressListener.managedZigPreparationStarted();
         ManagedZig zig = zigLocator.ensure(homeResolver.resolve());
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(workspaceRoot);
         prepareDirectories(workspace);
@@ -488,23 +491,44 @@ public final class ZigNativeLibraryBuilder {
                 businessTextBuildKey,
                 registrationBuildKey,
                 RuntimeHelperReachabilityPlan.from(
-                        llvmCompilation));
+                        llvmCompilation),
+                progressListener);
+        NativeLlvmSourcePlan llvmSources = writeLlvmSources(
+                workspace,
+                llvmCompilation,
+                progressListener);
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.PREPARE_ZIG_BUILD,
+                0L,
+                4L,
+                "native runtime"));
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(
                 runtime,
                 new HostWindowsDllEntryRuntimeSource().emit(libraryName),
                 StandardCharsets.UTF_8);
-        NativeLlvmSourcePlan llvmSources =
-                writeLlvmSources(workspace, llvmCompilation);
         NativeLibcRequirementPlan libcRequirement =
                 NativeLibcRequirementPlan.inspectAll(List.of(
                         Files.readString(wrapper, StandardCharsets.UTF_8),
                         Files.readString(runtime, StandardCharsets.UTF_8)));
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.PREPARE_ZIG_BUILD,
+                1L,
+                4L,
+                "native runtime"));
+        List<Path> headers = new ZigJniHeaderSet().prepare(
+                workspace,
+                libcRequirement);
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.PREPARE_ZIG_BUILD,
+                2L,
+                4L,
+                "JNI headers"));
         ZigSourceSet sources = new ZigSourceSet(
                 llvmSources.retainedPaths(),
                 List.of(wrapper, runtime),
                 List.of(),
-                new ZigJniHeaderSet().prepare(workspace, libcRequirement),
+                headers,
                 libcRequirement,
                 llvmSources);
         buildWriter.write(
@@ -514,7 +538,17 @@ public final class ZigNativeLibraryBuilder {
                 new ZigInputSet(sources),
                 strip,
                 unwindRetentionPolicy);
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.PREPARE_ZIG_BUILD,
+                3L,
+                4L,
+                "build graph"));
         ZigBuildInvocation invocation = buildInvoker.invocation(zig, workspace);
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.PREPARE_ZIG_BUILD,
+                4L,
+                4L,
+                "done"));
         try {
             buildInvoker.invoke(zig, workspace, buildPlan, sources, progressListener);
         } catch (IOException exception) {
@@ -606,7 +640,8 @@ public final class ZigNativeLibraryBuilder {
                 nativeTextBuildKey,
                 businessTextBuildKey,
                 registrationBuildKey,
-                RuntimeHelperReachabilityPlan.conservative());
+                RuntimeHelperReachabilityPlan.conservative(),
+                NativeBuildProgressListener.none());
     }
 
     private Path writeJniWrapper(
@@ -618,7 +653,8 @@ public final class ZigNativeLibraryBuilder {
             NativeTextBuildKey nativeTextBuildKey,
             NativeTextBuildKey businessTextBuildKey,
             NativeTextBuildKey registrationBuildKey,
-            RuntimeHelperReachabilityPlan runtimeReachability)
+            RuntimeHelperReachabilityPlan runtimeReachability,
+            NativeBuildProgressListener progressListener)
             throws IOException {
         Objects.requireNonNull(workspace, "workspace");
         Objects.requireNonNull(runtimeLoaderPlan, "runtimeLoaderPlan");
@@ -634,6 +670,7 @@ public final class ZigNativeLibraryBuilder {
         Objects.requireNonNull(
                 runtimeReachability,
                 "runtimeReachability");
+        Objects.requireNonNull(progressListener, "progressListener");
         if (!NativeLibraryName.isSafe(libraryName)) {
             throw new IOException("unsafe native library name in build plan: " + libraryName);
         }
@@ -652,7 +689,8 @@ public final class ZigNativeLibraryBuilder {
                         nativeTextBuildKey,
                         businessTextBuildKey,
                         registrationBuildKey,
-                        runtimeReachability),
+                        runtimeReachability,
+                        progressListener),
                 StandardCharsets.UTF_8);
         return wrapper;
     }
@@ -666,9 +704,17 @@ public final class ZigNativeLibraryBuilder {
 
     private NativeLlvmSourcePlan writeLlvmSources(
             ZigBuildWorkspace workspace,
-            NativeLlvmCompilation compilation) throws IOException {
+            NativeLlvmCompilation compilation,
+            NativeBuildProgressListener progressListener) throws IOException {
+        int total = compilation.modules().size();
+        progressListener.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.WRITE_NATIVE_IR,
+                0L,
+                total,
+                total == 0 ? "no LLVM modules" : "waiting"));
         ArrayList<NativeLlvmSource> sources = new ArrayList<>();
         Path omissionDirectory = workspace.llvmDirectory().resolve("no-unwind");
+        int completed = 0;
         for (NativeLlvmModuleCompilation module : compilation.modules()) {
             Path llvmPath = workspace.llvmDirectory()
                     .resolve(NativeSourceName.llvmFileName(module.owner()));
@@ -690,6 +736,12 @@ public final class ZigNativeLibraryBuilder {
                     omissionPath,
                     module.emissionPlan().proof().omissionSafe(),
                     module.emissionPlan().proof().reasonCode()));
+            completed++;
+            progressListener.preparationProgress(new NativePreparationProgress(
+                    NativePreparationStep.WRITE_NATIVE_IR,
+                    completed,
+                    total,
+                    completed == total ? "done" : module.owner()));
         }
         return new NativeLlvmSourcePlan(sources);
     }

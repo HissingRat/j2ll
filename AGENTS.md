@@ -112,7 +112,8 @@
 - `embeddedLibraryDirectory`同时是 resource与 Loader package prefix，必须为规范 Java internal package path；input base/MR同名 Loader在 Zig前分别以稳定 collision reason失败。
 - 普通 Code method可用 `nativeOriginal`；`<init>`、`<clinit>`和有 Code interface method使用合法 stub + generated native body helper。无法把全部用户语义移入 native implementation时整个 method为 `skipped`。
 - Packaging只重写 `nativeLowered` methods：registered入口按既有native/stub策略重写，`internalNativeOnly`精确删除method_info；`skipped` methods精确保留并验证没有registration/native bytecode copy。
-- `JNI_OnLoad` registration owner lookup直接用 slash internal name调用JNI `FindClass`，利用发起`System.load`的defining-loader context；不得把TCCL作为registration resolver。owner name必须在class lookup返回后立即清零。多 owner registration必须原子；单个 owner 的 `RegisterNatives` 失败也必须先对当前 owner 执行严格回滚，再把原异常交给外层逆序`UnregisterNatives`此前成功owner并清理local refs/scratch。只有每次unregister都返回`JNI_OK`且无pending exception、恢复原异常的`Throw`返回`JNI_OK`并形成pending exception时才允许返回普通失败，否则`FatalError` fail closed。
+- `JNI_OnLoad`只允许对唯一`<embeddedLibraryDirectory>/Loader` anchor调用JNI `FindClass`，再从该`jclass`取得exact defining `ClassLoader`。所有business registration owner必须把activation-local slash name原位转为binary name，并通过`Class.forName(name, false, definingLoader)`非初始化解析；不得对business owner调用`FindClass`，也不得回退TCCL/system loader。anchor、Class meta-object与defining-loader context只保留为本次`JNI_OnLoad` local refs，不建立global/weak-global class cache；owner scratch在lookup窗口立即清零。多 owner registration必须原子；单个 owner 的 `RegisterNatives` 失败也必须先对当前 owner执行严格回滚，再把原异常交给外层逆序`UnregisterNatives`此前成功owner并清理local refs/scratch。只有每次unregister都返回`JNI_OK`且无pending exception、恢复原异常的`Throw`返回`JNI_OK`并形成pending exception时才允许普通失败，否则`FatalError` fail closed。
+- Loader load state必须是per-defining-ClassLoader的fail-closed `UNLOADED -> LOADING -> READY` / `FAILED`状态机。`LOADING`在`System.load`前写入，`READY`只能在`System.load`及`JNI_OnLoad`完整返回后写入；同线程重入看到`LOADING`必须在第二次load前抛出稳定`UnsatisfiedLinkError`，任何Throwable使状态进入`FAILED`并原样向首次调用方传播，后续调用不得重试或假装ready。
 - 保留 manifest/resources/services/module-info/multi-release entries。Base class有 versioned counterpart时，命中 method为 `skipped` + `MULTI_RELEASE_VERSIONED_CLASS`，不 rewrite/register。
 - Signed JAR：`fail`在 rewrite前拒绝；`strip`移除 signature entries并 warning；`resign`先 preflight keystore/password/alias，再用当前 JDK `jarsigner`。失败不保留 final JAR。
 
@@ -252,7 +253,7 @@
 - Validate只校验 config且不建 workspace；dry-run不调用 Zig、不写 final JAR。Dry-run/build在 resolved `outputDirectory`下创建 `build_yyyy-MM-dd_HH-mm-ss[-n]`，final JAR在 workspace根。
 - `--debug`只开启 intermediates/debug dumps，不宣称 native debug symbols。
 - stdout只写稳定 `key=value`结果；progress、skipped notice/prompt和 diagnostics写 stderr。
-- TUI compiler stages为 `Read bytecode`、`Lower to IR`、`Emit LLVM IR`；native期间一个 aggregate row加每 target一行；完成后折叠 target rows；finalization用 `Finalize JAR`。
+- TUI compiler stages为 `Read bytecode`、`Lower to IR`、`Emit LLVM IR`；target构建前固定显示`Generate C`、`Audit native`、`Write LLVM`、`Prepare Zig`四条真实completed/total准备进度，managed Zig定位只占用瞬态`Stage`行、不伪造进度条；native期间保留准备完成行并显示一个aggregate row加每target一行，完成后只折叠target rows；finalization用`Finalize JAR`。
 - Target百分比只等于真实 Zig build-graph completed work units/total，最多64个按source kind同质的observable compile units/target。`BUILDING`/`LINKING`/`COMPLETED`来自 graph boundary，不解析 Zig文本或按耗时猜测。
 - `logs/zig-progress/`仅 invocation期间存在，成功/失败/中断都删除；持久 `zig-build.log`只用于诊断。
 - CLI/config error、exit code、summary/index/failure report合同按 `docs/io-config-output-contract.md`。

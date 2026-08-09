@@ -157,10 +157,37 @@ final class HostNativeRegistrationRollbackExecutionTest {
                 static const uintptr_t failure_id = UINT64_C(0x900);
                 static const uintptr_t rollback_id = UINT64_C(0x901);
 
-                static jclass j2ll_class_for_registration(
-                        JNIEnv* env, const char* internal_name) {
+                typedef struct {
+                    jclass loader_anchor;
+                    jclass class_class;
+                    jobject defining_loader;
+                    jmethodID class_for_name;
+                } j2ll_registration_resolver;
+
+                static jint j2ll_registration_resolver_open(
+                        JNIEnv* env,
+                        const char* loader_internal_name,
+                        j2ll_registration_resolver* resolver) {
                     (void)env;
-                    (void)internal_name;
+                    (void)loader_internal_name;
+                    memset(resolver, 0, sizeof(*resolver));
+                    return JNI_OK;
+                }
+
+                static void j2ll_registration_resolver_close(
+                        JNIEnv* env,
+                        j2ll_registration_resolver* resolver) {
+                    (void)env;
+                    (void)resolver;
+                }
+
+                static jclass j2ll_class_for_registration(
+                        JNIEnv* env,
+                        const j2ll_registration_resolver* resolver,
+                        char* binary_name) {
+                    (void)env;
+                    (void)resolver;
+                    (void)binary_name;
                     resolve_count++;
                     return (jclass)(uintptr_t)(owner_base + (uintptr_t)resolve_count);
                 }
@@ -275,6 +302,12 @@ final class HostNativeRegistrationRollbackExecutionTest {
                     }
                 }
 
+                static jint JNICALL fake_ensure_local_capacity(
+                        JNIEnv* env, jint capacity) {
+                    (void)env;
+                    return capacity >= 0 ? JNI_OK : JNI_ERR;
+                }
+
                 static struct JNINativeInterface_ fake_env_table = {
                     .ExceptionOccurred = fake_exception_occurred,
                     .ExceptionClear = fake_exception_clear,
@@ -284,6 +317,7 @@ final class HostNativeRegistrationRollbackExecutionTest {
                     .RegisterNatives = fake_register_natives,
                     .UnregisterNatives = fake_unregister_natives,
                     .ExceptionCheck = fake_exception_check,
+                    .EnsureLocalCapacity = fake_ensure_local_capacity,
                 };
                 static JNIEnv fake_env = &fake_env_table;
 

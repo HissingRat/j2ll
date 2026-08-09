@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.List;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativePreparationProgress;
 import xyz.melodysky.progress.NativeTargetProgress;
 import xyz.melodysky.progress.NativeTargetState;
 import xyz.melodysky.toolchain.NativeBuildPlan;
@@ -145,6 +146,16 @@ final class MainlineProgress {
 
     NativeBuildProgressListener nativeBuildProgress() {
         return new NativeBuildProgressListener() {
+            @Override
+            public void managedZigPreparationStarted() {
+                listener.managedZigPreparationStarted();
+            }
+
+            @Override
+            public void preparationProgress(NativePreparationProgress progress) {
+                listener.nativePreparationProgress(progress);
+            }
+
             @Override
             public void buildStarted(List<TargetTriple> targets) {
                 listener.nativeTargetsStarted(targets.stream()

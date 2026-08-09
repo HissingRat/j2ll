@@ -132,11 +132,25 @@ public final class GeneratedNativeHardeningAudit {
                     + "0xCA\\s*,\\s*0xFE\\s*,\\s*0xBA\\s*,\\s*0xBE");
 
     public GeneratedNativeHardeningAuditResult audit(String source) {
+        return audit(source, GeneratedNativeHardeningProgressListener.none());
+    }
+
+    public GeneratedNativeHardeningAuditResult audit(
+            String source,
+            GeneratedNativeHardeningProgressListener progressListener) {
         if (source == null) {
             throw new NullPointerException("source");
         }
+        if (progressListener == null) {
+            throw new NullPointerException("progressListener");
+        }
         String commentFree = maskComments(source, false);
         String structural = maskComments(source, true);
+        GeneratedNativeAffineStorageAudit affineStorageAudit =
+                new GeneratedNativeAffineStorageAudit();
+        int affineCipherCount = affineStorageAudit.cipherCount(structural);
+        long totalAuditUnits = (long) affineCipherCount + 2L;
+        progressListener.progress(0L, totalAuditUnits, "source structure");
         LinkedHashMap<String, GeneratedNativeHardeningFinding> findings =
                 new LinkedHashMap<>();
         LinkedHashSet<String> evidence = new LinkedHashSet<>();
@@ -149,9 +163,14 @@ public final class GeneratedNativeHardeningAudit {
                 .inspect(source)
                 .ifPresent(finding ->
                         findings.putIfAbsent(finding.code(), finding));
+        progressListener.progress(1L, totalAuditUnits, "source structure");
         GeneratedNativeAffineStorageAudit.Inspection affineStorage =
-                new GeneratedNativeAffineStorageAudit()
-                        .inspect(structural);
+                affineStorageAudit.inspect(
+                        structural,
+                        completed -> progressListener.progress(
+                                1L + completed,
+                                totalAuditUnits,
+                                "ciphertext array"));
         if (affineStorage.finding() != null) {
             findings.putIfAbsent(
                     affineStorage.finding().code(),
@@ -303,6 +322,8 @@ public final class GeneratedNativeHardeningAudit {
         if (containsIdentifier(structural, "j2ll_native_text_zero")) {
             evidence.add(EVIDENCE_SCRATCH_ZEROIZER);
         }
+
+        progressListener.progress(totalAuditUnits, totalAuditUnits, "done");
 
         return new GeneratedNativeHardeningAuditResult(
                 new ArrayList<>(findings.values()),

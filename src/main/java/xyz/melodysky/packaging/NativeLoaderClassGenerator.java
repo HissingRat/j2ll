@@ -23,6 +23,12 @@ public final class NativeLoaderClassGenerator implements Opcodes {
     private static final String TEMPLATE_INTERNAL_NAME =
             "xyz/melodysky/runtime/loader/LoaderTemplate";
     private static final String TEMPLATE_RESOURCE = TEMPLATE_INTERNAL_NAME + ".class";
+    private static final String LOAD_STATE_FIELD = "loadState";
+    private static final int LOAD_STATE_UNLOADED = 0;
+    private static final int LOAD_STATE_LOADING = 1;
+    private static final int LOAD_STATE_READY = 2;
+    private static final int LOAD_STATE_FAILED = 3;
+
     public byte[] generate(
             RuntimeLoaderPlan plan,
             List<NativeLibraryArtifact> artifacts) throws IOException {
@@ -85,12 +91,48 @@ public final class NativeLoaderClassGenerator implements Opcodes {
         method.visibleLocalVariableAnnotations = null;
         method.invisibleLocalVariableAnnotations = null;
 
-        Label load = new Label();
+        Label checkLoading = new Label();
+        Label checkFailed = new Label();
+        Label checkUnloaded = new Label();
+        Label beginLoad = new Label();
+        Label loadStart = new Label();
+        Label loadEnd = new Label();
+        Label loadFailure = new Label();
         method.visitCode();
-        method.visitFieldInsn(GETSTATIC, loaderInternalName, "loaded", "Z");
-        method.visitJumpInsn(IFEQ, load);
+        method.visitFieldInsn(GETSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        pushInt(method, LOAD_STATE_READY);
+        method.visitJumpInsn(IF_ICMPNE, checkLoading);
         method.visitInsn(RETURN);
-        method.visitLabel(load);
+        method.visitLabel(checkLoading);
+        method.visitFieldInsn(GETSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        pushInt(method, LOAD_STATE_LOADING);
+        method.visitJumpInsn(IF_ICMPNE, checkFailed);
+        emitUnsatisfiedLinkError(
+                method,
+                loaderInternalName,
+                "recursive j2ll native library loading detected before registration completed");
+        method.visitLabel(checkFailed);
+        method.visitFieldInsn(GETSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        pushInt(method, LOAD_STATE_FAILED);
+        method.visitJumpInsn(IF_ICMPNE, checkUnloaded);
+        emitUnsatisfiedLinkError(
+                method,
+                loaderInternalName,
+                "j2ll native library loading previously failed");
+        method.visitLabel(checkUnloaded);
+        method.visitFieldInsn(GETSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        pushInt(method, LOAD_STATE_UNLOADED);
+        method.visitJumpInsn(IF_ICMPEQ, beginLoad);
+        pushInt(method, LOAD_STATE_FAILED);
+        method.visitFieldInsn(PUTSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        emitUnsatisfiedLinkError(
+                method,
+                loaderInternalName,
+                "invalid j2ll native library load state");
+        method.visitLabel(beginLoad);
+        pushInt(method, LOAD_STATE_LOADING);
+        method.visitFieldInsn(PUTSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        method.visitLabel(loadStart);
         method.visitLdcInsn(Type.getObjectType(loaderInternalName));
         emitStringArray(method, artifacts.stream()
                 .map(artifact -> artifact.target().directoryName())
@@ -107,11 +149,34 @@ public final class NativeLoaderClassGenerator implements Opcodes {
                 "loadForCurrentTarget",
                 "(Ljava/lang/Class;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V",
                 false);
-        method.visitInsn(ICONST_1);
-        method.visitFieldInsn(PUTSTATIC, loaderInternalName, "loaded", "Z");
+        pushInt(method, LOAD_STATE_READY);
+        method.visitFieldInsn(PUTSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        method.visitLabel(loadEnd);
         method.visitInsn(RETURN);
+        method.visitLabel(loadFailure);
+        method.visitVarInsn(ASTORE, 0);
+        pushInt(method, LOAD_STATE_FAILED);
+        method.visitFieldInsn(PUTSTATIC, loaderInternalName, LOAD_STATE_FIELD, "I");
+        method.visitVarInsn(ALOAD, 0);
+        method.visitInsn(ATHROW);
+        method.visitTryCatchBlock(loadStart, loadEnd, loadFailure, "java/lang/Throwable");
         method.visitMaxs(0, 0);
         method.visitEnd();
+    }
+
+    private void emitUnsatisfiedLinkError(
+            MethodNode method,
+            String loaderInternalName,
+            String message) {
+        method.visitLdcInsn(message);
+        method.visitInsn(ACONST_NULL);
+        method.visitMethodInsn(
+                INVOKESTATIC,
+                loaderInternalName,
+                "unsatisfied",
+                "(Ljava/lang/String;Ljava/lang/Throwable;)Ljava/lang/UnsatisfiedLinkError;",
+                false);
+        method.visitInsn(ATHROW);
     }
 
     private void stripDebugMetadata(ClassNode loader) {

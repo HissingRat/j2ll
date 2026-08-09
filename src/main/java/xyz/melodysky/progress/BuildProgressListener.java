@@ -11,6 +11,14 @@ public interface BuildProgressListener {
 
     void stageProgress(BuildStage stage, long completed, long total, String detail);
 
+    /** Shows managed Zig resolution only in the transient Stage row. */
+    default void managedZigPreparationStarted() {
+    }
+
+    /** Updates one native-workspace preparation row. */
+    default void nativePreparationProgress(NativePreparationProgress progress) {
+    }
+
     default void nativeTargetsStarted(List<String> targets) {
     }
 

@@ -8,6 +8,8 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.progress.BuildProgressListener;
 import xyz.melodysky.progress.BuildStage;
+import xyz.melodysky.progress.NativePreparationProgress;
+import xyz.melodysky.progress.NativePreparationStep;
 import xyz.melodysky.progress.NativeTargetProgress;
 import xyz.melodysky.toolchain.NativeBuildPlan;
 import xyz.melodysky.toolchain.NativeBuildUnit;
@@ -96,6 +98,37 @@ class MainlineProgressTest {
     }
 
     @Test
+    void nativePreparationEventsRemainSeparateFromTargetBuildProgress() {
+        RecordingListener listener = new RecordingListener();
+        MainlineProgress progress = new MainlineProgress(listener);
+
+        var nativeProgress = progress.nativeBuildProgress();
+        nativeProgress.managedZigPreparationStarted();
+        nativeProgress.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.GENERATE_NATIVE_C,
+                0,
+                1,
+                "JNI wrapper source"));
+        nativeProgress.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.GENERATE_NATIVE_C,
+                1,
+                1,
+                "done"));
+        nativeProgress.preparationProgress(new NativePreparationProgress(
+                NativePreparationStep.WRITE_NATIVE_IR,
+                1,
+                2,
+                "pkg/Foo"));
+
+        assertEquals(1, listener.managedZigPreparationCount);
+        assertEquals(List.of(
+                "GENERATE_NATIVE_C:0/1:JNI wrapper source",
+                "GENERATE_NATIVE_C:1/1:done",
+                "WRITE_NATIVE_IR:1/2:pkg/Foo"), listener.nativePreparation);
+        assertEquals(List.of(), listener.nativeTargets);
+    }
+
+    @Test
     void zeroMethodAndClassCountsRemainZero() {
         RecordingListener listener = new RecordingListener();
         MainlineProgress progress = new MainlineProgress(listener);
@@ -117,6 +150,8 @@ class MainlineProgressTest {
         private final ArrayList<String> progressed = new ArrayList<>();
         private final ArrayList<String> nativeTargets = new ArrayList<>();
         private final ArrayList<String> nativeProgress = new ArrayList<>();
+        private final ArrayList<String> nativePreparation = new ArrayList<>();
+        private int managedZigPreparationCount;
 
         @Override
         public void stageStarted(BuildStage stage, String detail) {
@@ -131,6 +166,19 @@ class MainlineProgressTest {
         @Override
         public void nativeTargetsStarted(List<String> targets) {
             nativeTargets.addAll(targets);
+        }
+
+        @Override
+        public void managedZigPreparationStarted() {
+            managedZigPreparationCount++;
+        }
+
+        @Override
+        public void nativePreparationProgress(NativePreparationProgress progress) {
+            nativePreparation.add(progress.step()
+                    + ":" + progress.completed()
+                    + "/" + progress.total()
+                    + ":" + progress.detail());
         }
 
         @Override

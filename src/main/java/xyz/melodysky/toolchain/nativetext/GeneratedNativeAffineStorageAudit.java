@@ -1,9 +1,8 @@
 package xyz.melodysky.toolchain.nativetext;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
+import java.util.function.IntConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -25,24 +24,24 @@ final class GeneratedNativeAffineStorageAudit {
                     + "\\[[^]]*]\\s*=\\s*\\{");
     private static final Pattern BYTE =
             Pattern.compile("(?i)\\b0x[0-9a-f]{2}\\b");
-    private static final Pattern VOLATILE_CIPHER_READ = Pattern.compile(
-            "\\(\\(\\s*const\\s+volatile\\s+"
-                    + "unsigned\\s+char\\s*\\*\\s*\\)"
-                    + "\\s*\\(\\s*"
-                    + "(j2ll_nt_[0-9a-f]{24}_cipher)"
-                    + "\\s*\\)\\s*\\)"
-                    + "\\[\\s*"
-                    + "([A-Za-z_][A-Za-z0-9_]*)"
-                    + "\\s*]");
     private static final int SITE_WINDOW = 32 * 1024;
+    private static final IntConsumer NO_PROGRESS = ignored -> {};
     private final NativeTextCipherReferenceAudit referenceAudit =
             new NativeTextCipherReferenceAudit();
 
     Inspection inspect(String source) {
+        return inspect(source, NO_PROGRESS);
+    }
+
+    Inspection inspect(
+            String source,
+            IntConsumer cipherCompleted) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(cipherCompleted, "cipherCompleted");
         source = NativeTextCSourceMasker.spliceLineContinuations(source);
         Matcher ciphers = CIPHER.matcher(source);
-        Map<String, List<String>> readIndexes =
-                readIndexes(source);
+        NativeTextCipherReferenceAudit.Index referenceIndex =
+                referenceAudit.index(source);
         boolean contractActive = source.contains(MARKER);
         boolean finalGeneratedSource = source.contains("JNI_OnLoad");
         int cipherCount = 0;
@@ -57,6 +56,7 @@ final class GeneratedNativeAffineStorageAudit {
                             ciphers.start(),
                             "final generated native C has no affine ciphertext-storage contract marker");
                 }
+                cipherCompleted.accept(cipherCount);
                 continue;
             }
             int opening = source.indexOf('{', ciphers.start());
@@ -67,7 +67,7 @@ final class GeneratedNativeAffineStorageAudit {
             String cipher = ciphers.group(2);
             int unexpectedReference =
                     referenceAudit.firstUnexpectedReference(
-                            source,
+                            referenceIndex,
                             cipher,
                             ciphers.start(2),
                             ciphers.end(2),
@@ -80,19 +80,18 @@ final class GeneratedNativeAffineStorageAudit {
                         "native-text ciphertext has an unclassified direct or aliased reference");
             }
             if (!validSite(
-                    source,
-                    cipher,
-                    ciphers.group(3),
-                    length,
-                    readIndexes.getOrDefault(
+                            source,
+                            referenceIndex,
                             cipher,
-                            List.of()))
+                            ciphers.group(3),
+                            length)
                     && firstFinding == null) {
                 firstFinding = finding(
                         source,
                         ciphers.start(),
                         "native-text ciphertext is not consumed through a valid per-site affine storage cursor");
             }
+            cipherCompleted.accept(cipherCount);
         }
         boolean evidence = cipherCount > 0
                 && contractActive
@@ -100,12 +99,23 @@ final class GeneratedNativeAffineStorageAudit {
         return new Inspection(firstFinding, evidence);
     }
 
+    int cipherCount(String source) {
+        Objects.requireNonNull(source, "source");
+        Matcher ciphers = CIPHER.matcher(
+                NativeTextCSourceMasker.spliceLineContinuations(source));
+        int count = 0;
+        while (ciphers.find()) {
+            count++;
+        }
+        return count;
+    }
+
     private boolean validSite(
             String source,
+            NativeTextCipherReferenceAudit.Index referenceIndex,
             String cipher,
             String token,
-            int length,
-            List<String> readIndexes) {
+            int length) {
         if (length <= 0) {
             return false;
         }
@@ -129,7 +139,7 @@ final class GeneratedNativeAffineStorageAudit {
         initialization.region(siteStart, siteEnd);
         if (!initialization.find()
                 || !onlyAffineCipherReads(
-                        readIndexes,
+                        referenceIndex.readIndexes(cipher),
                         storageIndex)) {
             return false;
         }
@@ -197,18 +207,6 @@ final class GeneratedNativeAffineStorageAudit {
         return true;
     }
 
-    private Map<String, List<String>> readIndexes(String source) {
-        HashMap<String, List<String>> indexes = new HashMap<>();
-        Matcher reads = VOLATILE_CIPHER_READ.matcher(source);
-        while (reads.find()) {
-            indexes.computeIfAbsent(
-                            reads.group(1),
-                            ignored -> new ArrayList<>())
-                    .add(reads.group(2));
-        }
-        return indexes;
-    }
-
     private boolean validParameters(
             int length,
             int initial,
@@ -240,8 +238,8 @@ final class GeneratedNativeAffineStorageAudit {
             int opening,
             int closing) {
         int count = 0;
-        Matcher bytes = BYTE.matcher(
-                source.substring(opening + 1, closing));
+        Matcher bytes = BYTE.matcher(source);
+        bytes.region(opening + 1, closing);
         while (bytes.find()) {
             count++;
         }
