@@ -119,6 +119,21 @@ class RuntimeHelperCatalogTest {
     }
 
     @Test
+    void referenceIdentityHelperUsesEnvAndTwoOpaqueReferenceHandles() {
+        RuntimeHelper helper = RuntimeHelperCatalog.defaultCatalog()
+                .helper(RuntimeHelperKind.IS_SAME_OBJECT)
+                .orElseThrow();
+
+        assertEquals("j2ll_rt_is_same_object", helper.llvmSymbol());
+        assertEquals("i32", helper.llvmReturnType());
+        assertEquals(java.util.List.of("jobject", "jobject"), helper.signature().parameterTypes());
+        assertEquals(java.util.List.of("ptr", "ptr", "ptr"), helper.llvmParameterTypes());
+        assertTrue(new RuntimeHelperDeclarationEmitter()
+                .emit(new RuntimeHelperCatalog(java.util.List.of(helper)))
+                .contains("declare i32 @j2ll_rt_is_same_object(ptr, ptr, ptr) ; isSameObject"));
+    }
+
+    @Test
     void emitsStableLlvmDeclarationsForHelperAbi() {
         String declarations = new RuntimeHelperDeclarationEmitter().emit(RuntimeHelperCatalog.defaultCatalog());
 

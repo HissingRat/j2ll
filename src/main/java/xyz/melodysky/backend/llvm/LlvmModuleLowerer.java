@@ -576,6 +576,13 @@ public final class LlvmModuleLowerer {
                 localReferencePlan.map(LlvmLocalReferenceLowering::new);
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
         LlvmFunctionAbi functionAbi = functionAbis.get(method.methodKey());
+        LlvmReferenceIdentityLowering referenceIdentity =
+                new LlvmReferenceIdentityLowering(
+                        method,
+                        functionAbi,
+                        runtimeHelpers.helper(RuntimeHelperKind.IS_SAME_OBJECT)
+                                .orElseThrow()
+                                .llvmSymbol());
         if (functionAbi.passesJniEnv()) {
             parameters.add(new LlvmParameter(LlvmType.PTR, "%j2ll_env"));
         }
@@ -633,7 +640,8 @@ public final class LlvmModuleLowerer {
                                 functionAbis,
                                 block.name(),
                                 instructionIndex,
-                                jvalueScratch),
+                                jvalueScratch,
+                                referenceIdentity),
                         localReferences
                                 .map(lowering -> lowering.releases(
                                         releases.normalPath()))
@@ -977,7 +985,8 @@ public final class LlvmModuleLowerer {
             Map<String, LlvmFunctionAbi> functionAbis,
             String blockName,
             int instructionIndex,
-            LlvmJvalueScratchPlan jvalueScratch) {
+            LlvmJvalueScratchPlan jvalueScratch,
+            LlvmReferenceIdentityLowering referenceIdentity) {
         Optional<BusinessStringConstantRef> businessString =
                 BusinessStringConstantRef.fromInstruction(instruction);
         if (businessString.isPresent()) {
@@ -999,6 +1008,9 @@ public final class LlvmModuleLowerer {
             return nativeFields.lower(
                     instruction,
                     stableHash(blockName + ":" + instructionIndex + ":" + instruction.symbol().orElse("")));
+        }
+        if (isReferenceCompare(instruction.opcode())) {
+            return referenceIdentity.lower(instruction);
         }
         return List.of(lowerInstruction(instruction, directCallMethodKeys, functionAbis));
     }
@@ -1022,13 +1034,6 @@ public final class LlvmModuleLowerer {
             return LlvmInstruction.rawProvenNoNativeUnwind(
                     Optional.of(instruction.result().orElseThrow().name()),
                     "icmp " + comparePredicate(instruction.opcode()) + " i32 "
-                            + instruction.operands().get(0).name() + ", "
-                            + instruction.operands().get(1).name());
-        }
-        if (isReferenceCompare(instruction.opcode())) {
-            return LlvmInstruction.rawProvenNoNativeUnwind(
-                    Optional.of(instruction.result().orElseThrow().name()),
-                    "icmp " + comparePredicate(instruction.opcode()) + " ptr "
                             + instruction.operands().get(0).name() + ", "
                             + instruction.operands().get(1).name());
         }
@@ -2002,8 +2007,6 @@ public final class LlvmModuleLowerer {
             case CMP_LE_I32 -> "sle";
             case CMP_GT_I32 -> "sgt";
             case CMP_GE_I32 -> "sge";
-            case CMP_EQ_REF -> "eq";
-            case CMP_NE_REF -> "ne";
             default -> throw new IllegalArgumentException("not a primitive compare opcode: " + opcode);
         };
     }
@@ -2154,6 +2157,7 @@ public final class LlvmModuleLowerer {
                 || base.startsWith("j2ll_rt_double_")
                 || base.equals("j2ll_rt_object_get_class")
                 || base.equals("j2ll_rt_class_get_class_loader")
+                || base.equals("j2ll_rt_is_same_object")
                 || base.equals("j2ll_rt_thread_sleep")
                 || base.startsWith("j2ll_rt_objects_")
                 || base.equals("j2ll_rt_lambda_new")
@@ -2516,7 +2520,8 @@ public final class LlvmModuleLowerer {
             IrMethod method,
             Set<String> directCallMethodKeys,
             Set<String> staticCallMethodKeys) {
-        return method.blocks().stream()
+        return LlvmFunctionAbiPolicy.referenceComparisonsRequireJniEnv(method)
+                || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> !instruction.exceptionSites().isEmpty())
                 || method.blocks().stream()

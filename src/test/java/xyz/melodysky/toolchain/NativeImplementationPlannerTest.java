@@ -58,6 +58,42 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     @Test
+    void referenceIdentityRequiresJniEnvButDirectNullComparisonDoesNot() {
+        ParsedClass parsedClass = parse(
+                "pkg/ReferenceIdentity.class",
+                AsmFixtureBuilder.classWithReferenceBranchMethods(
+                        "pkg/ReferenceIdentity"));
+        MethodRewriteDecision same = decision(parsedClass, "same");
+        MethodRewriteDecision isNull = decision(parsedClass, "isNull");
+        IrMethod sameIr = irMethod(parsedClass, "same");
+        IrMethod isNullIr = irMethod(parsedClass, "isNull");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(same, isNull));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(same, isNull),
+                Map.of(
+                        same.method().methodKey(), sameIr,
+                        isNull.method().methodKey(), isNullIr));
+
+        NativeMethodImplementation sameImplementation = plan
+                .implementationFor(same.method().methodKey())
+                .orElseThrow();
+        NativeMethodImplementation nullImplementation = plan
+                .implementationFor(isNull.method().methodKey())
+                .orElseThrow();
+        assertTrue(sameImplementation.passesJniEnv());
+        assertFalse(nullImplementation.passesJniEnv());
+        assertEquals(
+                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false),
+                sameImplementation.llvmFunctionAbi());
+        assertEquals(
+                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(false, false),
+                nullImplementation.llvmFunctionAbi());
+    }
+
+    @Test
     void classLiteralOnlyMethodsFreezeJniEnvAbiForStaticAndInstanceBodies() {
         ParsedClass parsedClass = parse(
                 "pkg/ClassLiteralOps.class",

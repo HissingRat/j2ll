@@ -124,6 +124,7 @@ public final class RuntimeHelperCatalog {
                 new RuntimeHelper(RuntimeHelperKind.CLASS_GET_CLASS_LOADER, "classGetClassLoader", "j2ll_rt_class_get_class_loader", "jobject", List.of("jobject")),
                 new RuntimeHelper(RuntimeHelperKind.OBJECT_HASH_CODE, "objectHashCode", "j2ll_rt_object_hash_code", "i32", List.of("jobject")),
                 new RuntimeHelper(RuntimeHelperKind.OBJECT_EQUALS, "objectEquals", "j2ll_rt_object_equals", "i32", List.of("jobject", "jobject")),
+                new RuntimeHelper(RuntimeHelperKind.IS_SAME_OBJECT, "isSameObject", "j2ll_rt_is_same_object", "i32", List.of("jobject", "jobject")),
                 new RuntimeHelper(RuntimeHelperKind.STRING_LENGTH, "stringLength", "j2ll_rt_string_length", "i32", List.of("jobject")),
                 new RuntimeHelper(RuntimeHelperKind.STRING_IS_EMPTY, "stringIsEmpty", "j2ll_rt_string_is_empty", "i32", List.of("jobject")),
                 new RuntimeHelper(RuntimeHelperKind.STRING_CHAR_AT, "stringCharAt", "j2ll_rt_string_char_at", "i32", List.of("jobject", "i32")),

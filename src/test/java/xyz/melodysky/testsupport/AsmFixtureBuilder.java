@@ -582,6 +582,75 @@ public final class AsmFixtureBuilder implements Opcodes {
         isNull.visitMaxs(0, 0);
         isNull.visitEnd();
 
+        MethodVisitor different = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "different",
+                "(Ljava/lang/Object;Ljava/lang/Object;)I",
+                null,
+                null);
+        org.objectweb.asm.Label differentCase = new org.objectweb.asm.Label();
+        different.visitCode();
+        different.visitVarInsn(ALOAD, 0);
+        different.visitVarInsn(ALOAD, 1);
+        different.visitJumpInsn(IF_ACMPNE, differentCase);
+        different.visitInsn(ICONST_0);
+        different.visitInsn(IRETURN);
+        different.visitLabel(differentCase);
+        different.visitInsn(ICONST_1);
+        different.visitInsn(IRETURN);
+        different.visitMaxs(0, 0);
+        different.visitEnd();
+
+        MethodVisitor isNonNull = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "isNonNull",
+                "(Ljava/lang/Object;)I",
+                null,
+                null);
+        org.objectweb.asm.Label nonNullCase = new org.objectweb.asm.Label();
+        isNonNull.visitCode();
+        isNonNull.visitVarInsn(ALOAD, 0);
+        isNonNull.visitJumpInsn(IFNONNULL, nonNullCase);
+        isNonNull.visitInsn(ICONST_0);
+        isNonNull.visitInsn(IRETURN);
+        isNonNull.visitLabel(nonNullCase);
+        isNonNull.visitInsn(ICONST_1);
+        isNonNull.visitInsn(IRETURN);
+        isNonNull.visitMaxs(0, 0);
+        isNonNull.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    public static byte[] classWithReferenceComparingConstructor(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+
+        MethodVisitor constructor = writer.visitMethod(
+                ACC_PUBLIC,
+                "<init>",
+                "(Ljava/lang/Object;Ljava/lang/Object;)V",
+                null,
+                null);
+        org.objectweb.asm.Label notEqual = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label equal = new org.objectweb.asm.Label();
+        constructor.visitCode();
+        constructor.visitVarInsn(ALOAD, 0);
+        constructor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        constructor.visitVarInsn(ALOAD, 1);
+        constructor.visitVarInsn(ALOAD, 2);
+        constructor.visitJumpInsn(IF_ACMPNE, notEqual);
+        constructor.visitVarInsn(ALOAD, 1);
+        constructor.visitVarInsn(ALOAD, 2);
+        constructor.visitJumpInsn(IF_ACMPEQ, equal);
+        constructor.visitLabel(notEqual);
+        constructor.visitInsn(RETURN);
+        constructor.visitLabel(equal);
+        constructor.visitInsn(RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+
         writer.visitEnd();
         return writer.toByteArray();
     }

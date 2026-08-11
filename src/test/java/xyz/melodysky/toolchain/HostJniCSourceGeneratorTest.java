@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
@@ -133,6 +134,48 @@ class HostJniCSourceGeneratorTest {
         assertFalse(source.contains("j2ll_reflection_method_table"));
         assertFalse(source.contains("j2ll_reflection_field_table"));
         assertFalse(source.contains("j2ll_lambda_table"));
+    }
+
+    @Test
+    void genericReferenceComparisonsUseJniIdentityInsteadOfHandleAddresses() {
+        ParsedClass parsedClass = parse(
+                "pkg/ReferenceConstructor.class",
+                AsmFixtureBuilder.classWithReferenceComparingConstructor(
+                        "pkg/ReferenceConstructor"));
+        MethodRewriteDecision decision = decision(parsedClass, "<init>");
+        IrMethod method = irMethod(parsedClass, "<init>");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+        NativeMethodImplementation implementation = new NativeMethodImplementation(
+                registrationPlan.entries().getFirst(),
+                decision,
+                NativeImplementationPath.TEMPLATE_JNI_PATH,
+                Optional.empty(),
+                "TEST_GENERIC_REFERENCE_IDENTITY",
+                true,
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                Optional.of(method));
+
+        String source = new HostJniCSourceGenerator().generate(
+                new NativeImplementationPlan(List.of(implementation)));
+
+        assertEquals(
+                2,
+                countOccurrences(
+                        source,
+                        "(*env)->IsSameObject(env, arg1, arg2)"));
+        assertFalse(source.contains("arg1 == arg2"));
+        assertFalse(source.contains("arg1 != arg2"));
     }
 
     @Test
@@ -589,6 +632,16 @@ class HostJniCSourceGeneratorTest {
                         decision.method().name(),
                         decision.method().descriptor(),
                         decision.method().accessFlags().isStatic()));
+    }
+
+    private int countOccurrences(String text, String needle) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
     }
 
     private void assertAppearsBefore(String source, String first, String second) {

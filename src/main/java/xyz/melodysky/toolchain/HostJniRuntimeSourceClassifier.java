@@ -147,6 +147,10 @@ final class HostJniRuntimeSourceClassifier {
                 "j2ll_rt_math_max_f64");
         add(
                 families,
+                HostJniRuntimeSourceFamily.REFERENCE_IDENTITY,
+                "j2ll_rt_is_same_object");
+        add(
+                families,
                 HostJniRuntimeSourceFamily.JDK_OBJECT,
                 "j2ll_rt_object_get_class",
                 "j2ll_rt_class_get_class_loader",

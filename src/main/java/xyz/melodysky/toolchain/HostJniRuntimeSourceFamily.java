@@ -13,6 +13,7 @@ enum HostJniRuntimeSourceFamily {
     NUMERIC,
     EXCEPTION,
     MATH,
+    REFERENCE_IDENTITY,
     JDK_OBJECT,
     PURE_NATIVE_JDK,
     THREAD,

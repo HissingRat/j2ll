@@ -60,6 +60,7 @@ public record RuntimeHelper(
     private static boolean isEnvBackedJdkIntrinsic(RuntimeHelperKind kind) {
         return kind == RuntimeHelperKind.OBJECT_GET_CLASS
                 || kind == RuntimeHelperKind.CLASS_GET_CLASS_LOADER
+                || kind == RuntimeHelperKind.IS_SAME_OBJECT
                 || kind == RuntimeHelperKind.THREAD_SLEEP
                 || kind == RuntimeHelperKind.CLASS_FOR_NAME_STATIC
                 || kind == RuntimeHelperKind.GET_DECLARED_METHOD
@@ -162,7 +163,8 @@ public record RuntimeHelper(
                     RuntimeHelperCategory.STRING_HELPER;
             case I2B, I2C, I2S, F2I, F2L, D2I, D2L,
                     LCMP, FCMPL, FCMPG, DCMPL, DCMPG,
-                    OBJECT_GET_CLASS, CLASS_GET_CLASS_LOADER, OBJECT_HASH_CODE, OBJECT_EQUALS, THREAD_SLEEP,
+                    OBJECT_GET_CLASS, CLASS_GET_CLASS_LOADER, OBJECT_HASH_CODE, OBJECT_EQUALS,
+                    IS_SAME_OBJECT, THREAD_SLEEP,
                     STRING_BUILDER_NEW, STRING_BUILDER_INIT, STRING_BUILDER_APPEND_REF,
                     STRING_BUILDER_APPEND_I32, STRING_BUILDER_APPEND_I64,
                     STRING_BUILDER_APPEND_F32, STRING_BUILDER_APPEND_F64,

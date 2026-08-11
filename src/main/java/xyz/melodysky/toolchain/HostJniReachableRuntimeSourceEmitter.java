@@ -65,6 +65,14 @@ final class HostJniReachableRuntimeSourceEmitter {
         append(
                 fragments,
                 emissionFamilies,
+                HostJniRuntimeSourceFamily.REFERENCE_IDENTITY,
+                "reference-identity",
+                fragment -> fragment.append(
+                        HostJniReferenceIdentityRuntimeSource
+                                .helperSource()));
+        append(
+                fragments,
+                emissionFamilies,
                 HostJniRuntimeSourceFamily.JDK_OBJECT,
                 "jdk-object",
                 fragment -> fragment.append(

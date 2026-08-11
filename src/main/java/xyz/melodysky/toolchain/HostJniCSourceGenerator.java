@@ -6,7 +6,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.objectweb.asm.Opcodes;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbiPolicy;
 import xyz.melodysky.ir.model.BusinessStringConstantRef;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrInstruction;
@@ -897,6 +899,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
             BusinessStringSymbolMapper businessStringSymbols) {
         IrMethod method = binding.implementationIrMethod().orElseThrow();
         Map<String, String> values = new LinkedHashMap<>();
+        Set<String> directNullValues = LlvmFunctionAbiPolicy
+                .directNullReferenceValueNames(method);
         for (int index = 0; index < method.parameters().size(); index++) {
             values.put(method.parameters().get(index).name(), "arg" + index);
         }
@@ -916,7 +920,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         binding,
                         values,
                         instruction,
-                        businessStringSymbols);
+                        businessStringSymbols,
+                        directNullValues);
             }
             appendGenericTerminator(builder, values, block.terminator());
         }
@@ -954,7 +959,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
             Binding binding,
             Map<String, String> values,
             IrInstruction instruction,
-            BusinessStringSymbolMapper businessStringSymbols) {
+            BusinessStringSymbolMapper businessStringSymbols,
+            Set<String> directNullValues) {
         switch (instruction.opcode()) {
             case CONST_INT -> declareGenericLocal(
                     builder,
@@ -1033,7 +1039,11 @@ public final class HostJniCSourceGenerator implements Opcodes {
                             + " * "
                             + genericValue(values, instruction.operands().get(1)));
             case CMP_EQ_I32, CMP_NE_I32, CMP_LT_I32, CMP_LE_I32, CMP_GT_I32, CMP_GE_I32,
-                    CMP_EQ_REF, CMP_NE_REF -> appendGenericCompare(builder, values, instruction);
+                    CMP_EQ_REF, CMP_NE_REF -> appendGenericCompare(
+                            builder,
+                            values,
+                            instruction,
+                            directNullValues);
             case NEW_ARRAY -> appendGenericNewArray(builder, values, instruction);
             case PUT_FIELD -> appendGenericPutField(builder, binding, values, instruction);
             case PUT_STATIC -> appendGenericPutStatic(builder, binding, values, instruction);
@@ -1050,25 +1060,46 @@ public final class HostJniCSourceGenerator implements Opcodes {
     private void appendGenericCompare(
             StringBuilder builder,
             Map<String, String> values,
-            IrInstruction instruction) {
+            IrInstruction instruction,
+            Set<String> directNullValues) {
+        String left = genericValue(values, instruction.operands().get(0));
+        String right = genericValue(values, instruction.operands().get(1));
+        String expression;
+        if (instruction.opcode() == IrOpcode.CMP_EQ_REF
+                || instruction.opcode() == IrOpcode.CMP_NE_REF) {
+            if (LlvmFunctionAbiPolicy.referenceComparisonRequiresJniEnv(
+                    instruction,
+                    directNullValues)) {
+                String predicate = instruction.opcode() == IrOpcode.CMP_EQ_REF
+                        ? "=="
+                        : "!=";
+                expression = "((*env)->IsSameObject(env, "
+                        + left + ", " + right + ") "
+                        + predicate + " JNI_TRUE)";
+            } else {
+                expression = "(" + left + " "
+                        + (instruction.opcode() == IrOpcode.CMP_EQ_REF
+                                ? "=="
+                                : "!=")
+                        + " " + right + ")";
+            }
+        } else {
+            expression = "(" + left + " "
+                    + genericCompareOperator(instruction.opcode())
+                    + " " + right + ")";
+        }
         declareGenericLocal(
                 builder,
                 values,
                 instruction.result().orElseThrow(),
                 "jint",
-                "("
-                        + genericValue(values, instruction.operands().get(0))
-                        + " "
-                        + genericCompareOperator(instruction.opcode())
-                        + " "
-                        + genericValue(values, instruction.operands().get(1))
-                        + ") ? 1 : 0");
+                expression + " ? 1 : 0");
     }
 
     private String genericCompareOperator(IrOpcode opcode) {
         return switch (opcode) {
-            case CMP_EQ_I32, CMP_EQ_REF -> "==";
-            case CMP_NE_I32, CMP_NE_REF -> "!=";
+            case CMP_EQ_I32 -> "==";
+            case CMP_NE_I32 -> "!=";
             case CMP_LT_I32 -> "<";
             case CMP_LE_I32 -> "<=";
             case CMP_GT_I32 -> ">";

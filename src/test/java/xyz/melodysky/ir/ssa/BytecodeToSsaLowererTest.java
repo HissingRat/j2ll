@@ -6,11 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Set;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
 import xyz.melodysky.diagnostic.DiagnosticCode;
@@ -351,12 +353,53 @@ class BytecodeToSsaLowererTest {
 
         var same = lower(classBytes, "same").irMethod().orElseThrow();
         assertEquals(IrOpcode.CMP_EQ_REF, same.blocks().get(0).instructions().get(0).opcode());
-        assertTrue(llvm(same).contains("icmp eq ptr %p0, %p1"));
+        String sameLlvm = llvm(same);
+        assertEquals(
+                new LlvmFunctionAbi(true, false),
+                new LlvmModuleLowerer().inferFunctionAbi(
+                        same,
+                        Set.of(),
+                        Set.of()));
+        assertTrue(sameLlvm.contains(
+                "declare i32 @j2ll_rt_is_same_object(ptr, ptr, ptr) ; isSameObject"));
+        assertTrue(sameLlvm.contains(
+                "call i32 @j2ll_rt_is_same_object(ptr %j2ll_env, ptr %p0, ptr %p1)"));
+        assertTrue(sameLlvm.contains("icmp ne i32"));
+        assertFalse(sameLlvm.contains("icmp eq ptr %p0, %p1"));
+
+        var different = lower(classBytes, "different").irMethod().orElseThrow();
+        assertEquals(IrOpcode.CMP_NE_REF, different.blocks().get(0).instructions().get(0).opcode());
+        String differentLlvm = llvm(different);
+        assertTrue(differentLlvm.contains(
+                "call i32 @j2ll_rt_is_same_object(ptr %j2ll_env, ptr %p0, ptr %p1)"));
+        assertTrue(differentLlvm.contains("icmp eq i32"));
+        assertFalse(differentLlvm.contains("icmp ne ptr %p0, %p1"));
 
         var isNull = lower(classBytes, "isNull").irMethod().orElseThrow();
         assertEquals(IrOpcode.CONST_NULL, isNull.blocks().get(0).instructions().get(0).opcode());
         assertEquals(IrOpcode.CMP_EQ_REF, isNull.blocks().get(0).instructions().get(1).opcode());
-        assertTrue(llvm(isNull).contains("icmp eq ptr %p0"));
+        String isNullLlvm = llvm(isNull);
+        assertEquals(
+                new LlvmFunctionAbi(false, false),
+                new LlvmModuleLowerer().inferFunctionAbi(
+                        isNull,
+                        Set.of(),
+                        Set.of()));
+        assertTrue(isNullLlvm.contains("icmp eq ptr %p0"));
+        assertFalse(isNullLlvm.contains("call i32 @j2ll_rt_is_same_object"));
+
+        var isNonNull = lower(classBytes, "isNonNull").irMethod().orElseThrow();
+        assertEquals(IrOpcode.CONST_NULL, isNonNull.blocks().get(0).instructions().get(0).opcode());
+        assertEquals(IrOpcode.CMP_NE_REF, isNonNull.blocks().get(0).instructions().get(1).opcode());
+        String isNonNullLlvm = llvm(isNonNull);
+        assertEquals(
+                new LlvmFunctionAbi(false, false),
+                new LlvmModuleLowerer().inferFunctionAbi(
+                        isNonNull,
+                        Set.of(),
+                        Set.of()));
+        assertTrue(isNonNullLlvm.contains("icmp ne ptr %p0"));
+        assertFalse(isNonNullLlvm.contains("call i32 @j2ll_rt_is_same_object"));
     }
 
     @Test

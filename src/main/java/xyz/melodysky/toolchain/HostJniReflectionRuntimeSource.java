@@ -419,88 +419,70 @@ final class HostJniReflectionRuntimeSource {
 
                     """);
         }
-        appendFieldOperation(builder, helpers, "get", "Object", "jobject",
-                "jobject", "NULL", false);
-        appendFieldOperation(builder, helpers, "set", "Object", "void",
-                "jobject", "", true);
-        appendFieldOperation(builder, helpers, "get_int", "Int", "int32_t",
-                "jint", "0", false);
-        appendFieldOperation(builder, helpers, "set_int", "Int", "void",
-                "jint", "", true);
-        appendFieldOperation(builder, helpers, "get_boolean", "Boolean",
-                "int32_t", "jboolean", "0", false);
-        appendFieldOperation(builder, helpers, "set_boolean", "Boolean",
-                "void", "jboolean", "", true);
-        appendFieldOperation(builder, helpers, "get_long", "Long", "int64_t",
-                "jlong", "0", false);
-        appendFieldOperation(builder, helpers, "set_long", "Long", "void",
-                "jlong", "", true);
-        appendFieldOperation(builder, helpers, "get_double", "Double",
-                "double", "jdouble", "0.0", false);
-        appendFieldOperation(builder, helpers, "set_double", "Double",
-                "void", "jdouble", "", true);
+        for (ReflectionFieldOperation operation
+                : ReflectionFieldOperation.values()) {
+            appendFieldOperation(builder, helpers, operation);
+        }
     }
 
     private static void appendFieldOperation(
             StringBuilder builder,
             Set<String> helpers,
-            String operation,
-            String jniSuffix,
-            String cReturn,
-            String jniType,
-            String defaultValue,
-            boolean setter) {
-        String symbol = "j2ll_rt_reflect_field_" + operation;
+            ReflectionFieldOperation operation) {
+        String symbol = operation.runtimeHelperSymbol();
         if (!helpers.contains(symbol)) {
             return;
         }
-        builder.append(cReturn)
+        builder.append(operation.cReturnType())
                 .append(' ')
                 .append(symbol)
                 .append("(JNIEnv* env, jobject field, jobject target");
-        if (setter) {
-            builder.append(", ").append(cReturn.equals("void")
-                    ? switch (jniType) {
+        if (operation.setter()) {
+            builder.append(", ").append(operation.cReturnType().equals("void")
+                    ? switch (operation.jniValueType()) {
                         case "jobject" -> "jobject";
                         case "jlong" -> "int64_t";
                         case "jdouble" -> "double";
                         default -> "int32_t";
                     }
-                    : cReturn).append(" value");
+                    : operation.cReturnType()).append(" value");
         }
         builder.append(") {\n")
                 .append("    if (field == NULL) {\n")
                 .append("        j2ll_throw_new(env, \"java/lang/NullPointerException\", \"reflection receiver is null\");\n")
-                .append(setter ? "        return;\n" : "        return " + defaultValue + ";\n")
+                .append(operation.setter()
+                        ? "        return;\n"
+                        : "        return " + operation.defaultReturnValue() + ";\n")
                 .append("    }\n")
                 .append("    jclass cls = (*env)->FindClass(env, \"java/lang/reflect/Field\");\n")
-                .append(setter ? "    if (cls == NULL) return;\n"
-                        : "    if (cls == NULL) return " + defaultValue + ";\n");
-        String descriptor = setter
-                ? "(Ljava/lang/Object;" + descriptorFor(jniType) + ")V"
-                : "(Ljava/lang/Object;)" + descriptorFor(jniType);
+                .append(operation.setter()
+                        ? "    if (cls == NULL) return;\n"
+                        : "    if (cls == NULL) return "
+                                + operation.defaultReturnValue()
+                                + ";\n");
         builder.append("    jmethodID method = (*env)->GetMethodID(env, cls, \"")
-                .append(setter ? "set" : "get")
-                .append(jniSuffix)
+                .append(operation.javaMethodName())
                 .append("\", \"")
-                .append(descriptor)
+                .append(operation.javaMethodDescriptor())
                 .append("\");\n")
                 .append("    (*env)->DeleteLocalRef(env, cls);\n");
-        if (setter) {
-            String value = switch (jniType) {
+        if (operation.setter()) {
+            String value = switch (operation.jniValueType()) {
                 case "jboolean" -> "value ? JNI_TRUE : JNI_FALSE";
                 case "jint" -> "(jint)value";
                 case "jlong" -> "(jlong)value";
                 case "jdouble" -> "(jdouble)value";
                 default -> "value";
             };
-            builder.append("    if (method != NULL) (*env)->CallVoidMethod(env, field, method, target, ")
+            builder.append("    if (method != NULL) (*env)->Call")
+                    .append(operation.jniCallKind())
+                    .append("Method(env, field, method, target, ")
                     .append(value)
                     .append(");\n}\n\n");
         } else {
-            String call = "(*env)->Call" + jniSuffix
+            String call = "(*env)->Call" + operation.jniCallKind()
                     + "Method(env, field, method, target)";
-            String result = switch (jniType) {
+            String result = switch (operation.jniValueType()) {
                 case "jboolean" -> call + " == JNI_FALSE ? 0 : 1";
                 case "jint" -> "(int32_t)" + call;
                 case "jlong" -> "(int64_t)" + call;
@@ -508,22 +490,11 @@ final class HostJniReflectionRuntimeSource {
                 default -> call;
             };
             builder.append("    return method == NULL ? ")
-                    .append(defaultValue)
+                    .append(operation.defaultReturnValue())
                     .append(" : ")
                     .append(result)
                     .append(";\n}\n\n");
         }
-    }
-
-    private static String descriptorFor(String jniType) {
-        return switch (jniType) {
-            case "jobject" -> "Ljava/lang/Object;";
-            case "jboolean" -> "Z";
-            case "jint" -> "I";
-            case "jlong" -> "J";
-            case "jdouble" -> "D";
-            default -> throw new IllegalArgumentException(jniType);
-        };
     }
 
     private static void appendUnsafeOperations(

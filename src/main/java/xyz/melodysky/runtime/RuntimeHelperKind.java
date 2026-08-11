@@ -98,6 +98,7 @@ public enum RuntimeHelperKind {
     CLASS_GET_CLASS_LOADER,
     OBJECT_HASH_CODE,
     OBJECT_EQUALS,
+    IS_SAME_OBJECT,
     STRING_LENGTH,
     STRING_IS_EMPTY,
     STRING_CHAR_AT,

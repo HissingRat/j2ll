@@ -551,6 +551,7 @@ public final class NativeImplementationPlanner {
         }
         if (instruction.opcode() == IrOpcode.CMP_EQ_REF || instruction.opcode() == IrOpcode.CMP_NE_REF) {
             return instruction.result().map(IrValue::type).filter(type -> type == IrType.I1).isPresent()
+                    && instruction.operands().size() == 2
                     && instruction.operands().stream().map(IrValue::type).allMatch(type -> type == IrType.REFERENCE);
         }
         if (isArithmeticExceptionHelperInstruction(instruction)) {
@@ -1867,7 +1868,8 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean needsJniEnv(IrMethod method, List<String> directCallTargets, List<String> staticCallKeys) {
-        return method.blocks().stream()
+        return LlvmFunctionAbiPolicy.referenceComparisonsRequireJniEnv(method)
+                || method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .anyMatch(instruction -> !instruction.exceptionSites().isEmpty())
                 || method.blocks().stream()
@@ -1924,6 +1926,7 @@ public final class NativeImplementationPlanner {
                 || base.startsWith("j2ll_rt_double_")
                 || base.equals("j2ll_rt_object_get_class")
                 || base.equals("j2ll_rt_class_get_class_loader")
+                || base.equals("j2ll_rt_is_same_object")
                 || base.equals("j2ll_rt_thread_sleep")
                 || base.startsWith("j2ll_rt_objects_")
                 || base.equals("j2ll_rt_lambda_new")
