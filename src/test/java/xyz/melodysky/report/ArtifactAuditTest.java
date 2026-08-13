@@ -109,12 +109,86 @@ class ArtifactAuditTest {
     }
 
     @Test
-    void zigWorkspaceGeneratedSourceRemainsBlockingPlaintextSurface()
+    void sourceIdentifierSubstringIsNotAPlaintextCarrier() throws Exception {
+        Path workspace = temp.resolve("identifier-substring");
+        Path llvm = workspace.resolve(
+                "intermediates/classes/pkg/Foo/llvm/class.ll");
+        Files.createDirectories(llvm.getParent());
+        Files.writeString(
+                llvm,
+                "declare i32 @j2ll_rt_instanceof(ptr, ptr, i64) ; instanceof\n",
+                StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        "instance",
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("llvm-ir", "native-library")));
+
+        assertTrue(result.passed(), result.checks().toString());
+    }
+
+    @Test
+    void owningLlvmDataLiteralStillBlocksAfterIdentifierFiltering()
+            throws Exception {
+        Path workspace = temp.resolve("owning-llvm-data");
+        Path llvm = workspace.resolve(
+                "intermediates/classes/pkg/Foo/llvm/class.ll");
+        Files.createDirectories(llvm.getParent());
+        Files.writeString(
+                llvm,
+                "@leak = private constant [9 x i8] c\"instance\\00\"\n",
+                StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        "instance",
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("llvm-ir", "native-library")));
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(
+                json.contains("\"reasonCode\": \"FORBIDDEN_PLAINTEXT_FOUND\""),
+                json);
+        assertTrue(json.contains("intermediates/classes/pkg/Foo/llvm/class.ll:sha256="), json);
+        assertFalse(json.contains("instance"), json);
+    }
+
+    @Test
+    void methodFactDoesNotScanAnUnrelatedPerClassLlvmSurface()
+            throws Exception {
+        Path workspace = temp.resolve("unrelated-per-class-llvm");
+        Path unrelated = workspace.resolve(
+                "intermediates/classes/pkg/Bar/llvm/class.ll");
+        Files.createDirectories(unrelated.getParent());
+        Files.writeString(
+                unrelated,
+                "@leak = private constant [13 x i8] c\"owner-secret\\00\"\n",
+                StandardCharsets.ISO_8859_1);
+
+        ArtifactAuditResult result = auditFixture(
+                workspace,
+                SensitivePlaintextFact.of(
+                        "owner-secret",
+                        "pkg/Foo#run!()V",
+                        "STRING_ENCRYPTION",
+                        List.of("llvm-ir", "native-library")));
+
+        assertTrue(result.passed(), result.checks().toString());
+    }
+
+    @Test
+    void zigWorkspaceRelevantGeneratedSourceRemainsBlockingPlaintextSurface()
             throws Exception {
         Path workspace = temp.resolve("zig-workspace-source");
         String secret = "generated-runtime-sensitive-value";
         Path generated = workspace.resolve(
-                "native/zig-workspace/runtime/runtime.c");
+                "native/zig-workspace/jni/wrappers.c");
         Files.createDirectories(generated.getParent());
         Files.writeString(generated, secret, StandardCharsets.ISO_8859_1);
 
@@ -130,7 +204,7 @@ class ArtifactAuditTest {
         String json = new ArtifactAuditReportWriter().json(result);
         assertTrue(
                 json.contains(
-                        "native/zig-workspace/runtime/runtime.c:sha256="),
+                        "native/zig-workspace/jni/wrappers.c:sha256="),
                 json);
         assertFalse(json.contains(secret), json);
     }

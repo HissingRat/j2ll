@@ -22,9 +22,11 @@ import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
 import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
 import xyz.melodysky.packaging.InternalizedMethodArtifactVerifier;
+import xyz.melodysky.toolchain.ClassArtifactPath;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeLlvmCompilation;
 import xyz.melodysky.toolchain.NativeOnlyMethodCoalescingEmissionVerifier;
+import xyz.melodysky.toolchain.NativeSourceName;
 
 public class ArtifactAudit {
     public ArtifactAuditResult audit(
@@ -803,7 +805,7 @@ public class ArtifactAudit {
                         continue;
                     }
                     List<String> forbiddenPlaintexts = checkedSensitiveFacts.stream()
-                            .filter(fact -> appliesToWorkspacePath(fact, path))
+                            .filter(fact -> appliesToWorkspacePath(workspaceRoot, fact, path))
                             .map(SensitivePlaintextFact::plaintext)
                             .filter(value -> !value.isBlank())
                             .sorted()
@@ -1056,12 +1058,93 @@ public class ArtifactAudit {
             if (match < 0) {
                 return false;
             }
-            if (!isJniNativeMethodSignatureMember(path, text, forbidden, match)) {
+            if (!isJniNativeMethodSignatureMember(path, text, forbidden, match)
+                    && !isSourceIdentifierSubstring(path, text, match, forbidden.length())) {
                 return true;
             }
             fromIndex = match + forbidden.length();
         }
         return false;
+    }
+
+    /**
+     * Generated source is an evidence surface, but an arbitrary substring of
+     * a C/LLVM identifier is not a plaintext carrier. For example, the
+     * business literal {@code instance} must not match the runtime declaration
+     * {@code j2ll_rt_instanceof}. Exact identifiers and quoted/data literals
+     * remain blocking.
+     */
+    private boolean isSourceIdentifierSubstring(
+            Path path,
+            String text,
+            int match,
+            int length) {
+        String lower = path.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT);
+        if (!lower.endsWith(".c")
+                && !lower.endsWith(".ll")
+                && !lower.endsWith(".zig")) {
+            return false;
+        }
+        if (isInsideDataLiteral(path, text, match)) {
+            return false;
+        }
+        boolean joinedLeft = match > 0
+                && isSourceIdentifierPart(text.charAt(match - 1));
+        int after = match + length;
+        boolean joinedRight = after < text.length()
+                && isSourceIdentifierPart(text.charAt(after));
+        return joinedLeft || joinedRight;
+    }
+
+    private boolean isInsideDataLiteral(
+            Path path,
+            String text,
+            int position) {
+        int lineStart = text.lastIndexOf('\n', position - 1) + 1;
+        char quote = 0;
+        int quoteStart = -1;
+        boolean escaped = false;
+        for (int index = lineStart; index < position; index++) {
+            char ch = text.charAt(index);
+            if (quote == 0) {
+                if (ch == '\'' || ch == '"') {
+                    quote = ch;
+                    quoteStart = index;
+                }
+                continue;
+            }
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == quote) {
+                quote = 0;
+                quoteStart = -1;
+            }
+        }
+        if (quote == 0) {
+            return false;
+        }
+        String lower = path.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".ll")
+                && quote == '"'
+                && quoteStart > 0
+                && (text.charAt(quoteStart - 1) == '@'
+                        || text.charAt(quoteStart - 1) == '%')) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isSourceIdentifierPart(char ch) {
+        return ch >= 'a' && ch <= 'z'
+                || ch >= 'A' && ch <= 'Z'
+                || ch >= '0' && ch <= '9'
+                || ch == '_'
+                || ch == '$'
+                || ch == '.';
     }
 
     private boolean isJniNativeMethodSignatureMember(
@@ -1180,15 +1263,95 @@ public class ArtifactAudit {
         return false;
     }
 
-    private boolean appliesToWorkspacePath(SensitivePlaintextFact fact, Path path) {
+    private boolean appliesToWorkspacePath(
+            Path workspaceRoot,
+            SensitivePlaintextFact fact,
+            Path path) {
         if (!isNativeMetadataFact(fact)) {
-            return true;
+            return appliesToMethodWorkspaceSurface(workspaceRoot, fact, path);
         }
         String lower = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
         return lower.endsWith(".c")
                 || lower.endsWith(".dll")
                 || lower.endsWith(".so")
                 || lower.endsWith(".dylib");
+    }
+
+    private boolean appliesToMethodWorkspaceSurface(
+            Path workspaceRoot,
+            SensitivePlaintextFact fact,
+            Path path) {
+        String relative = displayPath(workspaceRoot, path);
+        String lower = path.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT);
+        if (relative.startsWith("reports/")) {
+            return true;
+        }
+        if (lower.endsWith(".dll")
+                || lower.endsWith(".so")
+                || lower.endsWith(".dylib")) {
+            return fact.artifactSurfaces().stream()
+                    .anyMatch(surface -> surface.equalsIgnoreCase("native-library"));
+        }
+        if (lower.endsWith(".ll")) {
+            return fact.artifactSurfaces().stream()
+                            .anyMatch(surface -> surface.equalsIgnoreCase("llvm-ir"))
+                    && isOwningClassSource(relative, fact.sourceMethod(), true);
+        }
+        if (lower.endsWith(".c")) {
+            if (fact.artifactSurfaces().stream()
+                    .noneMatch(surface -> surface.equalsIgnoreCase("generated-c"))) {
+                return false;
+            }
+            if (relative.startsWith("native/zig-workspace/jni/")) {
+                // The JNI translation unit is the consolidated carrier for
+                // per-method wrappers and business-string helper bodies.
+                return true;
+            }
+            return isOwningClassSource(relative, fact.sourceMethod(), false);
+        }
+        return false;
+    }
+
+    private boolean isOwningClassSource(
+            String relative,
+            String sourceMethod,
+            boolean llvm) {
+        String owner = sourceOwner(sourceMethod);
+        if (owner.isEmpty()) {
+            return false;
+        }
+        if (relative.startsWith("native/zig-workspace/llvm/")) {
+            return relative.endsWith("/" + NativeSourceName.llvmFileName(owner))
+                    || relative.equals("native/zig-workspace/llvm/"
+                            + NativeSourceName.llvmFileName(owner));
+        }
+        if (!relative.startsWith("intermediates/classes/")) {
+            return false;
+        }
+        String classRoot = "intermediates/classes/"
+                + new ClassArtifactPath().safeInternalName(owner);
+        String suffix = llvm ? "/llvm/" : "/c/";
+        if (relative.startsWith(classRoot + suffix)) {
+            return true;
+        }
+        if (!relative.startsWith(classRoot + "__")) {
+            return false;
+        }
+        int suffixStart = relative.indexOf(suffix, classRoot.length() + 2);
+        if (suffixStart < 0) {
+            return false;
+        }
+        String hashPrefix = relative.substring(classRoot.length() + 2, suffixStart);
+        String fullHash = new ClassArtifactPath().fullHash(owner);
+        return hashPrefix.length() >= 16 && fullHash.startsWith(hashPrefix);
+    }
+
+    private String sourceOwner(String sourceMethod) {
+        int memberSeparator = sourceMethod.indexOf('#');
+        return memberSeparator <= 0
+                ? ""
+                : sourceMethod.substring(0, memberSeparator);
     }
 
     private boolean isNativeMetadataFact(SensitivePlaintextFact fact) {
