@@ -5,11 +5,9 @@ import java.util.Optional;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.ir.pass.protection.ProtectionRandom;
-import xyz.melodysky.toolchain.ClassArtifactPath;
 
 public final class MethodRewritePlanner {
     private static final long COMPATIBILITY_SEED = 0L;
-    private final ClassArtifactPath artifactPath = new ClassArtifactPath();
 
     public List<MethodRewriteDecision> planClass(ParsedClass parsedClass) {
         return planClass(parsedClass, COMPATIBILITY_SEED);
@@ -40,12 +38,14 @@ public final class MethodRewritePlanner {
                     Optional.empty(),
                     notApplicableReason.orElseThrow());
         }
+        GeneratedInitializerCarrierName initializerNames =
+                new GeneratedInitializerCarrierName(buildScopedSeed);
         if (method.name().equals("<init>")) {
             return new MethodRewriteDecision(
                     method,
                     MethodRewriteStrategy.CONSTRUCTOR_STUB,
                     parsedClass.internalName(),
-                    Optional.of("__j2ll_init_body$" + methodId(method)),
+                    Optional.of(initializerNames.constructor(method)),
                     null);
         }
         if (method.name().equals("<clinit>")) {
@@ -53,7 +53,7 @@ public final class MethodRewritePlanner {
                     method,
                     MethodRewriteStrategy.CLASS_INITIALIZER_STUB,
                     parsedClass.internalName(),
-                    Optional.of("__j2ll_clinit_body$" + methodId(method)),
+                    Optional.of(initializerNames.classInitializer(method)),
                     null);
         }
         if (parsedClass.isInterface()) {
@@ -116,7 +116,4 @@ public final class MethodRewritePlanner {
                 + method.descriptor();
     }
 
-    private String methodId(ParsedMethod method) {
-        return artifactPath.methodId(method.owner(), method.name(), method.descriptor());
-    }
 }

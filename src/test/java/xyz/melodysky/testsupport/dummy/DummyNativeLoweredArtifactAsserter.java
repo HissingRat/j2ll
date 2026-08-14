@@ -25,6 +25,8 @@ final class DummyNativeLoweredArtifactAsserter {
             Pattern.compile("j2ll/generated/i_[0-9a-f]{32}");
     private static final Pattern INTERFACE_HELPER_METHOD =
             Pattern.compile("j2ll_m_[0-9a-f]{32}");
+    private static final Pattern INITIALIZER_HELPER_METHOD =
+            Pattern.compile("[a-p]{32}");
 
     private DummyNativeLoweredArtifactAsserter() {}
 
@@ -220,6 +222,16 @@ final class DummyNativeLoweredArtifactAsserter {
                         || !INTERFACE_HELPER_METHOD.matcher(carrier.method()).matches())) {
             failures.add("jar: interface helper carrier is not build-scoped hash-only: " + carrier.selector());
         }
+        if ((strategy.equals("constructorStub")
+                        || strategy.equals("classInitializerStub"))
+                && (!selector.owner().equals(carrier.owner())
+                        || !INITIALIZER_HELPER_METHOD.matcher(
+                                        carrier.method())
+                                .matches()
+                        || !isJavaIdentifier(carrier.method()))) {
+            failures.add("jar: initializer carrier is not a prefix-free build-scoped hash-only Java identifier: "
+                    + carrier.selector());
+        }
     }
 
     private static void assertClassInitializerLoadsBeforeConstructor(
@@ -324,6 +336,14 @@ final class DummyNativeLoweredArtifactAsserter {
 
     private static boolean hasCode(MethodNode method) {
         return method.instructions != null && method.instructions.size() > 0;
+    }
+
+    private static boolean isJavaIdentifier(String value) {
+        return !value.isEmpty()
+                && Character.isJavaIdentifierStart(value.codePointAt(0))
+                && value.codePoints()
+                        .skip(1)
+                        .allMatch(Character::isJavaIdentifierPart);
     }
 
     private static String selector(JsonObject method, String ownerFieldOrValue) {

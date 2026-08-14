@@ -92,6 +92,19 @@ public final class NativeOriginalClassRewriter implements Opcodes {
                             .at(location(decision)));
                     continue;
                 }
+                String helperName =
+                        decision.generatedHelperName().orElseThrow();
+                String helperDescriptor =
+                        NativeHelperDescriptor.forDecision(decision);
+                if (hasMethod(copy, helperName, helperDescriptor)) {
+                    diagnostics.add(Diagnostic.error(
+                                    DiagnosticStage.PACKAGING,
+                                    PackagingDiagnostics
+                                            .GENERATED_INITIALIZER_HELPER_COLLISION,
+                                    "initializer native carrier collides with another method")
+                            .at(location(decision)));
+                    continue;
+                }
                 InitializerImplementationPlan initializerPlan =
                         initializerPlans.get(decision.method().methodKey());
                 if (initializerPlan == null) {
@@ -138,6 +151,14 @@ public final class NativeOriginalClassRewriter implements Opcodes {
             }
         }
         return null;
+    }
+
+    private boolean hasMethod(
+            ClassNode classNode,
+            String name,
+            String descriptor) {
+        return classNode.methods.stream().anyMatch(method ->
+                method.name.equals(name) && method.desc.equals(descriptor));
     }
 
     private void makeNative(MethodNode method) {

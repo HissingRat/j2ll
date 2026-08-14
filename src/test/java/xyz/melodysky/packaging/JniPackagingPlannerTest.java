@@ -13,14 +13,18 @@ class JniPackagingPlannerTest {
     void emitsStableRegisterNativesTableGolden() {
         NativeRegistrationPlan plan = new NativeRegistrationPlan(List.of(
                 new NativeRegistrationEntry("pkg/Foo", "run", "()V", "j2ll_pkg_Foo_run"),
-                new NativeRegistrationEntry("pkg/Foo", "__j2ll_init_body$abc", "(I)V", "j2ll_pkg_Foo_init")));
+                new NativeRegistrationEntry(
+                        "pkg/Foo",
+                        "abcdefghijklmnopabcdefghijklmnop",
+                        "(I)V",
+                        "j2ll_pkg_Foo_init")));
 
         String table = new RegisterNativesTableBuilder().emit(plan);
         String ownerToken = CIdentifier.forIdentity("pkg/Foo");
 
         assertEquals(("""
                 static JNINativeMethod j2ll_natives_%s[] = {
-                    {"__j2ll_init_body$abc", "(I)V", (void*)j2ll_pkg_Foo_init},
+                    {"abcdefghijklmnopabcdefghijklmnop", "(I)V", (void*)j2ll_pkg_Foo_init},
                     {"run", "()V", (void*)j2ll_pkg_Foo_run},
                 };
                 static const int j2ll_natives_%s_count = 2;

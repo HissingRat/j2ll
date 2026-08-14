@@ -45,9 +45,9 @@ public final class RegistrationDefiningLoaderFixture {
             binaryName(CONSTRUCTOR_OWNER_INTERNAL_NAME);
 
     public static final String CLINIT_HELPER_NAME =
-            "__j2ll_clinit_body$fixture";
+            "abcdefghijklmnopabcdefghijklmnop";
     public static final String CONSTRUCTOR_HELPER_NAME =
-            "__j2ll_init_body$fixture";
+            "ponmlkjihgfedcbaponmlkjihgfedcba";
     public static final String CLINIT_HELPER_SYMBOL =
             "j2ll_registration_fixture_clinit_body";
     public static final String CLINIT_CALLS_SYMBOL =

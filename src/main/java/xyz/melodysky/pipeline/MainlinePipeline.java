@@ -85,6 +85,7 @@ import xyz.melodysky.packaging.InternalizedFieldClassTransform;
 import xyz.melodysky.packaging.InternalizedMethodClassTransform;
 import xyz.melodysky.packaging.InterfaceMethodHelperClassGenerator;
 import xyz.melodysky.packaging.InterfaceMethodHelperCollisionValidator;
+import xyz.melodysky.packaging.InitializerCarrierCollisionValidator;
 import xyz.melodysky.packaging.SignatureResignPreflight;
 import xyz.melodysky.packaging.SignatureResignPreflightResult;
 import xyz.melodysky.progress.BuildProgressListener;
@@ -454,7 +455,10 @@ public final class MainlinePipeline {
                 ParsedClass ownerClass = classesByName.get(method.owner());
                 if (ownerClass != null) {
                     MethodRewriteDecision initializerDecision =
-                            rewritePlanner.planMethod(ownerClass, method);
+                            rewritePlanner.planMethod(
+                                    ownerClass,
+                                    method,
+                                    wrapperSymbolSeed);
                     Optional<InitializerImplementationPlan> initializerPlan =
                             initializerPlanner.plan(initializerDecision, raw);
                     if (initializerPlan.isPresent()) {
@@ -627,6 +631,9 @@ public final class MainlinePipeline {
                 implementedInterfaceDecisions(
                         rewriteDecisions,
                         implementationPlan)));
+        diagnostics.addAll(new InitializerCarrierCollisionValidator().validate(
+                program.classes(),
+                rewriteDecisions));
         NativeOnlyMethodCoalescingPlan methodCoalescingPlan =
                 methodCoalescing.plan();
         protectionReports.add(methodCoalescing.protectionReport());

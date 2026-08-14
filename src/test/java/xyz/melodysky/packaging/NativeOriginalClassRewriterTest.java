@@ -202,7 +202,8 @@ class NativeOriginalClassRewriterTest implements Opcodes {
                 .findFirst()
                 .orElseThrow();
         ParsedMethod helper = rewrittenClass.methods().stream()
-                .filter(method -> method.name().startsWith("__j2ll_init_body$"))
+                .filter(method -> method.name().equals(
+                        constructor.generatedHelperName().orElseThrow()))
                 .findFirst()
                 .orElseThrow();
 
@@ -213,6 +214,58 @@ class NativeOriginalClassRewriterTest implements Opcodes {
         assertTrue(helper.accessFlags().isNative());
         assertFalse(helper.hasCode());
         assertEquals("(Lpkg/Foo;)V", helper.descriptor());
+        assertTrue(helper.name().matches("[a-p]{32}"));
+    }
+
+    @Test
+    void classInitializerStubCallsItsExactHashOnlyNativeCarrier() {
+        ParsedClass parsedClass = parsed(
+                "pkg/StaticState",
+                AsmFixtureBuilder.classWithClassInitializer(
+                        "pkg/StaticState"));
+        MethodRewriteDecision classInitializer =
+                planner.planClass(parsedClass, 0x10203040L).stream()
+                        .filter(item -> item.method().name().equals("<clinit>"))
+                        .findFirst()
+                        .orElseThrow();
+        InitializerImplementationPlan initializerPlan =
+                initializerPlan(classInitializer);
+
+        ClassRewriteResult result = new NativeOriginalClassRewriter().rewrite(
+                parsedClass,
+                List.of(classInitializer),
+                Map.of(
+                        classInitializer.method().methodKey(),
+                        initializerPlan),
+                null);
+        ParsedClass rewritten = parsed("pkg/StaticState", result.classBytes());
+        String carrierName =
+                classInitializer.generatedHelperName().orElseThrow();
+        ParsedMethod carrier = rewritten.methods().stream()
+                .filter(method -> method.name().equals(carrierName))
+                .findFirst()
+                .orElseThrow();
+        MethodNode stub = rewritten.classNode().methods.stream()
+                .filter(method -> method.name.equals("<clinit>"))
+                .findFirst()
+                .orElseThrow();
+        MethodInsnNode carrierCall = java.util.stream.StreamSupport.stream(
+                        java.util.Spliterators.spliteratorUnknownSize(
+                                stub.instructions.iterator(),
+                                java.util.Spliterator.ORDERED),
+                        false)
+                .filter(MethodInsnNode.class::isInstance)
+                .map(MethodInsnNode.class::cast)
+                .filter(call -> call.name.equals(carrierName))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertTrue(carrierName.matches("[a-p]{32}"));
+        assertEquals("pkg/StaticState", carrierCall.owner);
+        assertEquals("()V", carrierCall.desc);
+        assertTrue(carrier.accessFlags().isNative());
+        assertFalse(carrier.hasCode());
     }
 
     @Test

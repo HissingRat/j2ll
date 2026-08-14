@@ -119,7 +119,10 @@ class InitializerImplementationPlannerTest implements Opcodes {
         assertEquals(
                 CapturedTimerTaskFixture.NATIVE_BODY_DESCRIPTOR,
                 implementation.entry().descriptor());
-        assertTrue(implementation.entry().methodName().startsWith("__j2ll_init_body$"));
+        assertEquals(
+                decision.generatedHelperName().orElseThrow(),
+                implementation.entry().methodName());
+        assertTrue(implementation.entry().methodName().matches("[a-p]{32}"));
         assertEquals(
                 initializerPlan,
                 implementation.initializerPlan().orElseThrow());

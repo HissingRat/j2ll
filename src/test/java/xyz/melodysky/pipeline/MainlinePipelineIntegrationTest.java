@@ -378,11 +378,13 @@ class MainlinePipelineIntegrationTest implements Opcodes {
                 loweringReport);
         assertFalse(skippedReport.contains(methodKey), skippedReport);
 
-        assertTrue(result.nativeRegistrationPlan().entries().stream()
-                .anyMatch(entry -> entry.registrationOwner().equals(owner)
-                        && entry.methodName().startsWith("__j2ll_init_body$")
+        var constructorRegistration = result.nativeRegistrationPlan().entries().stream()
+                .filter(entry -> entry.registrationOwner().equals(owner)
                         && entry.descriptor().equals(
-                                CapturedTimerTaskFixture.NATIVE_BODY_DESCRIPTOR)));
+                                CapturedTimerTaskFixture.NATIVE_BODY_DESCRIPTOR))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(constructorRegistration.methodName().matches("[a-p]{32}"));
 
         var outputClass = new AsmClassParser()
                 .parseAll(new JarClassFileSource(result.outputJar()))
@@ -400,8 +402,8 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertFalse(constructor.accessFlags().isNative());
         assertTrue(constructor.hasCode());
         var nativeBody = outputClass.methods().stream()
-                .filter(method -> method.name().startsWith(
-                        "__j2ll_init_body$"))
+                .filter(method -> method.name().equals(
+                        constructorRegistration.methodName()))
                 .findFirst()
                 .orElseThrow();
         assertTrue(nativeBody.accessFlags().isNative());

@@ -1140,9 +1140,10 @@ Java `<init>` cannot become an ordinary native method. j2ll must keep a legal co
 
 - The original `<init>` remains a non-native constructor with Code.
 - The stub preserves the exact verifier-required prefix from method entry through the unique invocation that initializes `uninitializedThis`: `this(...)` or `super(...)`, with its original owner, descriptor and argument-computation bytecode.
-- After the object is initialized, the stub calls a private generated native body helper, for example `__j2ll_init_body$<method-id>(this, originalArgs...)`.
+- After the object is initialized, the stub calls a private generated native body helper whose name is a build-scoped hash-only Java identifier. The 128-bit hash is reversibly encoded nibble-by-nibble with the letters `a` through `p`, so every character is a legal Java identifier character without adding a fixed prefix. The name has no stable product, constructor, or body prefix and changes with the build identity.
 - The supported split requires a unique, linear prefix, and the current implementation requires the whole constructor to have no exception table; branches before initialization or ambiguous initializing calls fail closed. The post-init IR must independently pass the complete LLVM/helper support matrix.
 - The immutable initializer plan is shared by native compilation, rewrite, registration and audit. Packaging must not reconstruct a different split.
+- If an input method already occupies the generated same-owner carrier name and descriptor, the build fails before Zig with `GENERATED_INITIALIZER_HELPER_COLLISION`; the rewriter never silently binds the stub to that source method.
 - If the constructor cannot be split while preserving verifier semantics, or the post-init native body is incomplete, the entire constructor is `skipped` and retains its original Code.
 
 `classInitializerStub`
@@ -1151,8 +1152,9 @@ Java `<clinit>` is invoked implicitly by the JVM and is not a normal native meth
 
 - If a class has native-lowered methods and no `<clinit>`, j2ll may generate one.
 - The stub first calls the generated loader to load the native library and register owner-class native methods.
-- If the original `<clinit>` has Code and its complete IR passes the final LLVM/helper support matrix, its body is lowered into a private generated static native helper, for example `__j2ll_clinit_body$<method-id>()`.
+- If the original `<clinit>` has Code and its complete IR passes the final LLVM/helper support matrix, its body is lowered into a private generated static native helper with an independently domain-separated, build-scoped hash-only Java identifier.
 - The stub calls the native helper after loader initialization.
+- The same exact name-and-descriptor collision rule applies to the class-initializer carrier and fails closed with `GENERATED_INITIALIZER_HELPER_COLLISION`.
 - The loader and registration path must handle recursive class initialization and classloader concurrency.
 
 `interfaceMethodStub`

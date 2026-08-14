@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
@@ -12,6 +13,7 @@ import org.objectweb.asm.Opcodes;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
+import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class MethodRewritePlannerTest implements Opcodes {
@@ -37,6 +39,56 @@ class MethodRewritePlannerTest implements Opcodes {
 
         assertEquals(MethodRewriteStrategy.CONSTRUCTOR_STUB, planner.planClass(constructorClass).get(0).strategy());
         assertEquals(MethodRewriteStrategy.CLASS_INITIALIZER_STUB, planner.planClass(clinitClass).get(0).strategy());
+    }
+
+    @Test
+    void initializerCarrierNamesArePureBuildScopedJavaIdentifierHashes() {
+        ParsedClass constructorClass = parsed(
+                "sensitive/acme/Initializer",
+                AsmFixtureBuilder.minimalClass(
+                        "sensitive/acme/Initializer"));
+        ParsedClass classInitializerClass = parsed(
+                "sensitive/acme/StaticInitializer",
+                AsmFixtureBuilder.classWithClassInitializer(
+                        "sensitive/acme/StaticInitializer"));
+
+        List<String> first = initializerNames(
+                constructorClass,
+                classInitializerClass,
+                0x10203040L);
+        List<String> repeated = initializerNames(
+                constructorClass,
+                classInitializerClass,
+                0x10203040L);
+        List<String> nextBuild = initializerNames(
+                constructorClass,
+                classInitializerClass,
+                0x50607080L);
+
+        assertEquals(first, repeated);
+        assertEquals(2, first.size());
+        assertNotEquals(first, nextBuild);
+        assertTrue(first.stream().allMatch(name -> name.matches("[a-p]{32}")));
+        assertTrue(first.stream().allMatch(this::isJavaIdentifier));
+        assertTrue(first.stream().noneMatch(name -> name.contains("j2ll")
+                || name.contains("init")
+                || name.contains("body")
+                || name.contains("_")
+                || name.contains("$")));
+    }
+
+    @Test
+    void constructorAndClassInitializerCarrierPurposesAreSeparated() {
+        ParsedClass parsedClass = parsed(
+                "pkg/SeparatedInitializer",
+                AsmFixtureBuilder.minimalClass("pkg/SeparatedInitializer"));
+        ParsedMethod method = parsedClass.methods().get(0);
+        GeneratedInitializerCarrierName names =
+                new GeneratedInitializerCarrierName(0x11223344L);
+
+        assertNotEquals(
+                names.constructor(method),
+                names.classInitializer(method));
     }
 
     @Test
@@ -136,6 +188,32 @@ class MethodRewritePlannerTest implements Opcodes {
                 .filter(decision -> decision.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private List<String> initializerNames(
+            ParsedClass constructorClass,
+            ParsedClass classInitializerClass,
+            long seed) {
+        return java.util.stream.Stream.concat(
+                        planner.planClass(constructorClass, seed).stream(),
+                        planner.planClass(classInitializerClass, seed).stream())
+                .filter(decision -> decision.strategy()
+                                == MethodRewriteStrategy.CONSTRUCTOR_STUB
+                        || decision.strategy()
+                                == MethodRewriteStrategy.CLASS_INITIALIZER_STUB)
+                .map(decision -> decision.generatedHelperName().orElseThrow())
+                .sorted()
+                .toList();
+    }
+
+    private boolean isJavaIdentifier(String value) {
+        if (value.isEmpty()
+                || !Character.isJavaIdentifierStart(value.codePointAt(0))) {
+            return false;
+        }
+        return value.codePoints()
+                .skip(1)
+                .allMatch(Character::isJavaIdentifierPart);
     }
 
     private ParsedClass parsed(String internalName, byte[] bytes) {

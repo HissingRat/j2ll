@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
@@ -23,6 +24,64 @@ import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class GeneratedNativeIdentifierTest {
+    @Test
+    void everyInitializerCarrierUsesOnlyPrefixFreeJavaIdentifierHashNames() {
+        String constructorOwner = "sensitive/acme/Initializer";
+        ParsedClass constructorClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        constructorOwner + ".class",
+                        AsmFixtureBuilder.minimalClass(constructorOwner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        String classInitializerOwner = "sensitive/acme/StaticInitializer";
+        ParsedClass classInitializerClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        classInitializerOwner + ".class",
+                        AsmFixtureBuilder.classWithClassInitializer(
+                                classInitializerOwner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        MethodRewritePlanner planner = new MethodRewritePlanner();
+        List<MethodRewriteDecision> decisions =
+                java.util.stream.Stream.concat(
+                                planner.planClass(
+                                                constructorClass,
+                                                0x1020304050607080L)
+                                        .stream(),
+                                planner.planClass(
+                                                classInitializerClass,
+                                                0x1020304050607080L)
+                                        .stream())
+                        .filter(decision -> decision.generatedHelperName()
+                                .isPresent())
+                        .toList();
+        NativeRegistrationPlan registration =
+                new NativeRegistrationPlanner().plan(decisions);
+
+        assertEquals(2, decisions.size());
+        Set<String> names = decisions.stream()
+                .map(decision -> decision.generatedHelperName()
+                        .orElseThrow())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        assertEquals(2, names.size());
+        assertEquals(
+                names,
+                registration.entries().stream()
+                        .map(NativeRegistrationEntry::methodName)
+                        .collect(java.util.stream.Collectors
+                                .toUnmodifiableSet()));
+        assertTrue(names.stream().allMatch(name -> name.matches("[a-p]{32}")));
+        assertTrue(names.stream().allMatch(this::isJavaIdentifier));
+        assertTrue(names.stream().noneMatch(name -> name.contains("j2ll")
+                || name.contains("init")
+                || name.contains("clinit")
+                || name.contains("body")
+                || name.contains("_")
+                || name.contains("$")));
+    }
+
     @Test
     void interfaceCarrierIdentifiersAreBuildScopedHashOnlyTokens() {
         String owner = "sensitive/acme/SecretApi";
@@ -104,5 +163,13 @@ class GeneratedNativeIdentifierTest {
                 .filter(decision -> decision.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private boolean isJavaIdentifier(String value) {
+        return !value.isEmpty()
+                && Character.isJavaIdentifierStart(value.codePointAt(0))
+                && value.codePoints()
+                        .skip(1)
+                        .allMatch(Character::isJavaIdentifierPart);
     }
 }

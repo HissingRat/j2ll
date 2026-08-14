@@ -11,6 +11,8 @@ public final class PackagingDiagnostics {
             DiagnosticCode.of("INITIALIZER_IMPLEMENTATION_PLAN_MISSING");
     public static final DiagnosticCode CONSTRUCTOR_PREFIX_REWRITE_FAILED =
             DiagnosticCode.of("CONSTRUCTOR_PREFIX_REWRITE_FAILED");
+    public static final DiagnosticCode GENERATED_INITIALIZER_HELPER_COLLISION =
+            DiagnosticCode.of("GENERATED_INITIALIZER_HELPER_COLLISION");
     public static final DiagnosticCode INTERFACE_METHOD_LOADER_MISSING =
             DiagnosticCode.of("INTERFACE_METHOD_LOADER_MISSING");
     public static final DiagnosticCode GENERATED_INTERFACE_HELPER_ENTRY_COLLISION =
