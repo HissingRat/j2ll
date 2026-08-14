@@ -4,7 +4,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 
@@ -36,7 +35,10 @@ final class NativeJniEntryPlanSetValidator {
                                 "JNI entry plan belongs to a non-registered method: "
                                         + methodKey);
                     }
-                    validateEntry(implementation, plan);
+                    validateEntry(
+                            implementation,
+                            localReferences.get(methodKey),
+                            plan);
                     stable.put(methodKey, plan);
                 });
         List<String> registered = implementations.stream()
@@ -49,42 +51,20 @@ final class NativeJniEntryPlanSetValidator {
             throw new IllegalArgumentException(
                     "JNI entry plan must cover every registered implementation exactly once");
         }
-        validateProxyFacts(implementations, localReferences, stable);
         validateSymbols(implementations, stable);
         return Collections.unmodifiableMap(stable);
     }
 
-    private void validateProxyFacts(
-            List<NativeMethodImplementation> implementations,
-            Map<String, NativeLocalReferencePlan> localReferences,
-            Map<String, NativeJniEntryPlan> entries) {
-        Set<String> proxies = entries.entrySet().stream()
-                .filter(entry -> entry.getValue().llvmJniProxy())
-                .map(Map.Entry::getKey)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        NativeJniEntryCallFacts callFacts = NativeJniEntryCallFacts.analyze(
-                implementations,
-                Map.of());
-        if (proxies.stream().anyMatch(callFacts::targets)) {
-            throw new IllegalArgumentException(
-                    "LLVM JNI proxy semantic body is referenced by a native caller");
-        }
-        if (proxies.stream()
-                .map(localReferences::get)
-                .anyMatch(NativeJniEntryLocalReferenceFacts
-                        ::requiresSemanticHandling)) {
-            throw new IllegalArgumentException(
-                    "LLVM JNI proxy requires local-reference semantic handling");
-        }
-    }
-
     private void validateEntry(
             NativeMethodImplementation implementation,
+            NativeLocalReferencePlan localReferences,
             NativeJniEntryPlan entryPlan) {
         if (!entryPlan.llvmJniProxy()) {
             if (!entryPlan.functionSymbol().equals(
                             implementation.entry().nativeSymbol())
                     || !entryPlan.physicalLlvmAbi().equals(
+                            implementation.llvmFunctionAbi())
+                    || !entryPlan.semanticLlvmAbi().equals(
                             implementation.llvmFunctionAbi())) {
                 throw new IllegalArgumentException(
                         "generated-C JNI entry must retain its wrapper symbol and semantic LLVM ABI: "
@@ -105,21 +85,24 @@ final class NativeJniEntryPlanSetValidator {
                     "LLVM JNI proxy must bind an ordinary standalone semantic body: "
                             + implementation.methodKey());
         }
-        if (implementation.passesJniEnv()
-                || implementation.passesOwnerClass()
-                || implementation.decision().method().accessFlags().isSynchronized()
-                || !NativeJniEntryDescriptorPolicy.supports(
-                        implementation.decision().method().descriptor())
-                || NativeJniEntryImplementationFacts.hasRuntimeMetadata(
-                        implementation)) {
-            throw new IllegalArgumentException(
-                    "LLVM JNI proxy is outside the pure-scalar closed set: "
-                            + implementation.methodKey());
-        }
         boolean staticMethod = implementation.decision()
                 .method()
                 .accessFlags()
                 .isStatic();
+        if ((!staticMethod && implementation.passesOwnerClass())
+                || implementation.decision().method().accessFlags().isSynchronized()
+                || !NativeJniEntryDescriptorPolicy.supports(
+                        implementation.decision().method().descriptor())
+                || implementation.initializerPlan().isPresent()) {
+            throw new IllegalArgumentException(
+                    "LLVM JNI proxy is outside the projectable ordinary-method set: "
+                            + implementation.methodKey());
+        }
+        NativeJniProxyAbiProjection projection =
+                NativeJniProxyAbiProjection.derive(implementation)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "LLVM JNI proxy ABI cannot be projected: "
+                                        + implementation.methodKey()));
         if (!entryPlan.physicalLlvmAbi().passesJniEnv()
                 || !entryPlan.physicalLlvmAbi().isPhysicalJniEntry()
                 || entryPlan.physicalLlvmAbi().passesOwnerClass()
@@ -128,18 +111,24 @@ final class NativeJniEntryPlanSetValidator {
                     "LLVM JNI proxy ABI does not match the JVM invocation ABI: "
                             + implementation.methodKey());
         }
-        int arity = new xyz.melodysky.runtime.jni.JniTypeMapper()
-                        .parameterDescriptors(
-                                implementation.decision().method().descriptor())
-                        .size()
-                + (staticMethod ? 0 : 1);
-        if (entryPlan.topology().orElseThrow().parameterCount() != arity) {
+        NativeJniEntryTopology topology = entryPlan.topology().orElseThrow();
+        if (topology.parameterCount()
+                != projection.semanticParameterCount()) {
             throw new IllegalArgumentException(
                     "LLVM JNI proxy topology arity does not match its semantic body: "
                             + implementation.methodKey());
         }
+        if (NativeJniEntrySemanticSurface.requiresBranchedTopology(
+                        implementation,
+                        implementation.implementationIrMethod().orElse(null),
+                        localReferences)
+                && !topology.shape().branched()) {
+            throw new IllegalArgumentException(
+                    "LLVM JNI semantic surface requires a branched proxy topology: "
+                            + implementation.methodKey());
+        }
         if (!hashOnly(entryPlan.functionSymbol())
-                || entryPlan.topology().orElseThrow().bridgeSymbols().stream()
+                || topology.bridgeSymbols().stream()
                         .anyMatch(symbol -> !hashOnly(symbol))) {
             throw new IllegalArgumentException(
                     "LLVM JNI proxy and bridge symbols must be hash-only: "

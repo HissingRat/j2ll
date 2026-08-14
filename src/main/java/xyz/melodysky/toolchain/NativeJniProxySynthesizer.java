@@ -61,8 +61,16 @@ final class NativeJniProxySynthesizer {
                     .implementationFor(methodKey)
                     .orElseThrow(() -> new IllegalStateException(
                             "LLVM JNI proxy implementation is missing: " + methodKey));
+            NativeJniProxyAbiProjection projection =
+                    NativeJniProxyAbiProjection.derive(implementation)
+                            .orElseThrow(() -> new IllegalStateException(
+                                    "LLVM JNI proxy ABI is not projectable: "
+                                            + methodKey));
             NativeJniEntryTopology topology = entryPlan.topology().orElseThrow();
-            if (topology.parameterCount() != body.parameters().size()) {
+            if (topology.parameterCount()
+                            != projection.semanticParameterCount()
+                    || body.parameters().size()
+                            != projection.semanticParameterCount()) {
                 throw new IllegalStateException(
                         "LLVM JNI proxy topology/body arity mismatch: " + methodKey);
             }
@@ -71,10 +79,7 @@ final class NativeJniProxySynthesizer {
                     reserve(symbol, occupied, methodKey));
             functions.addAll(factory.create(
                     entryPlan,
-                    implementation.decision()
-                            .method()
-                            .accessFlags()
-                            .isStatic(),
+                    projection,
                     body));
         }
         LlvmModule result = new LlvmModule(

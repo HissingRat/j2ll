@@ -5,12 +5,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
 import xyz.melodysky.backend.llvm.model.LlvmFunction;
 import xyz.melodysky.backend.llvm.model.LlvmLinkage;
 import xyz.melodysky.backend.llvm.model.LlvmParameter;
-import xyz.melodysky.backend.llvm.model.LlvmType;
 import xyz.melodysky.backend.llvm.model.LlvmVisibility;
 
 /** Verifies every final LLVM proxy/body/topology binding before Zig. */
@@ -54,6 +51,24 @@ public final class NativeJniEntryLlvmVerifier {
         }
         if (!entryPlan.physicalLlvmAbi().isPhysicalJniEntry()) {
             add(issues, methodKey, "LLVM_JNI_PROXY_ABI_PURPOSE_MISMATCH");
+        }
+        NativeJniProxyAbiProjection projection =
+                NativeJniProxyAbiProjection.derive(implementation)
+                        .orElse(null);
+        if (projection == null) {
+            add(issues, methodKey, "LLVM_JNI_PROXY_ABI_NOT_PROJECTABLE");
+            return;
+        }
+        if (!entryPlan.physicalLlvmAbi().equals(
+                        xyz.melodysky.backend.llvm.LlvmFunctionAbi
+                                .physicalJniEntry(implementation
+                                        .decision()
+                                        .method()
+                                        .accessFlags()
+                                        .isStatic()))
+                || !entryPlan.semanticLlvmAbi().equals(
+                        implementation.llvmFunctionAbi())) {
+            add(issues, methodKey, "LLVM_JNI_PROXY_ABI_PLAN_MISMATCH");
         }
         String proxySymbol = entryPlan.functionSymbol();
         String bodySymbol = entryPlan.semanticBodySymbol().orElseThrow();
@@ -106,32 +121,16 @@ public final class NativeJniEntryLlvmVerifier {
                 "LLVM_JNI_PROXY_SEMANTIC_BODY",
                 issues);
 
-        boolean staticMethod = implementation.decision()
-                .method()
-                .accessFlags()
-                .isStatic();
-        Optional<NativeJniProxyFunctionVerifier.Signature> semantic =
-                functionVerifier.semanticSignature(
-                implementation.decision().method().descriptor(),
-                staticMethod);
-        if (semantic.isEmpty()) {
-            add(issues, methodKey, "LLVM_JNI_PROXY_DESCRIPTOR_UNSUPPORTED");
-            return;
-        }
         NativeJniProxyFunctionVerifier.Signature bodySignature =
-                semantic.orElseThrow();
-        ArrayList<LlvmType> physicalParameters = new ArrayList<>();
-        physicalParameters.add(LlvmType.PTR);
-        if (staticMethod) {
-            physicalParameters.add(LlvmType.PTR);
-        }
-        physicalParameters.addAll(bodySignature.parameterTypes());
+                new NativeJniProxyFunctionVerifier.Signature(
+                        projection.returnType(),
+                        projection.semanticParameterTypes());
         functionVerifier.verifySignature(
                 methodKey,
                 proxy.function(),
                 new NativeJniProxyFunctionVerifier.Signature(
-                        bodySignature.returnType(),
-                        physicalParameters),
+                        projection.returnType(),
+                        projection.physicalParameterTypes()),
                 "LLVM_JNI_PROXY",
                 issues);
         functionVerifier.verifySignature(
@@ -141,9 +140,11 @@ public final class NativeJniEntryLlvmVerifier {
                 "LLVM_JNI_PROXY_SEMANTIC_BODY",
                 issues);
 
-        int semanticOffset = staticMethod ? 2 : 1;
-        List<LlvmParameter> canonical = proxy.function().parameters()
-                .subList(semanticOffset, proxy.function().parameters().size());
+        List<LlvmParameter> canonical = projection
+                .semanticFromPhysicalIndices()
+                .stream()
+                .map(proxy.function().parameters()::get)
+                .toList();
         NativeJniEntryTopology topology = entryPlan.topology().orElseThrow();
         if (canonical.size() != topology.parameterCount()) {
             add(issues, methodKey, "LLVM_JNI_PROXY_TOPOLOGY_ARITY_MISMATCH");
@@ -167,18 +168,21 @@ public final class NativeJniEntryLlvmVerifier {
                 body.function(),
                 canonical,
                 bridges,
-                symbols));
-        Set<String> addressSensitiveSymbols = java.util.stream.Stream.concat(
-                        java.util.stream.Stream.of(proxySymbol, bodySymbol),
-                        topology.bridgeSymbols().stream())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        if (symbols.hasGlobalAddressReference(
+                symbols,
+                NativeLlvmSymbolIndex.functionReferences(
+                        proxy.module().llvmCallIndirection().module(),
+                        bodySymbol).stream()
+                        .filter(caller -> !caller.equals(proxySymbol)
+                                && !topology.bridgeSymbols().contains(caller))
+                        .toList()));
+        issues.addAll(new NativeJniProxyGlobalAddressVerifier().validate(
+                methodKey,
                 proxy.module(),
-                addressSensitiveSymbols)) {
-            add(issues, methodKey, "LLVM_JNI_PROXY_GLOBAL_ADDRESS_SURFACE");
-        }
+                symbols,
+                proxySymbol,
+                body.function(),
+                java.util.Set.copyOf(topology.bridgeSymbols())));
     }
-
     private Map<String, LlvmFunction> verifyBridges(
             NativeLlvmSymbolIndex symbols,
             String methodKey,

@@ -34,6 +34,12 @@ final class DirectJniEntryTestFixture {
         return parse(DirectJniEntryBytecodeFixture.ineligibleClass());
     }
 
+    static ParsedClass semanticClass() {
+        return parse(
+                SemanticJniProxyBytecodeFixture.OWNER,
+                SemanticJniProxyBytecodeFixture.classBytes());
+    }
+
     static Fixture fixture(
             ParsedClass parsedClass,
             List<String> methodNames) {
@@ -76,14 +82,19 @@ final class DirectJniEntryTestFixture {
     }
 
     static String compile(Fixture fixture) throws Exception {
-        NativeLlvmCompilation compilation = new NativeLlvmCompiler(
+        NativeLlvmCompilation compilation = compileModel(fixture);
+        return String.join("\n", compilation.textByOwner().values());
+    }
+
+    static NativeLlvmCompilation compileModel(Fixture fixture)
+            throws Exception {
+        return new NativeLlvmCompiler(
                         new LlvmModuleLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         fixture.implementationPlan(),
                         fixture.irMethods(),
                         LlvmProtectionConfig.disabled(0x6aL));
-        return String.join("\n", compilation.textByOwner().values());
     }
 
     static NativeMethodImplementation implementation(
@@ -97,9 +108,13 @@ final class DirectJniEntryTestFixture {
     }
 
     private static ParsedClass parse(byte[] bytes) {
+        return parse(DirectJniEntryBytecodeFixture.OWNER, bytes);
+    }
+
+    private static ParsedClass parse(String owner, byte[] bytes) {
         return new AsmClassParser()
                 .parse(new ClassFileEntry(
-                        DirectJniEntryBytecodeFixture.OWNER + ".class",
+                        owner + ".class",
                         bytes,
                         "direct-entry-fixture"))
                 .artifact()

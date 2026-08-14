@@ -5,12 +5,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 import xyz.melodysky.backend.llvm.model.LlvmDirectCallRef;
 import xyz.melodysky.backend.llvm.model.LlvmFunction;
+import xyz.melodysky.backend.llvm.model.LlvmGlobal;
+import xyz.melodysky.backend.llvm.model.LlvmModule;
 
 /** Read-only symbol/call index over the authoritative final LLVM modules. */
 final class NativeLlvmSymbolIndex {
+    private static final NativeLlvmGlobalReferenceLexer GLOBAL_REFERENCE_LEXER =
+            new NativeLlvmGlobalReferenceLexer();
     private final Map<String, List<FunctionLocation>> functions;
     private final Map<String, List<String>> declarations;
     private final Map<String, List<String>> callers;
@@ -27,13 +30,9 @@ final class NativeLlvmSymbolIndex {
                 mutableFunctions
                         .computeIfAbsent(function.name(), ignored -> new ArrayList<>())
                         .add(new FunctionLocation(module.owner(), module, function));
-                function.blocks().stream()
-                        .flatMap(block -> block.instructions().stream())
-                        .flatMap(instruction -> instruction.directCall().stream())
-                        .map(LlvmDirectCallRef::target)
-                        .forEach(target -> mutableCallers
-                                .computeIfAbsent(target, ignored -> new ArrayList<>())
-                                .add(function.name()));
+                referencedSymbols(function).forEach(target -> mutableCallers
+                        .computeIfAbsent(target, ignored -> new ArrayList<>())
+                        .add(function.name()));
             }
             module.module().declarations().forEach(declaration ->
                     mutableDeclarations
@@ -57,14 +56,63 @@ final class NativeLlvmSymbolIndex {
         return callers.getOrDefault(symbol, List.of());
     }
 
-    boolean hasGlobalAddressReference(
+    List<GlobalAddressReference> globalAddressReferences(
             NativeLlvmModuleCompilation module,
             Set<String> symbols) {
-        return module.module().globals().stream().anyMatch(global ->
-                symbols.stream().anyMatch(symbol -> Pattern.compile(
-                                "@" + Pattern.quote(symbol) + "(?![A-Za-z0-9_])")
-                        .matcher(global.definition())
-                        .find()));
+        ArrayList<GlobalAddressReference> references = new ArrayList<>();
+        for (LlvmGlobal global : module.module().globals()) {
+            List<String> matched = GLOBAL_REFERENCE_LEXER
+                    .symbolReferences(global.definition())
+                    .stream()
+                    .filter(symbols::contains)
+                    .toList();
+            if (!matched.isEmpty()) {
+                references.add(new GlobalAddressReference(global, matched));
+            }
+        }
+        return List.copyOf(references);
+    }
+
+    static List<String> functionReferences(LlvmModule module, String target) {
+        ArrayList<String> result = new ArrayList<>();
+        for (LlvmFunction function : module.functions()) {
+            referencedSymbols(function).stream()
+                    .filter(target::equals)
+                    .forEach(ignored -> result.add(function.name()));
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<String> referencedSymbols(LlvmFunction function) {
+        ArrayList<String> result = new ArrayList<>();
+        function.blocks().stream()
+                .flatMap(block -> block.instructions().stream())
+                .forEach(instruction -> {
+                    instruction.directCall()
+                            .map(LlvmDirectCallRef::target)
+                            .ifPresent(result::add);
+                    instruction.directCall().stream()
+                            .flatMap(call -> call.arguments().stream())
+                            .flatMap(argument -> GLOBAL_REFERENCE_LEXER
+                                    .symbolReferences(argument.value())
+                                    .stream())
+                            .forEach(result::add);
+                    instruction.rawText().stream()
+                            .flatMap(raw -> GLOBAL_REFERENCE_LEXER
+                                    .symbolReferences(raw)
+                                    .stream())
+                            .forEach(result::add);
+                    instruction.operands().stream()
+                            .flatMap(operand -> GLOBAL_REFERENCE_LEXER
+                                    .symbolReferences(operand)
+                                    .stream())
+                            .forEach(result::add);
+                });
+        return List.copyOf(result);
+    }
+
+    static List<String> symbolReferences(String llvmDefinition) {
+        return GLOBAL_REFERENCE_LEXER.symbolReferences(llvmDefinition);
     }
 
     private <T> Map<String, List<T>> immutableLists(
@@ -79,4 +127,12 @@ final class NativeLlvmSymbolIndex {
             String owner,
             NativeLlvmModuleCompilation module,
             LlvmFunction function) {}
+
+    record GlobalAddressReference(
+            LlvmGlobal global,
+            List<String> targetSymbols) {
+        GlobalAddressReference {
+            targetSymbols = List.copyOf(targetSymbols);
+        }
+    }
 }

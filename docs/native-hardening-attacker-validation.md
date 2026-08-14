@@ -639,13 +639,16 @@ fake-JNI/Ghidra复验：
 与 method dispatch 已改为 concrete-binding hash-only helper，并移除了统一
 token resolver。
 
-#### 6A LLVM JNI-proxy relocation
+#### 6A/6B LLVM JNI-proxy relocation
 
-实现状态为production-implemented、attacker/size validation `PENDING`。它只批准
-ordinary standalone LLVM、`V/I/J/F/D`、pure scalar/non-throwing且无semantic
-env/owner、field/call/monitor/initializer/reference/exception/local-ref和native-caller
-surface的闭集；窄整数、reference/array、synchronized、div/rem及证明不全shape保留
-generated-C wrapper。批准项不会把`RegisterNatives`直接指向semantic body，而是在final
+实现状态为production-implemented；focused、Windows real-host JVM、真实六目标与
+fixed-seed size validation已经完成，最终JAR-only Ghidra attacker validation仍为
+`PENDING`。它批准ordinary
+standalone `NATIVE_ORIGINAL`中descriptor只含可物理直传`V/I/J/F/D/L/[`且ABI可一对一投影
+的闭集；static可投影physical env/owner，instance可投影env/self，但instance需要额外owner
+class时fail closed。Reference/array handle与reference return只按`ptr`透传。`Z/B/C/S`
+scalar、initializer/interface/internal-only、synchronized及证明不全shape保留generated-C
+wrapper。批准项不会把`RegisterNatives`直接指向semantic body，而是在final
 LLVM module中增加build-scoped hash-only physical JNI proxy，并把原有bounded local-ABI
 topology等价迁移为最多三个`internal` bridge；semantic body仍保持原ABI与独立symbol。
 
@@ -656,13 +659,30 @@ exception语义。Generated C只保留exact physical prototype的`extern`与regi
 不出现semantic body、bridge或旧logical wrapper。Final-plan、structured LLVM call-edge/
 ordered-argument gate、closed CFG gate与generated-C gate共同fail closed；lowering report以
 `nativeEntryKind`、`nativeEntryReasonCode`和physical `nativeSymbol`给出authoritative分母。
+若semantic body已被IR/LLVM call-indirection写入函数指针表，final gate只接受pass-result
+module中byte-for-byte一致的module-local `LlvmGlobal`；同名table内容漂移、未知global、
+alias、`llvm.used`以及任意proxy/bridge地址引用都继续阻断。Pre-proxy与final module的
+function-level symbol-reference多重集也必须一致，不能在已table化caller中恢复raw/typed
+direct shortcut。
+任何env/owner/reference/local-reference/exception/runtime-metadata surface都强制branched
+topology；field/call/pending/local-ref及合法native-caller语义仍由原semantic body和既有
+安全caller route承担，proxy/bridge不会解引用Java handle或管理pending/local-ref state。
+该slice以`LLVM_JNI_PROXY_SEMANTIC_SURFACE`区别semantic-surface命中，pure-native scalar
+仍报告`LLVM_JNI_PROXY_PURE_SCALAR`，便于后续size/attacker验收分桶。
 
-该变换仅把已有wrapper topology从C translation unit搬到LLVM module，目标是减少C边界与
-允许LLVM/链接器做更好的size优化，不得减少原有静态分析拓扑。验收必须记录proxy/wrapped
-数量、四种topology分布、generated-C与逐target库/code-section delta、旧提取器恢复率、
-人工介入量和runtime parity。新的v2 controlled A/B、真实六目标final artifact及
-Windows/Linux/macOS Ghidra或等价binary analyzer复验尚未执行，因此当前不声明具体体积
-比例或静态分析难度提升。
+该变换仅把已有wrapper topology从C translation unit搬到LLVM module，目标是减少C边界，
+不得减少原有静态分析拓扑。2026-08-14以同一输入JAR（SHA-256
+`70A973F0BB8BC95FC7ADA804CD50BF0E124DFA2ABC91EE3F69E24A7232923A31`）和固定seed
+`j2ll-item6-size-benchmark-v1`完成controlled A/B：57个registered entry由57个
+`generatedCWrapper`变为27个`llvmJniProxy`+30个wrapper，27个proxy全部通过structured
+gate证明为`BRANCHED_PERMUTING_BRIDGE`，71个selected method的status/rewrite/retention
+逐项不变。Generated JNI C由3,358,939 B降至3,324,282 B（-34,657 B，-1.03%）；五库
+raw总量由1,637,086 B变为1,637,238 B（+152 B，+0.0093%），code section总量由
+1,397,765 B变为1,398,793 B（+1,028 B，+0.0735%）。因此本切片只能声明generated-C
+缩小和final DLL近似体积中性，不能声明动态库显著缩小。真实Windows `-Xcheck:jni`
+differential与真实六目标compile/link/export/artifact audit均通过；Windows/Linux/macOS
+JAR-only Ghidra复验、旧提取器恢复率和人工介入量仍待后续黑盒审计，当前不声明静态分析
+难度的量化提升。
 
 已完成的第二个安全切片：
 

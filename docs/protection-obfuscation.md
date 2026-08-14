@@ -351,14 +351,19 @@ exception/reference/caller边界为0命中，所以不能把本轮下降归因�
 
 ### JNI wrapper local ABI topology
 
-Final entry plan先处理6A闭集：ordinary standalone、descriptor仅`V/I/J/F/D`、
-pure scalar/non-throwing且无semantic JNI/field/call/monitor/local-reference/native-caller
-surface的registered method可把physical JNI entry与原bounded topology迁移进LLVM。
+Final entry plan先处理6A/6B闭集：ordinary standalone `NATIVE_ORIGINAL`、descriptor
+只含可直传的`V/I/J/F/D/L/[`类型且ABI可物理投影的registered method，可把physical JNI
+entry与原bounded topology迁移进LLVM。Static entry可把physical env/owner投影给semantic
+body；instance可投影env/self，但需要额外defining-owner `jclass`时fail closed。Reference/
+array参数与返回值只按opaque `ptr`原样转发；`Z/B/C/S` scalar、initializer/interface/
+internal-only和synchronized method仍保留generated-C wrapper。
 `RegisterNatives`指向build-scoped hash-only proxy；proxy再按原`NativeLocalAbiPlanner`
 shape进入独立NOINLINE semantic body，不允许直接注册body或删除保护跳数。其余
 `LLVM_NATIVE_PATH` wrapper与规范LLVM body之间继续按final native ABI选择bounded profile。
-传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用bounded branched
-参数重排，避免保留direct one-hop wrapper；不传递两者的pure-native scalar binding继续
+传递`JNIEnv*`/owner `jclass`/reference，或具有field/call/exception/pending/local-reference
+语义的binding强制使用bounded branched参数重排，避免保留direct one-hop proxy；这些语义
+仍完整位于原semantic body或既有安全native-caller路径，proxy/bridge只转发。不含这些
+surface的pure-native scalar binding继续
 由build identity从direct canonical、单层参数重排、
 双层参数重排和branched四种local topology中选择，以保留较低成本的build
 diversity。branched形态只使用一个activation-local volatile predicate，在“一层
@@ -380,6 +385,13 @@ cross-target fixture此前已覆盖该第四种形态；全套test、强制该sh
 通过。`HostNativeLocalAbiBridgeCParityTest`另真实编译并分别执行两条branched
 route，覆盖异构sentinel参数顺序、零参数`void` conditional与96-site optimized
 object增长预算。
+
+2026-08-14的6A/6B fixed-seed v2 controlled A/B中，57个registered entry有27个把同一
+branched topology从generated C迁入LLVM，30个按窄整数、initializer/interface、
+synchronized或instance-owner边界继续保留wrapper。Generated JNI C减少34,657 B；五库
+raw总量仅增加152 B、code section总量增加1,028 B，故该迁移按final动态库口径是近似体积
+中性。它的主要价值是移除C translation-unit边界并保持build-scoped topology，不把
+source-size下降误报为final-library size收益。
 
 2026-07-31的v2双随机构建完成了本切片的final-binary复验。71个
 `nativeLowered` binding中，source plan由旧样本的15/22/19/15

@@ -23,12 +23,25 @@ final class NativeJniProxyFunctionFactory {
 
     List<LlvmFunction> create(
             NativeJniEntryPlan entryPlan,
-            boolean staticMethod,
+            NativeJniProxyAbiProjection projection,
             LlvmFunction body) {
         NativeJniEntryTopology topology = entryPlan.topology().orElseThrow();
-        List<LlvmParameter> canonical = canonicalParameters(
+        List<LlvmParameter> physical = physicalParameters(
                 entryPlan.functionSymbol(),
-                body.parameters());
+                projection.physicalParameterTypes());
+        List<LlvmParameter> canonical = projection
+                .semanticFromPhysicalIndices()
+                .stream()
+                .map(physical::get)
+                .toList();
+        if (body.returnType() != projection.returnType()
+                || !body.parameters().stream()
+                        .map(LlvmParameter::type)
+                        .toList()
+                        .equals(projection.semanticParameterTypes())) {
+            throw new IllegalArgumentException(
+                    "LLVM JNI proxy projection does not match semantic body");
+        }
         ArrayList<LlvmFunction> functions = new ArrayList<>();
         if (topology.shape() == NativeJniEntryTopology.Shape
                 .SINGLE_PERMUTING_BRIDGE
@@ -40,8 +53,8 @@ final class NativeJniProxyFunctionFactory {
         }
         functions.add(proxy(
                 entryPlan.functionSymbol(),
-                staticMethod,
                 body.returnType(),
+                physical,
                 canonical,
                 body.name(),
                 topology));
@@ -99,21 +112,11 @@ final class NativeJniProxyFunctionFactory {
 
     private LlvmFunction proxy(
             String symbol,
-            boolean staticMethod,
             LlvmType returnType,
+            List<LlvmParameter> physical,
             List<LlvmParameter> canonical,
             String bodySymbol,
             NativeJniEntryTopology topology) {
-        ArrayList<LlvmParameter> parameters = new ArrayList<>();
-        parameters.add(new LlvmParameter(
-                LlvmType.PTR,
-                names.value(symbol, "implicit:env")));
-        if (staticMethod) {
-            parameters.add(new LlvmParameter(
-                    LlvmType.PTR,
-                    names.value(symbol, "implicit:owner")));
-        }
-        parameters.addAll(canonical);
         List<LlvmBasicBlock> blocks = topology.shape().branched()
                 ? branchedProxyBlocks(symbol, returnType, canonical, topology)
                 : List.of(callAndReturnBlock(
@@ -133,7 +136,7 @@ final class NativeJniProxyFunctionFactory {
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN,
                 returnType,
-                parameters,
+                physical,
                 blocks);
     }
 
@@ -251,14 +254,14 @@ final class NativeJniProxyFunctionFactory {
                 new LlvmTerminator(returnType, result));
     }
 
-    private List<LlvmParameter> canonicalParameters(
+    private List<LlvmParameter> physicalParameters(
             String proxySymbol,
-            List<LlvmParameter> bodyParameters) {
+            List<LlvmType> parameterTypes) {
         ArrayList<LlvmParameter> parameters = new ArrayList<>();
-        for (int index = 0; index < bodyParameters.size(); index++) {
+        for (int index = 0; index < parameterTypes.size(); index++) {
             parameters.add(new LlvmParameter(
-                    bodyParameters.get(index).type(),
-                    names.value(proxySymbol, "semantic:" + index)));
+                    parameterTypes.get(index),
+                    names.value(proxySymbol, "physical:" + index)));
         }
         return List.copyOf(parameters);
     }

@@ -151,20 +151,23 @@ Windows的`.pdata`/`.xdata`也进入结构化inspection/report，但SEH policy�
 - Constructor/class-initializer的LLVM body由专门initializer plan提供。Constructor Java stub保留唯一线性verifier prefix到真实`this(...)`/`super(...)` invocation，LLVM function只包含post-init body；`<clinit>` loader/bootstrap stub调用承载完整supported initializer IR的same-owner native helper。
 - 上述新增exception与initializer路径已有focused model/ABI tests和Windows real-Zig host child-JVM differential；`Object.getClass()`与`Thread.sleep(J)V`当前有focused planner/LLVM/C ABI evidence。其他五个固定target目前只有format/architecture/export/build-graph结构性证据，不得宣称已完成对应OS/JVM runtime E2E。
 
-### LLVM JNI-proxy relocation（6A）
+### LLVM JNI-proxy relocation（6A/6B）
 
 Final coalescing后、method-table hiding前会冻结每个registered method的
-`NativeJniEntryPlan`。只有ordinary standalone `LLVM_NATIVE_PATH`、descriptor仅含
-`V/I/J/F/D`、pure scalar/non-throwing、且没有semantic env/owner、field/call/
-monitor/initializer/reference/exception/local-reference或native-caller surface的方法可用
-`llvmJniProxy`；窄整数、reference/array、synchronized、div/rem、initializer/interface/
-internal-only及证明不全的shape继续使用`generatedCWrapper`。
+`NativeJniEntryPlan`。Ordinary standalone `LLVM_NATIVE_PATH` + `NATIVE_ORIGINAL`在descriptor
+只含可直传的`V/I/J/F/D/L/[`且physical-to-semantic ABI能一对一投影时可用
+`llvmJniProxy`。Static method可把physical env/owner映射给semantic ABI；instance method可
+映射env/self，但`passesOwnerClass=true`需要wrapper解析defining class，因而继续fail closed。
+Reference/array参数及reference return按opaque `ptr`原样返回，不在proxy里创建、删除、提升
+或解引用handle。`Z/B/C/S` scalar、synchronized、initializer/interface/internal-only及证明
+不全shape继续使用`generatedCWrapper`。
 
 `LlvmFunctionAbi`以`SEMANTIC_INTERNAL`和`PHYSICAL_JNI_ENTRY`区分两种purpose；二参
 兼容构造只产生前者。Physical proxy的static ABI为`JNIEnv* + jclass + Java args`，instance
 ABI为`JNIEnv* + jobject self + Java args`；semantic body仍使用原compiler-internal ABI。
 Proxy/bridge使用不同的hash-only hidden/internal symbol，semantic body保留原hidden symbol且
-不会变成registration target。
+不会变成registration target。Field/call/exception/pending/local-reference与native-caller
+语义不再否决relocation，而是完整留在semantic body或原有安全caller route中。
 
 Planner复用`NativeLocalAbiPlanner`的direct/single/double/branched选择、parameter order和
 branch salt，并只替换为build-scoped hash-only proxy/bridge symbol。Final LLVM synthesis在
@@ -172,16 +175,25 @@ optional protection/global-layout之后加入`external hidden noinline` proxy与
 `internal default noinline` bridge，同时给semantic body加`noinline`。Branched shape保留
 activation-local address predicate与volatile store/load；不增加cookie、持久function-pointer
 slot、JNI、local-reference或exception操作，也不使用`llvm.used`作额外retention root。
+任何env/owner/reference/local-reference/exception/runtime-metadata surface都强制复用
+`JVM_SEMANTIC_SURFACE`的branched topology；只有pure-native scalar仍使用低成本的四形态
+`COMPACT_DIVERSE`选择。
 
 Compiler pre-gate重验final eligibility；post-gate从structured direct-call metadata验证
-proxy/body/bridge唯一definition、exact linkage/visibility/ABI、ordered SSA argument
-permutation、exact caller closure和closed CFG schema。Generated-C gate要求proxy只有exact
+proxy/body/bridge唯一definition、exact linkage/visibility/physical-to-semantic projection、
+ordered SSA argument permutation、topology caller closure和closed CFG schema；semantic body
+可保留final plan已经允许的native callers。Generated-C gate要求proxy只有exact
 prototype的extern与registration引用，并证明semantic body、bridge和logical wrapper零残留。
 `lowering-report.json`写`nativeEntryKind`、`nativeEntryReasonCode`，其中`nativeSymbol`是physical
-proxy；compiler fingerprint还绑定semantic ABI与topology。
+proxy；semantic-surface relocation使用`LLVM_JNI_PROXY_SEMANTIC_SURFACE`，无该surface的
+pure-native scalar继续使用`LLVM_JNI_PROXY_PURE_SCALAR`。Compiler fingerprint还绑定
+semantic ABI与topology。
 
-6A只把已有保护拓扑从C搬到LLVM，并不删除或缩短拓扑。新的v2 controlled A/B、真实六目标
-和Ghidra/fake-JNI复验均为pending；不得在这些证据完成前宣称具体size收益或分析难度变化。
+6A/6B只把已有保护拓扑从C搬到LLVM，并不删除或缩短拓扑。2026-08-14 fixed-seed v2
+controlled A/B实测27/57 registered entry迁移，27项全部保持branched topology；generated
+JNI C下降34,657 B，而五库raw总量+152 B、code section总量+1,028 B，属于final DLL体积
+中性而不是显著缩小。Windows real-host `-Xcheck:jni`与真实六目标已通过；JAR-only
+Ghidra/fake-JNI攻击者复验仍pending，因此不得提前声明静态分析难度的量化提升。
 
 - JNI wrapper declaration and LLVM function signature must use the same env/owner-class policy. Non-env JVM numeric helpers such as `i2b` / `lcmp` do not make the hidden LLVM function receive `JNIEnv*`; field/array/allocation/type/dispatch/reflection/String/Unsafe/VarHandle/helper calls that actually need JNI state do. Regression coverage checks this with child JVM numeric helper E2E.
 - Native instance wrapper传入LLVM/native-field ABI的owner表示method/field的declared defining class。它必须在registered native method的defining-loader context解析，不能用`GetObjectClass(self)`替代，否则base method在subclass receiver上会把同一个internalized static field分裂成多个storage key。

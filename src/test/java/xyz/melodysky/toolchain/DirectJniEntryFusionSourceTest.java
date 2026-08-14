@@ -113,20 +113,14 @@ class DirectJniEntryFusionSourceTest {
     }
 
     @Test
-    void narrowReferenceAndSemanticSurfaceMethodsRetainCWrappers()
+    void narrowDescriptorsRetainCWrappers()
             throws Exception {
         ParsedClass parsedClass = DirectJniEntryTestFixture.ineligibleClass();
         List<String> methods = List.of(
                 "narrowBoolean",
                 "narrowByte",
                 "narrowChar",
-                "narrowShort",
-                "referenceIdentity",
-                "readField",
-                "divide",
-                "alwaysThrow",
-                "callee",
-                "caller");
+                "narrowShort");
         DirectJniEntryTestFixture.Fixture fixture =
                 DirectJniEntryTestFixture.fixture(parsedClass, methods);
 
@@ -150,7 +144,7 @@ class DirectJniEntryFusionSourceTest {
             assertTrue(
                     cFunctionDefinition(generatedC, nativeSymbol),
                     () -> methodName
-                            + " is outside the 6A proof slice and must retain its C wrapper\n"
+                            + " has an unsupported narrow physical descriptor\n"
                             + generatedC);
             assertFalse(
                     llvm.contains("@" + nativeSymbol + "("),

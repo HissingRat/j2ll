@@ -74,6 +74,22 @@ public record NativeJniEntryPlan(
             String semanticBodySymbol,
             LlvmFunctionAbi semanticAbi,
             NativeJniEntryTopology topology) {
+        return llvmProxy(
+                proxySymbol,
+                physicalAbi,
+                semanticBodySymbol,
+                semanticAbi,
+                topology,
+                "LLVM_JNI_PROXY_PURE_SCALAR");
+    }
+
+    public static NativeJniEntryPlan llvmProxy(
+            String proxySymbol,
+            LlvmFunctionAbi physicalAbi,
+            String semanticBodySymbol,
+            LlvmFunctionAbi semanticAbi,
+            NativeJniEntryTopology topology,
+            String reasonCode) {
         return new NativeJniEntryPlan(
                 Kind.LLVM_JNI_PROXY,
                 proxySymbol,
@@ -81,7 +97,7 @@ public record NativeJniEntryPlan(
                 Optional.of(semanticBodySymbol),
                 semanticAbi,
                 Optional.of(topology),
-                "LLVM_JNI_PROXY_PURE_SCALAR");
+                reasonCode);
     }
 
     public boolean llvmJniProxy() {

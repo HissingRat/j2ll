@@ -23,13 +23,10 @@ final class NativeJniProxyTopologyVerifier {
             LlvmFunction body,
             List<LlvmParameter> canonical,
             Map<String, LlvmFunction> bridges,
-            NativeLlvmSymbolIndex symbols) {
+            NativeLlvmSymbolIndex symbols,
+            List<String> expectedSemanticCallers) {
         ArrayList<String> issues = new ArrayList<>();
         Map<String, List<String>> expectedTargets = expectedTargets(
-                topology,
-                proxy.name(),
-                body.name());
-        Map<String, List<String>> expectedCallers = expectedCallers(
                 topology,
                 proxy.name(),
                 body.name());
@@ -49,12 +46,13 @@ final class NativeJniProxyTopologyVerifier {
                 add(issues, methodKey, "LLVM_JNI_PROXY_CALL_EDGE_MISMATCH");
             }
         });
-        expectedCallers.forEach((target, expected) -> {
-            if (!symbols.callers(target).stream().sorted().toList()
-                    .equals(expected.stream().sorted().toList())) {
-                add(issues, methodKey, "LLVM_JNI_PROXY_CALLER_CLOSURE_MISMATCH");
-            }
-        });
+        issues.addAll(new NativeJniProxyCallerVerifier().validate(
+                methodKey,
+                topology,
+                proxy.name(),
+                body.name(),
+                symbols,
+                expectedSemanticCallers));
         return issues.stream().distinct().sorted().toList();
     }
 
@@ -83,22 +81,6 @@ final class NativeJniProxyTopologyVerifier {
             }
         }
         return Map.copyOf(result);
-    }
-
-    private Map<String, List<String>> expectedCallers(
-            NativeJniEntryTopology topology,
-            String proxy,
-            String body) {
-        LinkedHashMap<String, ArrayList<String>> result = new LinkedHashMap<>();
-        result.put(proxy, new ArrayList<>());
-        expectedTargets(topology, proxy, body).forEach((caller, targets) ->
-                targets.forEach(target -> result
-                        .computeIfAbsent(target, ignored -> new ArrayList<>())
-                        .add(caller)));
-        LinkedHashMap<String, List<String>> immutable = new LinkedHashMap<>();
-        result.forEach((symbol, callers) ->
-                immutable.put(symbol, List.copyOf(callers)));
-        return Map.copyOf(immutable);
     }
 
     private void verifyClosedSchema(

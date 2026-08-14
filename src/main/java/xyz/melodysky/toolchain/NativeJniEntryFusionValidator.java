@@ -16,9 +16,6 @@ public final class NativeJniEntryFusionValidator {
             Map<String, IrMethod> irMethods) {
         Objects.requireNonNull(implementationPlan, "implementationPlan");
         Objects.requireNonNull(irMethods, "irMethods");
-        NativeJniEntryCallFacts callFacts = NativeJniEntryCallFacts.analyze(
-                implementationPlan.implementations(),
-                irMethods);
         ArrayList<String> issues = new ArrayList<>();
         implementationPlan.jniEntryPlans().entrySet().stream()
                 .filter(entry -> entry.getValue().llvmJniProxy())
@@ -32,9 +29,10 @@ public final class NativeJniEntryFusionValidator {
                                     eligibility.assess(
                                             implementation,
                                             method,
-                                            callFacts.targets(entry.getKey()),
-                                            NativeJniEntryLocalReferenceFacts
-                                                    .requiresSemanticHandling(
+                                            NativeJniEntrySemanticSurface
+                                                    .requiresBranchedTopology(
+                                                            implementation,
+                                                            method,
                                                             implementationPlan
                                                                     .localReferencePlans()
                                                                     .get(entry
@@ -47,6 +45,29 @@ public final class NativeJniEntryFusionValidator {
                                     entry.getValue().physicalLlvmAbi())) {
                                 issues.add(entry.getKey()
                                         + ":LLVM_JNI_PROXY_ABI_DRIFT");
+                            } else if (decision.projection()
+                                            .orElseThrow()
+                                            .semanticParameterCount()
+                                    != entry.getValue()
+                                            .topology()
+                                            .orElseThrow()
+                                            .parameterCount()) {
+                                issues.add(entry.getKey()
+                                        + ":LLVM_JNI_PROXY_PROJECTION_DRIFT");
+                            } else if (decision.profile()
+                                            == NativeLocalAbiProfile
+                                                    .JVM_SEMANTIC_SURFACE
+                                    && !entry.getValue()
+                                            .topology()
+                                            .orElseThrow()
+                                            .shape()
+                                            .branched()) {
+                                issues.add(entry.getKey()
+                                        + ":LLVM_JNI_PROXY_SEMANTIC_TOPOLOGY_DRIFT");
+                            } else if (!decision.reasonCode().equals(
+                                    entry.getValue().reasonCode())) {
+                                issues.add(entry.getKey()
+                                        + ":LLVM_JNI_PROXY_REASON_DRIFT");
                             }
                         }, () -> issues.add(entry.getKey()
                                 + ":LLVM_JNI_PROXY_IMPLEMENTATION_MISSING")));

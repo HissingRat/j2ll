@@ -14,9 +14,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.regex.Pattern;
@@ -28,26 +26,28 @@ import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.testsupport.DifferentialHarness;
 import xyz.melodysky.testsupport.DifferentialResult;
-import xyz.melodysky.toolchain.HostPlatform;
-import xyz.melodysky.toolchain.J2llHomeResolver;
+import xyz.melodysky.testsupport.RealJ2llHostTestSupport;
 import xyz.melodysky.toolchain.NativeLibraryName;
-import xyz.melodysky.toolchain.TargetTriple;
 
 /** Real-JVM semantic and physical-surface regression for 6A direct JNI entries. */
 class DirectJniEntryNativeRuntimeE2eTest {
-    private static final List<String> DIRECT_METHODS = List.of(
+    private static final List<String> SEMANTIC_PROXY_METHODS = List.of(
+            "instanceInt",
+            "instanceDouble",
+            "referenceIdentity",
+            "allocateReference",
+            "readField",
+            "divide",
+            "alwaysThrow",
+            "caller");
+    private static final List<String> PROXY_METHODS = List.of(
             "staticVoid",
             "staticInt",
             "staticLong",
             "staticFloat",
             "staticDouble",
             "instanceInt",
-            "instanceDouble");
-    private static final List<String> WRAPPED_METHODS = List.of(
-            "narrowBoolean",
-            "narrowByte",
-            "narrowChar",
-            "narrowShort",
+            "instanceDouble",
             "referenceIdentity",
             "allocateReference",
             "readField",
@@ -55,6 +55,11 @@ class DirectJniEntryNativeRuntimeE2eTest {
             "alwaysThrow",
             "callee",
             "caller");
+    private static final List<String> WRAPPED_METHODS = List.of(
+            "narrowBoolean",
+            "narrowByte",
+            "narrowChar",
+            "narrowShort");
 
     @TempDir
     Path temp;
@@ -62,19 +67,24 @@ class DirectJniEntryNativeRuntimeE2eTest {
     @Test
     void conservativeDirectEntriesRunInRealHostJvmAndExcludedShapesKeepWrappers()
             throws Exception {
-        Path j2llHome = realJ2llHome();
+        Path j2llHome = RealJ2llHostTestSupport.configuredHome();
         assumeTrue(
                 j2llHome != null
-                        && Files.isRegularFile(zigExecutable(j2llHome)),
+                        && Files.isRegularFile(
+                                RealJ2llHostTestSupport.zigExecutable(j2llHome)),
                 "set -Dj2ll.realHome=<distribution containing zig/zig(.exe)> "
                         + "to run the direct-JNI-entry E2E");
-        assertEquals("0.15.2", runZigVersion(zigExecutable(j2llHome)));
+        assertEquals(
+                "0.15.2",
+                RealJ2llHostTestSupport.zigVersion(
+                        RealJ2llHostTestSupport.zigExecutable(j2llHome)));
 
         Path inputJar = writeFixtureJar(temp.resolve("direct-entry.jar"));
         ResolvedConfig config = config(inputJar);
         Path workspace = temp.resolve("out/direct-entry");
         MainlinePipelineResult pipeline;
-        try (AutoCloseable ignored = useJ2llHome(j2llHome)) {
+        try (AutoCloseable ignored =
+                RealJ2llHostTestSupport.useHome(j2llHome)) {
             pipeline = new MainlinePipeline().run(
                     config,
                     workspace,
@@ -105,16 +115,16 @@ class DirectJniEntryNativeRuntimeE2eTest {
 
         Map<String, String> nativeSymbols = loweringSymbols(workspace);
         assertEquals(
-                DIRECT_METHODS.size() + WRAPPED_METHODS.size(),
+                PROXY_METHODS.size() + WRAPPED_METHODS.size(),
                 nativeSymbols.size());
         String generatedC = Files.readString(
                 workspace.resolve("native/zig-workspace/jni/")
                         .resolve(NativeLibraryName.derive(
                                 config.protection().seed()) + ".c"));
-        String llvm = readLlvm(workspace.resolve(
+        String llvm = RealJ2llHostTestSupport.readLlvm(workspace.resolve(
                 "native/zig-workspace/llvm"));
 
-        for (String method : DIRECT_METHODS) {
+        for (String method : PROXY_METHODS) {
             String symbol = nativeSymbols.get(method);
             assertTrue(symbol != null && !symbol.isBlank(), method);
             assertCDeclaration(generatedC, symbol);
@@ -154,13 +164,15 @@ class DirectJniEntryNativeRuntimeE2eTest {
                     "LLVM_NATIVE_PATH",
                     method.get("nativeImplementationPath").getAsString());
             String methodName = method.get("method").getAsString();
-            if (DIRECT_METHODS.contains(methodName)) {
+            if (PROXY_METHODS.contains(methodName)) {
                 assertEquals(
                         "llvmJniProxy",
                         method.get("nativeEntryKind").getAsString(),
                         methodName);
                 assertEquals(
-                        "LLVM_JNI_PROXY_PURE_SCALAR",
+                        SEMANTIC_PROXY_METHODS.contains(methodName)
+                                ? "LLVM_JNI_PROXY_SEMANTIC_SURFACE"
+                                : "LLVM_JNI_PROXY_PURE_SCALAR",
                         method.get("nativeEntryReasonCode").getAsString(),
                         methodName);
             } else {
@@ -181,19 +193,6 @@ class DirectJniEntryNativeRuntimeE2eTest {
                     method.get("nativeSymbol").getAsString());
         }
         return Map.copyOf(symbols);
-    }
-
-    private String readLlvm(Path directory) throws Exception {
-        try (var files = Files.list(directory)) {
-            StringBuilder llvm = new StringBuilder();
-            for (Path file : files.filter(path ->
-                            path.getFileName().toString().endsWith(".ll"))
-                    .sorted()
-                    .toList()) {
-                llvm.append(Files.readString(file)).append('\n');
-            }
-            return llvm.toString();
-        }
     }
 
     private void assertCDeclaration(String source, String symbol) {
@@ -341,69 +340,8 @@ class DirectJniEntryNativeRuntimeE2eTest {
                 }
                 """.formatted(
                 inputJar.toString().replace("\\", "\\\\"),
-                hostTargetJson())).getAsJsonObject();
+                RealJ2llHostTestSupport.hostTargetJson())).getAsJsonObject();
         return new ConfigLoader().load(json, temp).config().orElseThrow();
-    }
-
-    private String hostTargetJson() {
-        TargetTriple target = HostPlatform.detect().orElseThrow().target();
-        return """
-                {
-                    "windowsX64": %s,
-                    "windowsArm64": %s,
-                    "linuxX64": %s,
-                    "linuxArm64": %s,
-                    "macosX64": %s,
-                    "macosArm64": %s
-                  }""".formatted(
-                target == TargetTriple.WINDOWS_X64,
-                target == TargetTriple.WINDOWS_ARM64,
-                target == TargetTriple.LINUX_X64,
-                target == TargetTriple.LINUX_ARM64,
-                target == TargetTriple.MACOS_X64,
-                target == TargetTriple.MACOS_ARM64);
-    }
-
-    private Path realJ2llHome() {
-        String configured = System.getProperty("j2ll.realHome");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("J2LL_REAL_HOME");
-        }
-        return configured == null || configured.isBlank()
-                ? null
-                : Path.of(configured).toAbsolutePath().normalize();
-    }
-
-    private Path zigExecutable(Path home) {
-        return home.resolve("zig").resolve(isWindows() ? "zig.exe" : "zig");
-    }
-
-    private String runZigVersion(Path zig) throws Exception {
-        Process process = new ProcessBuilder(zig.toString(), "version").start();
-        assertTrue(process.waitFor(10, TimeUnit.SECONDS));
-        assertEquals(0, process.exitValue());
-        return new String(
-                        process.getInputStream().readAllBytes(),
-                        StandardCharsets.UTF_8)
-                .trim();
-    }
-
-    private AutoCloseable useJ2llHome(Path home) {
-        String previous = System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
-        System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, home.toString());
-        return () -> {
-            if (previous == null) {
-                System.clearProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
-            } else {
-                System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, previous);
-            }
-        };
-    }
-
-    private boolean isWindows() {
-        return System.getProperty("os.name", "")
-                .toLowerCase(Locale.ROOT)
-                .contains("win");
     }
 
     private String expectedOutput() {

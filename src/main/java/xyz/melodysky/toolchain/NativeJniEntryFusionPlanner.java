@@ -8,8 +8,8 @@ import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 
 /**
- * Selects bounded pure-scalar methods for a distinct LLVM JNI proxy while
- * retaining their semantic LLVM body and local-ABI topology.
+ * Selects ordinary standalone LLVM methods for a distinct JNI proxy while
+ * retaining their semantic LLVM body and bounded local-ABI topology.
  */
 public final class NativeJniEntryFusionPlanner {
     private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
@@ -36,9 +36,6 @@ public final class NativeJniEntryFusionPlanner {
         Objects.requireNonNull(implementationPlan, "implementationPlan");
         Objects.requireNonNull(irMethods, "irMethods");
         Objects.requireNonNull(buildKey, "buildKey");
-        NativeJniEntryCallFacts callFacts = NativeJniEntryCallFacts.analyze(
-                implementationPlan.implementations(),
-                irMethods);
         NativeJniProxySymbolMapper symbolMapper =
                 new NativeJniProxySymbolMapper();
         LinkedHashMap<String, NativeJniEntryPlan> entries =
@@ -51,9 +48,10 @@ public final class NativeJniEntryFusionPlanner {
                     eligibility.assess(
                             implementation,
                             method,
-                            callFacts.targets(implementation.methodKey()),
-                            NativeJniEntryLocalReferenceFacts
-                                    .requiresSemanticHandling(
+                            NativeJniEntrySemanticSurface
+                                    .requiresBranchedTopology(
+                                            implementation,
+                                            method,
                                             implementationPlan
                                                     .localReferencePlans()
                                                     .get(implementation
@@ -94,8 +92,10 @@ public final class NativeJniEntryFusionPlanner {
         NativeLocalAbiPlan localAbi = new NativeLocalAbiPlanner().plan(
                 buildKey,
                 implementation.methodKey(),
-                method.parameters().size(),
-                NativeLocalAbiProfile.COMPACT_DIVERSE);
+                decision.projection()
+                        .orElseThrow()
+                        .semanticParameterCount(),
+                decision.profile());
         NativeJniEntryTopology topology = NativeJniEntryTopology.from(
                 localAbi,
                 symbolMapper.bridgeSymbols(
@@ -109,6 +109,7 @@ public final class NativeJniEntryFusionPlanner {
                 decision.physicalAbi(),
                 implementation.llvmFunctionSymbol().orElseThrow(),
                 implementation.llvmFunctionAbi(),
-                topology);
+                topology,
+                decision.reasonCode());
     }
 }
