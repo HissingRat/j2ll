@@ -16,6 +16,14 @@ final class HostJniGeneratedCFragmentEmitter {
     private final GeneratedCFragmentTextObfuscator textObfuscator;
     private final NativeTextBuildKey buildKey;
     private final HostJniLowSensitivityThrowLeafPool lowSensitivityLeaves;
+    private final HostJniLowSensitivityThrowShardMaterializer materializer =
+            new HostJniLowSensitivityThrowShardMaterializer();
+    private final HostJniLowSensitivityThrowShardSource shardSource =
+            new HostJniLowSensitivityThrowShardSource();
+    private final HostJniLowSensitivityThrowShardSourceVerifier verifier =
+            new HostJniLowSensitivityThrowShardSourceVerifier();
+    private HostJniLowSensitivityThrowShardPlan frozenPlan;
+    private boolean finalSourceVerified;
 
     HostJniGeneratedCFragmentEmitter(
             StringBuilder output,
@@ -35,15 +43,17 @@ final class HostJniGeneratedCFragmentEmitter {
     void append(
             String scope,
             String fragment) {
+        requireCollecting();
         output.append(textObfuscator.obfuscate(
                 buildKey,
                 scope,
-                lowSensitivityLeaves.rewrite(fragment)));
+                lowSensitivityLeaves.rewrite(scope, fragment)));
     }
 
     void append(
             String scope,
             Consumer<StringBuilder> sourceEmitter) {
+        requireCollecting();
         Objects.requireNonNull(sourceEmitter, "sourceEmitter");
         StringBuilder fragment = new StringBuilder();
         sourceEmitter.accept(fragment);
@@ -51,14 +61,45 @@ final class HostJniGeneratedCFragmentEmitter {
     }
 
     void appendLowSensitivityLeaves() {
-        if (lowSensitivityLeaves.isEmpty()) {
-            return;
+        requireCollecting();
+        frozenPlan = lowSensitivityLeaves.freeze();
+        materializer.materialize(output, frozenPlan);
+        for (HostJniLowSensitivityThrowShardPlan.Shard shard
+                : frozenPlan.shards()) {
+            output.append(textObfuscator.obfuscate(
+                    buildKey,
+                    "low-sensitivity-throw-shard:" + shard.symbol(),
+                    shardSource.definition(shard),
+                    GeneratedCTextPolicy.sensitive(
+                            NativeTextPurpose.RUNTIME_ERROR)));
         }
-        output.append(textObfuscator.obfuscate(
-                buildKey,
-                "low-sensitivity-throw-leaves",
-                lowSensitivityLeaves.definitions(),
-                GeneratedCTextPolicy.sensitive(
-                        NativeTextPurpose.RUNTIME_ERROR)));
+    }
+
+    void verifyFinalSource() {
+        if (frozenPlan == null) {
+            throw new IllegalStateException(
+                    "low-sensitivity shard plan has not been frozen");
+        }
+        if (finalSourceVerified) {
+            throw new IllegalStateException(
+                    "low-sensitivity final source was already verified");
+        }
+        verifier.verify(output.toString(), frozenPlan);
+        finalSourceVerified = true;
+    }
+
+    HostJniLowSensitivityThrowShardPlan frozenPlan() {
+        if (frozenPlan == null) {
+            throw new IllegalStateException(
+                    "low-sensitivity shard plan has not been frozen");
+        }
+        return frozenPlan;
+    }
+
+    private void requireCollecting() {
+        if (frozenPlan != null) {
+            throw new IllegalStateException(
+                    "low-sensitivity generated-C fragments are already frozen");
+        }
     }
 }

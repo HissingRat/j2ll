@@ -234,7 +234,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 """);
         builder.append(new NativeTextCEmitter().runtimeSource());
         HostJniLowSensitivityThrowLeafPool lowSensitivityLeaves =
-                new HostJniLowSensitivityThrowLeafPool(runtimeTokens);
+                new HostJniLowSensitivityThrowLeafPool(buildKey);
         HostJniGeneratedCFragmentEmitter fragments =
                 new HostJniGeneratedCFragmentEmitter(
                         builder,
@@ -323,6 +323,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
         HostJniLocalReferenceRuntimeSource.appendIfNeeded(
                 builder,
                 implementationPlan);
+        fragments.verifyFinalSource();
         String source = builder.toString();
         List<String> directEntryIssues =
                 new NativeJniEntryGeneratedCVerifier().verify(

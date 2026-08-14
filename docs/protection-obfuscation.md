@@ -226,11 +226,29 @@ plaintext cache。
 
 普通固定异常类型和错误文案属于窄化的低敏感例外。只有显式 closed allowlist
 命中的 `j2ll_throw_new` pair 才会被 outline 为 build-scoped hash-only
-`noinline,cold` leaf；leaf 只接收 `JNIEnv*`，不接收 owner、member、descriptor、
+`noinline,cold` leaf。最终physical leaf symbol是exact `[a-p]{32}`，没有`j2ll`或
+异常语义前缀；单个physical leaf最多承接32个direct call site。所有generated-C
+fragment必须使用唯一scope先收集build-scoped site placeholder，全部fragment结束后才
+freeze immutable shard plan：每个logical pair的site按build key排序，使用
+`ceil(siteCount/32)`个bucket做round-robin均衡分片。同build保持稳定；multi-shard logical
+pair的membership与全部physical symbol由build identity派生并多样化。结构size budget为
+每个logical pair恰好`ceil(siteCount/32)`个physical definition，相对旧的每个used logical
+pair一个definition，只增加这些ceil之和减去used pair数；每shard恰有一份独立cipher，且没有
+额外secondary copy、padding、table或dispatcher。source/binary增量仍须用同输入dual-build与
+六目标产物实测，不能从该公式外推。
+声明anchor和site placeholder只在一次词法
+materialization中闭合，declaration去重；重复scope、missing/duplicate/unknown/residual
+placeholder、symbol collision、非连续shard ordinal、fanout/definition/reference closure或
+total-call conservation失败都会fail closed。registration与local-reference source追加后，
+完整translation unit还要再次验证每个symbol精确一个prototype、一个definition和1到32个
+direct `(env)` call，防止与后续proxy/identifier碰撞。
+
+leaf 只接收 `JNIEnv*`，不接收 owner、member、descriptor、
 metadata token、业务字符串或 Java value。异常类型与文案只在leaf真实到达时作为
 同一direct-call tuple解码到activation-local scratch，`ThrowNew`返回后由统一cleanup
-清零。生产路径不允许lazy-once、mutable ciphertext、in-place decode或跨activation
-plaintext cache。这样减少错误冷路径在每个localized helper中重复的throw骨架，同时
+清零；每个physical shard使用独立`RUNTIME_ERROR` scope、tuple/cipher/codec/use identity。
+生产路径不允许lazy-once、mutable ciphertext、in-place decode、跨activation plaintext
+cache、runtime function/token table或central dispatcher。这样减少错误冷路径在每个localized helper中重复的throw骨架，同时
 不恢复全局metadata resolver或集中业务字符串decoder。未列入allowlist的错误文本也
 继续使用activation-local scratch。
 

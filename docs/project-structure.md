@@ -1001,6 +1001,10 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `HostJniReachableRuntimeSourceEmitter`
 - `HostJniGeneratedCFragmentEmitter`
 - `HostJniLowSensitivityThrowLeafPool`
+- `HostJniLowSensitivityThrowShardPlanner`
+- `HostJniLowSensitivityThrowShardPlan`
+- `HostJniLowSensitivityThrowShardMaterializer`
+- `HostJniLowSensitivityThrowShardSourceVerifier`
 - `HostNativeFieldStorageSource`
 - `NativeLocalReferenceSafety`
 - `toolchain.localref.NativeLocalReferencePlanner`
@@ -1047,10 +1051,20 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - generated-C fragment policy：`HostJniGeneratedCFragmentEmitter`统一执行
   fragment-local sensitive text rewrite，并让
   `HostJniLowSensitivityThrowLeafPool`只对closed allowlist中的固定异常类型/
-  错误文案生成build-scoped hash-only `noinline,cold` leaf。leaf只接收
+  错误文案收集build-scoped site placeholder；fragment scope必须唯一。全部fragment结束后，
+  `HostJniLowSensitivityThrowShardPlanner`按logical leaf做build-keyed site排序，以
+  `ceil(siteCount/32)`个bucket round-robin形成immutable、均衡且每shard最多32个direct
+  call的physical plan；final leaf symbol为exact `[a-p]{32}`。`HostJniLowSensitivityThrowShardMaterializer`
+  用一次词法遍历替换唯一declaration anchor和全部site placeholder，并只发出一份deduplicated
+  prototype；missing/duplicate/unknown/residual placeholder、collision、fanout与site守恒失败
+  都fail closed。所有后续registration/local-reference source完成后，
+  `HostJniLowSensitivityThrowShardSourceVerifier`再次验证完整translation unit中每个planned
+  symbol只有一个prototype、一个definition和1到32个direct call，且总调用数守恒。
+  physical leaf是build-scoped hash-only `noinline,cold`，只接收
   `JNIEnv*`，不形成owner/member/descriptor/token join；异常类型与文案作为同一
-  direct-call tuple在leaf activation内解码，并由统一cleanup在返回时清零。生产路径
-  不允许lazy-once、mutable ciphertext或in-place decode。未allowlist文本仍留在原
+  direct-call tuple在leaf activation内解码，并由统一cleanup在返回时清零；每个shard使用
+  独立`RUNTIME_ERROR` scope/encoding。生产路径不允许lazy-once、mutable ciphertext、
+  in-place decode、runtime table或central dispatcher。未allowlist文本仍留在原
   activation-local fragment。
 - JNI local-reference lifetime：`NativeLocalReferenceSafety`识别需要精确规划的reachable cyclic CFG；`toolchain.localref`下的classifier、site-sensitive CFG facts、release scheduler、transfer safety与validator形成per-method immutable plan，覆盖normal/parallel/handler/explicit-throw edge。handler需求只回传到block live-in，不进入normal live-out。`NativeImplementationPlan`保存plan或精确unavailable reason，LLVM backend只消费已验证plan；registered native的ref-producing callee改走JVM/JNI nested activation，不能安全桥接的compiler-internal callee fail closed。
 - internal method dispatch：`HostJniInternalMethodDispatchSource`只为批准且由static/virtual dispatch helper到达的target生成descriptor-aware bridge。它调用hash-only local wrapper，不查询method ID；reference/owned/pending-exception shape必须通过nested JNI local frame提升结果或恢复异常。same-owner direct scalar target不生成未使用wrapper，降低体积。

@@ -837,10 +837,42 @@ plaintext/export audit与更新后的攻击者回归。
   low-sensitivity allowlist；只有固定异常类型/固定错误文案pair会被outline，
   owner/member/descriptor、reflection target、metadata token和业务字符串不会
   进入共享leaf。
-- 每个leaf使用build-scoped hash-only symbol、`noinline,cold`属性并且只接收
-  `JNIEnv*`。异常类型与文案作为同一direct-call tuple在leaf activation内guardless
+- 当前production先跨全部fragment收集唯一scope下的build-scoped placeholder，再按logical
+  pair做build-keyed排序与`ceil(siteCount/32)` round-robin均衡分片；physical symbol为exact
+  `[a-p]{32}`，单leaf direct-call fanout上限为32。同build plan稳定；multi-shard pair的
+  membership与全部symbol从build identity派生；不生成runtime table、dispatcher、token join
+  或function-pointer directory。结构size budget恰为各used pair的`ceil(siteCount/32)`之和，
+  相对旧one-leaf-per-pair增加该和减去used pair数；每shard恰有一份独立cipher，不增加额外
+  secondary copy、padding或table；下述fixed-seed dual-build记录真实source/五目标binary预算。
+  freeze/materialization与最终translation-unit gate分别阻断重复scope、placeholder残留/
+  缺失/重复、symbol collision、definition/reference closure和total-call守恒回归。
+- 每个physical leaf使用独立`RUNTIME_ERROR` scope/encoding、`noinline,cold`属性并且只接收
+  `JNIEnv*`。异常类型与文案作为同一direct-call tuple在该leaf activation内guardless
   解码，`ThrowNew`返回后统一清零；高敏感或未allowlist文本同样保持activation-local
   scratch。早期用于该优化的lazy-once emitter已经退役，不再保留mutable plaintext。
+  本条是当前source contract，不从下述pre-5A历史数据外推。
+- 2026-08-15 fixed-seed受控A/B以`build_2026-08-15_03-18-35`作为activation-local、
+  one-leaf-per-pair基线，以`build_2026-08-15_03-19-21`作为sharded实现；两边
+  `config.resolved.json`与325个input class的`sourceEntry/fullSha256`逐项相同，最终均为
+  71/71 `nativeLowered`、0 `skipped`、57 registrations、五目标built，artifact audit与
+  release readiness通过。generated JNI C从3,307,436 B增至3,335,361 B
+  （+27,925 B，+0.8443%）；physical leaf从20增至25，但direct call严格保持288，fanout
+  从`128,64,33,...`变为`32×6,17,17,16,...`，最大值128→32且`>32` leaf从3→0。
+  lazy decoder、atomic once state与mutable cipher两边均为0；新增的5个physical shard只
+  对应5份独立const cipher。
+- 同一A/B的五库raw合计从1,636,446 B增至1,641,310 B（+4,864 B，+0.2972%），
+  `.text/__text`合计从1,396,937 B增至1,403,709 B（+6,772 B，+0.4848%），最终JAR从
+  3,395,481 B增至3,401,241 B（+5,760 B，+0.1696%）。逐目标raw变化为Windows x64
+  +1,536 B、Linux x64 +1,648 B、Linux arm64 +1,680 B、两个macOS文件因既有对齐空间
+  保持不变；macOS的`__text/__const`仍按预期增加。该size开销是把三个高fanout锚点切到
+  bounded shard的实测预算，不外推为其他输入的固定比例。
+- 对两份最终Windows x64 DLL做fresh-project、final-artifact-only Ghidra 12黑盒复测，
+  `decoderCandidates`预算设为2,000且实际595/595与600/600全部列出，function inventory与该
+  section均`coverageComplete=true`。基线caller fanout中`128/64/33`各一个；5B变为
+  `32×6,17,16`且`>32`候选归零，精确对应`128→4×32`、`64→2×32`、`33→17+16`。
+  两份overall status仅因本轮有意把decompiler预算设为0而标记partial；decoder、函数清单及
+  其他非decompiler section均完整。这是方向性静态分析证据，source final gate仍是最大
+  fanout与调用守恒的blocking proof。
 - 以下大小数据是旧lazy lifetime退役前的pre-5A历史证据，只证明leaf outlining在该
   样本上的体积方向，不代表当前activation-local lifetime实现已经完成同口径重测。
   v2五目标随机build `build_2026-07-28_19-12-20` 对上一份同输入随机build

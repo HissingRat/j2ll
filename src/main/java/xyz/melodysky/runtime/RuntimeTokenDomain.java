@@ -17,6 +17,5 @@ public enum RuntimeTokenDomain {
     LAMBDA,
     CONSTANT_DYNAMIC,
     BUSINESS_STRING_CARRIER,
-    JNI_LOCAL_ABI,
-    LOW_SENSITIVITY_RUNTIME
+    JNI_LOCAL_ABI
 }

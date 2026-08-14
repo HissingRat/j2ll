@@ -191,10 +191,23 @@
   ciphertext、codec、owner/member/descriptor、token，也不能成为shared decoder或
   plaintext cache。
 - 固定异常类型/错误文案只有进入显式closed allowlist后，才可outline到
-  build-scoped hash-only `noinline,cold` leaf。该leaf只能接收`JNIEnv*`，不得接收
+  build-scoped hash-only `noinline,cold` leaf。physical leaf symbol必须是exact
+  `[a-p]{32}`且不得带`j2ll`或语义前缀；每个physical leaf最多32个direct call site。
+  全部fragment先以唯一scope收集build-scoped placeholder，再按logical leaf对site做
+  build-keyed排序，以`ceil(siteCount/32)`个bucket round-robin均衡分片；freeze只允许一次，
+  同build plan稳定，multi-shard logical leaf的membership与所有physical symbol由build
+  identity派生。结构size budget固定为每logical leaf恰好`ceil(siteCount/32)`个definition；
+  相对旧one-definition-per-used-logical-leaf只增加这些ceil之和减去used logical leaf数；
+  每shard恰有一份独立cipher，不允许额外secondary copy、padding、table或dispatcher；
+  source/binary增量必须另行实测，不能由结构预算外推。
+  immutable plan必须在单遍词法materialization中去重声明并替换全部placeholder。重复scope、
+  missing/duplicate/unknown/residual placeholder、symbol collision、定义/引用不闭合、fanout或
+  total-call守恒失败都必须fail closed；registration/local-reference source追加完成后还要对完整
+  translation unit执行第二次closure gate。每个leaf只能接收`JNIEnv*`，不得接收
   owner/member/descriptor、业务字符串、metadata token或Java value。leaf内的异常类型与
   文案必须作为同一direct-call tuple在该leaf activation内guardless解码，`ThrowNew`返回后
-  由统一cleanup清零；不得共享process-lifetime plaintext、mutable cipher或decoder cache。
+  由统一cleanup清零；每个shard必须使用独立`RUNTIME_ERROR` scope/encoding，不得共享
+  process-lifetime plaintext、mutable cipher、decoder cache、runtime table或dispatcher。
   高敏感文本和未列入allowlist的错误同样保持activation-local lifetime。
 - Registration rollback/exception-restore diagnostics必须使用registration text domain，
   只在对应`FatalError`路径解码；generated-C gate以
