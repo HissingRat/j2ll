@@ -51,6 +51,12 @@ On Windows, use a fresh project name per target. Quote paths that contain
 spaces. The `-deleteProject` flag keeps the audit workspace from accumulating
 analysis databases after evidence has been written.
 
+Ghidra's Windows `analyzeHeadless.bat` launcher may normalize a script argument
+written as `--name=value` into two Java script tokens, `--name` and `value`.
+Both scripts therefore accept both forms. A separated option with no following
+value, or whose next token is another `--option`, fails closed instead of
+shifting the remaining arguments.
+
 ```powershell
 & 'D:\Ghidra\support\analyzeHeadless.bat' `
   'C:\audit\ghidra-projects' 'sample-windows-x64' `

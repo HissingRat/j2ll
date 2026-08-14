@@ -1290,13 +1290,31 @@ public class BlackBoxNativeAudit extends GhidraScript {
 
         static Options parse(String[] arguments) {
             Options options = new Options();
-            for (String argument : arguments) {
-                int equals = argument.indexOf('=');
-                if (!argument.startsWith("--") || equals < 3) {
-                    throw new IllegalArgumentException("expected --name=value, got: " + argument);
+            for (int index = 0; index < arguments.length; index++) {
+                String argument = arguments[index];
+                if (argument == null || !argument.startsWith("--") || argument.length() <= 2) {
+                    throw new IllegalArgumentException(
+                            "expected --name=value or --name value, got: " + argument);
                 }
-                String name = argument.substring(2, equals);
-                String value = argument.substring(equals + 1);
+                int equals = argument.indexOf('=');
+                String name;
+                String value;
+                if (equals >= 0) {
+                    if (equals < 3) {
+                        throw new IllegalArgumentException(
+                                "expected --name=value or --name value, got: " + argument);
+                    }
+                    name = argument.substring(2, equals);
+                    value = argument.substring(equals + 1);
+                } else {
+                    name = argument.substring(2);
+                    if (index + 1 >= arguments.length
+                            || arguments[index + 1] == null
+                            || arguments[index + 1].startsWith("--")) {
+                        throw new IllegalArgumentException("missing value for --" + name);
+                    }
+                    value = arguments[++index];
+                }
                 switch (name) {
                     case "out" -> options.output = nonBlank(name, value);
                     case "max-functions" -> options.maxFunctions = positive(name, value, true);
