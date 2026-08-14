@@ -639,6 +639,31 @@ fake-JNI/Ghidra复验：
 与 method dispatch 已改为 concrete-binding hash-only helper，并移除了统一
 token resolver。
 
+#### 6A LLVM JNI-proxy relocation
+
+实现状态为production-implemented、attacker/size validation `PENDING`。它只批准
+ordinary standalone LLVM、`V/I/J/F/D`、pure scalar/non-throwing且无semantic
+env/owner、field/call/monitor/initializer/reference/exception/local-ref和native-caller
+surface的闭集；窄整数、reference/array、synchronized、div/rem及证明不全shape保留
+generated-C wrapper。批准项不会把`RegisterNatives`直接指向semantic body，而是在final
+LLVM module中增加build-scoped hash-only physical JNI proxy，并把原有bounded local-ABI
+topology等价迁移为最多三个`internal` bridge；semantic body仍保持原ABI与独立symbol。
+
+Proxy为`external hidden noinline`，bridge为`internal default noinline`，semantic body同样
+强制`noinline`。Branched shape继续使用activation-local address predicate与volatile
+materialization；没有`llvm.used`、cookie、持久function pointer、JNI操作、local-reference或
+exception语义。Generated C只保留exact physical prototype的`extern`与registration引用，
+不出现semantic body、bridge或旧logical wrapper。Final-plan、structured LLVM call-edge/
+ordered-argument gate、closed CFG gate与generated-C gate共同fail closed；lowering report以
+`nativeEntryKind`、`nativeEntryReasonCode`和physical `nativeSymbol`给出authoritative分母。
+
+该变换仅把已有wrapper topology从C translation unit搬到LLVM module，目标是减少C边界与
+允许LLVM/链接器做更好的size优化，不得减少原有静态分析拓扑。验收必须记录proxy/wrapped
+数量、四种topology分布、generated-C与逐target库/code-section delta、旧提取器恢复率、
+人工介入量和runtime parity。新的v2 controlled A/B、真实六目标final artifact及
+Windows/Linux/macOS Ghidra或等价binary analyzer复验尚未执行，因此当前不声明具体体积
+比例或静态分析难度提升。
+
 已完成的第二个安全切片：
 
 - concrete-binding field、static-field、virtual/interface/static/constructor

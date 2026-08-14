@@ -680,6 +680,10 @@ LLVM IR lowering、LLVM module model、LLVM text emission。
 - `LlvmTextBackend`：backend facade。
 - `PerClassIrPartitioner`：按原始 class 切分待 emission 的 IR。
 - `LlvmModuleLowerer`：`IrProgram` 到 LLVM module model。
+- `LlvmFunctionAbi`：区分canonical `SEMANTIC_INTERNAL`与registered
+  `PHYSICAL_JNI_ENTRY` purpose；二参兼容构造只能产生前者。
+- `LlvmDirectCallRef` / `LlvmCallArgument`：保存final synthetic proxy call的typed
+  target与ordered SSA arguments；emitter和gate共同消费，不从`.ll`文本反推call edge。
 - `LlvmExceptionFlowLowerer`：把已验证的pending-exception site与显式throw edge扩展为独立LLVM physical blocks，负责clear、ordered typed/catch-all dispatch、handler incoming和unmatched rethrow；不重新推断frontend exception语义。
 - `LlvmModuleEmitter`：module-level emission。
 - `LlvmFunctionEmitter`：function emission。
@@ -703,6 +707,8 @@ LLVM IR lowering、LLVM module model、LLVM text emission。
 - backend 不做 devirtualization decision。
 - backend 不修 CFG。
 - backend 不猜 JVM 语义。
+- Semantic planned ABI必须与lowering inference exact相等；physical proxy可增加JVM隐式
+  env/receiver参数，但semantic body保持原ABI，native caller不能把proxy当semantic target。
 - backend 可以把已有 Java semantic marker lower 成固定 helper call 或 conservative fence，但不能自己发明 marker。
 
 ## backend.llvm.model
@@ -943,6 +949,14 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 推荐类：
 
 - `NativeBuildPlanner`
+- `NativeJniEntryPlan`
+- `NativeJniEntryFusionPlanner`
+- `NativeJniEntryFusionValidator`
+- `NativeJniEntryGeneratedCVerifier`
+- `NativeJniEntryLlvmVerifier`
+- `NativeJniEntryPlanSetValidator`
+- `NativeJniProxySynthesizer` / `NativeJniProxyFunctionFactory`
+- `NativeJniProxyTopologyVerifier` / `NativeLlvmSymbolIndex`
 - `NativeBuildTargetPreflight`
 - `ManagedZigTargetCapabilities`
 - `ZigTargetCapability`
@@ -1018,6 +1032,12 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - generated/native machine policy：`ZigTargetBuildPolicy`组合`NativeUnwindRetentionPolicy`和`NativeMachineOutlinerPolicy`。Windows因SEH强制保留unwind并禁用machine outliner；`--debug`与config requested retain也强制保留。Linux/macOS requested=false时，generated-C unit使用no-unwind flags；`NativeLlvmSourcePlan`只为final canonical module proof为`PROVEN_ABSENT`的source选择结构化`nounwind`变体，`REQUIRED`/`UNKNOWN`或unmodeled object input保留。C flags和Zig module option都不得被当作会改写`addObjectFile` `.ll`的证据。manifest逐target记录generated-C decision、LLVM omitted/retained counts、unmodeled object count、final omission expectation/reason与outliner policy。machine outliner仍只作用于Linux/macOS generated C，并使用16-byte最低收益阈值。
 - Zig build invocation：`ZigBuildInvoker`，Java 侧只执行一次 managed `<j2ll-home>/zig/zig(.exe) build ...`，由该 matrix-wide invocation 生成全部 buildable selected targets。`NativePreparationStep` / `NativePreparationProgress`通过`NativeBuildProgressListener`把generated C、hardening audit、LLVM source writing和Zig build-graph preparation的真实work units桥接到TUI；managed Zig定位只触发瞬态Stage状态。
 - registration C generation：`HostNativeRegistrationSource` consumes either the ordinary registration plan or the exact `MethodTableHidingPlan`; transient physical layouts are never reconstructed from a boolean inside the emitter. `NativeRegistrationResolverPlan` / `HostNativeRegistrationResolverSource` encode the unique Loader anchor separately, reserve bounded local-reference capacity and create one activation-local resolver context. Only that anchor uses `FindClass`; business owners use its exact defining loader with non-initializing `Class.forName(..., false, loader)`, with no TCCL/system fallback or global class cache. `NativeRegistrationTextPlan` / `NativeRegistrationTextStorageLayout` reuse equal method-name/descriptor text only inside one owner and purpose domain, then form groups of at most 8 values and 512 decoded bytes; one oversize value owns one group, and no group crosses owner/purpose. `NativeRegistrationStoragePlan` selects bounded stack storage only for at most 64 bindings and at most 16 KiB total decoded text; larger owners retain heap allocation. Both paths zero text scratch and `JNINativeMethod[]`, and the heap path then frees them. `HostNativeRegistrationFailureLeafSource` owns four registration-domain hash-only `noinline,cold` failure leaves whose only argument is `JNIEnv*`; aggregate cleanup/rollback uses activation-local `jclass[]` plus `registered_count` instead of per-owner duplicated root control flow.
+- LLVM JNI proxy relocation：planner在coalescing后冻结method-to-entry plan并复用原
+  `NativeLocalAbiPlanner` topology；final LLVM synthesis发出hash-only physical proxy、最多
+  三个bridge和独立NOINLINE semantic body。Compiler structured-model gate验证exact ABI、
+  ordered arguments、caller closure与closed CFG；generated-C gate验证只保留exact proxy
+  extern/registration且logical wrapper/body/bridge零残留。Compiler fingerprint、method-table
+  hiding、registration和lowering report必须消费同一plan。
 - runtime source reachability：`LlvmModelSymbolReferenceCollector` reads referenced symbols from the final validated `NativeLlvmCompilation` module model rather than serialized `.ll`; `HostJniRuntimeSourceClassifier` accepts exact known stable symbols or build-local symbols with strict declaration evidence, maps them to source-family closure, and `HostJniReachableRuntimeSourceEmitter` emits that closure. Selected binding-driven emitters additionally close over cross-family dependencies of every entry they will physically write, even if an entry is stale relative to final roots. Unknown `j2ll_rt_*` / `j2ll_h_*` references or incomplete model evidence produce `RuntimeHelperReachabilityPlan.conservative()`; public/direct generator overloads also remain conservative.
 - generated-C fragment policy：`HostJniGeneratedCFragmentEmitter`统一执行
   fragment-local sensitive text rewrite，并让
@@ -1091,7 +1111,8 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 边界：
 
 - Java method 对应 LLVM function 默认 internal/hidden。
-- 只有 JNI / C ABI wrapper 进入 export list。
+- 只有loader/bootstrap所需JNI/C ABI root进入dynamic export list；普通C wrapper与LLVM
+  JNI proxy都保持local/hidden。
 - hidden/internal linkage 与最终 dynamic export allowlist audit 是不可关闭的 native build 基线，不受 protection master、LLVM protection 或 binary-hardening 开关影响。
 - Linux 使用 hidden visibility、version script 或 linker export list。
 - macOS 使用 exported symbols list。

@@ -53,6 +53,12 @@ public final class LlvmTextEmitter {
                             .map(parameter -> parameter.type().text() + " " + parameter.name())
                             .collect(Collectors.joining(", ")))
                     .append(')');
+            if (!function.attributes().isEmpty()) {
+                output.append(' ')
+                        .append(function.attributes().stream()
+                                .map(LlvmFunctionAttribute::text)
+                                .collect(Collectors.joining(" ")));
+            }
             if (unwindMode == LlvmUnwindEmissionMode.OMIT_PROVEN) {
                 output.append(" nounwind");
             }
@@ -61,7 +67,22 @@ public final class LlvmTextEmitter {
                 output.append(block.name()).append(":\n");
                 for (LlvmInstruction instruction : block.instructions()) {
                     output.append("  ");
-                    if (instruction.rawText().isPresent()) {
+                    if (instruction.directCall().isPresent()) {
+                        LlvmDirectCallRef call =
+                                instruction.directCall().orElseThrow();
+                        instruction.result().ifPresent(result -> output.append(result).append(" = "));
+                        output.append("call ")
+                                .append(call.returnType().text())
+                                .append(" @")
+                                .append(call.target())
+                                .append('(')
+                                .append(call.arguments().stream()
+                                        .map(argument -> argument.type().text()
+                                                + " "
+                                                + argument.value())
+                                        .collect(Collectors.joining(", ")))
+                                .append(')');
+                    } else if (instruction.rawText().isPresent()) {
                         instruction.result().ifPresent(result -> output.append(result).append(" = "));
                         output.append(instruction.rawText().orElseThrow());
                     } else {

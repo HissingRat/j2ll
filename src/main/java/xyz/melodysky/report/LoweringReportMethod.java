@@ -20,6 +20,8 @@ public record LoweringReportMethod(
         String nativeSymbol,
         String registrationOwner,
         String nativeImplementationPath,
+        String nativeEntryKind,
+        String nativeEntryReasonCode,
         String coalescedInto,
         List<HelperBackedSiteReport> helperBackedSites,
         String reasonCode,
@@ -39,6 +41,48 @@ public record LoweringReportMethod(
             throw new IllegalArgumentException(
                     "coalesced native-only report method requires its caller identity");
         }
+    }
+
+    public LoweringReportMethod(
+            String owner,
+            String name,
+            String descriptor,
+            String methodId,
+            LoweringStatus status,
+            MethodRewriteStrategy rewriteStrategy,
+            NativeMethodRetentionMode retentionMode,
+            boolean javaMethodPresent,
+            boolean registrationPresent,
+            List<String> accessFlags,
+            List<String> compilerFlags,
+            String nativeSymbol,
+            String registrationOwner,
+            String nativeImplementationPath,
+            String coalescedInto,
+            List<HelperBackedSiteReport> helperBackedSites,
+            String reasonCode,
+            String reason) {
+        this(
+                owner,
+                name,
+                descriptor,
+                methodId,
+                status,
+                rewriteStrategy,
+                retentionMode,
+                javaMethodPresent,
+                registrationPresent,
+                accessFlags,
+                compilerFlags,
+                nativeSymbol,
+                registrationOwner,
+                nativeImplementationPath,
+                null,
+                null,
+                coalescedInto,
+                helperBackedSites,
+                reasonCode,
+                reason);
     }
 
     public LoweringReportMethod(
@@ -81,6 +125,8 @@ public record LoweringReportMethod(
                 nativeSymbol,
                 registrationOwner,
                 nativeImplementationPath,
+                null,
+                null,
                 null,
                 helperBackedSites,
                 reasonCode,

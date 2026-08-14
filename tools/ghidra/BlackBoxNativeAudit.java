@@ -87,6 +87,9 @@ public class BlackBoxNativeAudit extends GhidraScript {
         PointerEvidence pointers = pointerEvidence(options);
         report.put("persistentCodePointers", pointers.codePointersJson());
         report.put("staticRegistrationEvidence", pointers.registrationJson());
+        RegisteredEntryCallShapes registeredEntryShapes =
+                registeredEntryCallShapes(pointers, inventory);
+        report.put("registeredEntryCallShapes", registeredEntryShapes.asJson());
 
         Map<String, Object> decoders = decoderCandidates(inventory, options);
         report.put("decoderCandidates", decoders);
@@ -113,6 +116,8 @@ public class BlackBoxNativeAudit extends GhidraScript {
                 true, pointers.codePointerCoverageComplete(), pointers.codePointerTruncated()));
         coverage.put("staticRegistrationEvidence", coverageEntry(
                 true, pointers.registrationCoverageComplete(), pointers.registrationTruncated()));
+        coverage.put("registeredEntryCallShapes", coverageEntry(
+                true, registeredEntryShapes.coverageComplete(), registeredEntryShapes.truncated()));
         coverage.put("decoderCandidates", coverageEntry(
                 true, decoderCoverageComplete, booleanValue(decoders, "truncated")));
         coverage.put("normalizedPcodeCloneFamilies", coverageEntry(
@@ -128,6 +133,7 @@ public class BlackBoxNativeAudit extends GhidraScript {
                 && strings.coverageComplete()
                 && pointers.codePointerCoverageComplete()
                 && pointers.registrationCoverageComplete()
+                && registeredEntryShapes.coverageComplete()
                 && decoderCoverageComplete
                 && cloneCoverageComplete
                 && decompiler.coverageComplete;
@@ -735,6 +741,116 @@ public class BlackBoxNativeAudit extends GhidraScript {
         return false;
     }
 
+    private RegisteredEntryCallShapes registeredEntryCallShapes(
+            PointerEvidence pointers, FunctionInventory inventory) throws Exception {
+        List<RegisteredEntryCallShape> entries = new ArrayList<>();
+        Map<String, Integer> identityCounts = new HashMap<>();
+        Map<String, Integer> reasonCounts = new TreeMap<>();
+        Map<String, Integer> shapeCounts = new TreeMap<>();
+        for (RegisteredEntryShape shape : RegisteredEntryShape.values()) {
+            shapeCounts.put(shape.wireName, 0);
+        }
+
+        int unknown = 0;
+        for (RegistrationTriplet triplet : pointers.registrationTriplets) {
+            monitor.checkCancelled();
+            String bindingIdentityHash = sha256(
+                    "persistent-jni-binding-v1\u0000"
+                            + triplet.methodName + "\u0000" + triplet.descriptor);
+            identityCounts.merge(bindingIdentityHash, 1, Integer::sum);
+
+            Function function = currentProgram.getFunctionManager().getFunctionAt(triplet.codePointer);
+            RegisteredEntryResolution resolution;
+            if (function == null) {
+                resolution = RegisteredEntryResolution.unknown(
+                        "NO_EXACT_FUNCTION_AT_REGISTERED_CODE_POINTER");
+            } else {
+                FunctionFacts facts = inventory.byEntry.get(function.getEntryPoint());
+                resolution = facts == null
+                        ? RegisteredEntryResolution.unknown(
+                                "REGISTERED_FUNCTION_OUTSIDE_INVENTORY_BUDGET")
+                        : resolveRegisteredEntryShape(facts, inventory);
+            }
+            if (resolution.shape == RegisteredEntryShape.UNKNOWN) {
+                unknown++;
+            }
+            shapeCounts.merge(resolution.shape.wireName, 1, Integer::sum);
+            reasonCounts.merge(resolution.reasonCode, 1, Integer::sum);
+            entries.add(new RegisteredEntryCallShape(
+                    bindingIdentityHash,
+                    resolution.shape,
+                    resolution.resolutionFingerprintHash,
+                    resolution.reasonCode));
+        }
+
+        int identityCollisions = 0;
+        for (int count : identityCounts.values()) {
+            identityCollisions += Math.max(0, count - 1);
+        }
+        return new RegisteredEntryCallShapes(
+                pointers.detectedRegistrationTriplets,
+                entries,
+                shapeCounts,
+                reasonCounts,
+                unknown,
+                identityCollisions,
+                pointers.scanTruncated,
+                pointers.registrationListingTruncated,
+                inventory.truncated);
+    }
+
+    private RegisteredEntryResolution resolveRegisteredEntryShape(
+            FunctionFacts entry, FunctionInventory inventory) throws Exception {
+        if (entry.unresolvedIndirectCalls > 0
+                || entry.resolvedIndirectCalls != entry.indirectCalls) {
+            return RegisteredEntryResolution.unknown(
+                    "REGISTERED_ENTRY_HAS_UNRESOLVED_INDIRECT_CALL");
+        }
+
+        List<String> internalCalleeFingerprints = new ArrayList<>();
+        for (Function callee : entry.function.getCalledFunctions(monitor)) {
+            if (callee.isExternal()) {
+                continue;
+            }
+            FunctionFacts calleeFacts = inventory.byEntry.get(callee.getEntryPoint());
+            if (calleeFacts == null) {
+                return RegisteredEntryResolution.unknown(
+                        "REGISTERED_ENTRY_CALLEE_OUTSIDE_INVENTORY_BUDGET");
+            }
+            internalCalleeFingerprints.add(calleeFacts.normalizedPcodeSha256);
+        }
+        internalCalleeFingerprints.sort(String::compareTo);
+
+        RegisteredEntryShape shape;
+        String reason;
+        if (entry.indirectCalls > 0) {
+            shape = RegisteredEntryShape.INDIRECT_DISPATCH;
+            reason = "REGISTERED_ENTRY_INDIRECT_TARGETS_RESOLVED";
+        } else if (entry.internalCallees == 0) {
+            shape = RegisteredEntryShape.REGISTERED_ENTRY_NO_RESOLVED_EDGE;
+            reason = "REGISTERED_ENTRY_HAS_NO_RESOLVED_INTERNAL_CALL_EDGE";
+        } else if (entry.internalCallees == 1) {
+            shape = RegisteredEntryShape.DIRECT_SINGLE_CALLEE;
+            reason = "REGISTERED_ENTRY_HAS_ONE_DIRECT_INTERNAL_CALLEE";
+        } else {
+            shape = RegisteredEntryShape.MULTIPLE_CALLEES;
+            reason = "REGISTERED_ENTRY_HAS_MULTIPLE_INTERNAL_CALLEES";
+        }
+
+        StringBuilder fingerprint = new StringBuilder()
+                .append("registered-entry-resolution-v1\u0000")
+                .append(shape.wireName)
+                .append('\u0000')
+                .append(entry.normalizedPcodeSha256);
+        for (String calleeFingerprint : internalCalleeFingerprints) {
+            fingerprint.append('\u0000').append(calleeFingerprint);
+        }
+        return new RegisteredEntryResolution(
+                shape,
+                sha256(fingerprint.toString()),
+                reason);
+    }
+
     private Map<String, Object> decoderCandidates(FunctionInventory inventory, Options options) {
         List<FunctionFacts> candidates = new ArrayList<>();
         for (FunctionFacts value : inventory.functions) {
@@ -1264,6 +1380,127 @@ public class BlackBoxNativeAudit extends GhidraScript {
             }
             result.put("triplets", rows);
             result.put("interpretation", "zero triplets does not hide RegisterNatives from a runtime hook");
+            return result;
+        }
+    }
+
+    private enum RegisteredEntryShape {
+        REGISTERED_ENTRY_NO_RESOLVED_EDGE("registeredEntryNoResolvedEdge"),
+        DIRECT_SINGLE_CALLEE("directSingleCallee"),
+        INDIRECT_DISPATCH("indirectDispatch"),
+        MULTIPLE_CALLEES("multipleCallees"),
+        UNKNOWN("unresolved");
+
+        final String wireName;
+
+        RegisteredEntryShape(String wireName) {
+            this.wireName = wireName;
+        }
+    }
+
+    private record RegisteredEntryResolution(
+            RegisteredEntryShape shape,
+            String resolutionFingerprintHash,
+            String reasonCode) {
+        static RegisteredEntryResolution unknown(String reasonCode) {
+            return new RegisteredEntryResolution(
+                    RegisteredEntryShape.UNKNOWN,
+                    null,
+                    reasonCode);
+        }
+    }
+
+    private record RegisteredEntryCallShape(
+            String bindingIdentityHash,
+            RegisteredEntryShape shape,
+            String resolutionFingerprintHash,
+            String reasonCode) {
+        Map<String, Object> asJson() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("bindingIdentityHash", bindingIdentityHash);
+            result.put("shape", shape.wireName);
+            result.put("resolutionFingerprintHash", resolutionFingerprintHash);
+            result.put("evidenceKind", "ghidraHeadlessPcode");
+            result.put("finalBinaryEvidence", true);
+            result.put("mappingStatus", shape == RegisteredEntryShape.UNKNOWN
+                    ? "unknown"
+                    : "resolved");
+            result.put("reasonCode", reasonCode);
+            return result;
+        }
+    }
+
+    private static final class RegisteredEntryCallShapes {
+        final long detectedRegistrationTriplets;
+        final List<RegisteredEntryCallShape> entries;
+        final Map<String, Integer> shapeCounts;
+        final Map<String, Integer> reasonCounts;
+        final int unknownCount;
+        final int bindingIdentityCollisionCount;
+        final boolean inputScanTruncated;
+        final boolean inputRegistrationListingTruncated;
+        final boolean inputFunctionInventoryTruncated;
+
+        RegisteredEntryCallShapes(
+                long detectedRegistrationTriplets,
+                List<RegisteredEntryCallShape> entries,
+                Map<String, Integer> shapeCounts,
+                Map<String, Integer> reasonCounts,
+                int unknownCount,
+                int bindingIdentityCollisionCount,
+                boolean inputScanTruncated,
+                boolean inputRegistrationListingTruncated,
+                boolean inputFunctionInventoryTruncated) {
+            this.detectedRegistrationTriplets = detectedRegistrationTriplets;
+            this.entries = List.copyOf(entries);
+            this.shapeCounts = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(shapeCounts));
+            this.reasonCounts = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(reasonCounts));
+            this.unknownCount = unknownCount;
+            this.bindingIdentityCollisionCount = bindingIdentityCollisionCount;
+            this.inputScanTruncated = inputScanTruncated;
+            this.inputRegistrationListingTruncated = inputRegistrationListingTruncated;
+            this.inputFunctionInventoryTruncated = inputFunctionInventoryTruncated;
+        }
+
+        boolean truncated() {
+            return inputScanTruncated
+                    || inputRegistrationListingTruncated
+                    || inputFunctionInventoryTruncated;
+        }
+
+        boolean coverageComplete() {
+            return !truncated()
+                    && unknownCount == 0
+                    && bindingIdentityCollisionCount == 0;
+        }
+
+        Map<String, Object> asJson() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("basis", "statically recovered persistent JNINativeMethod triplets and their exact code pointers");
+            result.put("scope", "listed persistent triplets only; runtime-constructed registration mappings are not inferred");
+            result.put("denominator", entries.size());
+            result.put("detectedPersistentTripletCount", detectedRegistrationTriplets);
+            result.put("listedPersistentTripletCount", entries.size());
+            result.put("unknownCount", unknownCount);
+            result.put("bindingIdentityBasis", "SHA-256(method-name + descriptor); owner is unavailable at this static evidence boundary");
+            result.put("bindingIdentityCollisionCount", bindingIdentityCollisionCount);
+            result.put("shapeCounts", shapeCounts);
+            result.put("reasonCounts", reasonCounts);
+            result.put("inputScanTruncated", inputScanTruncated);
+            result.put("inputRegistrationListingTruncated", inputRegistrationListingTruncated);
+            result.put("inputFunctionInventoryTruncated", inputFunctionInventoryTruncated);
+            result.put("truncated", truncated());
+            result.put("coverageComplete", coverageComplete());
+            result.put("runtimeConstructedMappingsIncluded", false);
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (RegisteredEntryCallShape entry : entries) {
+                rows.add(entry.asJson());
+            }
+            result.put("wrappers", rows);
+            result.put("interpretation",
+                    "registeredEntryNoResolvedEdge means the recovered registration target has no resolved internal call edge; it does not classify the target as a direct native body or make a semantic decompilation claim");
             return result;
         }
     }

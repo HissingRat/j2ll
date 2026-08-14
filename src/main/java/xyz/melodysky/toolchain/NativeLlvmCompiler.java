@@ -77,6 +77,16 @@ public final class NativeLlvmCompiler {
         Objects.requireNonNull(protectionConfig, "protectionConfig");
         Objects.requireNonNull(listener, "listener");
 
+        List<String> directEntryIssues =
+                new NativeJniEntryFusionValidator().validate(
+                        implementationPlan,
+                        irMethods);
+        if (!directEntryIssues.isEmpty()) {
+            throw new IOException(
+                    "LLVM JNI proxy final-plan validation failed before LLVM compilation: "
+                            + String.join(",", directEntryIssues));
+        }
+
         CompilationInputs inputs = inputs(implementationPlan, irMethods);
         listener.started(inputs.methodsByOwner().size());
         ArrayList<NativeLlvmModuleCompilation> compiled = new ArrayList<>();
@@ -111,8 +121,24 @@ public final class NativeLlvmCompiler {
             LlvmGlobalLayoutResult globalLayout =
                     new LlvmGlobalLayoutPass()
                             .runDetailed(llvmCallIndirection.module(), protectionConfig);
+            LlvmModule proxyModule;
+            try {
+                proxyModule = new NativeJniProxySynthesizer().synthesize(
+                        owner,
+                        globalLayout.module(),
+                        implementationPlan);
+            } catch (IllegalArgumentException | IllegalStateException exception) {
+                throw new IOException(
+                        "LLVM JNI proxy synthesis failed for " + owner,
+                        exception);
+            }
+            LlvmGlobalLayoutResult finalGlobalLayout =
+                    new LlvmGlobalLayoutResult(
+                            proxyModule,
+                            globalLayout.affectedGlobals(),
+                            globalLayout.validationIssues());
             LlvmModuleEmissionPlan emissionPlan =
-                    LlvmModuleEmissionPlan.create(globalLayout.module());
+                    LlvmModuleEmissionPlan.create(finalGlobalLayout.module());
             String retainedText =
                     emitter.emit(emissionPlan, LlvmUnwindEmissionMode.RETAIN);
             Optional<String> omissionText = emissionPlan.proof().omissionSafe()
@@ -137,16 +163,26 @@ public final class NativeLlvmCompiler {
                     opaquePredicates,
                     irCallIndirection,
                     llvmCallIndirection,
-                    globalLayout,
+                    finalGlobalLayout,
                     emissionPlan,
                     retainedText,
                     omissionText));
             completed++;
         }
-        listener.completed(inputs.methodsByOwner().size());
-        return new NativeLlvmCompilation(
+        NativeLlvmCompilation compilation = new NativeLlvmCompilation(
                 inputKey(implementationPlan, irMethods, protectionConfig),
                 compiled);
+        List<String> physicalEntryIssues =
+                new NativeJniEntryLlvmVerifier().validate(
+                        implementationPlan,
+                        compilation);
+        if (!physicalEntryIssues.isEmpty()) {
+            throw new IOException(
+                    "LLVM JNI proxy final LLVM model validation failed: "
+                            + String.join(",", physicalEntryIssues));
+        }
+        listener.completed(inputs.methodsByOwner().size());
+        return compilation;
     }
 
     static String inputKey(
@@ -174,6 +210,19 @@ public final class NativeLlvmCompiler {
                 .append(implementation.initializerPlan()).append('|')
                 .append(implementation.coalescedIntoMethodKey())
                 .append('\n'));
+        implementationPlan.jniEntryPlans().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> canonical
+                        .append("jniEntry|")
+                        .append(entry.getKey()).append('|')
+                        .append(entry.getValue().kind()).append('|')
+                        .append(entry.getValue().functionSymbol()).append('|')
+                        .append(entry.getValue().physicalLlvmAbi()).append('|')
+                        .append(entry.getValue().semanticBodySymbol()).append('|')
+                        .append(entry.getValue().semanticLlvmAbi()).append('|')
+                        .append(entry.getValue().topology()).append('|')
+                        .append(entry.getValue().reasonCode())
+                        .append('\n'));
         implementationPlan.localReferencePlans().entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> canonical

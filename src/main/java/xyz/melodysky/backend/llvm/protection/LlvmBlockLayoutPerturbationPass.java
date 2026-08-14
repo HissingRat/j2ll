@@ -92,7 +92,8 @@ public final class LlvmBlockLayoutPerturbationPass implements LlvmModulePass {
                 function.returnType(),
                 function.parameters(),
                 reordered,
-                function.nativeUnwindSemantics());
+                function.nativeUnwindSemantics(),
+                function.attributes());
     }
 
     private void rotateTail(List<LlvmBasicBlock> blocks) {

@@ -11,7 +11,8 @@ public record LlvmInstruction(
         List<String> operands,
         Optional<String> rawText,
         Optional<LlvmIrCallIndirectionRef> irCallIndirection,
-        LlvmNativeUnwindSemantics nativeUnwindSemantics) {
+        LlvmNativeUnwindSemantics nativeUnwindSemantics,
+        Optional<LlvmDirectCallRef> directCall) {
     public LlvmInstruction {
         Objects.requireNonNull(result, "result");
         Objects.requireNonNull(type, "type");
@@ -20,6 +21,33 @@ public record LlvmInstruction(
         Objects.requireNonNull(rawText, "rawText");
         Objects.requireNonNull(irCallIndirection, "irCallIndirection");
         Objects.requireNonNull(nativeUnwindSemantics, "nativeUnwindSemantics");
+        Objects.requireNonNull(directCall, "directCall");
+        if (directCall.isPresent()
+                && (rawText.isPresent()
+                        || irCallIndirection.isPresent()
+                        || !opcode.equals("call"))) {
+            throw new IllegalArgumentException(
+                    "structured direct call cannot carry raw or indirect-call state");
+        }
+    }
+
+    public LlvmInstruction(
+            Optional<String> result,
+            LlvmType type,
+            String opcode,
+            List<String> operands,
+            Optional<String> rawText,
+            Optional<LlvmIrCallIndirectionRef> irCallIndirection,
+            LlvmNativeUnwindSemantics nativeUnwindSemantics) {
+        this(
+                result,
+                type,
+                opcode,
+                operands,
+                rawText,
+                irCallIndirection,
+                nativeUnwindSemantics,
+                Optional.empty());
     }
 
     public LlvmInstruction(
@@ -35,7 +63,8 @@ public record LlvmInstruction(
                 operands,
                 rawText,
                 Optional.empty(),
-                LlvmNativeUnwindSemantics.UNKNOWN);
+                LlvmNativeUnwindSemantics.UNKNOWN,
+                Optional.empty());
     }
 
     public LlvmInstruction(
@@ -52,7 +81,8 @@ public record LlvmInstruction(
                 operands,
                 rawText,
                 irCallIndirection,
-                LlvmNativeUnwindSemantics.UNKNOWN);
+                LlvmNativeUnwindSemantics.UNKNOWN,
+                Optional.empty());
     }
 
     public LlvmInstruction(Optional<String> result, LlvmType type, String opcode, List<String> operands) {
@@ -74,7 +104,8 @@ public record LlvmInstruction(
                 List.of(),
                 Optional.of(text),
                 Optional.empty(),
-                nativeUnwindSemantics);
+                nativeUnwindSemantics,
+                Optional.empty());
     }
 
     public static LlvmInstruction rawProvenNoNativeUnwind(
@@ -95,7 +126,27 @@ public record LlvmInstruction(
                 operands,
                 Optional.empty(),
                 Optional.empty(),
-                LlvmNativeUnwindSemantics.PROVEN_ABSENT);
+                LlvmNativeUnwindSemantics.PROVEN_ABSENT,
+                Optional.empty());
+    }
+
+    public static LlvmInstruction directCallProvenNoNativeUnwind(
+            Optional<String> result,
+            LlvmDirectCallRef call) {
+        Objects.requireNonNull(call, "call");
+        if ((call.returnType() == LlvmType.VOID) != result.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "LLVM direct-call result must match its return type");
+        }
+        return new LlvmInstruction(
+                result,
+                call.returnType(),
+                "call",
+                List.of(),
+                Optional.empty(),
+                Optional.empty(),
+                LlvmNativeUnwindSemantics.PROVEN_ABSENT,
+                Optional.of(call));
     }
 
     public LlvmInstruction withIrCallIndirection(LlvmIrCallIndirectionRef reference) {
@@ -106,6 +157,7 @@ public record LlvmInstruction(
                 operands,
                 rawText,
                 Optional.of(Objects.requireNonNull(reference, "reference")),
-                nativeUnwindSemantics);
+                nativeUnwindSemantics,
+                directCall);
     }
 }

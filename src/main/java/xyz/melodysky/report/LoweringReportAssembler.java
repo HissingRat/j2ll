@@ -46,6 +46,10 @@ public final class LoweringReportAssembler {
             MethodRewriteDecision rewrite = rewritesByMethod.get(source.methodKey());
             Optional<NativeRegistrationEntry> registration = registrationFor(source, rewrite, registrationPlan);
             var implementation = implementationPlan.implementationFor(source.methodKey());
+            var jniEntry = implementation
+                    .filter(ignored -> registration.isPresent())
+                    .map(ignored -> implementationPlan.jniEntryPlanFor(
+                            source.methodKey()));
             methods.add(new LoweringReportMethod(
                     source.owner(),
                     source.name(),
@@ -64,6 +68,12 @@ public final class LoweringReportAssembler {
                     registration.map(NativeRegistrationEntry::nativeSymbol).orElse(null),
                     registration.map(NativeRegistrationEntry::registrationOwner).orElse(null),
                     implementation.map(item -> item.path().wireName()).orElse(null),
+                    jniEntry.map(entry -> entry.kind().wireName())
+                            .orElse(null),
+                    jniEntry.map(
+                                    xyz.melodysky.toolchain
+                                            .NativeJniEntryPlan::reasonCode)
+                            .orElse(null),
                     implementation.flatMap(item -> item.coalescedIntoMethodKey())
                             .orElse(null),
                     helperSiteAnalyzer.analyze(

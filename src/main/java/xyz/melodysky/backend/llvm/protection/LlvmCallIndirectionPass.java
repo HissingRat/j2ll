@@ -164,7 +164,8 @@ public final class LlvmCallIndirectionPass {
                 function.returnType(),
                 function.parameters(),
                 blocks,
-                function.nativeUnwindSemantics()), changed);
+                function.nativeUnwindSemantics(),
+                function.attributes()), changed);
     }
 
     private Optional<String> directCallTarget(

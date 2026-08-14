@@ -626,7 +626,9 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                         method.owner(),
                         method.name(),
                         method.descriptor(),
-                        "j2ll_test_" + method.name()),
+                        "test_" + method.name().replaceAll(
+                                "[^A-Za-z0-9_]",
+                                "_")),
                 decision,
                 NativeImplementationPath.LLVM_NATIVE_PATH,
                 Optional.of(new LlvmNameMangler().functionName(method)),

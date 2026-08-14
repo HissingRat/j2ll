@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import xyz.melodysky.backend.llvm.LlvmFunctionAbi;
+import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
@@ -14,7 +16,8 @@ import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 public record NativeImplementationPlan(
         List<NativeMethodImplementation> implementations,
         Map<String, String> unavailableReasonCodes,
-        Map<String, NativeLocalReferencePlan> localReferencePlans) {
+        Map<String, NativeLocalReferencePlan> localReferencePlans,
+        Map<String, NativeJniEntryPlan> jniEntryPlans) {
     public NativeImplementationPlan {
         implementations = implementations.stream()
                 .filter(Objects::nonNull)
@@ -65,13 +68,28 @@ public record NativeImplementationPlan(
                         || !caller.emitsStandaloneLlvmBody()
                         || caller.path() != NativeImplementationPath.LLVM_NATIVE_PATH) {
                     throw new IllegalArgumentException(
-                            "coalesced method target must be an emitted LLVM implementation: "
+                    "coalesced method target must be an emitted LLVM implementation: "
                                     + implementation.methodKey()
                                     + " -> "
                                     + callerKey);
                 }
             });
         }
+        jniEntryPlans = new NativeJniEntryPlanSetValidator().validate(
+                implementations,
+                stableLocalReferences,
+                Objects.requireNonNull(jniEntryPlans, "jniEntryPlans"));
+    }
+
+    public NativeImplementationPlan(
+            List<NativeMethodImplementation> implementations,
+            Map<String, String> unavailableReasonCodes,
+            Map<String, NativeLocalReferencePlan> localReferencePlans) {
+        this(
+                implementations,
+                unavailableReasonCodes,
+                localReferencePlans,
+                defaultJniEntryPlans(implementations));
     }
 
     public NativeImplementationPlan(
@@ -91,8 +109,41 @@ public record NativeImplementationPlan(
                         implementation.decision().strategy()
                                 != MethodRewriteStrategy
                                         .INTERNAL_NATIVE_ONLY)
-                .map(NativeMethodImplementation::entry)
+                .map(this::physicalRegistrationEntry)
                 .toList());
+    }
+
+    public NativeJniEntryPlan jniEntryPlanFor(String methodKey) {
+        NativeJniEntryPlan plan = jniEntryPlans.get(methodKey);
+        if (plan == null) {
+            throw new IllegalArgumentException(
+                    "registered method has no final JNI entry plan: "
+                            + methodKey);
+        }
+        return plan;
+    }
+
+    public LlvmFunctionAbi physicalEntryAbi(
+            NativeMethodImplementation implementation) {
+        Objects.requireNonNull(implementation, "implementation");
+        if (implementation.decision().strategy()
+                == MethodRewriteStrategy.INTERNAL_NATIVE_ONLY) {
+            return implementation.llvmFunctionAbi();
+        }
+        return jniEntryPlanFor(implementation.methodKey())
+                .physicalLlvmAbi();
+    }
+
+    public NativeRegistrationEntry physicalRegistrationEntry(
+            NativeMethodImplementation implementation) {
+        NativeRegistrationEntry logical = implementation.entry();
+        NativeJniEntryPlan entryPlan =
+                jniEntryPlanFor(implementation.methodKey());
+        return new NativeRegistrationEntry(
+                logical.registrationOwner(),
+                logical.methodName(),
+                logical.descriptor(),
+                entryPlan.functionSymbol());
     }
 
     public List<NativeMethodImplementation> registeredImplementations() {
@@ -132,4 +183,22 @@ public record NativeImplementationPlan(
                 .toList();
     }
 
+    private static Map<String, NativeJniEntryPlan> defaultJniEntryPlans(
+            List<NativeMethodImplementation> implementations) {
+        LinkedHashMap<String, NativeJniEntryPlan> result =
+                new LinkedHashMap<>();
+        Objects.requireNonNull(implementations, "implementations")
+                .stream()
+                .filter(Objects::nonNull)
+                .filter(implementation -> implementation.decision().strategy()
+                        != MethodRewriteStrategy.INTERNAL_NATIVE_ONLY)
+                .sorted(Comparator.naturalOrder())
+                .forEach(implementation -> result.put(
+                        implementation.methodKey(),
+                        NativeJniEntryPlan.wrapped(
+                                implementation.entry().nativeSymbol(),
+                                implementation.llvmFunctionAbi(),
+                                "LLVM_JNI_PROXY_NOT_PLANNED")));
+        return Map.copyOf(result);
+    }
 }

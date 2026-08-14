@@ -351,10 +351,15 @@ exception/reference/caller边界为0命中，所以不能把本轮下降归因�
 
 ### JNI wrapper local ABI topology
 
-`LLVM_NATIVE_PATH` wrapper 与规范 LLVM body 之间先按final native ABI选择bounded
-profile。传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用
-bounded branched参数重排，避免保留direct one-hop wrapper；不传递两者的
-pure-native scalar binding继续由build identity从direct canonical、单层参数重排、
+Final entry plan先处理6A闭集：ordinary standalone、descriptor仅`V/I/J/F/D`、
+pure scalar/non-throwing且无semantic JNI/field/call/monitor/local-reference/native-caller
+surface的registered method可把physical JNI entry与原bounded topology迁移进LLVM。
+`RegisterNatives`指向build-scoped hash-only proxy；proxy再按原`NativeLocalAbiPlanner`
+shape进入独立NOINLINE semantic body，不允许直接注册body或删除保护跳数。其余
+`LLVM_NATIVE_PATH` wrapper与规范LLVM body之间继续按final native ABI选择bounded profile。
+传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用bounded branched
+参数重排，避免保留direct one-hop wrapper；不传递两者的pure-native scalar binding继续
+由build identity从direct canonical、单层参数重排、
 双层参数重排和branched四种local topology中选择，以保留较低成本的build
 diversity。branched形态只使用一个activation-local volatile predicate，在“一层
 route”和“两层route”之间选择；最多生成三个`static` bridge，且只重排调用本来
@@ -386,6 +391,13 @@ binding中只有3个保留相同resolution fingerprint。`decrypt`、`encrypt`�
 one-hop变为two-route multiple-callee。动态probe仍能捕获完整71个
 `RegisterNatives` binding，因此该结果只证明静态批量分类成本提高，不把wrapper
 topology当成安全边界。
+
+6A是有界physical relocation，不是新的保护声明。Proxy为`external hidden noinline`，
+bridge为`internal default noinline`，semantic body也强制`noinline`；branched predicate继续
+activation-local volatile materialization，不使用`llvm.used`、cookie或持久function-pointer
+root。Structured LLVM gate锁住exact call target、ordered arguments、caller closure和closed
+CFG，generated-C gate阻断logical wrapper/body/bridge残留。新的v2、真实六目标与Ghidra复验
+仍为pending，以下历史topology/size数字不能作为6A验收结果。
 
 同一实测中，五个selected-target原生库总raw size从3,502,027 B降到
 2,611,446 B（-25.43%），Windows x64从686,080 B降到503,296 B

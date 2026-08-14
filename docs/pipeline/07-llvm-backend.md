@@ -143,13 +143,45 @@ Windows的`.pdata`/`.xdata`也进入结构化inspection/report，但SEH policy�
 
 - `NativeImplementationPlanner` 为每个注册方法记录 implementation path：`LLVM_NATIVE_PATH` 或 `TEMPLATE_JNI_PATH`，并写入 lowering report。两者都必须是完整、可执行的 native implementation，成功时 method 状态统一为 `nativeLowered`。
 - `LLVM_NATIVE_PATH` 覆盖 ordinary static 和 instance method 的第一层 primitive/reference-handle shape：primitive scalar 参数和返回支持 `boolean` / `int` / `long` / `float` / `double` / `void`，reference/String/primitive-array/reference-array 值作为 opaque JNI handle 传递、返回或交给已登记 helper，不能 dereference。
-- 已接实的常规运行路径是 Bytecode -> SSA IR -> per-class LLVM module / `.ll` -> hidden linkable LLVM function -> JNI wrapper -> `RegisterNatives` -> output JAR child JVM E2E。`internalNativeOnly`方法不再保留Java declaration或registration binding；默认保留hidden LLVM function，严格single-call-site coalescing批准后则把实现合并进caller且完全不发出callee function/declaration/reference或C wrapper。
+- 已接实的常规运行路径是 Bytecode -> SSA IR -> per-class LLVM module / `.ll` -> hidden semantic LLVM function -> generated-C JNI wrapper或validated LLVM JNI proxy -> `RegisterNatives` -> output JAR child JVM E2E。Proxy路径仍保留build-scoped bounded local-ABI topology，不把registration直接映射到semantic body。`internalNativeOnly`方法不再保留Java declaration或registration binding；默认保留hidden LLVM function，严格single-call-site coalescing批准后则把实现合并进caller且完全不发出callee function/declaration/reference或C wrapper。
 - 启用 `protection.llvm.nameObfuscation` 时，`LlvmNameMangler` 在 planner、LLVM lowerer、Zig workspace writer 和 JNI wrapper generator 之间共享同一 deterministic symbol 来源；C wrapper 调用 `j2ll_f_<sha256>` hidden linkable function，raw Java method symbol 不作为 native ABI 公开。
 - 启用 `protection.llvm.indirectCalls` 时，same-class selected static/private direct LLVM call 经过 `LlvmCallIndirectionPass` 默认变成 hidden signature-group function-pointer table `j2ll_cit_<sha256>` indirect call；caller 通过 deterministic table order load function pointer，再调用原 hidden LLVM function。dispatcher switch `j2ll_cid_<sha256>` 是另一种完全 native 的实现形态。table/dispatcher symbol 和 Java method hidden function 都不得出现在 dynamic export list。该 pass 同时作用于 report/intermediate module 和 Zig workspace 使用的 per-class `.ll`，table 成功 reason code 为 `CALL_INDIRECTION_TABLE`。
 - E2E 目前覆盖 static int add、long arithmetic、double arithmetic、boolean compare branch、void no-op、if/else return、nested if、block-parameter/phi merge、table/lookup switch terminator lowering、JVM numeric helper opcode `i2b/f2i/lcmp/fcmpl`、protected float/double constant raw-bit encryption through integer XOR + LLVM bitcast、protected CFF dispatcher switch for simple branch methods、static/instance/volatile field read/write/add through JNI field helpers, null receiver NPE ownership, synchronized block/method monitor helper calls through JNI `MonitorEnter` / `MonitorExit`, explicit `athrow` through JNI `Throw`, static reflection helpers for constant `Class.forName` / no-arg、reference、primitive 和 array 常量参数 descriptor 的 `getDeclaredMethod` / `getDeclaredConstructor` / `getDeclaredField` / `Method.invoke` / `Constructor.newInstance` / `Field.get` / `Field.set` / `Field.getInt` / `Field.setInt` / `setAccessible(true)`, Unsafe statically resolved field-token helpers for `objectFieldOffset` / `getInt` / `putInt` / monitor-backed `compareAndSwapInt` plus `AllocObject`-backed `allocateInstance`, typed-int VarHandle helpers, String/reference field pass-through/null return, ordinary `CONST_STRING` encrypted helper path, `idiv` / `irem` / `ldiv` / `lrem` through ArithmeticException helpers, `byte[]` / `short[]` / `char[]` / `int[]` / `long[]` / `float[]` / `double[]` / reference array load/store/length helpers, `System.arraycopy` byte/int/long/double/object/overlap/null/oob/ArrayStoreException helper, selected primitive/reference array allocation helpers, ordinary-method object construction helper subset, `checkcast` / `instanceof` helpers, String `length` / `equals` / `isEmpty` / `charAt` / `startsWith` / `endsWith` / `substring(int,int)` helpers, explicit StringBuilder append chain, StringConcatFactory `makeConcat` / common `makeConcatWithConstants`, LambdaMetafactory common `metafactory` helper, LDC MethodHandle + `invokeExact` direct call, Math `abs/min/max` int/long/float/double helpers, Integer/Long/Boolean/Double boxing-unboxing, Objects.requireNonNull/equals, env-backed `Object.getClass()` with null-receiver NPE, selected same-class static/private-special caller -> selected callee direct LLVM internal call, and tokenized virtual/interface/default-interface JVM dispatch helpers for no-arg int, int-arg int, reference return and single-reference-argument/reference-return shapes, including conflict boundary reporting。
 - Protected JVM exception flow把每个受保护helper instruction拆成LLVM physical blocks：normal path进入continuation；exception path调用`j2ll_rt_pending_exception`取得throwable，清除JNI pending state，按classfile顺序调用`j2ll_rt_instanceof`匹配typed handlers或直接进入catch-all adapter，并把throwable与throw-site locals作为handler `phi` incoming。没有匹配项时调用`j2ll_rt_rethrow`并返回descriptor-safe placeholder。显式`athrow`从已有throwable开始同一dispatch，不重复读取pending state。
 - Constructor/class-initializer的LLVM body由专门initializer plan提供。Constructor Java stub保留唯一线性verifier prefix到真实`this(...)`/`super(...)` invocation，LLVM function只包含post-init body；`<clinit>` loader/bootstrap stub调用承载完整supported initializer IR的same-owner native helper。
 - 上述新增exception与initializer路径已有focused model/ABI tests和Windows real-Zig host child-JVM differential；`Object.getClass()`与`Thread.sleep(J)V`当前有focused planner/LLVM/C ABI evidence。其他五个固定target目前只有format/architecture/export/build-graph结构性证据，不得宣称已完成对应OS/JVM runtime E2E。
+
+### LLVM JNI-proxy relocation（6A）
+
+Final coalescing后、method-table hiding前会冻结每个registered method的
+`NativeJniEntryPlan`。只有ordinary standalone `LLVM_NATIVE_PATH`、descriptor仅含
+`V/I/J/F/D`、pure scalar/non-throwing、且没有semantic env/owner、field/call/
+monitor/initializer/reference/exception/local-reference或native-caller surface的方法可用
+`llvmJniProxy`；窄整数、reference/array、synchronized、div/rem、initializer/interface/
+internal-only及证明不全的shape继续使用`generatedCWrapper`。
+
+`LlvmFunctionAbi`以`SEMANTIC_INTERNAL`和`PHYSICAL_JNI_ENTRY`区分两种purpose；二参
+兼容构造只产生前者。Physical proxy的static ABI为`JNIEnv* + jclass + Java args`，instance
+ABI为`JNIEnv* + jobject self + Java args`；semantic body仍使用原compiler-internal ABI。
+Proxy/bridge使用不同的hash-only hidden/internal symbol，semantic body保留原hidden symbol且
+不会变成registration target。
+
+Planner复用`NativeLocalAbiPlanner`的direct/single/double/branched选择、parameter order和
+branch salt，并只替换为build-scoped hash-only proxy/bridge symbol。Final LLVM synthesis在
+optional protection/global-layout之后加入`external hidden noinline` proxy与最多三个
+`internal default noinline` bridge，同时给semantic body加`noinline`。Branched shape保留
+activation-local address predicate与volatile store/load；不增加cookie、持久function-pointer
+slot、JNI、local-reference或exception操作，也不使用`llvm.used`作额外retention root。
+
+Compiler pre-gate重验final eligibility；post-gate从structured direct-call metadata验证
+proxy/body/bridge唯一definition、exact linkage/visibility/ABI、ordered SSA argument
+permutation、exact caller closure和closed CFG schema。Generated-C gate要求proxy只有exact
+prototype的extern与registration引用，并证明semantic body、bridge和logical wrapper零残留。
+`lowering-report.json`写`nativeEntryKind`、`nativeEntryReasonCode`，其中`nativeSymbol`是physical
+proxy；compiler fingerprint还绑定semantic ABI与topology。
+
+6A只把已有保护拓扑从C搬到LLVM，并不删除或缩短拓扑。新的v2 controlled A/B、真实六目标
+和Ghidra/fake-JNI复验均为pending；不得在这些证据完成前宣称具体size收益或分析难度变化。
 
 - JNI wrapper declaration and LLVM function signature must use the same env/owner-class policy. Non-env JVM numeric helpers such as `i2b` / `lcmp` do not make the hidden LLVM function receive `JNIEnv*`; field/array/allocation/type/dispatch/reflection/String/Unsafe/VarHandle/helper calls that actually need JNI state do. Regression coverage checks this with child JVM numeric helper E2E.
 - Native instance wrapper传入LLVM/native-field ABI的owner表示method/field的declared defining class。它必须在registered native method的defining-loader context解析，不能用`GetObjectClass(self)`替代，否则base method在subclass receiver上会把同一个internalized static field分裂成多个storage key。

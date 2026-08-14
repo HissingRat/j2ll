@@ -176,7 +176,8 @@ public final class LlvmIrCallIndirectionPass {
                 function.returnType(),
                 function.parameters(),
                 blocks,
-                function.nativeUnwindSemantics()), true);
+                function.nativeUnwindSemantics(),
+                function.attributes()), true);
     }
 
     private LlvmInstruction indirectCall(LlvmInstruction instruction, String callee) {

@@ -17,7 +17,8 @@ semantics.
   `JNI_OnLoad`-rooted resolved call closure, indirect-call sites, printable
   ASCII/UTF-16 strings, non-executable code-pointer cells, persistent
   `{name,descriptor,function}` registration candidates, decoder-like functions,
-  normalized p-code clone families, and root-closure decompiler success.
+  normalized p-code clone families, registered-entry call shapes, and
+  root-closure decompiler success.
 - `BlackBoxRootDecompile.java` writes a bounded manual-review corpus for the
   resolved call closure rooted at `JNI_OnLoad` (or another explicitly selected
   public ABI root). It records direct versus indirect p-code calls alongside
@@ -132,7 +133,14 @@ function lacked inventory facts, so an `unresolvedIndirectCallSites` count is
 never silently presented as complete. Pointer evidence distinguishes scan
 truncation from listing truncation and reports both `detectedCount` and
 `listedCount`. Static registration evidence uses the corresponding detected and
-listed JNI-triplet counts.
+listed JNI-triplet counts. `registeredEntryCallShapes` uses only those listed,
+statically recovered persistent triplets as its denominator. A triplet whose
+code pointer does not resolve to an exact inspected function, whose required
+callee facts fall outside the function budget, or whose indirect target remains
+unresolved is emitted with `mappingStatus=unknown`, `shape=unresolved`, and
+makes that metric's `coverageComplete` false. Scan/listing/inventory truncation
+and ambiguous owner-less binding hashes do the same. Runtime-constructed
+registration mappings are not guessed or added to this denominator.
 
 `BlackBoxRootDecompile` places the same `status`, `completed`, and
 `coverageComplete` fields at the top of its text corpus. A missing root is a
@@ -151,6 +159,13 @@ not write the output corpus.
   attribution.
 - `unresolvedIndirectCallSites` measures a real static-analysis boundary. It
   must not be silently converted into a recovered call edge.
+- `registeredEntryNoResolvedEdge` means that a statically recovered
+  registration code pointer targets an inspected function with no resolved
+  internal call edge and no unresolved indirect call. This is only a recovered
+  call-graph fact: it does not classify the target as a direct native body or
+  claim that the function's Java semantics were recovered. Transient
+  registration mappings that the static scan did not recover remain outside
+  this evidence boundary.
 - Raw strings reveal only plaintext present at rest. They do not measure text
   produced immediately before a JNI call.
 - Cross-build resistance requires running the same scripts against two default

@@ -8,7 +8,10 @@ import java.util.Objects;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-/** Aggregates explicit wrapper evidence and compares mapping reuse across builds. */
+/**
+ * Aggregates explicit registered-entry/wrapper evidence and compares mapping
+ * reuse across builds.
+ */
 public final class WrapperCallShapeAudit {
     public static final String FINAL_BINARY_REUSE_MEASURED =
             "WRAPPER_FINAL_BINARY_MAPPING_REUSE_MEASURED";
@@ -44,6 +47,9 @@ public final class WrapperCallShapeAudit {
         return new WrapperCallShapeMetric(
                 byBinding.size(),
                 byBinding.size() - unresolved,
+                shapeCounts.getOrDefault(
+                        WrapperCallShape.REGISTERED_ENTRY_NO_RESOLVED_EDGE,
+                        0),
                 shapeCounts.getOrDefault(
                         WrapperCallShape.DIRECT_SINGLE_CALLEE,
                         0),

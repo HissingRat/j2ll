@@ -130,6 +130,7 @@ import xyz.melodysky.toolchain.NativeBuildPlanner;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
 import xyz.melodysky.toolchain.NativeImplementationPlanner;
 import xyz.melodysky.toolchain.NativeImplementationPath;
+import xyz.melodysky.toolchain.NativeJniEntryFusionPlanner;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
 import xyz.melodysky.toolchain.NativeUnwindRetentionPolicy;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
@@ -625,6 +626,10 @@ public final class MainlinePipeline {
                         programProtectionSeed);
         nativeIr = methodCoalescing.methods();
         implementationPlan = methodCoalescing.implementationPlan();
+        implementationPlan = new NativeJniEntryFusionPlanner().plan(
+                implementationPlan,
+                nativeIr,
+                nativeTextBuildKey);
         registrationPlan = implementationPlan.registrationPlan();
         diagnostics.addAll(new InterfaceMethodHelperCollisionValidator().validate(
                 config.jarFile(),

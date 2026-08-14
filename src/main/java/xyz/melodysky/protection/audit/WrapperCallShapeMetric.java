@@ -5,10 +5,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 
-/** Per-build wrapper call-shape counts with explicit evidence provenance. */
+/**
+ * Per-build registered-entry/wrapper call-shape counts with explicit evidence
+ * provenance.
+ */
 public record WrapperCallShapeMetric(
         int wrapperCount,
         int resolvedWrapperCount,
+        int registeredEntryNoResolvedEdgeCount,
         int directSingleCalleeCount,
         int indirectWrapperCount,
         int multipleCalleeCount,
@@ -19,13 +23,15 @@ public record WrapperCallShapeMetric(
     public WrapperCallShapeMetric {
         if (wrapperCount < 0
                 || resolvedWrapperCount < 0
+                || registeredEntryNoResolvedEdgeCount < 0
                 || directSingleCalleeCount < 0
                 || indirectWrapperCount < 0
                 || multipleCalleeCount < 0
                 || unresolvedWrapperCount < 0
                 || resolvedWrapperCount + unresolvedWrapperCount
                         != wrapperCount
-                || directSingleCalleeCount
+                || registeredEntryNoResolvedEdgeCount
+                                + directSingleCalleeCount
                                 + indirectWrapperCount
                                 + multipleCalleeCount
                                 + unresolvedWrapperCount

@@ -66,6 +66,9 @@ public final class WrapperCallEvidenceJsonReader {
     }
 
     private WrapperCallShape shape(String wireName) {
+        if (wireName.equals("registeredBodyDirectNoWrapper")) {
+            return WrapperCallShape.REGISTERED_ENTRY_NO_RESOLVED_EDGE;
+        }
         for (WrapperCallShape value : WrapperCallShape.values()) {
             if (value.wireName().equals(wireName)) {
                 return value;

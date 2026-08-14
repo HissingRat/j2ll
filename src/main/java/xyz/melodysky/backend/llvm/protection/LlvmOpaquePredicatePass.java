@@ -122,7 +122,8 @@ public final class LlvmOpaquePredicatePass implements LlvmModulePass {
                 function.returnType(),
                 function.parameters(),
                 blocks,
-                function.nativeUnwindSemantics());
+                function.nativeUnwindSemantics(),
+                function.attributes());
     }
 
     private Set<String> collectValueNames(LlvmFunction function) {

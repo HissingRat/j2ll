@@ -126,6 +126,8 @@ class ReportJsonWriterTest {
                       "nativeSymbol": "j2ll_pkg_Foo_run_8f3a21c0d4e5f607",
                       "registrationOwner": "pkg/Foo",
                       "nativeImplementationPath": "LLVM_NATIVE_PATH",
+                      "nativeEntryKind": null,
+                      "nativeEntryReasonCode": null,
                       "helperBackedSites": [],
                       "reasonCode": null,
                       "reason": null
@@ -216,6 +218,8 @@ class ReportJsonWriterTest {
                       "nativeSymbol": "j2ll_pkg_Foo_concat_8f3a21c0d4e5f607",
                       "registrationOwner": "pkg/Foo",
                       "nativeImplementationPath": "TEMPLATE_JNI_PATH",
+                      "nativeEntryKind": null,
+                      "nativeEntryReasonCode": null,
                       "helperBackedSites": [
                         {
                           "helperKind": "j2ll_rt_string_builder_append_ref",

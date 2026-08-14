@@ -93,6 +93,11 @@ public final class ReportJsonWriter {
         nullableString(object, "nativeSymbol", method.nativeSymbol());
         nullableString(object, "registrationOwner", method.registrationOwner());
         nullableString(object, "nativeImplementationPath", method.nativeImplementationPath());
+        nullableString(object, "nativeEntryKind", method.nativeEntryKind());
+        nullableString(
+                object,
+                "nativeEntryReasonCode",
+                method.nativeEntryReasonCode());
         if (method.coalescedInto() != null) {
             object.addProperty("coalescedInto", method.coalescedInto());
         }

@@ -21,6 +21,9 @@ public final class WrapperCallShapeReportWriter {
                 "resolvedWrapperCount",
                 metric.resolvedWrapperCount());
         root.addProperty(
+                "registeredEntryNoResolvedEdgeCount",
+                metric.registeredEntryNoResolvedEdgeCount());
+        root.addProperty(
                 "directSingleCalleeCount",
                 metric.directSingleCalleeCount());
         root.addProperty("indirectWrapperCount", metric.indirectWrapperCount());

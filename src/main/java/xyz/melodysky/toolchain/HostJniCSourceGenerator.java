@@ -324,6 +324,15 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 builder,
                 implementationPlan);
         String source = builder.toString();
+        List<String> directEntryIssues =
+                new NativeJniEntryGeneratedCVerifier().verify(
+                        implementationPlan,
+                        source);
+        if (!directEntryIssues.isEmpty()) {
+            throw new IllegalStateException(
+                    "generated native JNI entry audit failed: "
+                            + String.join(",", directEntryIssues));
+        }
         progressListener.preparationProgress(new NativePreparationProgress(
                 NativePreparationStep.GENERATE_NATIVE_C,
                 1L,
@@ -364,6 +373,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 .collect(java.util.stream.Collectors
                         .toUnmodifiableSet());
         return bindings.stream()
+                .filter(binding -> !binding.llvmJniProxy())
                 .filter(binding -> binding.decision().strategy()
                                 != MethodRewriteStrategy
                                         .INTERNAL_NATIVE_ONLY
@@ -402,28 +412,51 @@ public final class HostJniCSourceGenerator implements Opcodes {
         return implementationPlan.implementations().stream()
                 .filter(implementation ->
                         implementation.coalescedIntoMethodKey().isEmpty())
-                .map(implementation -> new Binding(
-                        implementation.entry(),
-                        implementation.decision(),
-                        implementation.path(),
-                        implementation.llvmFunctionSymbol(),
-                        implementation.passesJniEnv(),
-                        implementation.passesOwnerClass(),
-                        implementation.fieldKeys(),
-                        implementation.directCallTargets(),
-                        implementation.allocationKeys(),
-                        implementation.typeCheckKeys(),
-                        implementation.classObjectKeys(),
-                        implementation.runtimeMetadataKeys(),
-                        implementation.constructorCallKeys(),
-                        implementation.staticCallKeys(),
-                        implementation.dispatchKeys(),
-                        implementation.stringHelperSymbols(),
-                        implementation.implementationIrMethod(),
-                        implementation.reasonCode(),
-                        bindingDescriptor(implementation.entry(), implementation.decision())))
+                .map(implementation -> binding(
+                        implementationPlan,
+                        implementation))
                 .sorted(Comparator.comparing(Binding::entry))
                 .toList();
+    }
+
+    private Binding binding(
+            NativeImplementationPlan implementationPlan,
+            NativeMethodImplementation implementation) {
+        boolean registered = implementation.decision().strategy()
+                != MethodRewriteStrategy.INTERNAL_NATIVE_ONLY;
+        NativeRegistrationEntry physicalEntry = registered
+                ? implementationPlan.physicalRegistrationEntry(
+                        implementation)
+                : implementation.entry();
+        var physicalAbi = implementationPlan.physicalEntryAbi(
+                implementation);
+        boolean llvmJniProxy = registered
+                && implementationPlan.jniEntryPlanFor(
+                                implementation.methodKey())
+                        .llvmJniProxy();
+        return new Binding(
+                physicalEntry,
+                implementation.decision(),
+                implementation.path(),
+                implementation.llvmFunctionSymbol(),
+                physicalAbi.passesJniEnv(),
+                physicalAbi.passesOwnerClass(),
+                llvmJniProxy,
+                implementation.fieldKeys(),
+                implementation.directCallTargets(),
+                implementation.allocationKeys(),
+                implementation.typeCheckKeys(),
+                implementation.classObjectKeys(),
+                implementation.runtimeMetadataKeys(),
+                implementation.constructorCallKeys(),
+                implementation.staticCallKeys(),
+                implementation.dispatchKeys(),
+                implementation.stringHelperSymbols(),
+                implementation.implementationIrMethod(),
+                implementation.reasonCode(),
+                bindingDescriptor(
+                        physicalEntry,
+                        implementation.decision()));
     }
 
     private JniMethodDescriptor bindingDescriptor(NativeRegistrationEntry entry, MethodRewriteDecision decision) {
@@ -444,6 +477,13 @@ public final class HostJniCSourceGenerator implements Opcodes {
     }
 
     private void appendLlvmForwardDeclaration(StringBuilder builder, Binding binding) {
+        if (binding.llvmJniProxy()) {
+            builder.append("extern ")
+                    .append(binding.descriptor().cPrototype(
+                            binding.entry().nativeSymbol()))
+                    .append(";\n");
+            return;
+        }
         builder.append("extern ")
                 .append(internalReturnType(binding.descriptor()))
                 .append(' ')
@@ -1501,6 +1541,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
             Optional<String> llvmFunctionSymbol,
             boolean passesJniEnv,
             boolean passesOwnerClass,
+            boolean llvmJniProxy,
             List<String> fieldKeys,
             List<String> directCallTargets,
             List<String> allocationKeys,
@@ -1514,6 +1555,48 @@ public final class HostJniCSourceGenerator implements Opcodes {
             Optional<IrMethod> implementationIrMethod,
             String reasonCode,
             JniMethodDescriptor descriptor) {
+        Binding(
+                NativeRegistrationEntry entry,
+                MethodRewriteDecision decision,
+                NativeImplementationPath path,
+                Optional<String> llvmFunctionSymbol,
+                boolean passesJniEnv,
+                boolean passesOwnerClass,
+                List<String> fieldKeys,
+                List<String> directCallTargets,
+                List<String> allocationKeys,
+                List<String> typeCheckKeys,
+                List<String> classObjectKeys,
+                List<String> runtimeMetadataKeys,
+                List<String> constructorCallKeys,
+                List<String> staticCallKeys,
+                List<String> dispatchKeys,
+                List<String> stringHelperSymbols,
+                Optional<IrMethod> implementationIrMethod,
+                String reasonCode,
+                JniMethodDescriptor descriptor) {
+            this(
+                    entry,
+                    decision,
+                    path,
+                    llvmFunctionSymbol,
+                    passesJniEnv,
+                    passesOwnerClass,
+                    false,
+                    fieldKeys,
+                    directCallTargets,
+                    allocationKeys,
+                    typeCheckKeys,
+                    classObjectKeys,
+                    runtimeMetadataKeys,
+                    constructorCallKeys,
+                    staticCallKeys,
+                    dispatchKeys,
+                    stringHelperSymbols,
+                    implementationIrMethod,
+                    reasonCode,
+                    descriptor);
+        }
     }
 
     private record FieldParts(String owner, String name, String descriptor) {

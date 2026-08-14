@@ -147,6 +147,42 @@ class WrapperCallShapeAuditTest {
                         """.formatted(expected.bindingIdentityHash())));
     }
 
+    @Test
+    void reportsNoResolvedEdgeAsNeutralFactAndReadsLegacyWireName() {
+        WrapperCallEvidence expected = evidence(
+                hash("binding", "pkg/Foo#run!()V"),
+                WrapperCallShape.REGISTERED_ENTRY_NO_RESOLVED_EDGE,
+                "registered-entry-with-no-resolved-edge",
+                WrapperEvidenceKind.GHIDRA_HEADLESS_PCODE);
+        WrapperCallShapeMetric metric = audit.summarize(List.of(expected));
+        String emitted = new WrapperCallShapeReportWriter().json(metric);
+
+        assertEquals(1, metric.resolvedWrapperCount());
+        assertEquals(1, metric.registeredEntryNoResolvedEdgeCount());
+        assertTrue(emitted.contains(
+                "\"registeredEntryNoResolvedEdgeCount\": 1"));
+        assertTrue(emitted.contains(
+                "\"shape\": \"registeredEntryNoResolvedEdge\""));
+        assertFalse(emitted.contains("registeredBodyDirectNoWrapper"));
+        assertEquals(List.of(expected), new WrapperCallEvidenceJsonReader().parse(emitted));
+
+        String legacyJson = """
+                {"wrappers":[
+                  {
+                    "bindingIdentityHash":"%s",
+                    "shape":"registeredBodyDirectNoWrapper",
+                    "resolutionFingerprintHash":"%s",
+                    "evidenceKind":"ghidraHeadlessPcode"
+                  }
+                ]}
+                """.formatted(
+                        expected.bindingIdentityHash(),
+                        expected.resolutionFingerprintHash());
+        assertEquals(
+                List.of(expected),
+                new WrapperCallEvidenceJsonReader().parse(legacyJson));
+    }
+
     private WrapperCallEvidence evidence(
             String bindingHash,
             WrapperCallShape shape,
