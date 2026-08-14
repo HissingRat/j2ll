@@ -9,8 +9,9 @@ final class HostNativeOwnerRegistrationSource {
     private final NativeTextCEmitter textEmitter = new NativeTextCEmitter();
 
     String emit(
-            NativeRegistrationTextPlan.Owner owner,
+            NativeRegistrationControlTopologyPlan.Owner plannedOwner,
             HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
+        NativeRegistrationTextPlan.Owner owner = plannedOwner.source();
         NativeRegistrationTextStorageLayout textLayout =
                 NativeRegistrationTextStorageLayout.plan(
                         owner);
@@ -22,6 +23,7 @@ final class HostNativeOwnerRegistrationSource {
         appendRegistrationFunction(
                 source,
                 owner,
+                plannedOwner.symbol(),
                 textLayout,
                 failureLeaves);
         return source.toString();
@@ -43,16 +45,19 @@ final class HostNativeOwnerRegistrationSource {
     private void appendRegistrationFunction(
             StringBuilder source,
             NativeRegistrationTextPlan.Owner owner,
+            String symbol,
             NativeRegistrationTextStorageLayout textLayout,
             HostNativeRegistrationFailureLeafSource.Plan failureLeaves) {
-        String suffix = physicalSuffix(owner);
         int textScratchSize = textLayout.textBytes();
         NativeRegistrationStoragePlan storage =
                 NativeRegistrationStoragePlan.plan(
                         owner.bindings().size(),
                         textScratchSize);
-        source.append("static jint j2ll_register_")
-                .append(suffix)
+        source.append("static jint ")
+                .append(symbol)
+                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) __attribute__((noinline));\n")
+                .append("static jint ")
+                .append(symbol)
                 .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) {\n")
                 .append("    const int count = ")
                 .append(owner.bindings().size())
@@ -247,7 +252,4 @@ final class HostNativeOwnerRegistrationSource {
                 "    "));
     }
 
-    static String physicalSuffix(NativeRegistrationTextPlan.Owner owner) {
-        return CIdentifier.forIdentity(owner.ownerText().symbol());
-    }
 }

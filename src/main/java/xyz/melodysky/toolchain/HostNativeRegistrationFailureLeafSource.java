@@ -19,28 +19,35 @@ import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 final class HostNativeRegistrationFailureLeafSource {
     private final NativeTextCEmitter textEmitter = new NativeTextCEmitter();
 
-    Plan plan(NativeTextBuildKey buildKey) {
+    Plan plan(
+            NativeTextBuildKey buildKey,
+            NativeRegistrationControlTopologyPlan.FailureSymbols symbols) {
         Objects.requireNonNull(buildKey, "buildKey");
+        Objects.requireNonNull(symbols, "symbols");
         NativeTextEncoder encoder = new NativeTextEncoder();
         return new Plan(
                 leaf(
                         encoder,
                         buildKey,
+                        symbols.ownerRollback(),
                         "owner-rollback",
                         "native owner registration rollback failed"),
                 leaf(
                         encoder,
                         buildKey,
+                        symbols.ownerExceptionRestore(),
                         "owner-exception-restore",
                         "native owner registration exception restore failed"),
                 leaf(
                         encoder,
                         buildKey,
+                        symbols.aggregateRollback(),
                         "aggregate-rollback",
                         "native registration rollback failed"),
                 leaf(
                         encoder,
                         buildKey,
+                        symbols.aggregateExceptionRestore(),
                         "aggregate-exception-restore",
                         "native registration exception restore failed"));
     }
@@ -61,6 +68,7 @@ final class HostNativeRegistrationFailureLeafSource {
     private Leaf leaf(
             NativeTextEncoder encoder,
             NativeTextBuildKey buildKey,
+            String symbol,
             String identity,
             String plaintext) {
         NativeTextEncoding encoding = encoder.encode(
@@ -68,10 +76,7 @@ final class HostNativeRegistrationFailureLeafSource {
                 NativeTextPurpose.REGISTRATION_ERROR,
                 "registration-cold-leaf:" + identity,
                 plaintext);
-        return new Leaf(
-                "j2ll_registration_failure_"
-                        + CIdentifier.forIdentity(encoding.symbol()),
-                encoding);
+        return new Leaf(symbol, encoding);
     }
 
     private void appendLeaf(StringBuilder source, Leaf leaf) {

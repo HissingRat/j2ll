@@ -152,7 +152,9 @@ class GeneratedNativeIdentifierTest {
         assertFalse(source.contains("PlainOwner"));
         assertFalse(source.contains("secretMethod"));
         assertTrue(source.matches(
-                "(?s).*static jint j2ll_register_[0-9a-f]{24}\\(JavaVM\\* vm\\).*"));
+                "(?s).*static jint [a-p]{32}\\(JavaVM\\* vm\\) "
+                        + "__attribute__\\(\\(noinline\\)\\);.*"));
+        assertFalse(source.contains("j2ll_register_"));
         assertFalse(source.contains("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm)"));
         assertTrue(source.contains("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)"));
     }

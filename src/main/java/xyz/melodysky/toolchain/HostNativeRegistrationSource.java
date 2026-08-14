@@ -57,16 +57,23 @@ public final class HostNativeRegistrationSource {
             MethodTableHidingPlan hidingPlan,
             RuntimeLoaderPlan runtimeLoaderPlan,
             NativeTextBuildKey buildKey) {
+        return emitWithPlan(
+                registrationPlan,
+                hidingPlan,
+                runtimeLoaderPlan,
+                buildKey).source();
+    }
+
+    Emission emitWithPlan(
+            NativeRegistrationPlan registrationPlan,
+            MethodTableHidingPlan hidingPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            NativeTextBuildKey buildKey) {
         validatePlan(registrationPlan, hidingPlan);
         Objects.requireNonNull(runtimeLoaderPlan, "runtimeLoaderPlan");
         Objects.requireNonNull(buildKey, "buildKey");
         NativeTextCEmitter textEmitter = new NativeTextCEmitter();
         StringBuilder source = new StringBuilder(textEmitter.runtimeSource());
-        HostNativeRegistrationFailureLeafSource failureLeafSource =
-                new HostNativeRegistrationFailureLeafSource();
-        HostNativeRegistrationFailureLeafSource.Plan failureLeaves =
-                failureLeafSource.plan(buildKey);
-        source.append(failureLeafSource.emit(failureLeaves));
         HostNativeOwnerRegistrationSource ownerEmitter =
                 new HostNativeOwnerRegistrationSource();
         HostNativeRegistrationResolverSource resolverEmitter =
@@ -75,15 +82,24 @@ public final class HostNativeRegistrationSource {
         if (hidingPlan.changed()) {
             owners = physicalOwnerOrder(
                     NativeRegistrationTextPlan.hidden(hidingPlan, buildKey));
-            for (NativeRegistrationTextPlan.Owner owner : owners) {
-                source.append(ownerEmitter.emit(owner, failureLeaves));
-            }
         } else {
             owners = physicalOwnerOrder(
                     NativeRegistrationTextPlan.ordinary(registrationPlan, buildKey));
-            for (NativeRegistrationTextPlan.Owner owner : owners) {
-                source.append(ownerEmitter.emit(owner, failureLeaves));
-            }
+        }
+        NativeRegistrationControlTopologyPlan topologyPlan =
+                new NativeRegistrationControlTopologyPlanner().plan(
+                        owners,
+                        buildKey);
+        HostNativeRegistrationFailureLeafSource failureLeafSource =
+                new HostNativeRegistrationFailureLeafSource();
+        HostNativeRegistrationFailureLeafSource.Plan failureLeaves =
+                failureLeafSource.plan(
+                        buildKey,
+                        topologyPlan.failureSymbols());
+        source.append(failureLeafSource.emit(failureLeaves));
+        for (NativeRegistrationControlTopologyPlan.Owner owner
+                : topologyPlan.owners()) {
+            source.append(ownerEmitter.emit(owner, failureLeaves));
         }
         NativeRegistrationResolverPlan resolverPlan = owners.isEmpty()
                 ? null
@@ -94,14 +110,21 @@ public final class HostNativeRegistrationSource {
         if (resolverPlan != null) {
             source.append(resolverEmitter.ciphertextDeclaration(resolverPlan));
         }
+        source.append(new HostNativeRegistrationChunkSource().emit(
+                topologyPlan));
         appendRootRegistration(
                 source,
-                owners,
-                "j2ll_register_" + buildKey.hashHex().substring(0, 24),
+                topologyPlan,
                 failureLeaves,
                 resolverPlan,
                 resolverEmitter);
-        return source.toString();
+        Emission emission = new Emission(
+                source.toString(),
+                topologyPlan);
+        new NativeRegistrationControlSourceVerifier().verify(
+                emission.source(),
+                topologyPlan);
+        return emission;
     }
 
     private List<NativeRegistrationTextPlan.Owner> physicalOwnerOrder(
@@ -143,11 +166,16 @@ public final class HostNativeRegistrationSource {
 
     private void appendRootRegistration(
             StringBuilder source,
-            List<NativeRegistrationTextPlan.Owner> owners,
-            String aggregateSymbol,
+            NativeRegistrationControlTopologyPlan topologyPlan,
             HostNativeRegistrationFailureLeafSource.Plan failureLeaves,
             NativeRegistrationResolverPlan resolverPlan,
             HostNativeRegistrationResolverSource resolverEmitter) {
+        List<NativeRegistrationControlTopologyPlan.Owner> owners =
+                topologyPlan.owners();
+        String aggregateSymbol = topologyPlan.aggregateSymbol();
+        source.append("static jint ")
+                .append(aggregateSymbol)
+                .append("(JavaVM* vm) __attribute__((noinline));\n");
         source.append("static jint ")
                 .append(aggregateSymbol)
                 .append("(JavaVM* vm) {\n")
@@ -171,18 +199,12 @@ public final class HostNativeRegistrationSource {
                     .append(owners.size())
                     .append("] = {NULL};\n");
         }
-        for (int index = 0; index < owners.size(); index++) {
-            NativeRegistrationTextPlan.Owner owner = owners.get(index);
-            source.append("    if (j2ll_register_")
-                     .append(HostNativeOwnerRegistrationSource.physicalSuffix(owner))
-                    .append("(env, &resolver, &registered_owners[")
-                    .append(index)
-                    .append("]) != JNI_OK) {\n")
+        if (!topologyPlan.chunks().isEmpty()) {
+            source.append("    if (")
+                    .append(topologyPlan.chunks().get(0).symbol())
+                    .append("(env, &resolver, registered_owners, &registered_count) != JNI_OK) {\n")
                     .append("        goto rollback;\n")
-                    .append("    }\n")
-                    .append("    registered_count = ")
-                    .append(index + 1)
-                    .append("u;\n");
+                    .append("    }\n");
         }
         if (!owners.isEmpty()) {
             source.append("    while (registered_count != 0u) {\n")
@@ -254,5 +276,14 @@ public final class HostNativeRegistrationSource {
                 .append(aggregateSymbol)
                 .append("(vm);\n")
                 .append("}\n");
+    }
+
+    record Emission(
+            String source,
+            NativeRegistrationControlTopologyPlan topologyPlan) {
+        Emission {
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(topologyPlan, "topologyPlan");
+        }
     }
 }

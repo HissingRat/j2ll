@@ -409,6 +409,24 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - aggregate root使用activation-local `jclass[]`和`registered_count`统一执行成功清理与
   失败逆序rollback，不再为每个owner展开重复控制流；每个unregister的status/pending-
   exception检查与原异常恢复合同保持不变。
+- aggregate、每个owner helper、forward chunk和四个failure leaf现在由独立
+  registration-control KDF purpose派生为exact `[a-p]{32}` symbol；不保留`j2ll`、
+  register/owner/chunk/failure语义前缀。planner先冻结完整control集合，再对全部owner/name/
+  descriptor/text-group/native symbol做collision gate，避免future control symbol漏扫 earlier
+  registration material。
+- `JNI_OnLoad`只直接调用唯一`noinline` aggregate。resolver、activation-local owner array/
+  count、success cleanup、逆序rollback、status/pending-exception验证及原Throwable identity
+  restore仍只位于该activation。aggregate只进入chunk0；chunk按build-derived owner顺序形成
+  exact `min(8, ceil(ownerCount / 4))`个连续balanced slice，并只执行owner direct call、成功后
+  count推进和唯一forward edge。`ownerCount <= 32`时每chunk最多4项；更大输入固定8个chunk
+  作为bounded-depth conservative fallback。chunk不得含JNI exception/resolver/rollback/
+  local-ref/scratch/table/dispatcher/cache；zero-owner不生成chunk、owner array或rollback。
+- final generated-C gate先执行C phase-2 line splice，再以一次code-only lexical index验证
+  所有control symbol closure，并要求最早control prototype到`JNI_OnLoad`结束处于
+  unconditional、无directive span；comment/string/char、trigraph、`#if 0`/替代
+  preprocessor token decoy均不能充当证据。chunk使用exact closed schema，aggregate的
+  success cleanup、rollback loop、unregister status/pending exception和failure-exception
+  restore使用exact tail schema；missing/duplicate/bypass/conservation一律fail closed。
 
 验收：
 
@@ -417,6 +435,40 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
   `registered_owners[]`或rollback路径且`JNI_OnLoad`直接返回`JNI_VERSION_1_8`。
 - 2026-08-10 real Zig/child-JVM fixture直接嵌入由`NativeLoaderClassGenerator`生成的生产`Loader.class`及真实SHA-256动态库resource，并把TCCL设为`null`。测试不预加载Loader，而是先初始化business owner；该owner正在执行的`<clinit>`首条调用为`Loader.ensureLoaded()`，`JNI_OnLoad`以`Class.forName(..., false, definingLoader)`取回这个in-progress owner并完成全部binding，随后同一个`<clinit>`成功调用native helper。第二个未初始化owner的constructor helper同样通过。该链路已在Java 17和Java 25分别真实运行通过。
 - ASan/host integration 不出现 use-after-free、double-free 或明文 lifetime 回归。
+
+本control-topology切片的结构size budget为新增exact
+`min(8, ceil(ownerCount / 4))`个chunk definitions（zero owner为0），不引入table、padding、
+dispatcher或持久data。2026-08-15 fixed-seed受控A/B以
+`build_2026-08-15_03-19-21`作为前一版sharded-throw基线，以
+`build_2026-08-15_05-21-34`作为registration-control topology实现；两边
+`config.resolved.json`与intermediates manifest均byte-exact，325个input class的
+`sourceEntry/fullSha256`差异为0，最终均为71/71 `nativeLowered`、0 `skipped`、57个
+registrations、五目标built，artifact audit与release readiness通过。当前11个owner产生唯一
+aggregate、3个forward chunk、11个owner helper与4个failure leaf；旧
+`j2ll_register*`/`j2ll_registration_failure*` role prefix在新source中为0。
+
+- generated JNI C从3,335,361 B增至3,337,278 B（+1,917 B，+0.0575%）；五库raw合计
+  从1,641,310 B增至1,641,998 B（+688 B，+0.0419%），`.text/__text`合计从
+  1,403,709 B增至1,404,001 B（+292 B，+0.0208%）。逐目标raw变化为Windows x64
+  +512 B、Linux x64 +96 B、Linux arm64 +80 B、两个macOS文件因既有对齐空间保持不变；
+  最终JAR从3,401,241 B降至3,400,918 B（-323 B，-0.0095%）。这是当前样本的实测预算，
+  不外推为其他owner数量或工具链布局的固定比例。
+- 对两份最终Windows x64 DLL做fresh-project、final-artifact-only Ghidra 12黑盒复测。
+  基线`JNI_OnLoad`为2,994 B、702条instruction、3,448个p-code op、28个direct-call op、
+  45个indirect-call op，depth-1有18个resolved internal callee；新入口为10 B、4条
+  instruction、9个p-code op、0个direct/indirect call op，并只通过一条resolved tail edge
+  进入唯一aggregate。该aggregate为1,682 B、415条
+  instruction；registration-root closure从19个function/63条resolved edge变为24个function/
+  69条resolved edge，bounded traversal最大depth为5。root closure本身完整且未截断；overall
+  status仅因本轮有意把decompiler预算设为0而标为partial。
+- focused source/mutation/fake-JNI矩阵91/91执行通过（另2项环境skip），真实managed-Zig
+  defining-loader child-JVM与六目标cross-target build均通过；full suite中仅3个要求真实Zig的
+  Dummy gate先按设计拒绝，设置`J2LL_REAL_HOME`后3/3通过。
+
+这些证据证明导出入口不再直接暴露owner registration/JNI slot调用，并提高跨build静态复用
+成本；它没有阻断攻击者沿aggregate/chunk/owner closure继续遍历，也不阻断运行时hook
+`RegisterNatives`恢复映射。下述历史micro A/B发生在本拓扑之前，只保留为原owner-local
+text/cleanup方案的历史证据。
 
 32-binding、单owner、相同build key的Clang `-Oz` micro A/B中，registration source由
 162,919 B降到42,700 B（-73.79%），cipher/decoder site由69降到13，COFF object由

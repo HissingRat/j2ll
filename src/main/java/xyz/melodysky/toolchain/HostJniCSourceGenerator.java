@@ -211,8 +211,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 1L,
                 "JNI wrapper source"));
         NativeRegistrationPlan supportedPlan = implementationPlan.registrationPlan();
-        String registrationSource =
-                new HostNativeRegistrationSource().emit(
+        HostNativeRegistrationSource.Emission registrationEmission =
+                new HostNativeRegistrationSource().emitWithPlan(
                         supportedPlan,
                         methodTablePlan,
                         runtimeLoaderPlan,
@@ -319,12 +319,15 @@ public final class HostJniCSourceGenerator implements Opcodes {
         // Registration text already uses call-site-local NativeText scratch
         // buffers. Keeping it as an independent fragment also ensures
         // JNI_OnLoad never becomes a decode-all entry point.
-        builder.append(registrationSource);
+        builder.append(registrationEmission.source());
         HostJniLocalReferenceRuntimeSource.appendIfNeeded(
                 builder,
                 implementationPlan);
         fragments.verifyFinalSource();
         String source = builder.toString();
+        new NativeRegistrationControlSourceVerifier().verify(
+                source,
+                registrationEmission.topologyPlan());
         List<String> directEntryIssues =
                 new NativeJniEntryGeneratedCVerifier().verify(
                         implementationPlan,

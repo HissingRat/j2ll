@@ -347,10 +347,17 @@ final class HostNativeRegistrationSourceTest {
         HostNativeRegistrationSource emitter = new HostNativeRegistrationSource();
 
         long distinctOrders = IntStream.range(0, 16)
-                .mapToObj(index -> registrationCallOrder(emitter.emit(
-                        multiOwner,
-                        hiding,
-                        NativeTextBuildKey.fromUtf8("owner-order-" + index))))
+                .mapToObj(index -> emitter.emitWithPlan(
+                                multiOwner,
+                                hiding,
+                                RuntimeLoaderPlan.create("native0"),
+                                NativeTextBuildKey.fromUtf8(
+                                        "owner-order-" + index))
+                        .topologyPlan()
+                        .owners()
+                        .stream()
+                        .map(owner -> owner.source().owner())
+                        .collect(java.util.stream.Collectors.joining(";")))
                 .distinct()
                 .count();
 
@@ -409,25 +416,31 @@ final class HostNativeRegistrationSourceTest {
                         "run",
                         "()V",
                         "j2ll_fn_gamma")));
-        String source = new HostNativeRegistrationSource().emit(
-                multiOwner,
-                new MethodTableHidingPlanner().plan(
+        HostNativeRegistrationSource.Emission emission =
+                new HostNativeRegistrationSource().emitWithPlan(
                         multiOwner,
-                        true,
-                        77L),
-                NativeTextBuildKey.fromUtf8("atomic-owner-registration"));
+                        new MethodTableHidingPlanner().plan(
+                                multiOwner,
+                                true,
+                                77L),
+                        RuntimeLoaderPlan.create("native0"),
+                        NativeTextBuildKey.fromUtf8(
+                                "atomic-owner-registration"));
+        String source = emission.source();
 
         assertTrue(source.contains(
                 "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner)"));
         assertTrue(source.contains("*registered_owner = owner_class;"));
         assertTrue(source.contains("owner_class = NULL;"));
-        assertTrue(source.contains(
-                "(env, &resolver, &registered_owners[0]) != JNI_OK"));
-        assertTrue(source.contains(
-                "(env, &resolver, &registered_owners[1]) != JNI_OK"));
-        assertTrue(source.contains(
-                "(env, &resolver, &registered_owners[2]) != JNI_OK"));
-        assertEquals(3, occurrences(source, "goto rollback;"));
+        for (NativeRegistrationControlTopologyPlan.Owner owner
+                : emission.topologyPlan().owners()) {
+            assertTrue(source.contains(
+                    owner.symbol()
+                            + "(env, resolver, &registered_owners["
+                            + owner.index()
+                            + "]) != JNI_OK"));
+        }
+        assertEquals(1, occurrences(source, "goto rollback;"));
 
         int rollback = source.indexOf("rollback:");
         int decrement = source.indexOf("registered_count--;", rollback);
@@ -482,7 +495,7 @@ final class HostNativeRegistrationSourceTest {
         HostNativeRegistrationSource emitter =
                 new HostNativeRegistrationSource();
 
-        String source = emitter.emit(
+        HostNativeRegistrationSource.Emission emission = emitter.emitWithPlan(
                 registrations,
                 new MethodTableHidingPlanner().plan(
                         registrations,
@@ -490,6 +503,7 @@ final class HostNativeRegistrationSourceTest {
                         77L),
                 loaderPlan,
                 key);
+        String source = emission.source();
         NativeRegistrationResolverPlan resolverPlan =
                 NativeRegistrationResolverPlan.create(
                         loaderPlan,
@@ -518,12 +532,16 @@ final class HostNativeRegistrationSourceTest {
                         source,
                         "j2ll_registration_resolver_close(env, &resolver);"));
 
-        int aggregate = source.lastIndexOf("static jint j2ll_register_");
+        int aggregate = source.lastIndexOf(
+                "static jint "
+                        + emission.topologyPlan().aggregateSymbol()
+                        + "(JavaVM* vm) {");
         int open = source.indexOf(
                 "jint resolver_status = j2ll_registration_resolver_open(",
                 aggregate);
         int ownerCall = source.indexOf(
-                "(env, &resolver, &registered_owners[0]) != JNI_OK",
+                emission.topologyPlan().chunks().get(0).symbol()
+                        + "(env, &resolver, registered_owners, &registered_count) != JNI_OK",
                 open);
         int successClose = source.indexOf(
                 "j2ll_registration_resolver_close(env, &resolver);",
@@ -538,18 +556,6 @@ final class HostNativeRegistrationSourceTest {
         assertTrue(successClose > ownerCall);
         assertTrue(rollback > successClose);
         assertTrue(rollbackClose > rollback);
-    }
-
-    private String registrationCallOrder(String source) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("if \\(j2ll_register_(h_[0-9a-f]{32})"
-                        + "\\(env, &resolver, &registered_owners\\[[0-9]+\\]\\)")
-                .matcher(source);
-        StringBuilder order = new StringBuilder();
-        while (matcher.find()) {
-            order.append(matcher.group(1)).append(';');
-        }
-        return order.toString();
     }
 
     private String ordinaryFunctionOrder(String source) {

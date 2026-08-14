@@ -351,6 +351,27 @@ IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 
 
 owner/name/descriptor 是 JVM registration 必需信息，运行时仍会短暂形成明文；最终 generated C/native 不再使用全局 metadata 目录或 aggregate decode-all。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，在该 owner 的注册窗口内解码到临时 scratch；owner name 在 defining-loader lookup 返回后立即清零，method/descriptor scratch 和 `JNINativeMethod[]` 则在 `RegisterNatives` 成功或失败后以 volatile zeroizer 清理再释放。aggregate root、per-owner helper 和 implementation symbol 均为 internal/hidden，动态导出仅保留 `JNI_OnLoad`。aggregate root使用activation-local `jclass[]`与`registered_count`统一执行成功清理和逆序rollback，避免按owner展开重复控制流。multi-owner rollback仍检查每次 `UnregisterNatives` 的 status 与 pending exception；rollback 不完整时通过 `FatalError` fail closed，完整时恢复原始 pending exception，并检查 `Throw` status 与 pending-exception evidence，恢复失败同样 fail closed。四种rollback/exception-restore失败文案由registration-domain、build-scoped、hash-only `noinline,cold` leaf拥有，每个leaf只接收`JNIEnv*`并只在对应`FatalError`路径恢复；`GeneratedNativeHardeningAudit` 以 `STABLE_REGISTRATION_DIAGNOSTIC` 阻断历史稳定明文及任意 direct/adjacent `FatalError` C string literal 重新成为跨构建 xref 锚点。这仍是 at-rest obfuscation，不是运行时内存保密。`protection-report.json` 使用 `METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT`，`packaging-report.json` 明确写入 transient strategy、未生成 runtime token/function table，以及 hash/token-only report evidence。当前 gated real-Zig host E2E 已覆盖多 method 注册和双 ClassLoader；六目标专项已覆盖 two-owner generated-C/build-graph/privacy/export。多 owner + virtual/interface 的真实 runtime 与 non-host JVM runtime 仍待补。
 
+Registration control flow另消费一次冻结的immutable build plan：aggregate、owner helper、
+forward chunk和四个failure leaf全部使用无语义前缀的exact `[a-p]{32}` symbol，并在完整
+control-symbol set形成后统一拒绝与owner/name/descriptor/group/native symbol碰撞。
+`JNI_OnLoad`只调用`noinline` aggregate；resolver、`registered_owners[]`、count、success
+cleanup、逆序rollback和原异常恢复仍只在这一activation中。owner按build-derived物理顺序
+切成`min(8, ceil(ownerCount / 4))`个连续balanced chunk，root只进入chunk0，每个chunk只
+按顺序调用本slice owner、在成功后推进count并forward到唯一下一chunk。`ownerCount <= 32`
+时每chunk最多4项；更大输入固定8个balanced chunk以保持call depth有界。chunk不允许JNI
+exception/resolver/rollback/local-ref/scratch/table/dispatcher/cache；zero-owner没有chunk、
+owner array或rollback。不同build的symbol与排序均为build-derived/diversified，但单chunk
+membership及理论hash/order碰撞不作“必然变化”承诺。
+
+Plan gate和完整translation-unit source gate共同验证owner顺序/连续partition/all-once、
+exact root→chunk chain、每个hash symbol的prototype/definition/call closure、chunk closed
+schema与aggregate固定success/rollback tail。source gate先执行C phase-2 line splice，再建立
+一次comment/string/char-free词法索引，并拒绝trigraph、conditional/preprocessor decoy、
+collision、missing/duplicate、direct bypass及守恒失败。结构size budget是新增exact
+`min(8, ceil(ownerCount / 4))`个chunk definition（zero owner为0），不增加table、padding、
+dispatcher或持久data。该切片的真实六目标source/native delta、dual-build topology和Ghidra
+复验尚未记录，因此下方历史size数据不能作为本拓扑的收益或体积结论。
+
 method name 与 descriptor 的同值复用严格限制在同一 owner 和各自 purpose domain；
 不同 owner 即使文本相同也会获得独立 encoding/scratch。去重文本按最多8项、最多
 512 decoded bytes形成bounded group，每group使用一个encoding/decoder，单个超限文本
