@@ -2,6 +2,7 @@ package xyz.melodysky.toolchain.nativetext;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -255,90 +256,25 @@ final class NativeTextCodecCParityTest {
     }
 
     @Test
-    void affineMutableCipherUsesScratchForSafeInPlaceDecode(
-            @TempDir Path temp) throws Exception {
-        Path clang = findClang().orElse(null);
-        assumeTrue(
-                clang != null,
-                "clang is required for affine in-place parity");
-
-        String plaintext =
-                "affine-in-place-cycle-overwrite-regression";
+    void immutableAffineCipherRejectsInPlaceDecodeDestination() {
         NativeTextEncoding encoding = new NativeTextEncoder().encode(
                 NativeTextBuildKey.fromUtf8("affine-in-place-build"),
                 NativeTextPurpose.RUNTIME_ERROR,
                 "affine-in-place-use",
-                plaintext);
+                "affine-in-place-cycle-overwrite-regression");
         assertFalse(encoding.storagePermutation().isIdentity());
         NativeTextCEmitter emitter = new NativeTextCEmitter();
-        String source = """
-                #include <stddef.h>
-                #include <stdint.h>
-                #include <string.h>
 
-                """
-                + emitter.runtimeSource()
-                + emitter.mutableCiphertextDeclaration(encoding)
-                + "static void decode_once(void) {\n"
-                + emitter.decodeInPlace(
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> emitter.decodeInto(
                         encoding,
                         encoding.symbol() + "_cipher",
-                        "    ")
-                + "}\n"
-                + "int main(void) {\n"
-                + "    decode_once();\n"
-                + "    return strcmp((char*)"
-                + encoding.symbol()
-                + "_cipher, \""
-                + plaintext
-                + "\");\n"
-                + "}\n";
-        assertTrue(source.contains(
-                "unsigned char j2ll_nt_in_place_"));
-        assertTrue(source.contains(
-                "j2ll_native_text_zero(j2ll_nt_in_place_"));
-        GeneratedNativeHardeningAuditResult audit =
-                new GeneratedNativeHardeningAudit()
-                        .audit(source);
-        assertTrue(audit.passed(), audit.findings().toString());
-        assertTrue(audit.evidence().contains(
-                GeneratedNativeHardeningAudit
-                        .EVIDENCE_AFFINE_CIPHERTEXT_STORAGE));
-
-        Path cFile = temp.resolve("native-text-in-place.c");
-        Path executable = temp.resolve(isWindows()
-                ? "native-text-in-place.exe"
-                : "native-text-in-place");
-        Files.writeString(cFile, source, StandardCharsets.UTF_8);
-        Process compile = new ProcessBuilder(
-                        clang.toString(),
-                        "-std=gnu11",
-                        "-Wall",
-                        "-Wextra",
-                        "-Werror",
-                        cFile.toString(),
-                        "-o",
-                        executable.toString())
-                .redirectErrorStream(true)
-                .start();
-        assertTrue(
-                compile.waitFor(45, TimeUnit.SECONDS),
-                "affine in-place C compile timed out");
-        String compileOutput = new String(
-                compile.getInputStream().readAllBytes(),
-                StandardCharsets.UTF_8);
-        assertEquals(0, compile.exitValue(), compileOutput);
-
-        Process run = new ProcessBuilder(executable.toString())
-                .redirectErrorStream(true)
-                .start();
-        assertTrue(
-                run.waitFor(15, TimeUnit.SECONDS),
-                "affine in-place C parity run timed out");
-        String runOutput = new String(
-                run.getInputStream().readAllBytes(),
-                StandardCharsets.UTF_8);
-        assertEquals(0, run.exitValue(), runOutput);
+                        "    "));
+        assertTrue(failure.getMessage().contains(
+                "must not alias ciphertext"));
+        assertTrue(emitter.ciphertextDeclaration(encoding)
+                .startsWith("static const unsigned char "));
     }
 
     @Test

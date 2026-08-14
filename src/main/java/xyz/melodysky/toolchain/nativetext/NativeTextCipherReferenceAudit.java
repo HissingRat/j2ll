@@ -10,10 +10,9 @@ import java.util.regex.Pattern;
 /**
  * Rejects unclassified production-cipher references.
  *
- * <p>Const ciphertext may only be declared, sized and read by the canonical
- * volatile affine cursor. Mutable low-sensitivity lazy-once storage may also
- * receive the completed plaintext copy and be passed as the exact decoded
- * pointer value.</p>
+ * <p>Ciphertext may only be declared as immutable storage, sized and read by
+ * the canonical volatile affine cursor. A mutable declaration, in-place write
+ * or direct pointer use is never a classified production reference.</p>
  */
 final class NativeTextCipherReferenceAudit {
     private static final String CIPHER_IDENTIFIER =
@@ -30,50 +29,24 @@ final class NativeTextCipherReferenceAudit {
                     + ")\\s*\\)\\s*\\)\\s*"
                     + "\\[\\s*("
                     + C_IDENTIFIER
-                    + ")\\s*]"
-                    + "|\\(\\(\\s*unsigned\\s+char\\s*\\*\\s*\\)"
-                    + "\\s*\\(\\s*("
-                    + CIPHER_IDENTIFIER
-                    + ")\\s*\\)\\s*\\)\\s*"
-                    + "\\[\\s*"
-                    + C_IDENTIFIER
-                    + "\\s*]\\s*="
-                    + "|\\(\\s*char\\s*\\*\\s*\\)\\s*("
-                    + CIPHER_IDENTIFIER
-                    + ")(?=\\s*[,;)])");
+                    + ")\\s*]");
     private static final Pattern REFERENCES = Pattern.compile(
             "\\b(" + CIPHER_IDENTIFIER + ")\\b");
 
     Index index(String source) {
         String structural = NativeTextCSourceMasker.maskNonCode(source);
-        HashMap<Integer, Integer> classifications = new HashMap<>();
+        HashMap<Integer, Boolean> classifications = new HashMap<>();
         HashMap<String, List<String>> readIndexes = new HashMap<>();
         Matcher classified = CLASSIFIED_REFERENCES.matcher(structural);
         while (classified.find()) {
             if (classified.group(1) != null) {
-                allow(
-                        classifications,
-                        classified.start(1),
-                        ReferenceKind.ALWAYS_ALLOWED);
+                classifications.put(classified.start(1), true);
             } else if (classified.group(2) != null) {
-                allow(
-                        classifications,
-                        classified.start(2),
-                        ReferenceKind.ALWAYS_ALLOWED);
+                classifications.put(classified.start(2), true);
                 readIndexes.computeIfAbsent(
                                 classified.group(2),
                                 ignored -> new ArrayList<>())
                         .add(classified.group(3));
-            } else if (classified.group(4) != null) {
-                allow(
-                        classifications,
-                        classified.start(4),
-                        ReferenceKind.MUTABLE_ONLY);
-            } else if (classified.group(5) != null) {
-                allow(
-                        classifications,
-                        classified.start(5),
-                        ReferenceKind.MUTABLE_ONLY);
             }
         }
 
@@ -86,9 +59,7 @@ final class NativeTextCipherReferenceAudit {
                     .add(new Reference(
                             matcher.start(1),
                             matcher.end(1),
-                            classifications.getOrDefault(
-                                    matcher.start(1),
-                                    0)));
+                            classifications.containsKey(matcher.start(1))));
         }
         return new Index(references, readIndexes);
     }
@@ -97,29 +68,18 @@ final class NativeTextCipherReferenceAudit {
             Index index,
             String cipher,
             int declarationNameStart,
-            int declarationNameEnd,
-            boolean mutable) {
+            int declarationNameEnd) {
         for (Reference reference : index.references(cipher)) {
             if (reference.start() >= declarationNameStart
                     && reference.end() <= declarationNameEnd) {
                 continue;
             }
-            if (reference.allowed(ReferenceKind.ALWAYS_ALLOWED)
-                    || (mutable
-                            && reference.allowed(
-                                    ReferenceKind.MUTABLE_ONLY))) {
+            if (reference.classified()) {
                 continue;
             }
             return reference.start();
         }
         return -1;
-    }
-
-    private void allow(
-            Map<Integer, Integer> classifications,
-            int offset,
-            ReferenceKind kind) {
-        classifications.merge(offset, kind.mask, (left, right) -> left | right);
     }
 
     static final class Index {
@@ -149,20 +109,5 @@ final class NativeTextCipherReferenceAudit {
         }
     }
 
-    private record Reference(int start, int end, int classifications) {
-        private boolean allowed(ReferenceKind kind) {
-            return (classifications & kind.mask) != 0;
-        }
-    }
-
-    private enum ReferenceKind {
-        ALWAYS_ALLOWED(1),
-        MUTABLE_ONLY(2);
-
-        private final int mask;
-
-        ReferenceKind(int mask) {
-            this.mask = mask;
-        }
-    }
+    private record Reference(int start, int end, boolean classified) {}
 }

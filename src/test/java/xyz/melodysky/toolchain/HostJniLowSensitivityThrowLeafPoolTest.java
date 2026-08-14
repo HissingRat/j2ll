@@ -11,6 +11,7 @@ import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
 import xyz.melodysky.toolchain.nativetext.GeneratedNativeHardeningAudit;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
 import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
+import xyz.melodysky.toolchain.nativetext.NativeScratchZeroizerSource;
 
 final class HostJniLowSensitivityThrowLeafPoolTest {
     @Test
@@ -64,7 +65,7 @@ final class HostJniLowSensitivityThrowLeafPoolTest {
     }
 
     @Test
-    void emittedLeavesUseOneLowSensitivityEncodingPerEqualValue() {
+    void emittedLeavesUsePerLeafActivationLocalTuplesAndCleanup() {
         NativeTextBuildKey buildKey =
                 NativeTextBuildKey.fromUtf8("fixed-build");
         RuntimeTokenMapper tokens =
@@ -96,16 +97,34 @@ final class HostJniLowSensitivityThrowLeafPoolTest {
         assertFalse(output.contains("\"java/lang/NullPointerException\""));
         assertFalse(output.contains("\"array is null\""));
         assertFalse(output.contains("\"field receiver is null\""));
-        assertEquals(3, occurrences(output, "_cipher[] = {"));
-        assertEquals(3, occurrences(
+        assertEquals(2, occurrences(output, "_cipher[] = {"));
+        assertEquals(2, occurrences(
                 output,
-                "static void j2ll_gcf_low_decode_"));
+                "static const unsigned char j2ll_nt_"));
+        assertEquals(2, occurrences(
+                output,
+                "__attribute__((cleanup("
+                        + NativeScratchZeroizerSource.CLEANUP_FUNCTION_NAME
+                        + ")))"));
+        assertFalse(output.contains("#include <stdatomic.h>"));
+        assertFalse(output.contains("_Atomic"));
+        assertFalse(output.contains("atomic_"));
+        assertFalse(output.contains("j2ll_gcf_low_"));
+        assertFalse(output.matches(
+                "(?s).*static\\s+unsigned\\s+char\\s+j2ll_nt_[0-9a-f]{24}_cipher.*"));
         assertEquals(2, occurrences(
                 output,
                 "__attribute__((noinline, cold))"));
-        assertTrue(new GeneratedNativeHardeningAudit()
-                .audit(output)
-                .passed());
+        var audit = new GeneratedNativeHardeningAudit().audit(output);
+        assertTrue(audit.passed(), audit.findings().toString());
+        assertTrue(audit.evidence().contains(
+                GeneratedNativeHardeningAudit
+                        .EVIDENCE_CALL_LOCAL_TEXT_SCRATCH));
+        assertTrue(audit.evidence().contains(
+                GeneratedNativeHardeningAudit
+                        .EVIDENCE_CALL_LOCAL_TEXT_CLEANUP));
+        assertFalse(audit.evidence().contains(
+                "LOW_SENSITIVITY_RUNTIME_TEXT_LAZY_ONCE"));
     }
 
     private HostJniLowSensitivityThrowLeafPool pool(String key) {

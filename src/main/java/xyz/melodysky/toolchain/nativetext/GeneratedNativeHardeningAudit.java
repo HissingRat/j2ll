@@ -74,8 +74,6 @@ public final class GeneratedNativeHardeningAudit {
             "CALL_LOCAL_TEXT_SCRATCH";
     public static final String EVIDENCE_CALL_LOCAL_TEXT_CLEANUP =
             "CALL_LOCAL_TEXT_EXIT_CLEANUP";
-    public static final String EVIDENCE_LOW_SENSITIVITY_LAZY_ONCE =
-            "LOW_SENSITIVITY_RUNTIME_TEXT_LAZY_ONCE";
     /**
      * Compatibility name retained for focused callers; generic lazy decoding
      * is no longer accepted as positive hardening evidence.
@@ -84,8 +82,8 @@ public final class GeneratedNativeHardeningAudit {
     public static final String EVIDENCE_SCOPE_LOCAL_DECODER =
             "SCOPE_LOCAL_TEXT_DECODER";
     /**
-     * Compatibility name retained for focused callers; lazy-once is only
-     * evidence when explicitly classified as low-sensitivity runtime text.
+     * Compatibility name retained for focused callers; process-lifetime
+     * decoding is not accepted as positive hardening evidence.
      */
     @Deprecated
     public static final String EVIDENCE_THREAD_SAFE_ONCE =
@@ -284,14 +282,6 @@ public final class GeneratedNativeHardeningAudit {
                     "business string key and ciphertext arrays are colocated");
         }
 
-        boolean lowSensitivityDecoder =
-                containsIdentifierPrefix(structural, "j2ll_gcf_low_decode_");
-        if (lowSensitivityDecoder
-                && structural.contains("j2ll_gcf_low_once_")
-                && structural.contains("atomic_compare_exchange_strong_explicit")
-                && structural.contains("atomic_store_explicit")) {
-            evidence.add(EVIDENCE_LOW_SENSITIVITY_LAZY_ONCE);
-        }
         NativeTextSourceMetrics nativeTextMetrics =
                 new NativeTextSourceScanner().scan(structural);
         if (structural.contains(

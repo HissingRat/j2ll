@@ -5,15 +5,12 @@ import java.util.Objects;
 /**
  * Applies an explicit plaintext-lifetime policy to one generated-C fragment.
  *
- * <p>The default overload is fail-safe: it uses activation-local scratch.
- * Process-lifetime lazy decoding requires the caller to opt into the
- * low-sensitivity runtime-error policy explicitly.</p>
+ * <p>All supported policies use activation-local scratch. Process-lifetime
+ * plaintext is not a supported generated-C text lifetime.</p>
  */
 public final class GeneratedCFragmentTextObfuscator {
     private final GeneratedCSensitiveTextObfuscator sensitive =
             new GeneratedCSensitiveTextObfuscator();
-    private final GeneratedCLazyRuntimeTextObfuscator lazyRuntime =
-            new GeneratedCLazyRuntimeTextObfuscator();
 
     public String obfuscate(
             NativeTextBuildKey buildKey,
@@ -39,10 +36,6 @@ public final class GeneratedCFragmentTextObfuscator {
                     scope,
                     fragment,
                     policy.purpose());
-            case LOW_SENSITIVITY_LAZY_ONCE -> lazyRuntime.obfuscate(
-                    buildKey,
-                    scope,
-                    fragment);
         };
     }
 }

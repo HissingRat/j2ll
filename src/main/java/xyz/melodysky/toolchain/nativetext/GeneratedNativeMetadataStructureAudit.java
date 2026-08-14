@@ -51,7 +51,7 @@ final class GeneratedNativeMetadataStructureAudit {
                     + "\\s*\\{");
     private static final Pattern DECODER = Pattern.compile(
             "\\bstatic\\s+void\\s+"
-                    + "(j2ll_gcf_(?:low_)?decode_[0-9a-f]+)"
+                    + "(j2ll_gcf_(?:low_)?decode_[0-9a-f]+(?:_[0-9a-f]+)*)"
                     + "\\s*\\([^)]*\\)\\s*\\{");
     private static final Pattern TUPLE_USE = Pattern.compile(
             "\\bj2ll_nt_use_([0-9a-f]{24})\\s*\\(\\s*\\)");
@@ -210,13 +210,11 @@ final class GeneratedNativeMetadataStructureAudit {
             int decodedArrays = distinctCount(
                     NATIVE_TEXT_REFERENCE,
                     body);
-            if (!matcher.group(1).startsWith("j2ll_gcf_low_decode_")) {
-                findings.add(finding(
-                        PERSISTENT_DECODED_SENSITIVE_TEXT,
-                        structural,
-                        matcher.start(),
-                        "generic generated-C decoder leaves sensitive plaintext in process-lifetime arrays"));
-            }
+            findings.add(finding(
+                    PERSISTENT_DECODED_SENSITIVE_TEXT,
+                    structural,
+                    matcher.start(),
+                    "generated-C decoder leaves plaintext in process-lifetime arrays"));
             if (decodedArrays >= BULK_DECODER_ARRAY_THRESHOLD) {
                 findings.add(finding(
                         SINGLE_DECODER_BULK_TEXT_LIFETIME,

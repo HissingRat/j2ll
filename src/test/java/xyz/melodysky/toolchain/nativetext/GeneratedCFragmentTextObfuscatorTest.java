@@ -148,32 +148,45 @@ final class GeneratedCFragmentTextObfuscatorTest {
     }
 
     @Test
-    void lazyOnceRequiresExplicitLowSensitivityRuntimeErrorPolicy() {
-        String fragment =
-                "const char* runtime_message(void) { return \"ordinary runtime warning\"; }\n";
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> obfuscator.obfuscate(
-                        NativeTextBuildKey.fromUtf8("fixed-build"),
-                        "runtime:error",
-                        fragment));
+    void runtimeErrorPolicyUsesActivationLocalScratchAndDomainSeparation() {
+        String fragment = """
+                static int consume(const char* value);
+                static int runtime_message(void) {
+                    return consume("ordinary runtime warning");
+                }
+                """;
 
         String output = obfuscator.obfuscate(
                 NativeTextBuildKey.fromUtf8("fixed-build"),
                 "runtime:error",
                 fragment,
-                GeneratedCTextPolicy.lowSensitivityRuntimeError());
+                GeneratedCTextPolicy.sensitive(
+                        NativeTextPurpose.RUNTIME_ERROR));
+        String generatedFragmentDomain = obfuscator.obfuscate(
+                NativeTextBuildKey.fromUtf8("fixed-build"),
+                "runtime:error",
+                fragment);
 
         assertFalse(output.contains("ordinary runtime warning"));
-        assertTrue(output.contains("static _Atomic int j2ll_gcf_low_once_"));
-        assertTrue(output.contains("j2ll_gcf_low_decode_"));
-        assertTrue(output.contains("atomic_compare_exchange_strong_explicit("));
+        assertTrue(output.contains("static const unsigned char j2ll_nt_"));
+        assertTrue(output.contains(
+                "__attribute__((cleanup("
+                        + NativeScratchZeroizerSource.CLEANUP_FUNCTION_NAME
+                        + ")))"));
+        assertNotEquals(
+                firstTextSymbol(output),
+                firstTextSymbol(generatedFragmentDomain));
+        assertFalse(output.contains("#include <stdatomic.h>"));
+        assertFalse(output.contains("_Atomic"));
+        assertFalse(output.contains("atomic_"));
+        assertFalse(output.contains("j2ll_gcf_low_"));
+        assertFalse(output.matches(
+                "(?s).*static\\s+unsigned\\s+char\\s+j2ll_nt_[0-9a-f]{24}_cipher.*"));
         assertFalse(output.contains("j2ll_encoded_metadata_strings"));
     }
 
     @Test
-    void lazyOnceDeduplicatesEqualValuesAndDecodesOnlyFunctionUses() {
+    void runtimeErrorTextDoesNotShareScratchOrEncodingAcrossFunctions() {
         String fragment = """
                 static int consume(const char*);
                 static int first(void) {
@@ -191,17 +204,27 @@ final class GeneratedCFragmentTextObfuscatorTest {
                 NativeTextBuildKey.fromUtf8("fixed-build"),
                 "runtime:error",
                 fragment,
-                GeneratedCTextPolicy.lowSensitivityRuntimeError());
+                GeneratedCTextPolicy.sensitive(
+                        NativeTextPurpose.RUNTIME_ERROR));
 
-        assertEquals(3, occurrences(output, "_cipher[] = {"));
-        assertEquals(
-                3,
-                occurrences(
-                        output,
-                        "static void j2ll_gcf_low_decode_"));
-        String untouched = output.substring(
-                output.indexOf("static int untouched"));
-        assertFalse(untouched.contains("j2ll_gcf_low_decode_"));
+        assertEquals(4, occurrences(output, "_cipher[] = {"));
+        assertEquals(2, occurrences(
+                output,
+                "__attribute__((cleanup("
+                        + NativeScratchZeroizerSource.CLEANUP_FUNCTION_NAME
+                        + ")))"));
+        assertEquals(0, occurrences(output, ".ready == 0u"));
+        assertEquals(0, occurrences(output, ".ready = 0u;"));
+        assertFalse(output.contains("j2ll_gcf_low_"));
+        assertFalse(output.contains("_Atomic"));
+        assertTrue(output.contains("static int untouched(void) {\n"
+                + "    return 7;\n"
+                + "}"));
+        var audit = new GeneratedNativeHardeningAudit().audit(output);
+        assertTrue(audit.passed(), audit.findings().toString());
+        assertTrue(audit.evidence().contains(
+                GeneratedNativeHardeningAudit
+                        .EVIDENCE_CALL_LOCAL_TEXT_CLEANUP));
     }
 
     @Test

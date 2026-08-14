@@ -11,11 +11,6 @@ public record GeneratedCTextPolicy(
     public GeneratedCTextPolicy {
         Objects.requireNonNull(purpose, "purpose");
         Objects.requireNonNull(lifetime, "lifetime");
-        if (lifetime == NativeTextLifetimePolicy.LOW_SENSITIVITY_LAZY_ONCE
-                && purpose != NativeTextPurpose.RUNTIME_ERROR) {
-            throw new IllegalArgumentException(
-                    "lazy-once native text is restricted to the runtime-error domain");
-        }
     }
 
     public static GeneratedCTextPolicy sensitive(
@@ -23,11 +18,5 @@ public record GeneratedCTextPolicy(
         return new GeneratedCTextPolicy(
                 purpose,
                 NativeTextLifetimePolicy.CALL_LOCAL_SCRATCH);
-    }
-
-    public static GeneratedCTextPolicy lowSensitivityRuntimeError() {
-        return new GeneratedCTextPolicy(
-                NativeTextPurpose.RUNTIME_ERROR,
-                NativeTextLifetimePolicy.LOW_SENSITIVITY_LAZY_ONCE);
     }
 }

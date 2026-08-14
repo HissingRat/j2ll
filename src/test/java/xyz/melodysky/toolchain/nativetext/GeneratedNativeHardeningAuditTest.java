@@ -289,6 +289,37 @@ final class GeneratedNativeHardeningAuditTest {
     }
 
     @Test
+    void rejectsMutableCiphertextMutation() {
+        NativeTextEncoding encoding = new NativeTextEncoder().encode(
+                NativeTextBuildKey.fromUtf8("mutable-cipher-audit"),
+                NativeTextPurpose.RUNTIME_ERROR,
+                "mutable-cipher-use",
+                "ordinary warning");
+        NativeTextCEmitter emitter = new NativeTextCEmitter();
+        String valid = emitter.runtimeSource()
+                + emitter.ciphertextDeclaration(encoding)
+                + "static void decode(unsigned char* output) {\n"
+                + emitter.decodeInto(encoding, "output", "    ")
+                + "}\n";
+        assertTrue(audit.audit(valid).passed());
+
+        String mutable = valid.replaceFirst(
+                "static const unsigned char",
+                "static unsigned char");
+        GeneratedNativeHardeningAuditResult result = audit.audit(mutable);
+
+        assertEquals(
+                List.of(GeneratedNativeHardeningAudit
+                        .INVALID_AFFINE_CIPHERTEXT_STORAGE),
+                result.findings().stream()
+                        .map(GeneratedNativeHardeningFinding::code)
+                        .toList());
+        assertFalse(result.evidence().contains(
+                GeneratedNativeHardeningAudit
+                        .EVIDENCE_AFFINE_CIPHERTEXT_STORAGE));
+    }
+
+    @Test
     void rejectsLegacyNamesAndRenamedTokenTextDirectories() {
         String vulnerable = """
                 typedef struct {
@@ -342,38 +373,75 @@ final class GeneratedNativeHardeningAuditTest {
     }
 
     @Test
-    void genericPersistentDecoderIsFindingAndLazyRuntimeTextIsExplicit() {
-        String generic = """
-                static void j2ll_gcf_decode_aaaaaaaaaaaaaaaaaaaaaaaa(void) {
-                    for (size_t index = 0;
-                         index < sizeof(j2ll_nt_aaaaaaaaaaaaaaaaaaaaaaaa);
-                         index++) {}
+    void genericAndLegacyLowSensitivityPersistentDecodersAreFindings() {
+        for (String decoder : List.of(
+                "j2ll_gcf_decode_aaaaaaaaaaaaaaaaaaaaaaaa",
+                "j2ll_gcf_low_decode_aaaaaaaaaaaaaaaaaaaaaaaa",
+                "j2ll_gcf_low_decode_aaaaaaaaaaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbbbbbbbbbb")) {
+            String persistent = """
+                    static void %s(void) {
+                        for (size_t index = 0; index < 4u; index++) {}
+                    }
+                    """.formatted(decoder);
+            GeneratedNativeHardeningAuditResult result =
+                    audit.audit(persistent);
+            assertEquals(
+                    List.of(GeneratedNativeHardeningAudit
+                            .PERSISTENT_DECODED_SENSITIVE_TEXT),
+                    result.findings().stream()
+                            .map(GeneratedNativeHardeningFinding::code)
+                            .toList(),
+                    decoder);
+        }
+
+        String legacyAtomic = """
+                #include <stdatomic.h>
+                static unsigned char decoded_text[4];
+                static _Atomic int decoded_once = 0;
+                static void j2ll_gcf_low_decode_bbbbbbbbbbbbbbbbbbbbbbbb(void) {
+                    int observed = atomic_load_explicit(
+                            &decoded_once,
+                            memory_order_acquire);
+                    if (observed == 0) {
+                        decoded_text[0] = 1u;
+                        atomic_store_explicit(
+                                &decoded_once,
+                                1,
+                                memory_order_release);
+                    }
                 }
                 """;
-        GeneratedNativeHardeningAuditResult genericResult =
-                audit.audit(generic);
+        GeneratedNativeHardeningAuditResult legacyAtomicResult =
+                audit.audit(legacyAtomic);
         assertEquals(
                 List.of(GeneratedNativeHardeningAudit
                         .PERSISTENT_DECODED_SENSITIVE_TEXT),
-                genericResult.findings().stream()
+                legacyAtomicResult.findings().stream()
                         .map(GeneratedNativeHardeningFinding::code)
                         .toList());
-        assertFalse(genericResult.evidence().contains(
-                GeneratedNativeHardeningAudit.EVIDENCE_SCOPE_LOCAL_DECODER));
-        assertFalse(genericResult.evidence().contains(
-                GeneratedNativeHardeningAudit.EVIDENCE_THREAD_SAFE_ONCE));
 
         String low = new GeneratedCFragmentTextObfuscator().obfuscate(
                 NativeTextBuildKey.fromUtf8("fixed-build"),
                 "runtime:error",
-                "const char* message(void) { return \"ordinary warning\"; }\n",
-                GeneratedCTextPolicy.lowSensitivityRuntimeError());
+                """
+                static int consume(const char* value);
+                static int message(void) {
+                    return consume("ordinary warning");
+                }
+                """,
+                GeneratedCTextPolicy.sensitive(
+                        NativeTextPurpose.RUNTIME_ERROR))
+                + new NativeTextCEmitter().runtimeSource();
         GeneratedNativeHardeningAuditResult lowResult = audit.audit(low);
         assertTrue(lowResult.passed(), lowResult.findings().toString());
         assertEquals(
                 List.of(
                         GeneratedNativeHardeningAudit
-                                .EVIDENCE_LOW_SENSITIVITY_LAZY_ONCE,
+                                .EVIDENCE_AFFINE_CIPHERTEXT_STORAGE,
+                        GeneratedNativeHardeningAudit
+                                .EVIDENCE_CALL_LOCAL_TEXT_CLEANUP,
+                        GeneratedNativeHardeningAudit
+                                .EVIDENCE_CALL_LOCAL_TEXT_SCRATCH,
                         GeneratedNativeHardeningAudit
                                 .EVIDENCE_SCRATCH_ZEROIZER,
                         GeneratedNativeHardeningAudit
@@ -381,6 +449,8 @@ final class GeneratedNativeHardeningAuditTest {
                         GeneratedNativeHardeningAudit
                                 .EVIDENCE_SITE_BOUND_TEXT_CODEC),
                 lowResult.evidence());
+        assertFalse(lowResult.evidence().contains(
+                "LOW_SENSITIVITY_RUNTIME_TEXT_LAZY_ONCE"));
     }
 
     @Test
@@ -538,8 +608,11 @@ final class GeneratedNativeHardeningAuditTest {
                 audit.audit(source.toString());
 
         assertEquals(
-                List.of(GeneratedNativeHardeningAudit
-                        .SINGLE_DECODER_BULK_TEXT_LIFETIME),
+                List.of(
+                        GeneratedNativeHardeningAudit
+                                .PERSISTENT_DECODED_SENSITIVE_TEXT,
+                        GeneratedNativeHardeningAudit
+                                .SINGLE_DECODER_BULK_TEXT_LIFETIME),
                 result.findings().stream()
                         .map(GeneratedNativeHardeningFinding::code)
                         .toList());

@@ -65,13 +65,19 @@ final class GeneratedNativeAffineStorageAudit {
                     ? 0
                     : countBytes(source, opening, closing);
             String cipher = ciphers.group(2);
+            boolean immutable = ciphers.group(1) != null;
+            if (!immutable && firstFinding == null) {
+                firstFinding = finding(
+                        source,
+                        ciphers.start(),
+                        "native-text ciphertext uses mutable storage; process-lifetime plaintext and in-place decode are forbidden");
+            }
             int unexpectedReference =
                     referenceAudit.firstUnexpectedReference(
                             referenceIndex,
                             cipher,
                             ciphers.start(2),
-                            ciphers.end(2),
-                            ciphers.group(1) == null);
+                            ciphers.end(2));
             if (unexpectedReference >= 0
                     && firstFinding == null) {
                 firstFinding = finding(

@@ -29,11 +29,21 @@ public final class NativeTextCEmitter {
     }
 
     public String ciphertextDeclaration(NativeTextEncoding encoding) {
-        return ciphertextDeclaration(encoding, true);
-    }
-
-    public String mutableCiphertextDeclaration(NativeTextEncoding encoding) {
-        return ciphertextDeclaration(encoding, false);
+        Objects.requireNonNull(encoding, "encoding");
+        StringBuilder source = new StringBuilder("static const unsigned char ");
+        source.append(cipherSymbol(encoding))
+                .append("[] = {");
+        byte[] ciphertext = encoding.ciphertext();
+        for (int index = 0; index < ciphertext.length; index++) {
+            if (index % 12 == 0) {
+                source.append("\n    ");
+            }
+            source.append(String.format(
+                    Locale.ROOT,
+                    "0x%02x, ",
+                    ciphertext[index] & 0xff));
+        }
+        return source.append("\n};\n").toString();
     }
 
     public String scratchDeclarationAndDecode(
@@ -106,67 +116,6 @@ public final class NativeTextCEmitter {
                 indent);
     }
 
-    public String decodeInPlace(
-            NativeTextEncoding encoding,
-            String mutableCipher,
-            String indent) {
-        Objects.requireNonNull(encoding, "encoding");
-        requireCIdentifier(mutableCipher);
-        requireIndent(indent);
-        String token =
-                encoding.symbol().substring("j2ll_nt_".length());
-        String scratch = "j2ll_nt_in_place_" + token;
-        String copyIndex = "j2ll_nt_copy_" + token;
-        String inner = indent + "    ";
-        String loop = inner + "    ";
-        return new StringBuilder(indent)
-                .append("{\n")
-                .append(inner)
-                .append("unsigned char ")
-                .append(scratch)
-                .append("[sizeof(")
-                .append(mutableCipher)
-                .append(")];\n")
-                .append(codecEmitter.decodeInto(
-                        encoding,
-                        mutableCipher,
-                        "sizeof(" + mutableCipher + ")",
-                        scratch,
-                        inner))
-                .append(inner)
-                .append("for (size_t ")
-                .append(copyIndex)
-                .append(" = 0u; ")
-                .append(copyIndex)
-                .append(" < sizeof(")
-                .append(mutableCipher)
-                .append("); ")
-                .append(copyIndex)
-                .append("++) {\n")
-                .append(loop)
-                .append("((unsigned char*)(")
-                .append(mutableCipher)
-                .append("))[")
-                .append(copyIndex)
-                .append("] = ")
-                .append(scratch)
-                .append("[")
-                .append(copyIndex)
-                .append("];\n")
-                .append(inner)
-                .append("}\n")
-                .append(inner)
-                .append(NativeScratchZeroizerSource.FUNCTION_NAME)
-                .append("(")
-                .append(scratch)
-                .append(", sizeof(")
-                .append(scratch)
-                .append("));\n")
-                .append(indent)
-                .append("}\n")
-                .toString();
-    }
-
     public String scratchCleanup(
             NativeTextEncoding encoding,
             String scratchVariable) {
@@ -180,30 +129,6 @@ public final class NativeTextCEmitter {
                 + "));\n";
     }
 
-    private String ciphertextDeclaration(
-            NativeTextEncoding encoding,
-            boolean constant) {
-        Objects.requireNonNull(encoding, "encoding");
-        StringBuilder source = new StringBuilder("static ");
-        if (constant) {
-            source.append("const ");
-        }
-        source.append("unsigned char ")
-                .append(cipherSymbol(encoding))
-                .append("[] = {");
-        byte[] ciphertext = encoding.ciphertext();
-        for (int index = 0; index < ciphertext.length; index++) {
-            if (index % 12 == 0) {
-                source.append("\n    ");
-            }
-            source.append(String.format(
-                    Locale.ROOT,
-                    "0x%02x, ",
-                    ciphertext[index] & 0xff));
-        }
-        return source.append("\n};\n").toString();
-    }
-
     private String cipherSymbol(NativeTextEncoding encoding) {
         return encoding.symbol() + "_cipher";
     }
@@ -213,7 +138,7 @@ public final class NativeTextCEmitter {
             String destination) {
         if (cipherSymbol(encoding).equals(destination)) {
             throw new IllegalArgumentException(
-                    "affine native-text decode destination aliases ciphertext; use decodeInPlace");
+                    "affine native-text decode destination must not alias ciphertext");
         }
     }
 

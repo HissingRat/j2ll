@@ -1048,9 +1048,10 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
   fragment-local sensitive text rewrite，并让
   `HostJniLowSensitivityThrowLeafPool`只对closed allowlist中的固定异常类型/
   错误文案生成build-scoped hash-only `noinline,cold` leaf。leaf只接收
-  `JNIEnv*`，不形成owner/member/descriptor/token join；低敏感lazy-once编码按
-  明文去重且每个function只调用自身实际引用的decoder。未allowlist文本仍留在
-  原activation-local fragment。
+  `JNIEnv*`，不形成owner/member/descriptor/token join；异常类型与文案作为同一
+  direct-call tuple在leaf activation内解码，并由统一cleanup在返回时清零。生产路径
+  不允许lazy-once、mutable ciphertext或in-place decode。未allowlist文本仍留在原
+  activation-local fragment。
 - JNI local-reference lifetime：`NativeLocalReferenceSafety`识别需要精确规划的reachable cyclic CFG；`toolchain.localref`下的classifier、site-sensitive CFG facts、release scheduler、transfer safety与validator形成per-method immutable plan，覆盖normal/parallel/handler/explicit-throw edge。handler需求只回传到block live-in，不进入normal live-out。`NativeImplementationPlan`保存plan或精确unavailable reason，LLVM backend只消费已验证plan；registered native的ref-producing callee改走JVM/JNI nested activation，不能安全桥接的compiler-internal callee fail closed。
 - internal method dispatch：`HostJniInternalMethodDispatchSource`只为批准且由static/virtual dispatch helper到达的target生成descriptor-aware bridge。它调用hash-only local wrapper，不查询method ID；reference/owned/pending-exception shape必须通过nested JNI local frame提升结果或恢复异常。same-owner direct scalar target不生成未使用wrapper，降低体积。
 - native text：`toolchain.nativetext.NativeTextEncoder` 生成 build/purpose/use-scoped

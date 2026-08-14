@@ -322,8 +322,8 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
   compile-time offset。只有跨call/assignment复用允许生成`ready` guard。
 - 每个 function 使用聚合 scratch 与统一 cleanup hook，在 normal/early/failure
   return 时清零全部 slot；owner/table 等可明确界定更短 use window 的路径继续
-  使用显式 decode/use/zero。只有低敏感普通 runtime error 文案可显式选择
-  lazy-once lifetime。
+  使用显式 decode/use/zero。低敏感普通runtime error也不得选择process-lifetime
+  lazy-once；所有generated-C文本统一保持activation-local明文生命周期。
 
 验收：
 
@@ -838,9 +838,12 @@ plaintext/export audit与更新后的攻击者回归。
   owner/member/descriptor、reflection target、metadata token和业务字符串不会
   进入共享leaf。
 - 每个leaf使用build-scoped hash-only symbol、`noinline,cold`属性并且只接收
-  `JNIEnv*`。低敏感lazy-once emitter按相同明文去重，且一个function只调用自己
-  实际使用的decoder；高敏感或未allowlist文本继续保持activation-local scratch。
-- v2五目标随机build `build_2026-07-28_19-12-20` 对上一份同输入随机build
+  `JNIEnv*`。异常类型与文案作为同一direct-call tuple在leaf activation内guardless
+  解码，`ThrowNew`返回后统一清零；高敏感或未allowlist文本同样保持activation-local
+  scratch。早期用于该优化的lazy-once emitter已经退役，不再保留mutable plaintext。
+- 以下大小数据是旧lazy lifetime退役前的pre-5A历史证据，只证明leaf outlining在该
+  样本上的体积方向，不代表当前activation-local lifetime实现已经完成同口径重测。
+  v2五目标随机build `build_2026-07-28_19-12-20` 对上一份同输入随机build
   `build_2026-07-28_18-23-55`，generated C从6,596,235 B降到4,807,332 B
   （-27.12%）；五个flat native分别下降14.80%至17.25%，最终JAR从
   4,402,475 B降到3,969,147 B（-9.84%）。x64 Linux `.text`从725,188 B降到
@@ -1086,9 +1089,9 @@ CI 不要求安装交互式 Ghidra；常规 suite 使用轻量 binary/source sca
   directory、旧 class/method/field/reflection 集中表、generic persistent decoder
   及单 decoder 覆盖大量数组。decoder structural scanner 不依赖历史函数名：
   改名后的 pointer/loop/XOR decoder 若从 call sites 覆盖两个以上 ciphertext，
-  或仍携带固定 SplitMix 常量/相邻 XOR seed shares，同样失败。lazy-once 只有
-  明确的 low-sensitivity runtime-error policy 才记录窄化证据，不能再无条件
-  作为 hardening 正证据。
+  或仍携带固定 SplitMix 常量/相邻 XOR seed shares，同样失败。process-lifetime
+  lazy-once不再属于任何文本domain的正向hardening证据；旧decoder、mutable cipher和
+  in-place write必须分别由persistent-plaintext或affine-storage审计fail closed。
 - registration diagnostic gate 除精确阻断历史稳定文案，还结构化拒绝
   `FatalError` 的 direct/adjacent C string-literal 第二参数；使用 decoded local
   variable 的失败路径不被误报，注释中的伪调用不作为代码。

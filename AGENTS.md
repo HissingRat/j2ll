@@ -182,18 +182,20 @@
   不读取未初始化明文，跨call/assignment复用才允许`ready` guard。不得跨function共享tuple、slot、plaintext cache或
   encoding identity，source audit必须以`CROSS_FUNCTION_NATIVE_TEXT_TUPLE_REUSE`阻断
   回归。函数内slot使用聚合scratch与统一cleanup hook覆盖normal/early/failure exit；能
-  明确更短use window的owner/table metadata继续优先显式decode/use/zero。只有低敏感普通
-  runtime error文本可显式选择lazy-once；generic/global decoder、集中text-pointer目录和
-  单decoder批量覆盖必须被source audit阻断。允许translation-unit内共享一个
+  明确更短use window的owner/table metadata继续优先显式decode/use/zero。普通runtime
+  error文本也必须使用activation-local scratch；process-lifetime lazy-once、mutable
+  ciphertext/in-place decode、generic/global decoder、集中text-pointer目录和单decoder批量
+  覆盖必须被source audit阻断。允许translation-unit内共享一个
   metadata-free `noinline`
   zeroizer/cleanup callback；它只能接收scratch地址/长度，不能接收或解析
   ciphertext、codec、owner/member/descriptor、token，也不能成为shared decoder或
   plaintext cache。
 - 固定异常类型/错误文案只有进入显式closed allowlist后，才可outline到
   build-scoped hash-only `noinline,cold` leaf。该leaf只能接收`JNIEnv*`，不得接收
-  owner/member/descriptor、业务字符串、metadata token或Java value；相同低敏感文本
-  可在leaf fragment内复用一个lazy-once encoding，各function只触发自身实际引用的
-  decoder。高敏感文本和未列入allowlist的错误仍保持activation-local lifetime。
+  owner/member/descriptor、业务字符串、metadata token或Java value。leaf内的异常类型与
+  文案必须作为同一direct-call tuple在该leaf activation内guardless解码，`ThrowNew`返回后
+  由统一cleanup清零；不得共享process-lifetime plaintext、mutable cipher或decoder cache。
+  高敏感文本和未列入allowlist的错误同样保持activation-local lifetime。
 - Registration rollback/exception-restore diagnostics必须使用registration text domain，
   只在对应`FatalError`路径解码；generated-C gate以
   `STABLE_REGISTRATION_DIAGNOSTIC`阻断稳定明文xref锚点与任意direct/adjacent

@@ -227,11 +227,12 @@ plaintext cache。
 普通固定异常类型和错误文案属于窄化的低敏感例外。只有显式 closed allowlist
 命中的 `j2ll_throw_new` pair 才会被 outline 为 build-scoped hash-only
 `noinline,cold` leaf；leaf 只接收 `JNIEnv*`，不接收 owner、member、descriptor、
-metadata token、业务字符串或 Java value。低敏感 leaf fragment可按相同明文共享
-一个 lazy-once encoding，但每个 leaf function只调用它实际引用的 decoder。这样
-减少错误冷路径在每个 localized helper 中重复的 codec/throw骨架，同时不恢复
-全局 metadata resolver、集中业务字符串 decoder 或跨站点高敏感明文 cache。
-未列入allowlist的错误文本继续使用activation-local scratch。
+metadata token、业务字符串或 Java value。异常类型与文案只在leaf真实到达时作为
+同一direct-call tuple解码到activation-local scratch，`ThrowNew`返回后由统一cleanup
+清零。生产路径不允许lazy-once、mutable ciphertext、in-place decode或跨activation
+plaintext cache。这样减少错误冷路径在每个localized helper中重复的throw骨架，同时
+不恢复全局metadata resolver或集中业务字符串decoder。未列入allowlist的错误文本也
+继续使用activation-local scratch。
 
 每次 ciphertext indexed read 都通过 `const volatile unsigned char` lvalue 形成跨平台 runtime boundary，防止 Zig/Clang 在 generated-C `ReleaseSmall` optimization 中把常量 ciphertext + key 解码循环折叠回最终 binary 明文；generated-C audit 对缺失或混用 direct read 的 source fail closed，`-O2` object test 扫描全部 12-byte UTF-8/UTF-16LE sliding windows。helper 在栈上恢复 JNI modified UTF-8，调用 `NewStringUTF` 后立即清零，包括 JNI 返回 `NULL` 且保留 pending exception 的路径。相同值允许在单次构建内共享一个小 helper group。通用 runtime metadata、business string、registration text 分别使用独立 build material；registration/runtime metadata 也保持不同 purpose/lifetime/lookup。generated-C audit 会阻断 reusable decoder fanout、固定 SplitMix shape、相邻 seed/cipher、optimizer-foldable read与非法affine storage。artifact audit 中 `LLVM_NATIVE_PATH`、`TEMPLATE_JNI_PATH_STABLE_SURFACE` 和 StringConcat constant carrier stable generated-C surface 是 blocking sensitive fact，并分别记录 `promotionReason=llvmNativeSurface`、`templateStableSurface`、`stableGeneratedCSurface`；report 只写 literal hash，lowering helper evidence只写 kind + identity hash。class name / descriptor / reflection metadata token / lambda 或 MethodHandle bootstrap metadata 仍不加密；reflection-sensitive method 的普通 `CONST_STRING` 记录 `STRING_ENCRYPTION_REFLECTION_SENSITIVE` skip，相关 metadata fact 只按 `metadataSensitiveObservedOnly` 进入 observed-only evidence，避免破坏静态 metadata 解析。
 

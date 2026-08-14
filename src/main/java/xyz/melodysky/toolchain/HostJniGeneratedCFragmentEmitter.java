@@ -5,6 +5,7 @@ import java.util.function.Consumer;
 import xyz.melodysky.toolchain.nativetext.GeneratedCFragmentTextObfuscator;
 import xyz.melodysky.toolchain.nativetext.GeneratedCTextPolicy;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
+import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
 /**
  * Applies the common generated-C text and low-sensitivity outlining policy to
@@ -57,6 +58,7 @@ final class HostJniGeneratedCFragmentEmitter {
                 buildKey,
                 "low-sensitivity-throw-leaves",
                 lowSensitivityLeaves.definitions(),
-                GeneratedCTextPolicy.lowSensitivityRuntimeError()));
+                GeneratedCTextPolicy.sensitive(
+                        NativeTextPurpose.RUNTIME_ERROR)));
     }
 }
