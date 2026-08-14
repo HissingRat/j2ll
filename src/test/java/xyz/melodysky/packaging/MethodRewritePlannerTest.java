@@ -1,6 +1,8 @@
 package xyz.melodysky.packaging;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -70,7 +72,34 @@ class MethodRewritePlannerTest implements Opcodes {
         assertTrue(decisions.stream().allMatch(decision ->
                 decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB));
         assertTrue(decisions.stream().allMatch(decision ->
-                decision.generatedHelperName().orElseThrow().startsWith("__j2ll_interface_body$")));
+                decision.generatedHelperName().orElseThrow().matches("j2ll_m_[0-9a-f]{32}")));
+        assertTrue(decisions.stream().allMatch(decision ->
+                decision.registrationOwner().matches("j2ll/generated/i_[0-9a-f]{32}")));
+    }
+
+    @Test
+    void interfaceHelperIdentifiersAreStableWithinBuildAndVaryAcrossBuilds() {
+        ParsedClass parsedClass = parsed(
+                "sensitive/acme/SecretApi",
+                AsmFixtureBuilder.interfaceWithAbstractAndDefault(
+                        "sensitive/acme/SecretApi"));
+
+        MethodRewriteDecision first = interfaceDecision(
+                planner.planClass(parsedClass, 0x1234L));
+        MethodRewriteDecision repeated = interfaceDecision(
+                planner.planClass(parsedClass, 0x1234L));
+        MethodRewriteDecision distinct = interfaceDecision(
+                planner.planClass(parsedClass, 0x5678L));
+
+        assertEquals(first.registrationOwner(), repeated.registrationOwner());
+        assertEquals(first.generatedHelperName(), repeated.generatedHelperName());
+        assertNotEquals(first.registrationOwner(), distinct.registrationOwner());
+        assertNotEquals(first.generatedHelperName(), distinct.generatedHelperName());
+        assertTrue(first.registrationOwner().matches("j2ll/generated/i_[0-9a-f]{32}"));
+        assertTrue(first.generatedHelperName().orElseThrow().matches("j2ll_m_[0-9a-f]{32}"));
+        assertFalse(first.registrationOwner().contains("sensitive"));
+        assertFalse(first.registrationOwner().contains("SecretApi"));
+        assertFalse(first.generatedHelperName().orElseThrow().contains("answer"));
     }
 
     @Test
@@ -96,8 +125,17 @@ class MethodRewritePlannerTest implements Opcodes {
         NativeRegistrationPlan plan = new NativeRegistrationPlanner().plan(planner.planClass(parsedClass));
 
         assertEquals(1, plan.entries().size());
-        assertTrue(plan.entries().get(0).methodName().startsWith("__j2ll_interface_body$"));
-        assertTrue(plan.entries().get(0).registrationOwner().contains("InterfaceMethods"));
+        assertTrue(plan.entries().get(0).methodName().matches("j2ll_m_[0-9a-f]{32}"));
+        assertTrue(plan.entries().get(0).registrationOwner().matches(
+                "j2ll/generated/i_[0-9a-f]{32}"));
+    }
+
+    private MethodRewriteDecision interfaceDecision(
+            java.util.List<MethodRewriteDecision> decisions) {
+        return decisions.stream()
+                .filter(decision -> decision.method().name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
     }
 
     private ParsedClass parsed(String internalName, byte[] bytes) {

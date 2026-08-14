@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionHandlers;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -199,7 +200,8 @@ final class NativeLocalReferenceOwnershipClassifier {
                 index < instructions.size();
                 index++) {
             instructions.get(index).exceptionSites().stream()
-                    .flatMap(site -> site.handlers().stream())
+                    .flatMap(site -> IrExceptionHandlers
+                            .reachable(site.handlers()).stream())
                     .map(edge -> new Successor(
                             edge.target(),
                             edge.arguments()))
@@ -209,7 +211,8 @@ final class NativeLocalReferenceOwnershipClassifier {
         if (definingBlock.terminator().kind()
                         == xyz.melodysky.ir.model.IrTerminatorKind.THROW
                 && !definingBlock.exceptionEdges().isEmpty()) {
-            definingBlock.exceptionEdges().stream()
+            IrExceptionHandlers.reachable(
+                            definingBlock.exceptionEdges()).stream()
                     .map(edge -> new Successor(
                             edge.target(),
                             edge.arguments()))
@@ -286,7 +289,8 @@ final class NativeLocalReferenceOwnershipClassifier {
         boolean used = NativeLocalReferenceCfgFacts.referenceTerminatorUses(
                                 block.terminator())
                         .contains(value)
-                || block.exceptionEdges().stream()
+                || IrExceptionHandlers.reachable(
+                                block.exceptionEdges()).stream()
                         .flatMap(edge -> edge.arguments().stream())
                         .anyMatch(value::equals);
         return used ? ValueFlow.USED : ValueFlow.UNCHANGED;
@@ -298,7 +302,8 @@ final class NativeLocalReferenceOwnershipClassifier {
         return NativeLocalReferenceCfgFacts.referenceOperands(instruction)
                         .contains(value)
                 || instruction.exceptionSites().stream()
-                        .flatMap(site -> site.handlers().stream())
+                        .flatMap(site -> IrExceptionHandlers
+                                .reachable(site.handlers()).stream())
                         .flatMap(edge -> edge.arguments().stream())
                         .anyMatch(value::equals);
     }
@@ -309,12 +314,13 @@ final class NativeLocalReferenceOwnershipClassifier {
         block.instructions().stream()
                 .flatMap(instruction ->
                         instruction.exceptionSites().stream())
-                .flatMap(site -> site.handlers().stream())
+                .flatMap(site -> IrExceptionHandlers
+                        .reachable(site.handlers()).stream())
                 .map(edge -> new Successor(
                         edge.target(),
                         edge.arguments()))
                 .forEach(result::add);
-        block.exceptionEdges().stream()
+        IrExceptionHandlers.reachable(block.exceptionEdges()).stream()
                 .map(edge -> new Successor(
                         edge.target(),
                         edge.arguments()))
@@ -369,7 +375,8 @@ final class NativeLocalReferenceOwnershipClassifier {
                                 instruction)
                         .forEach(result::add);
                 instruction.exceptionSites().stream()
-                        .flatMap(site -> site.handlers().stream())
+                        .flatMap(site -> IrExceptionHandlers
+                                .reachable(site.handlers()).stream())
                         .flatMap(edge -> edge.arguments().stream())
                         .filter(value ->
                                 value.type() == IrType.REFERENCE)
@@ -378,7 +385,7 @@ final class NativeLocalReferenceOwnershipClassifier {
             NativeLocalReferenceCfgFacts.referenceTerminatorUses(
                             block.terminator())
                     .forEach(result::add);
-            block.exceptionEdges().stream()
+            IrExceptionHandlers.reachable(block.exceptionEdges()).stream()
                     .flatMap(edge -> edge.arguments().stream())
                     .filter(value -> value.type() == IrType.REFERENCE)
                     .forEach(result::add);

@@ -905,10 +905,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             return true;
         }
         if (intrinsic.policy() == JdkMethodPolicy.JVM_HELPER_UNSUPPORTED) {
-            addJvmHelperUnsupportedDiagnostic(
+            addUnsupportedDiagnostic(
                     currentMethod,
                     intrinsic.method().methodKey(),
                     intrinsic.reason(),
+                    intrinsic.unsupportedDiagnosticCode().orElseThrow(),
                     diagnostics);
             return false;
         }
@@ -1760,10 +1761,11 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             String reason = lambdaPlan.supported()
                     ? "unsupported lambda capture shape"
                     : lambdaPlan.reason();
-            addJvmHelperUnsupportedDiagnostic(
+            addUnsupportedDiagnostic(
                     currentMethod,
                     "indy:" + invokeDynamicInsn.name + "!" + invokeDynamicInsn.desc,
                     reason,
+                    lambdaPlan.unsupportedDiagnosticCode(),
                     diagnostics);
         }
         String methodKey = "indy:" + invokeDynamicInsn.name

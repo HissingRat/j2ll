@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import xyz.melodysky.diagnostic.DiagnosticCode;
 
 class LambdaMetafactoryBootstrapTest {
     @Test
@@ -55,6 +56,7 @@ class LambdaMetafactoryBootstrapTest {
         assertTrue(plan.lambdaMetafactory());
         assertTrue(plan.supported());
         assertTrue(plan.serializable());
+        assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, plan.unsupportedDiagnosticCode());
         assertEquals(java.util.List.of("java/io/Serializable"), plan.markerInterfaces());
         assertEquals(java.util.List.of("()V"), plan.bridgeMethodDescriptors());
     }
@@ -67,6 +69,7 @@ class LambdaMetafactoryBootstrapTest {
 
         assertTrue(plan.lambdaMetafactory());
         assertFalse(plan.supported());
+        assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, plan.unsupportedDiagnosticCode());
     }
 
     private Handle bootstrap(String name) {

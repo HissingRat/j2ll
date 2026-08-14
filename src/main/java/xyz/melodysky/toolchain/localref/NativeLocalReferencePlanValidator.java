@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
+import xyz.melodysky.ir.model.IrExceptionHandlers;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -110,7 +111,8 @@ public final class NativeLocalReferencePlanValidator {
         for (IrBlock block : method.blocks()) {
             for (IrInstruction instruction : block.instructions()) {
                 for (var site : instruction.exceptionSites()) {
-                    for (var edge : site.handlers()) {
+                    for (var edge : IrExceptionHandlers.reachable(
+                            site.handlers())) {
                         Optional<String> failure = parallelTransferFailure(
                                 edge.arguments(),
                                 blocks.get(edge.target()),
@@ -122,7 +124,8 @@ public final class NativeLocalReferencePlanValidator {
                     }
                 }
             }
-            for (var edge : block.exceptionEdges()) {
+            for (var edge : IrExceptionHandlers.reachable(
+                    block.exceptionEdges())) {
                 Optional<String> failure = parallelTransferFailure(
                         edge.arguments(),
                         blocks.get(edge.target()),
@@ -329,19 +332,43 @@ public final class NativeLocalReferencePlanValidator {
         Set<String> transferCycles = cyclicTransferValues(transfers);
         LinkedHashSet<String> result = new LinkedHashSet<>();
         method.blocks().stream()
-                .filter(block -> block.terminator().kind()
-                                == xyz.melodysky.ir.model
-                                        .IrTerminatorKind.RETURN
-                        || (block.terminator().kind()
-                                        == xyz.melodysky.ir.model
-                                                .IrTerminatorKind.THROW
-                                && block.exceptionEdges().isEmpty()))
-                .flatMap(block -> block.terminator().value().stream())
-                .filter(value -> value.type() == IrType.REFERENCE)
-                .map(IrValue::name)
-                .filter(value -> !transferCycles.contains(value))
-                .forEach(result::add);
+                .filter(this::isActivationExit)
+                .forEach(block -> {
+                    /*
+                     * JNI deletes every local reference still owned by the
+                     * native activation when it returns.  An exception-edge
+                     * argument may therefore terminate at an otherwise
+                     * unused handler parameter in a return/unhandled-throw
+                     * block; it need not be consumed by the terminator to be
+                     * a real lifetime sink.
+                     */
+                    block.parameters().stream()
+                            .filter(value ->
+                                    value.type() == IrType.REFERENCE)
+                            .map(IrValue::name)
+                            .filter(value ->
+                                    !transferCycles.contains(value))
+                            .forEach(result::add);
+                    block.terminator().value().stream()
+                            .filter(value ->
+                                    value.type() == IrType.REFERENCE)
+                            .map(IrValue::name)
+                            .filter(value ->
+                                    !transferCycles.contains(value))
+                            .forEach(result::add);
+                });
         return Set.copyOf(result);
+    }
+
+    private boolean isActivationExit(IrBlock block) {
+        return block.terminator().kind()
+                        == xyz.melodysky.ir.model.IrTerminatorKind.RETURN
+                || (block.terminator().kind()
+                                == xyz.melodysky.ir.model
+                                        .IrTerminatorKind.THROW
+                        && IrExceptionHandlers.reachable(
+                                        block.exceptionEdges())
+                                .isEmpty());
     }
 
     private Set<String> cyclicTransferValues(
@@ -399,16 +426,18 @@ public final class NativeLocalReferencePlanValidator {
                             instruction.result().orElseThrow());
                 }
                 instruction.exceptionSites().stream()
-                        .flatMap(site -> site.handlers().stream())
+                        .flatMap(site -> IrExceptionHandlers
+                                .reachable(site.handlers()).stream())
                         .forEach(edge -> addArgumentTransfers(
                                 mutable,
                                 edge.arguments(),
                                 blocks.get(edge.target())));
             }
-            block.exceptionEdges().forEach(edge -> addArgumentTransfers(
-                    mutable,
-                    edge.arguments(),
-                    blocks.get(edge.target())));
+            IrExceptionHandlers.reachable(block.exceptionEdges())
+                    .forEach(edge -> addArgumentTransfers(
+                            mutable,
+                            edge.arguments(),
+                            blocks.get(edge.target())));
             var terminator = block.terminator();
             terminator.target().ifPresent(target ->
                     addArgumentTransfers(
@@ -506,11 +535,12 @@ public final class NativeLocalReferencePlanValidator {
             block.instructions().stream()
                     .flatMap(instruction ->
                             instruction.exceptionSites().stream())
-                    .flatMap(site -> site.handlers().stream())
+                    .flatMap(site -> IrExceptionHandlers
+                            .reachable(site.handlers()).stream())
                     .map(edge -> edge.target())
                     .filter(names::contains)
                     .forEach(targets::add);
-            block.exceptionEdges().stream()
+            IrExceptionHandlers.reachable(block.exceptionEdges()).stream()
                     .map(xyz.melodysky.ir.model.IrExceptionEdge::target)
                     .filter(names::contains)
                     .forEach(targets::add);

@@ -664,6 +664,66 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
+    void synchronizedCleanupRetainsSelfCatchAndOrderedOuterHandlers() {
+        IrMethod method = lower(
+                ExceptionFlowAsmFixtures
+                        .classWithSelfProtectedSynchronizedCleanup(
+                                "pkg/SyncCleanup"),
+                "cleanup").irMethod().orElseThrow();
+
+        IrBlock cleanup = method.blocks().stream()
+                .filter(block -> block.isExceptionHandler()
+                        && hasOpcode(
+                                block,
+                                IrOpcode.MONITOR_EXIT_ON_EXCEPTION))
+                .findFirst()
+                .orElseThrow();
+        var monitorExit = cleanup.instructions().stream()
+                .filter(instruction -> instruction.opcode()
+                        == IrOpcode.MONITOR_EXIT_ON_EXCEPTION)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(
+                List.of("<any>", "java/lang/ArithmeticException", "<any>"),
+                monitorExit.exceptionSites().get(0).handlers().stream()
+                        .map(IrExceptionEdge::catchType)
+                        .toList());
+        assertEquals(
+                cleanup.name(),
+                monitorExit.exceptionSites().get(0).handlers().get(0).target());
+        assertEquals(
+                List.of("<any>"),
+                xyz.melodysky.ir.model.IrExceptionHandlers.reachable(
+                                monitorExit.exceptionSites().get(0).handlers())
+                        .stream()
+                        .map(IrExceptionEdge::catchType)
+                        .toList());
+        assertFalse(new NativeExceptionFlowSupport()
+                .hasUnsupportedJvmFlow(method));
+        var localReferences = new xyz.melodysky.toolchain.localref
+                        .NativeLocalReferencePlanner()
+                .plan(method);
+        assertTrue(
+                localReferences.plan().isPresent(),
+                localReferences.failureReason().orElse("missing plan"));
+        var localReferencePlan = localReferences.plan().orElseThrow();
+        IrValue caught = cleanup.parameters().get(0);
+        int monitorExitIndex = cleanup.instructions().indexOf(monitorExit);
+        var release = localReferencePlan.releasesAfter(
+                cleanup.name(),
+                monitorExitIndex);
+        assertTrue(release.exceptionalPath().contains(caught));
+        IrValue pending = monitorExit.exceptionSites().get(0)
+                .exceptionValue()
+                .orElseThrow();
+        assertFalse(release.exceptionalPath().contains(pending));
+        assertEquals(
+                pending,
+                monitorExit.exceptionSites().get(0).handlers().get(0)
+                        .arguments().get(0));
+    }
+
+    @Test
     void prunesUnreachableSynchronizedBlockExceptionalUnlockHandler() {
         SsaMethodResult result = lower(
                 AsmFixtureBuilder.classWithSynchronizedExceptionalUnlockShape("pkg/SyncExceptional"),
@@ -722,7 +782,7 @@ class BytecodeToSsaLowererTest {
 
         assertEquals(LoweringStatus.SKIPPED, result.status());
         assertTrue(result.irMethod().isEmpty());
-        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED.value(), result.reasonCode());
+        assertEquals(DiagnosticCode.THREAD_HELPER_UNSUPPORTED.value(), result.reasonCode());
     }
 
     @Test
@@ -736,8 +796,10 @@ class BytecodeToSsaLowererTest {
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
-        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
-        assertTrue(result.diagnostics().get(0).message().contains("WAIT_NOTIFY_UNSUPPORTED"));
+        assertEquals(DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertEquals(
+                DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED.value(),
+                result.artifact().orElseThrow().reasonCode());
     }
 
     @Test
@@ -909,9 +971,30 @@ class BytecodeToSsaLowererTest {
         var result = new BytecodeToSsaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
-        assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertEquals(
+                DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED.value(),
+                result.artifact().orElseThrow().reasonCode());
         assertTrue(result.diagnostics().get(0).message().contains("altMetafactory"));
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
+    }
+
+    @Test
+    void unsupportedAltMetafactoryCaptureUsesExactReasonCode() {
+        ParsedMethod parsedMethod = parseMethod(
+                AsmFixtureBuilder.classWithAltMetafactoryUnsupportedCapture("pkg/AltCaptureUnsupported"),
+                "altCapture");
+        MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
+
+        var result = new BytecodeToSsaLowerer().lower(cfg);
+
+        assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
+        assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
+        assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, result.diagnostics().get(0).code());
+        assertEquals(
+                DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED.value(),
+                result.artifact().orElseThrow().reasonCode());
+        assertTrue(result.diagnostics().get(0).message().contains("unsupported lambda capture shape"));
     }
 
     @Test

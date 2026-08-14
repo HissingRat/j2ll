@@ -14,6 +14,7 @@ import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
+import xyz.melodysky.packaging.NativeHelperDescriptor;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.toolchain.IntermediateArtifactLayout;
@@ -140,24 +141,12 @@ public final class LoweringReportAssembler {
             return Optional.empty();
         }
         String methodName = rewrite.generatedHelperName().orElse(source.name());
-        String descriptor = registeredDescriptor(rewrite);
+        String descriptor = NativeHelperDescriptor.forDecision(rewrite);
         return registrationPlan.entries().stream()
                 .filter(entry -> entry.registrationOwner().equals(rewrite.registrationOwner()))
                 .filter(entry -> entry.methodName().equals(methodName))
                 .filter(entry -> entry.descriptor().equals(descriptor))
                 .findFirst();
-    }
-
-    private String registeredDescriptor(MethodRewriteDecision rewrite) {
-        if (rewrite.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            String descriptor = rewrite.method().descriptor();
-            int close = descriptor.indexOf(')');
-            return "(L" + rewrite.method().owner() + ";" + descriptor.substring(1, close) + ")V";
-        }
-        if (rewrite.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return "()V";
-        }
-        return rewrite.method().descriptor();
     }
 
     private List<String> compilerFlags(ParsedMethod method) {

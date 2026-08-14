@@ -21,6 +21,7 @@ import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.ir.ssa.BytecodeToSsaLowerer;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.InterfaceMethodAsmFixtures;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 
@@ -71,6 +72,114 @@ class NativeOriginalClassRewriterTest implements Opcodes {
         assertEquals("native0/Loader", trigger.owner);
         assertEquals("ensureLoaded", trigger.name);
         assertEquals("()V", trigger.desc);
+    }
+
+    @Test
+    void defaultInterfaceMethodBecomesLoaderBackedHelperStub() {
+        ParsedClass parsedClass = parsed(
+                "pkg/Api",
+                AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"));
+        MethodRewriteDecision decision = planner.planClass(parsedClass).stream()
+                .filter(item -> item.method().name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
+
+        ClassRewriteResult result = new NativeOriginalClassRewriter().rewrite(
+                parsedClass,
+                List.of(decision),
+                "native0/Loader");
+        ParsedClass rewritten = parsed("pkg/Api", result.classBytes());
+        MethodNode answer = rewritten.classNode().methods.stream()
+                .filter(method -> method.name.equals("answer"))
+                .findFirst()
+                .orElseThrow();
+        List<AbstractInsnNode> opcodes = java.util.stream.StreamSupport.stream(
+                        java.util.Spliterators.spliteratorUnknownSize(
+                                answer.instructions.iterator(),
+                                java.util.Spliterator.ORDERED),
+                        false)
+                .filter(instruction -> instruction.getOpcode() >= 0)
+                .toList();
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals(1, result.applied().size());
+        assertFalse((answer.access & ACC_NATIVE) != 0);
+        assertEquals(4, opcodes.size());
+        MethodInsnNode loader = (MethodInsnNode) opcodes.get(0);
+        assertEquals("native0/Loader", loader.owner);
+        assertEquals("ensureLoaded", loader.name);
+        assertEquals(ALOAD, opcodes.get(1).getOpcode());
+        assertEquals(0, ((VarInsnNode) opcodes.get(1)).var);
+        MethodInsnNode helper = (MethodInsnNode) opcodes.get(2);
+        assertEquals(decision.registrationOwner(), helper.owner);
+        assertEquals(decision.generatedHelperName().orElseThrow(), helper.name);
+        assertEquals("(Lpkg/Api;)I", helper.desc);
+        assertEquals(IRETURN, opcodes.get(3).getOpcode());
+        assertTrue(rewritten.classNode().methods.stream()
+                .noneMatch(method -> method.name.equals(
+                        decision.generatedHelperName().orElseThrow())));
+    }
+
+    @Test
+    void staticAndPrivateInterfaceStubsUseCorrectLocalLayout() {
+        ParsedClass parsedClass = parsed(
+                "pkg/CodeApi",
+                InterfaceMethodAsmFixtures.interfaceWithDefaultStaticAndPrivate(
+                        "pkg/CodeApi"));
+        var decisions = planner.planClass(parsedClass).stream()
+                .filter(decision -> decision.method().name().equals("staticAnswer")
+                        || decision.method().name().equals("privateAnswer"))
+                .toList();
+
+        ClassRewriteResult result = new NativeOriginalClassRewriter().rewrite(
+                parsedClass,
+                decisions,
+                "native0/Loader");
+        ParsedClass rewritten = parsed("pkg/CodeApi", result.classBytes());
+        MethodNode staticAnswer = method(rewritten, "staticAnswer");
+        MethodNode privateAnswer = method(rewritten, "privateAnswer");
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertFalse(java.util.stream.StreamSupport.stream(
+                        java.util.Spliterators.spliteratorUnknownSize(
+                                staticAnswer.instructions.iterator(),
+                                java.util.Spliterator.ORDERED),
+                        false)
+                .anyMatch(VarInsnNode.class::isInstance));
+        MethodInsnNode staticHelper = helperCall(staticAnswer);
+        assertEquals("()I", staticHelper.desc);
+        List<VarInsnNode> privateLoads = java.util.stream.StreamSupport.stream(
+                        java.util.Spliterators.spliteratorUnknownSize(
+                                privateAnswer.instructions.iterator(),
+                                java.util.Spliterator.ORDERED),
+                        false)
+                .filter(VarInsnNode.class::isInstance)
+                .map(VarInsnNode.class::cast)
+                .toList();
+        assertEquals(1, privateLoads.size());
+        assertEquals(ALOAD, privateLoads.get(0).getOpcode());
+        assertEquals(0, privateLoads.get(0).var);
+        assertEquals("(Lpkg/CodeApi;)I", helperCall(privateAnswer).desc);
+    }
+
+    private MethodNode method(ParsedClass parsedClass, String name) {
+        return parsedClass.classNode().methods.stream()
+                .filter(method -> method.name.equals(name))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private MethodInsnNode helperCall(MethodNode method) {
+        return java.util.stream.StreamSupport.stream(
+                        java.util.Spliterators.spliteratorUnknownSize(
+                                method.instructions.iterator(),
+                                java.util.Spliterator.ORDERED),
+                        false)
+                .filter(MethodInsnNode.class::isInstance)
+                .map(MethodInsnNode.class::cast)
+                .filter(call -> call.owner.startsWith("j2ll/generated/i_"))
+                .findFirst()
+                .orElseThrow();
     }
 
     @Test

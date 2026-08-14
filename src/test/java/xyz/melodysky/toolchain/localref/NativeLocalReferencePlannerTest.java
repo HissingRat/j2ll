@@ -565,6 +565,120 @@ class NativeLocalReferencePlannerTest {
                 "the caught path bypasses the normal terminator cleanup");
     }
 
+    @Test
+    void replacesAnOwnedCaughtReferenceOnASelfCatchBackedge() {
+        IrValue caught = ref("%caught");
+        IrValue pending = ref("%pending");
+        IrInstruction retry = IrInstruction.operation(
+                        Optional.empty(),
+                        IrOpcode.MONITOR_EXIT_ON_EXCEPTION,
+                        List.of(),
+                        "monitorExit")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(
+                                new IrExceptionEdge(
+                                        "cleanup",
+                                        "<any>",
+                                        List.of(pending)),
+                                new IrExceptionEdge(
+                                        "outer",
+                                        "java/lang/Throwable",
+                                        List.of(
+                                                pending,
+                                                caught))),
+                        Optional.of(pending)));
+        IrValue borrowed = ref("%borrowed");
+        IrMethod method = method(
+                List.of(borrowed),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.gotoBlock(
+                                        "cleanup",
+                                        List.of(borrowed))),
+                        new IrBlock(
+                                "cleanup",
+                                List.of(caught),
+                                List.of("<any>"),
+                                List.of(retry),
+                                IrTerminator.returnVoid()),
+                        new IrBlock(
+                                "outer",
+                                List.of(
+                                        ref("%outerCaught"),
+                                        ref("%outerCarried")),
+                                List.of("java/lang/Throwable"),
+                                List.of(),
+                                IrTerminator.returnVoid())));
+
+        NativeLocalReferencePlan plan =
+                planner.plan(method).plan().orElseThrow();
+        NativeLocalReferenceReleaseSchedule release =
+                plan.releasesAfter("cleanup", 0);
+
+        assertTrue(release.exceptionalPath().contains(caught));
+        assertFalse(release.exceptionalPath().contains(pending));
+        assertEquals(
+                1,
+                xyz.melodysky.ir.model.IrExceptionHandlers.reachable(
+                                retry.exceptionSites().get(0).handlers())
+                        .size());
+    }
+
+    @Test
+    void replacementMayTerminateAtAnUnusedActivationExitHandlerParameter() {
+        IrValue initial = ref("%initial");
+        IrValue caught = ref("%caught");
+        IrValue pending = ref("%pending");
+        IrValue recovered = ref("%recovered");
+        IrInstruction retry = IrInstruction.operation(
+                        Optional.empty(),
+                        IrOpcode.MONITOR_EXIT_ON_EXCEPTION,
+                        List.of(),
+                        "monitorExit")
+                .withExceptionSite(new IrExceptionSite(
+                        IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                        List.of(new IrExceptionEdge(
+                                "cleanup",
+                                "<any>",
+                                List.of(pending))),
+                        Optional.of(pending)));
+        IrMethod method = method(
+                List.of(initial),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(),
+                                IrTerminator.gotoBlock(
+                                        "cleanup",
+                                        List.of(initial))),
+                        new IrBlock(
+                                "cleanup",
+                                List.of(caught),
+                                List.of("<any>"),
+                                List.of(new IrExceptionEdge(
+                                        "recovered",
+                                        "java/lang/Throwable",
+                                        List.of(caught))),
+                                List.of(retry),
+                                IrTerminator.throwValue(caught)),
+                        new IrBlock(
+                                "recovered",
+                                List.of(recovered),
+                                List.of("java/lang/Throwable"),
+                                List.of(),
+                                IrTerminator.returnVoid())));
+
+        NativeLocalReferencePlan plan =
+                planner.plan(method).plan().orElseThrow();
+
+        assertTrue(plan.releasesAfter("cleanup", 0)
+                .exceptionalPath()
+                .contains(caught));
+    }
+
     private IrInstruction pendingIntCall(
             IrValue result,
             IrValue exception,

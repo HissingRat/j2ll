@@ -1,6 +1,8 @@
 package xyz.melodysky.toolchain;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -21,6 +23,37 @@ import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class GeneratedNativeIdentifierTest {
+    @Test
+    void interfaceCarrierIdentifiersAreBuildScopedHashOnlyTokens() {
+        String owner = "sensitive/acme/SecretApi";
+        ParsedClass parsedClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        owner + ".class",
+                        AsmFixtureBuilder.interfaceWithAbstractAndDefault(owner),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        MethodRewritePlanner planner = new MethodRewritePlanner();
+
+        MethodRewriteDecision first = interfaceDecision(
+                planner.planClass(parsedClass, 0x10203040L));
+        MethodRewriteDecision repeated = interfaceDecision(
+                planner.planClass(parsedClass, 0x10203040L));
+        MethodRewriteDecision nextBuild = interfaceDecision(
+                planner.planClass(parsedClass, 0x50607080L));
+
+        assertTrue(first.registrationOwner().matches(
+                "j2ll/generated/i_[0-9a-f]{32}"));
+        assertTrue(first.generatedHelperName().orElseThrow().matches(
+                "j2ll_m_[0-9a-f]{32}"));
+        assertFalse(first.registrationOwner().contains("SecretApi"));
+        assertFalse(first.generatedHelperName().orElseThrow().contains("answer"));
+        assertEquals(first.registrationOwner(), repeated.registrationOwner());
+        assertEquals(first.generatedHelperName(), repeated.generatedHelperName());
+        assertNotEquals(first.registrationOwner(), nextBuild.registrationOwner());
+        assertNotEquals(first.generatedHelperName(), nextBuild.generatedHelperName());
+    }
+
     @Test
     void generatedCUsesHashOnlyApplicationIdentifiersAndKeepsExportedAbi() {
         String owner = "sensitive/acme/PlainOwner";
@@ -63,5 +96,13 @@ class GeneratedNativeIdentifierTest {
                 "(?s).*static jint j2ll_register_[0-9a-f]{24}\\(JavaVM\\* vm\\).*"));
         assertFalse(source.contains("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm)"));
         assertTrue(source.contains("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)"));
+    }
+
+    private MethodRewriteDecision interfaceDecision(
+            List<MethodRewriteDecision> decisions) {
+        return decisions.stream()
+                .filter(decision -> decision.method().name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
     }
 }

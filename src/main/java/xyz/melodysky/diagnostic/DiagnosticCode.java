@@ -6,6 +6,12 @@ public record DiagnosticCode(String value) implements Comparable<DiagnosticCode>
     public static final DiagnosticCode BOOTSTRAP_STAGE_RAN = new DiagnosticCode("BOOTSTRAP_STAGE_RAN");
     public static final DiagnosticCode BOOTSTRAP_VALIDATION = new DiagnosticCode("BOOTSTRAP_VALIDATION");
     public static final DiagnosticCode JVM_HELPER_UNSUPPORTED = new DiagnosticCode("JVM_HELPER_UNSUPPORTED");
+    public static final DiagnosticCode THREAD_HELPER_UNSUPPORTED =
+            new DiagnosticCode("THREAD_HELPER_UNSUPPORTED");
+    public static final DiagnosticCode WAIT_NOTIFY_UNSUPPORTED =
+            new DiagnosticCode("WAIT_NOTIFY_UNSUPPORTED");
+    public static final DiagnosticCode ALT_METAFACTORY_UNSUPPORTED =
+            new DiagnosticCode("ALT_METAFACTORY_UNSUPPORTED");
     public static final DiagnosticCode UNSAFE_RAW_MEMORY_UNSUPPORTED =
             new DiagnosticCode("UNSAFE_RAW_MEMORY_UNSUPPORTED");
     public static final DiagnosticCode VAR_HANDLE_DYNAMIC_UNSUPPORTED =

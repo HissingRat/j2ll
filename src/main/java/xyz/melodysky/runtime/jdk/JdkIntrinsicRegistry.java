@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import xyz.melodysky.diagnostic.DiagnosticCode;
 import xyz.melodysky.runtime.RuntimeHelperKind;
 
 public final class JdkIntrinsicRegistry {
@@ -131,13 +132,13 @@ public final class JdkIntrinsicRegistry {
                 JdkIntrinsic.unsupported("java/lang/Throwable", "getMessage", "()Ljava/lang/String;", "THROWABLE_HELPER_UNSUPPORTED: Throwable.getMessage keeps JVM Throwable semantics"),
                 JdkIntrinsic.unsupported("java/lang/Throwable", "initCause", "(Ljava/lang/Throwable;)Ljava/lang/Throwable;", "THROWABLE_HELPER_UNSUPPORTED: Throwable.initCause keeps JVM cause semantics"),
                 JdkIntrinsic.unsupported("java/lang/Throwable", "getCause", "()Ljava/lang/Throwable;", "THROWABLE_HELPER_UNSUPPORTED: Throwable.getCause keeps JVM cause semantics"),
-                JdkIntrinsic.unsupported("java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V", "THREAD_HELPER_UNSUPPORTED: Thread(Runnable) keeps JVM thread semantics"),
-                JdkIntrinsic.unsupported("java/lang/Thread", "start", "()V", "THREAD_HELPER_UNSUPPORTED: Thread.start keeps JVM scheduler semantics"),
-                JdkIntrinsic.unsupported("java/lang/Thread", "join", "()V", "THREAD_HELPER_UNSUPPORTED: Thread.join keeps JVM scheduler semantics"),
+                JdkIntrinsic.unsupported("java/lang/Thread", "<init>", "(Ljava/lang/Runnable;)V", DiagnosticCode.THREAD_HELPER_UNSUPPORTED, "Thread(Runnable) keeps JVM thread semantics"),
+                JdkIntrinsic.unsupported("java/lang/Thread", "start", "()V", DiagnosticCode.THREAD_HELPER_UNSUPPORTED, "Thread.start keeps JVM scheduler semantics"),
+                JdkIntrinsic.unsupported("java/lang/Thread", "join", "()V", DiagnosticCode.THREAD_HELPER_UNSUPPORTED, "Thread.join keeps JVM scheduler semantics"),
                 JdkIntrinsic.runtimeHelper("java/lang/Thread", "sleep", "(J)V", RuntimeHelperKind.THREAD_SLEEP),
-                JdkIntrinsic.unsupported("java/lang/Object", "wait", "()V", "WAIT_NOTIFY_UNSUPPORTED: Object.wait keeps JVM monitor queue semantics"),
-                JdkIntrinsic.unsupported("java/lang/Object", "wait", "(J)V", "WAIT_NOTIFY_UNSUPPORTED: Object.wait(long) keeps JVM monitor queue semantics"),
-                JdkIntrinsic.unsupported("java/lang/Object", "notify", "()V", "WAIT_NOTIFY_UNSUPPORTED: Object.notify keeps JVM monitor queue semantics"),
+                JdkIntrinsic.unsupported("java/lang/Object", "wait", "()V", DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, "Object.wait keeps JVM monitor queue semantics"),
+                JdkIntrinsic.unsupported("java/lang/Object", "wait", "(J)V", DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, "Object.wait(long) keeps JVM monitor queue semantics"),
+                JdkIntrinsic.unsupported("java/lang/Object", "notify", "()V", DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, "Object.notify keeps JVM monitor queue semantics"),
                 JdkIntrinsic.unsupported(
                         "java/lang/String",
                         "substring",

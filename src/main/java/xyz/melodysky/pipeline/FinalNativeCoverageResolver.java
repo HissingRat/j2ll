@@ -14,8 +14,10 @@ import xyz.melodysky.ir.ssa.SsaMethodResult;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.toolchain.NativeExceptionFlowSupport;
 import xyz.melodysky.toolchain.NativeImplementationPlan;
+import xyz.melodysky.toolchain.NativeImplementationUnavailableReasonClassifier;
 import xyz.melodysky.toolchain.NativeLocalReferenceSafety;
 import xyz.melodysky.toolchain.NativeMethodImplementation;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanner;
 
 /**
  * Closes the final rewrite-to-native implementation coverage gap.
@@ -30,6 +32,11 @@ public final class FinalNativeCoverageResolver {
             new NativeExceptionFlowSupport();
     private final NativeLocalReferenceSafety localReferenceSafety =
             new NativeLocalReferenceSafety();
+    private final NativeLocalReferencePlanner localReferencePlanner =
+            new NativeLocalReferencePlanner();
+    private final NativeImplementationUnavailableReasonClassifier
+            unavailableReasonClassifier =
+                    new NativeImplementationUnavailableReasonClassifier();
 
     public FinalNativeCoverageResult resolve(
             List<MethodRewriteDecision> rewriteDecisions,
@@ -92,8 +99,18 @@ public final class FinalNativeCoverageResolver {
         if (plannedReason != null) {
             return plannedReason;
         }
+        String structuralReason = result.irMethod()
+                .flatMap(unavailableReasonClassifier::classify)
+                .orElse(null);
+        if (structuralReason != null) {
+            return structuralReason;
+        }
         if (result.irMethod()
                 .filter(localReferenceSafety::hasUnboundedLocalReferenceRisk)
+                .filter(method -> localReferencePlanner
+                        .plan(method)
+                        .plan()
+                        .isEmpty())
                 .isPresent()) {
             return FinalNativeCoverageDiagnostics
                     .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME
@@ -121,6 +138,10 @@ public final class FinalNativeCoverageResolver {
                 .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME
                 .value())) {
             return "a JNI-owned local reference can be created repeatedly inside a native control-flow or direct-call cycle";
+        }
+        if (reasonCode.equals(NativeImplementationUnavailableReasonClassifier
+                .MULTIANEWARRAY_UNSUPPORTED)) {
+            return "MULTIANEWARRAY has no complete JNI allocation runtime implementation";
         }
         return "no safe final native implementation is available";
     }

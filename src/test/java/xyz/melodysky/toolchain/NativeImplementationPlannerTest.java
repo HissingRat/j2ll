@@ -38,6 +38,9 @@ import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.ExceptionFlowAsmFixtures;
+import xyz.melodysky.testsupport.InterfaceMethodAsmFixtures;
+import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanner;
 
 class NativeImplementationPlannerTest implements Opcodes {
     @Test
@@ -55,6 +58,66 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertEquals(1, plan.implementations().size());
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, plan.implementations().get(0).path());
         assertEquals("LLVM_PRIMITIVE_SCALAR_IR", plan.implementations().get(0).reasonCode());
+    }
+
+    @Test
+    void selectsLlvmNativePathForCodeBearingDefaultInterfaceMethod() {
+        ParsedClass parsedClass = parse(
+                "pkg/Api.class",
+                AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"));
+        MethodRewriteDecision decision = decision(parsedClass, "answer");
+        NativeRegistrationPlan registrationPlan =
+                new NativeRegistrationPlanner().plan(List.of(decision));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                registrationPlan,
+                List.of(decision),
+                Map.of(
+                        decision.method().methodKey(),
+                        irMethod(parsedClass, "answer")));
+
+        NativeMethodImplementation implementation = plan
+                .implementationFor(decision.method().methodKey())
+                .orElseThrow();
+        assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
+        assertEquals("(Lpkg/Api;)I", implementation.entry().descriptor());
+        assertEquals(
+                xyz.melodysky.packaging.MethodRewriteStrategy.INTERFACE_METHOD_STUB,
+                implementation.decision().strategy());
+    }
+
+    @Test
+    void selectsLlvmNativePathForStaticAndPrivateInterfaceMethods() {
+        ParsedClass parsedClass = parse(
+                "pkg/CodeApi.class",
+                InterfaceMethodAsmFixtures.interfaceWithDefaultStaticAndPrivate(
+                        "pkg/CodeApi"));
+        var decisions = List.of(
+                decision(parsedClass, "staticAnswer"),
+                decision(parsedClass, "privateAnswer"));
+        Map<String, IrMethod> methods = new LinkedHashMap<>();
+        decisions.forEach(decision -> methods.put(
+                decision.method().methodKey(),
+                irMethod(parsedClass, decision.method().name())));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                new NativeRegistrationPlanner().plan(decisions),
+                decisions,
+                methods);
+
+        assertEquals(2, plan.implementations().size());
+        assertEquals(
+                "()I",
+                plan.implementationFor(decisions.get(0).method().methodKey())
+                        .orElseThrow()
+                        .entry()
+                        .descriptor());
+        assertEquals(
+                "(Lpkg/CodeApi;)I",
+                plan.implementationFor(decisions.get(1).method().methodKey())
+                        .orElseThrow()
+                        .entry()
+                        .descriptor());
     }
 
     @Test
@@ -205,6 +268,50 @@ class NativeImplementationPlannerTest implements Opcodes {
                 plan.implementationFor(decision.method().methodKey()).orElseThrow();
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
         assertEquals(List.of(helperKey), implementation.directCallTargets());
+    }
+
+    @Test
+    void harmlessCffCycleDoesNotInvalidateSynchronizedCleanupReferencePlan() {
+        ParsedClass parsedClass = parse(
+                "pkg/RecoveringSync.class",
+                ExceptionFlowAsmFixtures.classWithRecoveringSynchronizedCleanup(
+                        "pkg/RecoveringSync"));
+        MethodRewriteDecision decision = decision(parsedClass, "recover");
+        IrMethod optimized = OptimizationPipeline.defaultPipeline()
+                .run(irMethod(parsedClass, "recover"), PassContext.empty())
+                .artifact()
+                .orElseThrow();
+        IrMethod protectedMethod = null;
+        for (long seed = 0; seed < 256; seed++) {
+            IrMethod candidate = ProtectionPipeline.defaultPipeline().run(
+                    optimized,
+                    ProtectionConfig.enabled(seed));
+            if (candidate.blocks().stream()
+                    .anyMatch(block -> block.name().startsWith("cff_d_"))) {
+                protectedMethod = candidate;
+                break;
+            }
+        }
+        assertTrue(protectedMethod != null, "fixture must exercise a CFF region");
+        var localReferences = new NativeLocalReferencePlanner().plan(protectedMethod);
+        assertTrue(
+                localReferences.plan().isPresent(),
+                localReferences.failureReason().orElse("missing local-reference plan"));
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+                new NativeRegistrationPlanner().plan(List.of(decision)),
+                List.of(decision),
+                Map.of(decision.method().methodKey(), protectedMethod));
+
+        assertTrue(
+                plan.implementationFor(decision.method().methodKey()).isPresent(),
+                plan.unavailableReasonCodeFor(decision.method().methodKey())
+                        .orElse("missing implementation without a reason")
+                        + "\n"
+                        + protectedMethod);
+        assertTrue(plan.localReferencePlanFor(
+                        decision.method().methodKey())
+                .isPresent());
     }
 
     @Test
@@ -640,6 +747,31 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertEquals(NativeImplementationPath.LLVM_NATIVE_PATH, implementation.path());
         assertEquals("LLVM_ALLOCATION_HELPER_IR", implementation.reasonCode());
         assertTrue(implementation.passesJniEnv());
+    }
+
+    @Test
+    void reportsMultianewarrayAsTheStructuredUnsupportedShape() {
+        ParsedClass parsedClass = parse(
+                "pkg/Arrays.class",
+                AsmFixtureBuilder.classWithArrayOperationMethods(
+                        "pkg/Arrays"));
+        MethodRewriteDecision decision = decision(parsedClass, "multi");
+        IrMethod irMethod = irMethod(parsedClass, "multi");
+
+        NativeImplementationPlan plan = new NativeImplementationPlanner()
+                .plan(
+                        new NativeRegistrationPlanner().plan(
+                                List.of(decision)),
+                        List.of(decision),
+                        Map.of(decision.method().methodKey(), irMethod));
+
+        assertTrue(plan.implementations().isEmpty());
+        assertEquals(
+                NativeImplementationUnavailableReasonClassifier
+                        .MULTIANEWARRAY_UNSUPPORTED,
+                plan.unavailableReasonCodeFor(
+                                decision.method().methodKey())
+                        .orElseThrow());
     }
 
     @Test

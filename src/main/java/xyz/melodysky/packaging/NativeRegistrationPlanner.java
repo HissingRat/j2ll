@@ -50,20 +50,8 @@ public final class NativeRegistrationPlanner {
         return new NativeRegistrationEntry(
                 decision.registrationOwner(),
                 registeredName,
-                registeredDescriptor(decision),
+                NativeHelperDescriptor.forDecision(decision),
                 nativeSymbol);
-    }
-
-    private String registeredDescriptor(MethodRewriteDecision decision) {
-        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            String descriptor = decision.method().descriptor();
-            int close = descriptor.indexOf(')');
-            return "(L" + decision.method().owner() + ";" + descriptor.substring(1, close) + ")V";
-        }
-        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return "()V";
-        }
-        return decision.method().descriptor();
     }
 
     private String nativeSymbol(MethodRewriteDecision decision) {

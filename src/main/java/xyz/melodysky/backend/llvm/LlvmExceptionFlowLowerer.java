@@ -15,6 +15,7 @@ import xyz.melodysky.backend.llvm.model.LlvmTerminator;
 import xyz.melodysky.backend.llvm.model.LlvmType;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionHandlers;
 import xyz.melodysky.ir.model.IrExceptionSite;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrTerminatorKind;
@@ -215,7 +216,8 @@ final class LlvmExceptionFlowLowerer {
             List<LlvmInstruction> exceptionalExitCleanup,
             List<LlvmInstruction> protectedSiteCleanup,
             String suffix) {
-        List<IrExceptionEdge> handlers = reachableHandlers(declaredHandlers);
+        List<IrExceptionEdge> handlers =
+                IrExceptionHandlers.reachable(declaredHandlers);
         ArrayList<String> adapterNames = new ArrayList<>(handlers.size());
         ArrayList<String> checkNames = new ArrayList<>(handlers.size());
         for (int index = 0; index < handlers.size(); index++) {
@@ -313,20 +315,6 @@ final class LlvmExceptionFlowLowerer {
                     returnDefault(functionReturnType)));
         }
         return new DispatchResult(blocks, exceptionalIncoming);
-    }
-
-    private List<IrExceptionEdge> reachableHandlers(List<IrExceptionEdge> declaredHandlers) {
-        if (declaredHandlers.isEmpty()) {
-            throw new IllegalArgumentException("exception dispatch requires at least one handler");
-        }
-        ArrayList<IrExceptionEdge> handlers = new ArrayList<>();
-        for (IrExceptionEdge handler : declaredHandlers) {
-            handlers.add(handler);
-            if (CATCH_ALL.equals(handler.catchType())) {
-                break;
-            }
-        }
-        return List.copyOf(handlers);
     }
 
     private void validateHandlerArguments(IrExceptionEdge handler, IrValue exception) {

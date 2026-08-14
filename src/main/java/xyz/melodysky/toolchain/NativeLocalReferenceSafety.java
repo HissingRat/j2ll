@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionHandlers;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrOpcode;
@@ -100,13 +101,14 @@ public final class NativeLocalReferenceSafety {
                     .map(switchCase -> switchCase.target())
                     .filter(names::contains)
                     .forEach(targets::add);
-            block.exceptionEdges().stream()
+            IrExceptionHandlers.reachable(block.exceptionEdges()).stream()
                     .map(IrExceptionEdge::target)
                     .filter(names::contains)
                     .forEach(targets::add);
             block.instructions().stream()
                     .flatMap(instruction -> instruction.exceptionSites().stream())
-                    .flatMap(site -> site.handlers().stream())
+                    .flatMap(site -> IrExceptionHandlers
+                            .reachable(site.handlers()).stream())
                     .map(IrExceptionEdge::target)
                     .filter(names::contains)
                     .forEach(targets::add);

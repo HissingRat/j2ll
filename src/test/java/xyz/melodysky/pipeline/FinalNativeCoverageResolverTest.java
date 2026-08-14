@@ -147,6 +147,9 @@ class FinalNativeCoverageResolverTest implements Opcodes {
         ParsedMethod method = method("referenceLoop", "()V");
         MethodRewriteDecision decision = decision(method);
         IrValue text = new IrValue("%text", IrType.REFERENCE);
+        IrValue pending = new IrValue("%pending", IrType.REFERENCE);
+        IrValue left = new IrValue("%left", IrType.REFERENCE);
+        IrValue right = new IrValue("%right", IrType.REFERENCE);
         IrMethod irMethod = new IrMethod(
                 method.owner(),
                 method.name(),
@@ -160,11 +163,16 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                                 IrTerminator.gotoBlock("loop")),
                         new IrBlock(
                                 "loop",
+                                List.of(left, right),
                                 List.of(IrInstruction.symbolicConstant(
-                                        text,
-                                        IrOpcode.CONST_STRING,
-                                        "plain:v1:loop")),
-                                IrTerminator.gotoBlock("loop"))));
+                                                text,
+                                                IrOpcode.CONST_STRING,
+                                                "plain:v1:loop")
+                                        .withExceptionSite(
+                                                unprotectedPending(pending))),
+                                IrTerminator.gotoBlock(
+                                        "loop",
+                                        List.of(text, text)))));
 
         FinalNativeCoverageResult result = resolver.resolve(
                 List.of(decision),
@@ -179,6 +187,74 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                 FinalNativeCoverageDiagnostics
                         .UNBOUNDED_JNI_LOCAL_REFERENCE_LIFETIME,
                 result.diagnostics().get(0).code());
+    }
+
+    @Test
+    void boundedOwnedReferencesInACycleDoNotUseTheLifetimeDiagnostic() {
+        ParsedMethod method = method("boundedReferenceLoop", "()[[I");
+        MethodRewriteDecision decision = decision(method);
+        IrValue rows = new IrValue("%rows", IrType.I32);
+        IrValue columns = new IrValue("%columns", IrType.I32);
+        IrValue condition = new IrValue("%condition", IrType.I1);
+        IrValue matrix = new IrValue("%matrix", IrType.REFERENCE);
+        IrValue allocationPending = new IrValue(
+                "%allocationPending",
+                IrType.REFERENCE);
+        IrValue row = new IrValue("%row", IrType.REFERENCE);
+        IrValue loadPending = new IrValue("%loadPending", IrType.REFERENCE);
+        IrMethod irMethod = new IrMethod(
+                method.owner(),
+                method.name(),
+                method.descriptor(),
+                IrType.REFERENCE,
+                List.of(),
+                List.of(
+                        new IrBlock(
+                                "entry",
+                                List.of(
+                                        IrInstruction.constInt(rows, 2),
+                                        IrInstruction.constInt(columns, 3),
+                                        IrInstruction.operation(
+                                                Optional.of(matrix),
+                                                IrOpcode.NEW_MULTI_ARRAY,
+                                                List.of(rows, columns),
+                                                "multiArray:[[I:2")
+                                                .withExceptionSite(
+                                                        unprotectedPending(
+                                                                allocationPending)),
+                                        IrInstruction.binary(
+                                                condition,
+                                                IrOpcode.CMP_EQ_I32,
+                                                rows,
+                                                columns)),
+                                IrTerminator.gotoBlock("loop")),
+                        new IrBlock(
+                                "loop",
+                                List.of(IrInstruction.operation(
+                                                Optional.of(row),
+                                                IrOpcode.ARRAY_LOAD_REF,
+                                                List.of(matrix, rows),
+                                                "reference")
+                                        .withExceptionSite(
+                                                unprotectedPending(
+                                                        loadPending))),
+                                IrTerminator.branch(
+                                        condition,
+                                        "loop",
+                                        "exit")),
+                        new IrBlock(
+                                "exit",
+                                List.of(),
+                                IrTerminator.returnValue(matrix))));
+
+        FinalNativeCoverageResult result = resolver.resolve(
+                List.of(decision),
+                new NativeImplementationPlan(List.of()),
+                List.of(SsaMethodResult.nativeLowered(method, irMethod)));
+
+        assertEquals(
+                "MULTIANEWARRAY_UNSUPPORTED",
+                result.finalSsaResults().get(0).reasonCode());
     }
 
     @Test
@@ -324,5 +400,12 @@ class FinalNativeCoverageResolverTest implements Opcodes {
                                 List.of("java/lang/RuntimeException"),
                                 List.of(),
                                 IrTerminator.returnVoid())));
+    }
+
+    private IrExceptionSite unprotectedPending(IrValue pending) {
+        return new IrExceptionSite(
+                IrExceptionSiteKind.JVM_PENDING_EXCEPTION,
+                List.of(),
+                Optional.of(pending));
     }
 }

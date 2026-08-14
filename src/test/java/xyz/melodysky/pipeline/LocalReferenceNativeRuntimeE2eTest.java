@@ -55,6 +55,7 @@ class LocalReferenceNativeRuntimeE2eTest {
                 "carriedPhi",
                 "nativeNext",
                 "repeatedNativeNext",
+                "multiArrayFilledInNestedLoops",
                 "caughtCastLoop",
                 "caughtCallBeforeCarriedUse")) {
             var planning = new NativeLocalReferencePlanner().plan(
@@ -286,6 +287,18 @@ class LocalReferenceNativeRuntimeE2eTest {
                             total += ((String) raw).length();
                         }
                         return total;
+                    }
+
+                    public static int[][] multiArrayFilledInNestedLoops(
+                            int rows,
+                            int columns) {
+                        int[][] result = new int[rows][columns];
+                        for (int row = 0; row < rows; row++) {
+                            for (int column = 0; column < columns; column++) {
+                                result[row][column] = (row + 1) * 10 + column;
+                            }
+                        }
+                        return result;
                     }
 
                     public static int caughtCastLoop(List<?> values, int rounds) {

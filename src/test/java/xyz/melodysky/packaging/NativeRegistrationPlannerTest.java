@@ -11,6 +11,7 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
+import xyz.melodysky.testsupport.InterfaceMethodAsmFixtures;
 
 class NativeRegistrationPlannerTest {
     @Test
@@ -43,6 +44,65 @@ class NativeRegistrationPlannerTest {
         assertEquals(first.nativeSymbol(), repeated.nativeSymbol());
         assertNotEquals(first.nativeSymbol(), nextBuild.nativeSymbol());
         assertNotEquals(first.nativeSymbol(), legacy.nativeSymbol());
+    }
+
+    @Test
+    void defaultInterfaceRegistrationMakesTheReceiverExplicit() {
+        ParsedClass parsedClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        "pkg/Api.class",
+                        AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+                .filter(candidate -> candidate.method().name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
+
+        NativeRegistrationEntry entry = new NativeRegistrationPlanner()
+                .plan(List.of(decision))
+                .entries()
+                .get(0);
+
+        assertEquals("(Lpkg/Api;)I", entry.descriptor());
+        assertEquals(decision.registrationOwner(), entry.registrationOwner());
+    }
+
+    @Test
+    void interfaceStaticAndPrivateDescriptorsMatchTheirStubAbi() {
+        ParsedClass parsedClass = new AsmClassParser()
+                .parse(new ClassFileEntry(
+                        "pkg/CodeApi.class",
+                        InterfaceMethodAsmFixtures.interfaceWithDefaultStaticAndPrivate(
+                                "pkg/CodeApi"),
+                        "fixture"))
+                .artifact()
+                .orElseThrow();
+        var decisions = new MethodRewritePlanner().planClass(parsedClass);
+        var entries = new NativeRegistrationPlanner().plan(decisions).entries();
+
+        assertEquals(
+                "()I",
+                entryFor(decisions, entries, "staticAnswer").descriptor());
+        assertEquals(
+                "(Lpkg/CodeApi;)I",
+                entryFor(decisions, entries, "privateAnswer").descriptor());
+    }
+
+    private NativeRegistrationEntry entryFor(
+            List<MethodRewriteDecision> decisions,
+            List<NativeRegistrationEntry> entries,
+            String sourceName) {
+        MethodRewriteDecision decision = decisions.stream()
+                .filter(candidate -> candidate.method().name().equals(sourceName))
+                .findFirst()
+                .orElseThrow();
+        return entries.stream()
+                .filter(entry -> entry.methodName().equals(
+                        decision.generatedHelperName().orElseThrow()))
+                .findFirst()
+                .orElseThrow();
     }
 
     private NativeRegistrationEntry entry(NativeRegistrationPlanner planner, ParsedClass parsedClass) {

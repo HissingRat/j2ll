@@ -83,6 +83,8 @@ import xyz.melodysky.packaging.JarSignatureResignResult;
 import xyz.melodysky.packaging.J2llMetadataEntries;
 import xyz.melodysky.packaging.InternalizedFieldClassTransform;
 import xyz.melodysky.packaging.InternalizedMethodClassTransform;
+import xyz.melodysky.packaging.InterfaceMethodHelperClassGenerator;
+import xyz.melodysky.packaging.InterfaceMethodHelperCollisionValidator;
 import xyz.melodysky.packaging.SignatureResignPreflight;
 import xyz.melodysky.packaging.SignatureResignPreflightResult;
 import xyz.melodysky.progress.BuildProgressListener;
@@ -489,7 +491,11 @@ public final class MainlinePipeline {
         optimizedIr.putAll(fusedActiveUses);
         buildProgress.methodLoweringComplete(requestedMethodCount);
 
-        List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(program, selection.requestedMethods(), ssaResults);
+        List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(
+                program,
+                selection.requestedMethods(),
+                ssaResults,
+                wrapperSymbolSeed);
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(rewriteDecisions, wrapperSymbolSeed);
         NativeImplementationPlanner implementationPlanner =
@@ -616,6 +622,11 @@ public final class MainlinePipeline {
         nativeIr = methodCoalescing.methods();
         implementationPlan = methodCoalescing.implementationPlan();
         registrationPlan = implementationPlan.registrationPlan();
+        diagnostics.addAll(new InterfaceMethodHelperCollisionValidator().validate(
+                config.jarFile(),
+                implementedInterfaceDecisions(
+                        rewriteDecisions,
+                        implementationPlan)));
         NativeOnlyMethodCoalescingPlan methodCoalescingPlan =
                 methodCoalescing.plan();
         protectionReports.add(methodCoalescing.protectionReport());
@@ -827,7 +838,12 @@ public final class MainlinePipeline {
                     methodInternalizationPlan,
                     diagnostics,
                     loaderInternalName);
-            Map<String, byte[]> addedEntries = addedJarEntries(config, nativeBuildResult, runtimeLoaderPlan);
+            Map<String, byte[]> addedEntries = addedJarEntries(
+                    config,
+                    nativeBuildResult,
+                    runtimeLoaderPlan,
+                    rewriteDecisions,
+                    implementationPlan);
             repackager.write(
                     config.jarFile(),
                     outputJar,
@@ -1066,7 +1082,8 @@ public final class MainlinePipeline {
     private List<MethodRewriteDecision> rewriteDecisions(
             ParsedProgram program,
             List<ParsedMethod> requestedMethods,
-            List<SsaMethodResult> ssaResults) {
+            List<SsaMethodResult> ssaResults,
+            long wrapperSymbolSeed) {
         Map<String, ParsedMethod> requested = new HashMap<>();
         requestedMethods.forEach(method -> requested.put(method.methodKey(), method));
         Set<String> rewriteable = ssaResults.stream()
@@ -1076,7 +1093,9 @@ public final class MainlinePipeline {
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         ArrayList<MethodRewriteDecision> decisions = new ArrayList<>();
         for (ParsedClass parsedClass : program.classes()) {
-            for (MethodRewriteDecision decision : rewritePlanner.planClass(parsedClass)) {
+            for (MethodRewriteDecision decision : rewritePlanner.planClass(
+                    parsedClass,
+                    wrapperSymbolSeed)) {
                 if (requested.containsKey(decision.method().methodKey())
                         && rewriteable.contains(decision.method().methodKey())) {
                     decisions.add(decision);
@@ -1108,7 +1127,8 @@ public final class MainlinePipeline {
                 .filter(decision -> implementedMethodKeys.contains(decision.method().methodKey()))
                 .filter(decision -> decision.strategy() == MethodRewriteStrategy.NATIVE_ORIGINAL
                         || decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
-                        || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB)
+                        || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB
+                        || decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB)
                 .forEach(decision -> byClass.computeIfAbsent(decision.method().owner(), ignored -> new ArrayList<>())
                         .add(decision));
         Map<String, byte[]> rewritten = new LinkedHashMap<>();
@@ -1164,7 +1184,9 @@ public final class MainlinePipeline {
     private Map<String, byte[]> addedJarEntries(
             ResolvedConfig config,
             Optional<ZigNativeBuildResult> nativeBuildResult,
-            RuntimeLoaderPlan runtimeLoaderPlan) throws IOException {
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            List<MethodRewriteDecision> rewriteDecisions,
+            NativeImplementationPlan implementationPlan) throws IOException {
         Map<String, byte[]> added = new LinkedHashMap<>();
         if (nativeBuildResult.isPresent()) {
             ZigNativeBuildResult result = nativeBuildResult.orElseThrow();
@@ -1174,9 +1196,27 @@ public final class MainlinePipeline {
             for (NativeLibraryArtifact artifact : result.artifacts()) {
                 added.put(artifact.jarPath(), Files.readAllBytes(artifact.libraryPath()));
             }
+            added.putAll(new InterfaceMethodHelperClassGenerator().generate(
+                    implementedInterfaceDecisions(
+                            rewriteDecisions,
+                            implementationPlan)));
         }
         added.putAll(new J2llMetadataEntries().entries(config, nativeBuildResult));
         return added;
+    }
+
+    private List<MethodRewriteDecision> implementedInterfaceDecisions(
+            List<MethodRewriteDecision> rewriteDecisions,
+            NativeImplementationPlan implementationPlan) {
+        Set<String> implementedMethodKeys = implementationPlan.implementations().stream()
+                .map(NativeMethodImplementation::methodKey)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return rewriteDecisions.stream()
+                .filter(decision -> decision.strategy()
+                        == MethodRewriteStrategy.INTERFACE_METHOD_STUB)
+                .filter(decision -> implementedMethodKeys.contains(
+                        decision.method().methodKey()))
+                .toList();
     }
 
     private void writeReports(

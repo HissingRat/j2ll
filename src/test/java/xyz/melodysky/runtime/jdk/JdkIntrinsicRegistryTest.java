@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import xyz.melodysky.diagnostic.DiagnosticCode;
 import xyz.melodysky.runtime.RuntimeHelperKind;
 
 class JdkIntrinsicRegistryTest {
@@ -32,6 +33,9 @@ class JdkIntrinsicRegistryTest {
 
         var unsupported = registry.lookup("java/lang/String", "substring", "(I)Ljava/lang/String;").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, unsupported.policy());
+        assertEquals(
+                DiagnosticCode.JVM_HELPER_UNSUPPORTED,
+                unsupported.unsupportedDiagnosticCode().orElseThrow());
 
         var startsWith = registry.lookup("java/lang/String", "startsWith", "(Ljava/lang/String;)Z").orElseThrow();
         assertEquals(RuntimeHelperKind.STRING_STARTS_WITH, startsWith.helperKind().orElseThrow());
@@ -70,7 +74,8 @@ class JdkIntrinsicRegistryTest {
 
         var threadStart = registry.lookup("java/lang/Thread", "start", "()V").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, threadStart.policy());
-        assertEquals("THREAD_HELPER_UNSUPPORTED: Thread.start keeps JVM scheduler semantics", threadStart.reason());
+        assertEquals(DiagnosticCode.THREAD_HELPER_UNSUPPORTED, threadStart.unsupportedDiagnosticCode().orElseThrow());
+        assertEquals("Thread.start keeps JVM scheduler semantics", threadStart.reason());
 
         var threadSleep = registry.lookup("java/lang/Thread", "sleep", "(J)V").orElseThrow();
         assertEquals(JdkMethodPolicy.RUNTIME_HELPER, threadSleep.policy());
@@ -78,7 +83,8 @@ class JdkIntrinsicRegistryTest {
 
         var objectWait = registry.lookup("java/lang/Object", "wait", "()V").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, objectWait.policy());
-        assertEquals("WAIT_NOTIFY_UNSUPPORTED: Object.wait keeps JVM monitor queue semantics", objectWait.reason());
+        assertEquals(DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, objectWait.unsupportedDiagnosticCode().orElseThrow());
+        assertEquals("Object.wait keeps JVM monitor queue semantics", objectWait.reason());
     }
 
     @Test

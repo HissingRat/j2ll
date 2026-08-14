@@ -62,12 +62,25 @@ public final class NativeOriginalClassRewriter implements Opcodes {
                     || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB
                     || decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB) {
                 if (decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB) {
-                    diagnostics.add(Diagnostic.warning(
-                                    DiagnosticStage.PACKAGING,
-                                    PackagingDiagnostics.STUB_REWRITE_NOT_IMPLEMENTED,
-                                    decision.strategy().wireName() + " rewrite is planned but not implemented yet")
-                            .at(location(decision))
-                            .withDecision("skipped"));
+                    MethodNode method = findMethod(copy, decision);
+                    if (method == null) {
+                        diagnostics.add(Diagnostic.error(
+                                        DiagnosticStage.PACKAGING,
+                                        PackagingDiagnostics.NATIVE_ORIGINAL_REWRITE_FAILED,
+                                        "method selected for interface stub rewrite was not found")
+                                .at(location(decision)));
+                        continue;
+                    }
+                    if (loaderInternalName == null) {
+                        diagnostics.add(Diagnostic.error(
+                                        DiagnosticStage.PACKAGING,
+                                        PackagingDiagnostics.INTERFACE_METHOD_LOADER_MISSING,
+                                        "interface method stub requires the generated runtime Loader")
+                                .at(location(decision)));
+                        continue;
+                    }
+                    rewriteInterfaceMethodStub(method, decision, loaderInternalName);
+                    applied.add(decision);
                     continue;
                 }
                 MethodNode method = findMethod(copy, decision);
@@ -100,7 +113,8 @@ public final class NativeOriginalClassRewriter implements Opcodes {
                 applied.add(decision);
             }
         }
-        if (loaderInternalName != null && !applied.isEmpty()) {
+        if (loaderInternalName != null && applied.stream().anyMatch(
+                decision -> decision.strategy() != MethodRewriteStrategy.INTERFACE_METHOD_STUB)) {
             injectLoaderTrigger(copy, loaderInternalName);
         }
 
@@ -243,6 +257,38 @@ public final class NativeOriginalClassRewriter implements Opcodes {
             instructions.add(new VarInsnNode(type.getOpcode(ILOAD), local));
             local += type.getSize();
         }
+    }
+
+    private void rewriteInterfaceMethodStub(
+            MethodNode method,
+            MethodRewriteDecision decision,
+            String loaderInternalName) {
+        String helperDescriptor = NativeHelperDescriptor.forDecision(decision);
+        method.instructions = new InsnList();
+        method.instructions.add(new MethodInsnNode(
+                INVOKESTATIC,
+                loaderInternalName,
+                "ensureLoaded",
+                "()V",
+                false));
+        int firstLocal = 0;
+        if (!decision.method().accessFlags().isStatic()) {
+            method.instructions.add(new VarInsnNode(ALOAD, 0));
+            firstLocal = 1;
+        }
+        addOriginalArguments(method.instructions, decision.method().descriptor(), firstLocal);
+        method.instructions.add(new MethodInsnNode(
+                INVOKESTATIC,
+                decision.registrationOwner(),
+                decision.generatedHelperName().orElseThrow(),
+                helperDescriptor,
+                false));
+        method.instructions.add(new InsnNode(
+                Type.getReturnType(decision.method().descriptor()).getOpcode(IRETURN)));
+        method.tryCatchBlocks.clear();
+        method.localVariables = null;
+        method.visibleLocalVariableAnnotations = null;
+        method.invisibleLocalVariableAnnotations = null;
     }
 
     private void addNativeHelper(ClassNode classNode, String name, String descriptor) {

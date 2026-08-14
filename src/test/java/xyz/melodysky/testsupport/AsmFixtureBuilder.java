@@ -2138,6 +2138,51 @@ public final class AsmFixtureBuilder implements Opcodes {
         return writer.toByteArray();
     }
 
+    public static byte[] classWithAltMetafactoryUnsupportedCapture(String internalName) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);
+
+        MethodVisitor targetRun = writer.visitMethod(
+                ACC_PRIVATE | ACC_STATIC,
+                "targetRun",
+                "(Ljava/lang/String;Ljava/lang/String;)V",
+                null,
+                null);
+        targetRun.visitCode();
+        targetRun.visitInsn(RETURN);
+        targetRun.visitMaxs(0, 0);
+        targetRun.visitEnd();
+
+        MethodVisitor alt = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "altCapture",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Runnable;",
+                null,
+                null);
+        alt.visitCode();
+        alt.visitVarInsn(ALOAD, 0);
+        alt.visitVarInsn(ALOAD, 1);
+        alt.visitInvokeDynamicInsn(
+                "run",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Runnable;",
+                lambdaMetafactoryBootstrap("altMetafactory"),
+                Type.getMethodType("()V"),
+                new Handle(
+                        H_INVOKESTATIC,
+                        internalName,
+                        "targetRun",
+                        "(Ljava/lang/String;Ljava/lang/String;)V",
+                        false),
+                Type.getMethodType("()V"),
+                1);
+        alt.visitInsn(ARETURN);
+        alt.visitMaxs(0, 0);
+        alt.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
     public static byte[] classWithMethodHandleInvokeExact(String internalName) {
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V17, ACC_PUBLIC | ACC_SUPER, internalName, null, "java/lang/Object", null);

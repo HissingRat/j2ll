@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import xyz.melodysky.ir.model.IrBlock;
 import xyz.melodysky.ir.model.IrExceptionEdge;
+import xyz.melodysky.ir.model.IrExceptionHandlers;
 import xyz.melodysky.ir.model.IrInstruction;
 import xyz.melodysky.ir.model.IrMethod;
 import xyz.melodysky.ir.model.IrTerminator;
@@ -66,7 +67,7 @@ final class NativeLocalReferenceCfgFacts {
 
     LinkedHashSet<IrValue> explicitThrowNeeded(IrBlock block) {
         LinkedHashSet<IrValue> needed = new LinkedHashSet<>();
-        block.exceptionEdges().stream()
+        IrExceptionHandlers.reachable(block.exceptionEdges()).stream()
                 .map(this::handlerNeeded)
                 .forEach(needed::addAll);
         return needed;
@@ -76,7 +77,8 @@ final class NativeLocalReferenceCfgFacts {
             IrInstruction instruction) {
         LinkedHashSet<IrValue> needed = new LinkedHashSet<>();
         instruction.exceptionSites().stream()
-                .flatMap(site -> site.handlers().stream())
+                .flatMap(site -> IrExceptionHandlers
+                        .reachable(site.handlers()).stream())
                 .map(this::handlerNeeded)
                 .forEach(needed::addAll);
         return needed;
@@ -87,7 +89,8 @@ final class NativeLocalReferenceCfgFacts {
         for (IrBlock block : method.blocks()) {
             Optional<String> blockFailure =
                     validateUniformHandlerNeeds(
-                            block.exceptionEdges(),
+                            IrExceptionHandlers.reachable(
+                                    block.exceptionEdges()),
                             block.name() + ":terminator");
             if (blockFailure.isPresent()) {
                 return blockFailure;
@@ -100,10 +103,11 @@ final class NativeLocalReferenceCfgFacts {
                 for (int siteIndex = 0;
                         siteIndex < instruction.exceptionSites().size();
                         siteIndex++) {
-                    List<IrExceptionEdge> handlers = instruction
+                    List<IrExceptionEdge> handlers = IrExceptionHandlers
+                            .reachable(instruction
                             .exceptionSites()
                             .get(siteIndex)
-                            .handlers();
+                            .handlers());
                     if (handlers.size() < 2) {
                         continue;
                     }
@@ -245,7 +249,8 @@ final class NativeLocalReferenceCfgFacts {
                                     value.type() == IrType.REFERENCE)
                             .forEach(out::add);
                 }
-                for (IrExceptionEdge edge : block.exceptionEdges()) {
+                for (IrExceptionEdge edge : IrExceptionHandlers.reachable(
+                        block.exceptionEdges())) {
                     out.addAll(liveIn.getOrDefault(
                             edge.target(),
                             Set.of()));
@@ -283,8 +288,9 @@ final class NativeLocalReferenceCfgFacts {
                     exceptionDefinitions.forEach(in::remove);
                     referenceOperands(instruction).forEach(in::add);
                     instruction.exceptionSites().stream()
-                            .flatMap(site ->
-                                    site.handlers().stream())
+                            .flatMap(site -> IrExceptionHandlers
+                                    .reachable(site.handlers())
+                                    .stream())
                             .map(edge -> handlerNeeded(
                                     edge,
                                     blocks,

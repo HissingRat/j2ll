@@ -23,6 +23,7 @@ import xyz.melodysky.ir.ssa.JvmExceptionInstructionSemantics;
 import xyz.melodysky.analysis.field.NativeFieldStorageKind;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
+import xyz.melodysky.packaging.NativeHelperDescriptor;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
@@ -44,6 +45,9 @@ public final class NativeImplementationPlanner {
             new NativeLocalReferenceSafety();
     private final NativeLocalReferencePlanner localReferencePlanner =
             new NativeLocalReferencePlanner();
+    private final NativeImplementationUnavailableReasonClassifier
+            unavailableReasonClassifier =
+                    new NativeImplementationUnavailableReasonClassifier();
     private final JvmExceptionInstructionSemantics exceptionSemantics =
             new JvmExceptionInstructionSemantics();
     private final InitializerImplementationPlanner initializerPlanner =
@@ -122,8 +126,7 @@ public final class NativeImplementationPlanner {
                 continue;
             }
             MethodRewriteDecision decision = maybeDecision.orElseThrow();
-            if (decision.strategy() == MethodRewriteStrategy.NOT_APPLICABLE
-                    || decision.strategy() == MethodRewriteStrategy.INTERFACE_METHOD_STUB) {
+            if (decision.strategy() == MethodRewriteStrategy.NOT_APPLICABLE) {
                 continue;
             }
             entriesByMethod.put(decision.method().methodKey(), entry);
@@ -172,6 +175,17 @@ public final class NativeImplementationPlanner {
                 .forEach(methodKey -> unavailableReasonCodes.put(
                         methodKey,
                         NativeLocalReferenceSafety.UNBOUNDED_REASON_CODE));
+        decisionsByMethod.keySet().stream()
+                .filter(methodKey ->
+                        !supportedLlvmMethods.contains(methodKey))
+                .filter(methodKey ->
+                        !unavailableReasonCodes.containsKey(methodKey))
+                .forEach(methodKey -> Optional.ofNullable(
+                                analysisBodies.get(methodKey))
+                        .flatMap(unavailableReasonClassifier::classify)
+                        .ifPresent(reasonCode -> unavailableReasonCodes.put(
+                                methodKey,
+                                reasonCode)));
         LinkedHashMap<String, NativeLocalReferencePlan>
                 localReferencePlans = new LinkedHashMap<>();
         localReferenceResults.entrySet().stream()
@@ -381,9 +395,6 @@ public final class NativeImplementationPlanner {
             IrMethod method,
             Set<String> directCallTargets,
             Set<String> availableProgramMethods) {
-        if (decision.method().accessFlags().isInterface()) {
-            return false;
-        }
         if (decision.method().accessFlags().isSynchronized()
                 && !containsMonitorHelper(method)) {
             return false;
@@ -433,20 +444,8 @@ public final class NativeImplementationPlanner {
         return decisions.stream()
                 .filter(decision -> decision.registrationOwner().equals(entry.registrationOwner()))
                 .filter(decision -> decision.generatedHelperName().orElse(decision.method().name()).equals(entry.methodName()))
-                .filter(decision -> registeredDescriptor(decision).equals(entry.descriptor()))
+                .filter(decision -> NativeHelperDescriptor.forDecision(decision).equals(entry.descriptor()))
                 .findFirst();
-    }
-
-    private String registeredDescriptor(MethodRewriteDecision decision) {
-        if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB) {
-            String descriptor = decision.method().descriptor();
-            int close = descriptor.indexOf(')');
-            return "(L" + decision.method().owner() + ";" + descriptor.substring(1, close) + ")V";
-        }
-        if (decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return "()V";
-        }
-        return decision.method().descriptor();
     }
 
     private boolean supportsJvmHostedDescriptor(String descriptor) {

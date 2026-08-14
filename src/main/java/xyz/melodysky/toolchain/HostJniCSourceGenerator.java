@@ -530,10 +530,12 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     "env"));
         }
         if (binding.passesOwnerClass()) {
+            boolean interfaceStub = binding.decision().strategy()
+                    == MethodRewriteStrategy.INTERFACE_METHOD_STUB;
             parameters.add(new HostNativeLocalAbiBridgeSource.Parameter(
                     "jclass",
-                    "owner",
-                    "owner"));
+                    interfaceStub ? "defining_owner" : "owner",
+                    interfaceStub ? "defining_owner" : "owner"));
         }
         if (!binding.descriptor().staticMethod()) {
             parameters.add(new HostNativeLocalAbiBridgeSource.Parameter(
@@ -690,10 +692,16 @@ public final class HostJniCSourceGenerator implements Opcodes {
         if (!binding.passesJniEnv()) {
             builder.append("    (void)env;\n");
         }
-        if (binding.descriptor().staticMethod() && !binding.passesOwnerClass()) {
+        boolean interfaceStub = binding.decision().strategy()
+                == MethodRewriteStrategy.INTERFACE_METHOD_STUB;
+        if (binding.descriptor().staticMethod()
+                && (!binding.passesOwnerClass() || interfaceStub)) {
             builder.append("    (void)owner;\n");
         }
-        boolean localOwner = !binding.descriptor().staticMethod() && binding.passesOwnerClass();
+        boolean localOwner = binding.passesOwnerClass()
+                && (!binding.descriptor().staticMethod()
+                        || interfaceStub);
+        String localOwnerVariable = interfaceStub ? "defining_owner" : "owner";
         if (localOwner) {
             /*
              * The LLVM owner operand denotes the method's defining class, not
@@ -709,7 +717,8 @@ public final class HostJniCSourceGenerator implements Opcodes {
              */
             new HostJniDefiningOwnerSource().appendLookup(
                     builder,
-                    binding.decision().method().owner());
+                    binding.decision().method().owner(),
+                    localOwnerVariable);
             appendDefaultReturn(builder, binding.descriptor().javaReturnDescriptor());
             builder.append("    }\n");
         }
@@ -717,11 +726,11 @@ public final class HostJniCSourceGenerator implements Opcodes {
         String returnDescriptor = binding.descriptor().javaReturnDescriptor();
         if (returnDescriptor.equals("V")) {
             builder.append("    ").append(call).append(";\n")
-                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, owner);\n" : "")
+                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, " + localOwnerVariable + ");\n" : "")
                     .append("    return;\n");
         } else if (returnDescriptor.equals("Z")) {
             builder.append("    jboolean result = ").append(call).append(" != 0 ? JNI_TRUE : JNI_FALSE;\n")
-                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, owner);\n" : "")
+                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, " + localOwnerVariable + ");\n" : "")
                     .append("    return result;\n");
         } else {
             builder.append("    ")
@@ -731,7 +740,7 @@ public final class HostJniCSourceGenerator implements Opcodes {
                     .append(")")
                     .append(call)
                     .append(";\n")
-                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, owner);\n" : "")
+                    .append(localOwner ? "    (*env)->DeleteLocalRef(env, " + localOwnerVariable + ");\n" : "")
                     .append("    return result;\n");
         }
     }
