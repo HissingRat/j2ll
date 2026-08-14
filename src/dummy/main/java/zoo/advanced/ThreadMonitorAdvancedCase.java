@@ -18,7 +18,7 @@ public final class ThreadMonitorAdvancedCase implements Case {
         }
         synchronizedIncrement();
         Thread thread = new Thread(() -> {
-            synchronized (lock) {
+            synchronized (this) {
                 counter += 5;
             }
         });

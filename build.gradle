@@ -147,8 +147,13 @@ tasks.register('buildDummy', Jar) {
     from sourceSets.dummy.output
     manifest {
         attributes(
-                'Main-Class': 'zoo.Main'
+                'Main-Class': 'zoo.Main',
+                'Multi-Release': 'true'
         )
+    }
+    from(sourceSets.dummy.output.classesDirs) {
+        include 'zoo/versioned/VersionedFeature.class'
+        into 'META-INF/versions/17'
     }
 }
 

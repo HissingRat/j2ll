@@ -30,6 +30,9 @@ import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.protection.audit.HashOnlyEvidence;
 import xyz.melodysky.testsupport.FakeManagedZig;
+import xyz.melodysky.testsupport.dummy.DummyMethodExpectation;
+import xyz.melodysky.testsupport.dummy.DummyMethodMatrix;
+import xyz.melodysky.testsupport.dummy.DummyMethodOutcomeAsserter;
 import xyz.melodysky.testsupport.dummy.DummyReportAsserter;
 import xyz.melodysky.toolchain.HostPlatform;
 import xyz.melodysky.toolchain.J2llHomeResolver;
@@ -41,23 +44,20 @@ class DummyE2eTest {
 
     @Test
     void dummyBasicRunsThroughJ2ll() throws Exception {
-        runProfile("basic", basicSelectors(), List.of());
+        runProfile("basic", DummyMethodMatrix.basicExpectations());
     }
 
     @Test
     void dummyAdvancedRunsThroughJ2ll() throws Exception {
-        runProfile("advanced", advancedSelectors(), advancedReasons());
+        runProfile("advanced", DummyMethodMatrix.advancedExpectations());
     }
 
     @Test
     void dummyAllRunsThroughJ2ll() throws Exception {
-        ArrayList<String> selectors = new ArrayList<>();
-        selectors.addAll(basicSelectors());
-        selectors.addAll(advancedSelectors());
-        runProfile("all", selectors, advancedReasons());
+        runProfile("all", DummyMethodMatrix.allExpectations());
     }
 
-    private void runProfile(String profile, List<String> selectors, List<String> expectedReasonCodes)
+    private void runProfile(String profile, List<DummyMethodExpectation> expectations)
             throws Exception {
         ArrayList<String> failures = new ArrayList<>();
         Path inputJar = dummyJar();
@@ -68,7 +68,7 @@ class DummyE2eTest {
         MainlinePipelineResult pipeline;
         try (AutoCloseable ignored = useManagedZig(profile)) {
             pipeline = new MainlinePipeline().run(
-                    config(inputJar, selectors),
+                    config(inputJar, DummyMethodMatrix.selectors(expectations)),
                     workspace,
                     xyz.melodysky.progress.BuildProgressListener.none(),
                     xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy.strict(),
@@ -88,7 +88,13 @@ class DummyE2eTest {
             compare(original, output, failures);
         }
         if (pipeline.outputJar() != null) {
-            DummyReportAsserter.assertProfile(profile, workspace, pipeline.outputJar(), expectedReasonCodes, failures);
+            DummyReportAsserter.assertProfile(profile, workspace, pipeline.outputJar(), failures);
+            DummyMethodOutcomeAsserter.assertExactOutcomes(
+                    inputJar,
+                    pipeline.outputJar(),
+                    workspace.resolve("reports"),
+                    expectations,
+                    failures);
         }
         if (profile.equals("basic") || profile.equals("all")) {
             assertBigEndianIntFrameIntrinsicEvidence(
@@ -279,42 +285,6 @@ class DummyE2eTest {
                 target == TargetTriple.MACOS_ARM64);
     }
 
-    private List<String> advancedReasons() {
-        return List.of(
-                "METHOD_HANDLE_CHAIN_FALLBACK",
-                "METHOD_HANDLE_PERMUTE_FALLBACK",
-                "METHOD_HANDLE_FILTER_FALLBACK",
-                "METHOD_HANDLE_FOLD_FALLBACK",
-                "METHOD_HANDLE_COLLECTOR_UNSUPPORTED",
-                "UNSAFE_RAW_MEMORY_FALLBACK",
-                "WAIT_NOTIFY_FALLBACK",
-                "UNSUPPORTED_DEFAULT_INTERFACE_SUPER");
-    }
-
-    private List<String> basicSelectors() {
-        return List.of(
-                "zoo/basic/PrimitiveBasicCase#simpleInt!(II)I",
-                "zoo/basic/PrimitiveBasicCase#longMath!(JJ)J",
-                "zoo/basic/PrimitiveBasicCase#lessThan!(II)Z",
-                "zoo/basic/PrimitiveBasicCase#floatValue!()F",
-                "zoo/basic/PrimitiveBasicCase#doubleValue!()D",
-                "zoo/basic/ArrayBasicCase#run!()Ljava/lang/String;",
-                "zoo/basic/ControlFlowBasicCase#negate!(I)I",
-                "zoo/basic/ControlFlowBasicCase#table!(I)I",
-                "zoo/basic/ControlFlowBasicCase#lookup!(I)I",
-                "zoo/basic/ControlFlowBasicCase#regionAroundOwnedBoundary!(I[Ljava/lang/String;)Ljava/lang/String;",
-                "zoo/basic/ControlFlowBasicCase#regionAroundTypedCatch!(II)I",
-                "zoo/basic/ExceptionBasicCase#catchCode!()I",
-                "zoo/basic/StringJdkBasicCase#stableStringOps!()Ljava/lang/String;",
-                "zoo/basic/StringJdkBasicCase#bigEndianIntFrame!(I)[B",
-                "zoo/basic/InterfaceLambdaConcatBasicCase#run!()Ljava/lang/String;",
-                "zoo/basic/PolymorphismBasicCase#virtualDispatch!()Ljava/lang/String;",
-                "zoo/basic/PolymorphismBasicCase#abstractDispatch!()Ljava/lang/String;",
-                "zoo/basic/PolymorphismBasicCase#superDispatch!()Ljava/lang/String;",
-                "zoo/basic/PolymorphismBasicCase#bridgeDispatch!()Ljava/lang/String;",
-                "zoo/basic/ReflectionBasicCase#run!()Ljava/lang/String;");
-    }
-
     private void assertBigEndianIntFrameIntrinsicEvidence(
             Path loweringReport,
             List<String> failures) {
@@ -420,21 +390,6 @@ class DummyE2eTest {
         return element == null || element.isJsonNull() ? null : element.getAsString();
     }
 
-    private List<String> advancedSelectors() {
-        return List.of(
-                "zoo/advanced/ReflectionAdvancedCase#run!()Ljava/lang/String;",
-                "zoo/advanced/MethodHandleAdvancedCase#methodHandleBoundary!()Ljava/lang/String;",
-                "zoo/advanced/UnsafeVarHandleAdvancedCase#run!()Ljava/lang/String;",
-                "zoo/advanced/ThreadMonitorAdvancedCase#run!()Ljava/lang/String;",
-                "zoo/advanced/InterfaceBoundaryAdvancedCase#run!()Ljava/lang/String;",
-                "zoo/advanced/InterfaceBoundaryAdvancedCase$SuperCall#call!()Ljava/lang/String;",
-                "zoo/advanced/ComplexFinallyBoundaryCase#run!()Ljava/lang/String;",
-                "zoo/advanced/AnnotationEnumRecordAdvancedCase#run!()Ljava/lang/String;",
-                "zoo/advanced/JdkSurfaceAdvancedCase#resourceBundle!()Ljava/lang/String;",
-                "zoo/advanced/JdkSurfaceAdvancedCase#localeFormat!()Ljava/lang/String;",
-                "zoo/advanced/JdkSurfaceAdvancedCase#moduleApi!()Ljava/lang/String;");
-    }
-
     private ChildRun runJar(Path jar, String mode) throws IOException, InterruptedException {
         ArrayList<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home")).resolve("bin").resolve(javaBinary()).toString());
@@ -470,6 +425,15 @@ class DummyE2eTest {
         Path realHome = realJ2llHome();
         if (realHome != null && Files.isRegularFile(zigExecutable(realHome))) {
             return useJ2llHome(realHome);
+        }
+        HostPlatform host = HostPlatform.detect().orElse(null);
+        if (!FakeManagedZig.supportsCurrentHostFixture(host)) {
+            String detail = realHome == null
+                    ? "no real toolchain was configured"
+                    : "configured home has no " + zigExecutable(realHome);
+            throw new IllegalStateException(
+                    "Dummy E2E requires a real managed Zig 0.15.2 toolchain on this host ("
+                            + detail + "). Set J2LL_REAL_HOME to the j2ll distribution directory containing zig/.");
         }
         return FakeManagedZig.installAndUse(temp.resolve("j2ll-home-" + profile));
     }

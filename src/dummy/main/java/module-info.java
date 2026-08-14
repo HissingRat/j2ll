@@ -1,4 +1,6 @@
 module zoo.dummy {
+    requires jdk.unsupported;
+
     exports zoo;
     exports zoo.services;
 
