@@ -70,13 +70,13 @@ public final class LambdaMetafactoryBootstrap {
         }
         return new LambdaMetafactoryPlan(
                 true,
-                true,
+                false,
                 Optional.of(implementationHandle),
                 (flags & FLAG_SERIALIZABLE) != 0,
                 markers,
                 bridges,
                 DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED,
-                "altMetafactory");
+                "altMetafactory marker/bridge/serialization semantics are outside the current native-lowering boundary");
     }
 
     private LambdaMetafactoryPlan unsupportedAlt(String reason) {

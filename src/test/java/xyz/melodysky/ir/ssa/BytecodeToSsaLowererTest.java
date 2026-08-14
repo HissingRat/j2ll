@@ -994,7 +994,8 @@ class BytecodeToSsaLowererTest {
         assertEquals(
                 DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED.value(),
                 result.artifact().orElseThrow().reasonCode());
-        assertTrue(result.diagnostics().get(0).message().contains("unsupported lambda capture shape"));
+        assertTrue(result.diagnostics().get(0).message().contains("altMetafactory"));
+        assertTrue(result.diagnostics().get(0).message().contains("outside the current native-lowering boundary"));
     }
 
     @Test

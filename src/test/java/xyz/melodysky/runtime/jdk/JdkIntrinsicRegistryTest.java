@@ -68,6 +68,10 @@ class JdkIntrinsicRegistryTest {
         assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, runtimeMessage.policy());
         assertEquals("JDK_BRIDGE: RuntimeException(String) keeps JVM Throwable semantics", runtimeMessage.reason());
 
+        var illegalStateMessage = registry.lookup("java/lang/IllegalStateException", "<init>", "(Ljava/lang/String;)V").orElseThrow();
+        assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, illegalStateMessage.policy());
+        assertEquals("JDK_BRIDGE: IllegalStateException(String) keeps JVM Throwable semantics", illegalStateMessage.reason());
+
         var getCause = registry.lookup("java/lang/Throwable", "getCause", "()Ljava/lang/Throwable;").orElseThrow();
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, getCause.policy());
         assertEquals("THROWABLE_HELPER_UNSUPPORTED: Throwable.getCause keeps JVM cause semantics", getCause.reason());
@@ -85,6 +89,10 @@ class JdkIntrinsicRegistryTest {
         assertEquals(JdkMethodPolicy.JVM_HELPER_UNSUPPORTED, objectWait.policy());
         assertEquals(DiagnosticCode.WAIT_NOTIFY_UNSUPPORTED, objectWait.unsupportedDiagnosticCode().orElseThrow());
         assertEquals("Object.wait keeps JVM monitor queue semantics", objectWait.reason());
+
+        var runnableRun = registry.lookup("java/lang/Runnable", "run", "()V").orElseThrow();
+        assertEquals(JdkMethodPolicy.JVM_HELPER_BRIDGE, runnableRun.policy());
+        assertEquals("JDK_BRIDGE: Runnable.run uses JVM interface dispatch semantics", runnableRun.reason());
     }
 
     @Test

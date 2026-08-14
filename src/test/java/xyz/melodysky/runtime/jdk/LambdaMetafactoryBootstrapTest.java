@@ -30,7 +30,7 @@ class LambdaMetafactoryBootstrapTest {
     }
 
     @Test
-    void parsesAltMetafactoryCommonFlags() {
+    void parsesButRejectsAltMetafactoryCommonFlagsUntilRuntimeSemanticsAreComplete() {
         Handle implementation = new Handle(
                 Opcodes.H_INVOKESTATIC,
                 "pkg/Lambda",
@@ -54,11 +54,12 @@ class LambdaMetafactoryBootstrapTest {
                 });
 
         assertTrue(plan.lambdaMetafactory());
-        assertTrue(plan.supported());
+        assertFalse(plan.supported());
         assertTrue(plan.serializable());
         assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, plan.unsupportedDiagnosticCode());
         assertEquals(java.util.List.of("java/io/Serializable"), plan.markerInterfaces());
         assertEquals(java.util.List.of("()V"), plan.bridgeMethodDescriptors());
+        assertTrue(plan.reason().contains("outside the current native-lowering boundary"));
     }
 
     @Test
