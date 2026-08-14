@@ -66,7 +66,8 @@ class ProtectedJvmExceptionFlowNativeRuntimeE2eTest {
         String llvm = emittedLlvm(workspace);
         assertTrue(llvm.contains("call ptr @j2ll_rt_pending_exception("), llvm);
         assertTrue(llvm.contains("call void @j2ll_rt_clear_exception("), llvm);
-        assertTrue(llvm.contains("call i32 @j2ll_rt_instanceof("), llvm);
+        assertLocalizedCatchTypeChecksAreCalled(llvm);
+        assertFalse(llvm.contains("call i32 @j2ll_rt_instanceof("), llvm);
         assertTrue(llvm.contains("call void @j2ll_rt_rethrow("), llvm);
 
         String generatedC = generatedC(workspace);
@@ -233,5 +234,18 @@ class ProtectedJvmExceptionFlowNativeRuntimeE2eTest {
             index += needle.length();
         }
         return count;
+    }
+
+    private void assertLocalizedCatchTypeChecksAreCalled(String llvm) {
+        var declarations = java.util.regex.Pattern.compile(
+                        "declare i32 @([A-Za-z0-9_]+)\\(ptr, ptr\\) ; localizedCatchTypeCheck")
+                .matcher(llvm);
+        int count = 0;
+        while (declarations.find()) {
+            count++;
+            String symbol = declarations.group(1);
+            assertTrue(llvm.contains("call i32 @" + symbol + "("), symbol + " => " + llvm);
+        }
+        assertTrue(count > 0, llvm);
     }
 }

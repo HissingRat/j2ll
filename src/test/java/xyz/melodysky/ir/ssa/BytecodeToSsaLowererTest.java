@@ -1511,13 +1511,14 @@ class BytecodeToSsaLowererTest {
     }
 
     @Test
-    void lowersAltMetafactoryCommonFlagsToLambdaHelper() {
+    void skipsAltMetafactoryCommonFlagsUntilTheirRuntimeSemanticsAreComplete() {
         SsaMethodResult result = lower(
                 AsmFixtureBuilder.classWithAltMetafactoryLambda("pkg/AltLambda"),
                 "altCommon");
 
-        assertEquals(LoweringStatus.NATIVE_LOWERED, result.status());
-        assertTrue(hasHelper(result.irMethod().orElseThrow(), "j2ll_rt_lambda_new"));
+        assertEquals(LoweringStatus.SKIPPED, result.status());
+        assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED.value(), result.reasonCode());
+        assertTrue(result.irMethod().isEmpty());
     }
 
     @Test

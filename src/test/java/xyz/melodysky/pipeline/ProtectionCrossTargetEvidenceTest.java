@@ -86,7 +86,7 @@ class ProtectionCrossTargetEvidenceTest {
         }
         assertSharedLlvmEvidence(workspace, passes);
         assertFieldAndMethodTableEvidence(workspace, config);
-        assertEverySharedSourceFeedsEveryTarget(workspace);
+        assertEveryLogicalSourceFeedsEveryTarget(workspace);
         assertSixTargetArtifacts(workspace);
     }
 
@@ -170,7 +170,7 @@ class ProtectionCrossTargetEvidenceTest {
         }
     }
 
-    private void assertEverySharedSourceFeedsEveryTarget(Path workspace) throws Exception {
+    private void assertEveryLogicalSourceFeedsEveryTarget(Path workspace) throws Exception {
         Path zigWorkspace = workspace.resolve("native/zig-workspace");
         JsonObject manifest = JsonParser.parseString(Files.readString(
                         zigWorkspace.resolve("j2ll-build-manifest.json")))
@@ -184,18 +184,83 @@ class ProtectionCrossTargetEvidenceTest {
         assertEquals(expectedTargets, selectedTargets);
 
         String buildZig = Files.readString(zigWorkspace.resolve("build.zig"));
-        List<String> sharedSources = java.util.stream.Stream.concat(
-                        manifest.getAsJsonArray("cSources").asList().stream(),
-                        manifest.getAsJsonArray("llvmSources").asList().stream())
+        List<String> cSources = manifest.getAsJsonArray("cSources").asList().stream()
                 .map(element -> element.getAsString())
                 .toList();
-        assertFalse(sharedSources.isEmpty());
-        for (String source : sharedSources) {
+        List<String> retainedLlvmSources = manifest.getAsJsonArray("llvmSources")
+                .asList().stream()
+                .map(element -> element.getAsString())
+                .toList();
+        JsonArray logicalLlvmSources = manifest.getAsJsonArray("llvmUnwindSources");
+        assertFalse(cSources.isEmpty());
+        assertFalse(logicalLlvmSources.isEmpty());
+        assertEquals(
+                retainedLlvmSources,
+                logicalLlvmSources.asList().stream()
+                        .map(element -> element.getAsJsonObject()
+                                .get("retainedPath")
+                                .getAsString())
+                        .toList());
+        for (String source : cSources) {
             assertEquals(
                     TargetTriple.values().length,
                     occurrences(buildZig, "b.path(\"" + source + "\")"),
                     source);
         }
+
+        for (TargetTriple target : TargetTriple.values()) {
+            JsonObject targetEvidence = manifest.getAsJsonArray("targets")
+                    .asList().stream()
+                    .map(element -> element.getAsJsonObject())
+                    .filter(element -> element.get("target").getAsString()
+                            .equals(target.directoryName()))
+                    .findFirst()
+                    .orElseThrow();
+            boolean retainsGeneratedUnwind = targetEvidence
+                    .get("generatedCUnwindInfoRetained")
+                    .getAsBoolean();
+            for (var element : logicalLlvmSources) {
+                JsonObject source = element.getAsJsonObject();
+                boolean omissionSafe = source.get("omissionSafe").getAsBoolean();
+                String retainedPath = source.get("retainedPath").getAsString();
+                String selectedPath = !retainsGeneratedUnwind && omissionSafe
+                        ? source.get("omissionPath").getAsString()
+                        : retainedPath;
+                assertEquals(
+                        1,
+                        targetSourceOccurrences(buildZig, target, "llvm", selectedPath),
+                        target.directoryName() + " => "
+                                + source.get("owner").getAsString()
+                                + " => " + selectedPath);
+                if (omissionSafe) {
+                    String omissionPath = source.get("omissionPath").getAsString();
+                    String unselectedPath = selectedPath.equals(retainedPath)
+                            ? omissionPath
+                            : retainedPath;
+                    assertEquals(
+                            0,
+                            targetSourceOccurrences(
+                                    buildZig,
+                                    target,
+                                    "llvm",
+                                    unselectedPath),
+                            target.directoryName() + " must not use both LLVM unwind variants for "
+                                    + source.get("owner").getAsString());
+                }
+            }
+        }
+    }
+
+    private int targetSourceOccurrences(
+            String buildZig,
+            TargetTriple target,
+            String sourceKind,
+            String source) {
+        String modulePrefix = "module_" + target.safeSymbol() + "_" + sourceKind + "_";
+        String path = "b.path(\"" + source + "\")";
+        return (int) buildZig.lines()
+                .filter(line -> line.contains(modulePrefix) && line.contains(path))
+                .count();
     }
 
     private void assertSixTargetArtifacts(Path workspace) throws Exception {

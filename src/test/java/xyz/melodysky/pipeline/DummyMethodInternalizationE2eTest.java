@@ -11,7 +11,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -86,16 +89,28 @@ class DummyMethodInternalizationE2eTest {
                 "zoo/basic/PrimitiveBasicCase",
                 "publicStaticMiddle",
                 "(I)I"));
-        assertFalse(jarContainsField(
+        assertTrue(jarContainsField(
                 pipeline.outputJar(),
                 "zoo/basic/PrimitiveBasicCase",
                 "INLINE_LEAF_BIAS",
                 "I"));
-        assertFalse(jarContainsField(
+        assertTrue(jarContainsField(
                 pipeline.outputJar(),
                 "zoo/basic/PrimitiveBasicCase",
                 "UNUSED_CONSTANT_LABEL",
                 "Ljava/lang/String;"));
+        assertKeptFieldReason(
+                workspace,
+                "zoo/basic/PrimitiveBasicCase",
+                "INLINE_LEAF_BIAS",
+                "I",
+                "REFLECTION_DYNAMIC_SURFACE");
+        assertKeptFieldReason(
+                workspace,
+                "zoo/basic/PrimitiveBasicCase",
+                "UNUSED_CONSTANT_LABEL",
+                "Ljava/lang/String;",
+                "REFLECTION_DYNAMIC_SURFACE");
         assertTrue(pipeline.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.code().equals(
                         PublicMethodInternalizationDiagnostics
@@ -224,6 +239,44 @@ class DummyMethodInternalizationE2eTest {
                                 && check.get("reasonCode").getAsString()
                                         .equals(reasonCode)),
                 checks.toString());
+    }
+
+    private void assertKeptFieldReason(
+            Path workspace,
+            String owner,
+            String name,
+            String descriptor,
+            String reasonCode) throws IOException {
+        JsonArray decisions = JsonParser.parseString(Files.readString(
+                        workspace.resolve("reports/field-internalization-report.json")))
+                .getAsJsonObject()
+                .getAsJsonArray("decisions");
+        String expectedHash = sha256(owner + "#" + name + "!" + descriptor);
+        assertTrue(
+                decisions.asList().stream()
+                        .map(element -> element.getAsJsonObject())
+                        .anyMatch(decision -> decision.get("fieldIdHash")
+                                        .getAsString()
+                                        .equals(expectedHash)
+                                && decision.get("status").getAsString()
+                                        .equals("KEPT")
+                                && !decision.get("removedFromOutputClass")
+                                        .getAsBoolean()
+                                && decision.getAsJsonArray("reasonCodes")
+                                        .asList()
+                                        .stream()
+                                        .anyMatch(reason -> reason.getAsString()
+                                                .equals(reasonCode))),
+                decisions.toString());
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private ResolvedConfig config(
