@@ -9,9 +9,15 @@ import org.junit.jupiter.api.Test;
 final class HostWindowsDllEntryRuntimeSourceTest {
     @Test
     void emitsADataFreeEntryPointWithoutAnyCrtCall() {
-        String source = new HostWindowsDllEntryRuntimeSource().emit("j2ll_deadbeef");
+        String libraryName = "408cc4b89702abf5";
+        String symbol = HostWindowsDllEntryRuntimeSource.symbol(libraryName);
+        String source = new HostWindowsDllEntryRuntimeSource().emit(libraryName);
 
-        assertTrue(source.contains("int j2ll_deadbeef_entry("));
+        assertTrue(symbol.matches("[a-p]{32}"), symbol);
+        assertTrue(symbol.equals(HostWindowsDllEntryRuntimeSource.symbol(libraryName)));
+        assertFalse(symbol.equals(HostWindowsDllEntryRuntimeSource.symbol("008cc4b89702abf5")));
+        assertTrue(source.contains("int " + symbol + "("));
+        assertFalse(source.contains("j2ll"), source);
         assertTrue(source.contains("return 1;"));
         assertFalse(NativeLibcRequirementPlan.inspect(source).required());
     }

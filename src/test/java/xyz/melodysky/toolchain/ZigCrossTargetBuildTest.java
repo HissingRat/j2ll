@@ -43,6 +43,8 @@ class ZigCrossTargetBuildTest {
                 java.util.Map.of());
         assumeTrue(version.exitCode() == 0 && version.stdout().trim().equals("0.15.2"),
                 "the cross-target build test requires Zig 0.15.2");
+        String logicalLibraryName = NativeLibraryName.derive("seed-b");
+        assertTrue(logicalLibraryName.startsWith("0"), logicalLibraryName);
 
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(temp);
         Files.createDirectories(workspace.jniDirectory());
@@ -181,7 +183,7 @@ class ZigCrossTargetBuildTest {
         Path runtime = workspace.runtimeDirectory().resolve("j2ll_runtime_helpers.c");
         Files.writeString(
                 runtime,
-                new HostWindowsDllEntryRuntimeSource().emit("j2ll_probe"),
+                new HostWindowsDllEntryRuntimeSource().emit(logicalLibraryName),
                 StandardCharsets.UTF_8);
         Path llvm = workspace.llvmDirectory().resolve("probe.ll");
         String retainedLlvm = """
@@ -210,7 +212,7 @@ class ZigCrossTargetBuildTest {
                 StandardCharsets.UTF_8);
 
         List<TargetTriple> targets = Arrays.asList(TargetTriple.values());
-        NativeBuildPlan plan = new NativeBuildPlanner().plan(temp, "j2ll_probe", targets);
+        NativeBuildPlan plan = new NativeBuildPlanner().plan(temp, logicalLibraryName, targets);
         NativeLibcRequirementPlan libcRequirement =
                 NativeLibcRequirementPlan.inspectAll(List.of(
                         wrapperSource,
@@ -232,7 +234,7 @@ class ZigCrossTargetBuildTest {
                         "LLVM_NATIVE_UNWIND_PROVEN_ABSENT"))));
         new ZigBuildWriter().write(
                 workspace,
-                "j2ll_probe",
+                logicalLibraryName,
                 plan,
                 new ZigInputSet(sources),
                 true,
@@ -281,6 +283,15 @@ class ZigCrossTargetBuildTest {
             assertTrue(Files.isRegularFile(unit.outputPath()), unit.outputPath().toString());
             assertTrue(Files.size(unit.outputPath()) > 0, unit.outputPath().toString());
             byte[] binary = Files.readAllBytes(unit.outputPath());
+            String internalLibraryIdentity = unit.target().isWindows()
+                    ? logicalLibraryName + ".dll"
+                    : "lib" + logicalLibraryName + "." + unit.target().libraryExtension();
+            assertTrue(
+                    NativeBinaryPrivacyInspector.contains(
+                            binary,
+                            internalLibraryIdentity.getBytes(StandardCharsets.US_ASCII)),
+                    unit.target().directoryName() + " internal library identity: " + internalLibraryIdentity);
+            assertEncodedTextAbsent(binary, "j2ll_" + logicalLibraryName, unit.target());
             assertLibcFree(binary, unit.target());
             for (String forbidden : forbiddenBinaryText.stream().distinct().toList()) {
                 assertEncodedTextAbsent(binary, forbidden, unit.target());

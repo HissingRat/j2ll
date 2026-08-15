@@ -6,7 +6,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
 public final class NativeLibraryName {
-    private static final String SAFE_NAME_PATTERN = "[A-Za-z][A-Za-z0-9_-]{0,63}";
+    private static final String SAFE_NAME_PATTERN = "[A-Za-z0-9][A-Za-z0-9_-]{0,63}";
 
     private NativeLibraryName() {
     }
@@ -15,7 +15,7 @@ public final class NativeLibraryName {
         try {
             String seedHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(protectionSeed.getBytes(StandardCharsets.UTF_8)));
-            return "j2ll_" + seedHash.substring(0, 16);
+            return seedHash.substring(0, 16);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }

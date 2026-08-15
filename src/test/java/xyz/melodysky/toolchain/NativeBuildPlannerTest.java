@@ -123,8 +123,11 @@ class NativeBuildPlannerTest {
 
         assertEquals(first, repeated);
         assertTrue(NativeLibraryName.isSafe(first));
-        assertTrue(first.matches("j2ll_[0-9a-f]{16}"));
+        assertTrue(first.matches("[0-9a-f]{16}"));
+        assertTrue(!first.contains("j2ll"));
         assertTrue(!first.equals(different));
+        assertTrue(different.startsWith("0"), different);
+        assertTrue(NativeLibraryName.isSafe(different));
     }
 
     @Test

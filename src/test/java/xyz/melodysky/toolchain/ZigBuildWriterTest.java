@@ -421,15 +421,19 @@ class ZigBuildWriterTest {
                 List.of(),
                 NativeLibcRequirementPlan.inspect("int helper(void) { return 1; }"));
 
+        String libraryName = "408cc4b89702abf5";
         String buildZig = new ZigBuildWriter().buildZig(
                 workspace,
-                "j2lltest",
+                libraryName,
                 plan,
                 libcFree,
                 true);
 
         assertTrue(buildZig.contains(
-                "lib_windows_x64.entry = .{ .symbol_name = \"j2lltest_entry\" };"));
+                "lib_windows_x64.entry = .{ .symbol_name = \""
+                        + HostWindowsDllEntryRuntimeSource.symbol(libraryName)
+                        + "\" };"));
+        assertTrue(buildZig.contains(".name = \"408cc4b89702abf5\""), buildZig);
         assertTrue(buildZig.contains(".link_libc = false"));
     }
 
