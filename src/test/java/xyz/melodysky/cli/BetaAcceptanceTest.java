@@ -143,13 +143,9 @@ class BetaAcceptanceTest implements Opcodes {
                 .anyMatch(path -> path.equals("reports/release-readiness.json")));
 
         try (JarFile jar = new JarFile(outputJar.toFile(), false)) {
-            String buildInfo = readJarEntry(jar, "META-INF/j2ll/build-info.json");
-            String nativeLibraries = readJarEntry(jar, "META-INF/j2ll/native-libraries.json");
-            String reportsManifest = readJarEntry(jar, "META-INF/j2ll/reports-manifest.json");
-            assertTrue(buildInfo.contains("\"protectionSeedHash\""), buildInfo);
-            assertFalse(buildInfo.contains(SECRET_SEED), buildInfo);
-            assertFalse(nativeLibraries.contains(workspace.toString()), nativeLibraries);
-            assertFalse(reportsManifest.contains(workspace.toString()), reportsManifest);
+            assertTrue(jar.stream()
+                    .noneMatch(entry -> entry.getName().toLowerCase(java.util.Locale.ROOT)
+                            .startsWith("meta-inf/j2ll/")));
         }
     }
 
@@ -160,12 +156,6 @@ class BetaAcceptanceTest implements Opcodes {
                 assertFalse(text.contains(SECRET_SEED), report + " leaked raw protection seed");
             }
         }
-    }
-
-    private String readJarEntry(JarFile jar, String name) throws Exception {
-        JarEntry entry = jar.getJarEntry(name);
-        assertTrue(entry != null, "missing " + name);
-        return new String(jar.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private void writeJar(Path jar, Map<String, byte[]> entries) throws Exception {

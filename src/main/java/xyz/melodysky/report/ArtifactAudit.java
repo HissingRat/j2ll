@@ -14,12 +14,14 @@ import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.jar.Manifest;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
+import xyz.melodysky.packaging.FinalJarMetadataPolicy;
 import xyz.melodysky.packaging.InternalizedFieldArtifactVerifier;
 import xyz.melodysky.packaging.InternalizedMethodArtifactVerifier;
 import xyz.melodysky.toolchain.ClassArtifactPath;
@@ -63,6 +65,8 @@ public class ArtifactAudit {
         }
 
         try (JarFile jar = new JarFile(outputJar.toFile())) {
+            Set<String> allEntries = new HashSet<>();
+            jar.stream().forEach(entry -> allEntries.add(entry.getName()));
             Set<String> entries = new HashSet<>();
             jar.stream().filter(entry -> !entry.isDirectory()).forEach(entry -> entries.add(entry.getName()));
             checkAuditSurfaces(checks, workspaceRoot, entries, embeddedLibraries, exportedSymbols);
@@ -77,7 +81,7 @@ public class ArtifactAudit {
                     embeddedLibraryDirectory,
                     !embeddedLibraries.isEmpty());
             checkEmbeddedLibraryHashes(checks, jar, embeddedLibraries);
-            checkJ2llMetadata(checks, workspaceRoot, jar, entries, embeddedLibraries);
+            checkFinalJarMetadataPolicy(checks, workspaceRoot, jar, allEntries, embeddedLibraries);
             checkPlaintextsInJar(workspaceRoot, jar, checks, checkedSensitiveFacts);
         }
         checkNoLegacyFallbackWorkspaceSurfaces(checks, workspaceRoot);
@@ -482,151 +486,56 @@ public class ArtifactAudit {
                         "native library hash mismatches: " + mismatches));
     }
 
-    private void checkJ2llMetadata(
+    private void checkFinalJarMetadataPolicy(
             List<ArtifactAuditCheck> checks,
             Path workspaceRoot,
             JarFile jar,
             Set<String> entries,
             List<EmbeddedLibraryReport> embeddedLibraries) throws IOException {
-        List<String> required = List.of(
-                "META-INF/j2ll/build-info.json",
-                "META-INF/j2ll/native-libraries.json",
-                "META-INF/j2ll/reports-manifest.json");
-        List<String> missing = required.stream()
-                .filter(entry -> !entries.contains(entry))
+        List<String> forbidden = entries.stream()
+                .filter(FinalJarMetadataPolicy::isPrivateJ2llEntry)
+                .sorted()
                 .toList();
-        if (!missing.isEmpty()) {
-            checks.add(ArtifactAuditCheck.failed(
-                    "metadata.j2llEntries",
-                    "J2LL_METADATA_MISSING",
-                    "missing j2ll metadata entries: " + missing));
-            return;
-        }
-        JsonObject nativeLibraries = readJson(jar, "META-INF/j2ll/native-libraries.json");
-        java.util.Map<String, String> expected = embeddedLibraries.stream()
+        List<String> manifestReferences = privateManifestReferences(jar);
+        checks.add(forbidden.isEmpty() && manifestReferences.isEmpty()
+                ? ArtifactAuditCheck.passed(
+                        "metadata.privateJ2llEntries",
+                        "PRIVATE_J2LL_METADATA_ABSENT",
+                        "final JAR contains no META-INF/j2ll private metadata")
+                : ArtifactAuditCheck.failed(
+                        "metadata.privateJ2llEntries",
+                        "PRIVATE_J2LL_METADATA_PRESENT",
+                        "forbidden final-JAR private metadata entries: " + forbidden
+                                + "; manifest references: " + manifestReferences));
+        java.util.Map<String, String> embeddedLibraryEvidence = embeddedLibraries.stream()
                 .collect(java.util.stream.Collectors.toMap(
                         EmbeddedLibraryReport::jarPath,
                         EmbeddedLibraryReport::sha256,
                         (left, right) -> left,
                         java.util.TreeMap::new));
-        java.util.Map<String, String> actual = new java.util.TreeMap<>();
-        nativeLibraries.getAsJsonArray("libraries").forEach(element -> {
-            JsonObject library = element.getAsJsonObject();
-            actual.put(library.get("jarPath").getAsString(), library.get("sha256").getAsString());
-        });
-        boolean matches = expected.equals(actual);
-        checks.add(matches
-                ? ArtifactAuditCheck.passed(
-                        "metadata.nativeLibraries",
-                        "J2LL_NATIVE_METADATA_MATCH",
-                        "native library metadata matches packaging embedded libraries")
-                : ArtifactAuditCheck.failed(
-                        "metadata.nativeLibraries",
-                        "J2LL_NATIVE_METADATA_MISMATCH",
-                        "native library metadata does not match packaging embedded libraries"));
-        checkNativeLibrariesMatchTargetArtifacts(checks, workspaceRoot, actual);
-        JsonObject buildInfo = readJson(jar, "META-INF/j2ll/build-info.json");
-        JsonObject reportsManifest = readJson(jar, "META-INF/j2ll/reports-manifest.json");
-        boolean fieldsPresent = hasText(buildInfo, "configHash")
-                && hasText(buildInfo, "protectionSeedHash")
-                && hasText(reportsManifest, "reportsManifestHash");
-        checks.add(fieldsPresent
-                ? ArtifactAuditCheck.passed(
-                        "metadata.requiredFields",
-                        "J2LL_METADATA_FIELDS_PRESENT",
-                        "j2ll metadata includes config/report/protection hashes")
-                : ArtifactAuditCheck.failed(
-                        "metadata.requiredFields",
-                        "J2LL_METADATA_FIELDS_MISSING",
-                        "j2ll metadata is missing required hash fields"));
-        checkMetadataVersions(checks, buildInfo, nativeLibraries, reportsManifest);
-        checkMetadataHashesAndSeeds(checks, buildInfo);
-        checkReportsManifest(checks, reportsManifest);
+        checkNativeLibrariesMatchTargetArtifacts(checks, workspaceRoot, embeddedLibraryEvidence);
     }
 
-    private void checkMetadataVersions(
-            List<ArtifactAuditCheck> checks,
-            JsonObject buildInfo,
-            JsonObject nativeLibraries,
-            JsonObject reportsManifest) {
-        boolean valid = hasPositiveInt(buildInfo, "schemaVersion")
-                && hasPositiveInt(buildInfo, "reportVersion")
-                && hasPositiveInt(nativeLibraries, "schemaVersion")
-                && hasPositiveInt(nativeLibraries, "reportVersion")
-                && hasPositiveInt(reportsManifest, "schemaVersion")
-                && hasPositiveInt(reportsManifest, "reportVersion");
-        checks.add(valid
-                ? ArtifactAuditCheck.passed(
-                        "metadata.schemaVersions",
-                        "J2LL_METADATA_SCHEMA_VERSIONS_PRESENT",
-                        "all j2ll metadata entries include schemaVersion and reportVersion")
-                : ArtifactAuditCheck.failed(
-                        "metadata.schemaVersions",
-                        "METADATA_CONSISTENCY_FAILED",
-                        "one or more j2ll metadata entries are missing schemaVersion/reportVersion"));
-    }
-
-    private void checkMetadataHashesAndSeeds(List<ArtifactAuditCheck> checks, JsonObject buildInfo) {
-        boolean hashes = isSha256(textOrEmpty(buildInfo, "configHash"))
-                && isSha256(textOrEmpty(buildInfo, "protectionSeedHash"));
-        boolean rawSeed = buildInfo.has("seed")
-                || buildInfo.has("rawSeed")
-                || buildInfo.has("protectionSeed");
-        checks.add(hashes && !rawSeed
-                ? ArtifactAuditCheck.passed(
-                        "metadata.hashesOnly",
-                        "J2LL_METADATA_HASHES_ONLY",
-                        "build-info metadata stores config/protection hashes without raw seed")
-                : ArtifactAuditCheck.failed(
-                        "metadata.hashesOnly",
-                        rawSeed ? "J2LL_METADATA_RAW_SEED" : "METADATA_CONSISTENCY_FAILED",
-                        "build-info metadata must contain only hash-shaped config/protection seed values"));
-    }
-
-    private void checkReportsManifest(List<ArtifactAuditCheck> checks, JsonObject reportsManifest) {
-        if (!reportsManifest.has("reports") || !reportsManifest.get("reports").isJsonArray()) {
-            checks.add(ArtifactAuditCheck.failed(
-                    "metadata.reportsManifest",
-                    "J2LL_REPORTS_MANIFEST_INCOMPLETE",
-                    "reports-manifest metadata is missing reports array"));
-            return;
+    private List<String> privateManifestReferences(JarFile jar) throws IOException {
+        ArrayList<String> references = new ArrayList<>();
+        for (var entry : jar.stream()
+                .filter(candidate -> candidate.getName().equalsIgnoreCase("META-INF/MANIFEST.MF"))
+                .toList()) {
+            try (InputStream input = jar.getInputStream(entry)) {
+                Manifest manifest = new Manifest(input);
+                FinalJarMetadataPolicy.privateManifestSections(manifest).stream()
+                        .map(section -> entry.getName() + ":" + section)
+                        .forEach(references::add);
+            }
         }
-        ArrayList<String> reports = new ArrayList<>();
-        reportsManifest.getAsJsonArray("reports").forEach(element -> reports.add(element.getAsString()));
-        List<String> required = List.of(
-                "diagnostics.json",
-                "artifact-audit.json",
-                "field-internalization-report.json",
-                "known-blockers.json",
-                "lowering-report.json",
-                "opcode-support-matrix.json",
-                "packaging-report.json",
-                "protection-report.json",
-                "release-readiness.json",
-                "skipped-method-report.json",
-                "index.json",
-                "summary.json",
-                "summary.md",
-                "support-matrix.json",
-                "symbol-audit.json");
-        boolean complete = reports.containsAll(required);
-        String expectedHash = sha256(String.join("\n", reports).getBytes(StandardCharsets.UTF_8));
-        boolean hashMatches = expectedHash.equals(textOrEmpty(reportsManifest, "reportsManifestHash"));
-        checks.add(complete && hashMatches
-                ? ArtifactAuditCheck.passed(
-                        "metadata.reportsManifest",
-                        "J2LL_REPORTS_MANIFEST_MATCH",
-                        "reports manifest entries and hash are internally consistent")
-                : ArtifactAuditCheck.failed(
-                        "metadata.reportsManifest",
-                        complete ? "METADATA_CONSISTENCY_FAILED" : "J2LL_REPORTS_MANIFEST_INCOMPLETE",
-                        "reports manifest entries/hash mismatch"));
+        references.sort(String::compareTo);
+        return List.copyOf(references);
     }
 
     private void checkNativeLibrariesMatchTargetArtifacts(
             List<ArtifactAuditCheck> checks,
             Path workspaceRoot,
-            java.util.Map<String, String> nativeLibrariesMetadata) throws IOException {
+            java.util.Map<String, String> embeddedLibraryEvidence) throws IOException {
         Path packagingReport = workspaceRoot.resolve("reports/packaging-report.json");
         if (!Files.isRegularFile(packagingReport)) {
             checks.add(ArtifactAuditCheck.skipped(
@@ -648,6 +557,8 @@ public class ArtifactAudit {
         }
         java.util.Map<String, String> targetArtifacts = new java.util.TreeMap<>();
         ArrayList<String> failedRequiredWithMetadata = new ArrayList<>();
+        ArrayList<String> invalidLibraryNames = new ArrayList<>();
+        java.util.TreeSet<String> builtLibraryNames = new java.util.TreeSet<>();
         for (com.google.gson.JsonElement element : zig.getAsJsonArray("targetArtifacts")) {
             JsonObject target = element.getAsJsonObject();
             boolean built = "built".equals(textOrEmpty(target, "status"))
@@ -655,6 +566,12 @@ public class ArtifactAudit {
                     && hasText(target, "actualSha256");
             if (built) {
                 targetArtifacts.put(target.get("actualJarPath").getAsString(), target.get("actualSha256").getAsString());
+                String libraryName = textOrEmpty(target, "libraryName");
+                if (!libraryName.matches("[0-9a-f]{16}")) {
+                    invalidLibraryNames.add(textOrEmpty(target, "target") + ":" + libraryName);
+                } else {
+                    builtLibraryNames.add(libraryName);
+                }
             }
             boolean failedRequired = target.has("required")
                     && target.get("required").getAsBoolean()
@@ -664,23 +581,31 @@ public class ArtifactAudit {
                 failedRequiredWithMetadata.add(textOrEmpty(target, "target"));
             }
         }
-        boolean matches = nativeLibrariesMetadata.equals(targetArtifacts) && failedRequiredWithMetadata.isEmpty();
+        boolean libraryNamesValid = invalidLibraryNames.isEmpty()
+                && (targetArtifacts.isEmpty() || builtLibraryNames.size() == 1);
+        checks.add(libraryNamesValid
+                ? ArtifactAuditCheck.passed(
+                        "metadata.nativeLibraryName",
+                        "NATIVE_LIBRARY_NAME_HASH_ONLY",
+                        targetArtifacts.isEmpty()
+                                ? "no built native target required a logical library name"
+                                : "all built targets use one pure 16-hex logical library name")
+                : ArtifactAuditCheck.failed(
+                        "metadata.nativeLibraryName",
+                        "NATIVE_LIBRARY_NAME_NOT_HASH_ONLY",
+                        "invalid or inconsistent logical native library names: "
+                                + invalidLibraryNames + "; valid names: " + builtLibraryNames));
+        boolean matches = embeddedLibraryEvidence.equals(targetArtifacts) && failedRequiredWithMetadata.isEmpty();
         checks.add(matches
                 ? ArtifactAuditCheck.passed(
                         "metadata.nativeLibrariesTargetArtifacts",
-                        "J2LL_NATIVE_METADATA_TARGET_ARTIFACTS_MATCH",
-                        "native-libraries metadata matches built target artifacts")
+                        "WORKSPACE_NATIVE_EVIDENCE_MATCH",
+                        "packaging embedded-library evidence matches built target artifacts")
                 : ArtifactAuditCheck.failed(
                         "metadata.nativeLibrariesTargetArtifacts",
                         "METADATA_CONSISTENCY_FAILED",
-                        "native-libraries metadata mismatch with targetArtifacts; failed required metadata: "
+                        "embedded-library evidence mismatch with targetArtifacts; failed required metadata: "
                                 + failedRequiredWithMetadata));
-    }
-
-    private JsonObject readJson(JarFile jar, String entryName) throws IOException {
-        try (InputStream input = jar.getInputStream(jar.getJarEntry(entryName))) {
-            return JsonParser.parseString(new String(input.readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
-        }
     }
 
     private void checkNoLegacyFallbackWorkspaceSurfaces(
@@ -735,20 +660,12 @@ public class ArtifactAudit {
                 || relative.contains("nativeembeddedfallbackblob");
     }
 
-    private boolean isSha256(String value) {
-        return value.matches("[0-9a-f]{64}");
-    }
-
     private String textOrEmpty(JsonObject object, String field) {
         return hasText(object, field) ? object.get(field).getAsString() : "";
     }
 
     private boolean hasText(JsonObject object, String field) {
         return object.has(field) && !object.get(field).isJsonNull() && !object.get(field).getAsString().isBlank();
-    }
-
-    private boolean hasPositiveInt(JsonObject object, String field) {
-        return object.has(field) && object.get(field).isJsonPrimitive() && object.get(field).getAsInt() > 0;
     }
 
     private void checkExportedSymbols(

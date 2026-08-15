@@ -213,7 +213,7 @@ xyz.melodysky.toolchain.symbols
   non-sensitive kind + domain-separated hash；不得把 business string carrier
   或额外 owner/member mapping 写入 lowering report。
 - `FailureReportWriter`：失败运行 sidecar writer，记录 error diagnostics 的 stage/reason/message/affected artifact，并固定 `finalArtifactWritten=false`。
-- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、j2ll metadata/packaging targetArtifacts consistency、reports manifest hash、hidden symbol export、PDB、sensitive plaintext facts，以及registered native的implementation/registration closure、`internalNativeOnly`的hidden implementation/native-caller closure与零classfile residual、`skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；generated C只排除精确的JNI ABI结构访问`methods[n].signature`，同文件任意其他`signature`原文仍阻断；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
+- `ArtifactAudit` / `ArtifactAuditReportWriter`：`artifact-audit.json` writer，审计 output JAR、唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class` 的 identity/version、旧 runtime support class absence、embedded native resource、SHA-256、private `META-INF/j2ll/**` absence、workspace packaging targetArtifacts consistency、pure-hash logical native name、hidden symbol export、PDB、sensitive plaintext facts，以及registered native的implementation/registration closure、`internalNativeOnly`的hidden implementation/native-caller closure与零classfile residual、`skipped` method 的原 body 保留与 registration absence、generated C/native/JAR 中没有 embedded bytecode/fallback carrier。Canonical plaintext surface 包括 generated C/LLVM、flat final libraries 和 primary reports；generated C只排除精确的JNI ABI结构访问`methods[n].signature`，同文件任意其他`signature`原文仍阻断；`native/zig-cache/**` 只作为 Zig duplicate cache 排除，不能据此排除 `native/*.{dll,so,dylib}`。
 - `PackagingReportWriter`：`packaging-report.json` 的稳定 JSON writer。
 - `FieldInternalizationReportWriter`：`field-internalization-report.json` writer，只写 hash-only field identity、final implementation path、hybrid storage/cache/lifecycle policy、field removal 和稳定 reason。
 - `ProtectionReportCoverageCollector`：把 protection producer 的显式 per-subject coverage 合并进 `protection-report.json`；未持久化 applicability 的旧 producer 只能降为 `UNKNOWN`，不得从 `SKIPPED` 推断。
@@ -914,7 +914,7 @@ JAR rewrite、loader、native registration。
 - `ResourceCopyPolicy`
 - `OutputJarLayout`
 - `EmbeddedLibraryLayout`
-- `J2llMetadataEntries`
+- `FinalJarMetadataPolicy`
 - `ClassRewriteReport`
 
 边界：
@@ -923,7 +923,7 @@ JAR rewrite、loader、native registration。
 - packaging 不生成 LLVM。
 - packaging 只消费 compiler output、JVM/JNI helper metadata 和 native artifact metadata。
 - packaging 必须保证 output jar 中 `embeddedLibraryDirectory` 下存在所有 selected target 动态库，以及唯一 Java 17 `<embeddedLibraryDirectory>/Loader.class`。
-- packaging 必须在签名前写入 `META-INF/j2ll/build-info.json`、`META-INF/j2ll/native-libraries.json` 和 `META-INF/j2ll/reports-manifest.json`，只记录 hashes/path/target/schema/tool facts，不泄漏 raw seed 或 sensitive plaintext；artifact audit 校验 metadata 与 packaging report 一致。
+- packaging 必须从输入及multi-release counterpart中剥离整个private `META-INF/j2ll/**` namespace，并拒绝任何added entry重新引入；普通`META-INF/MANIFEST.MF`继续保留，但指向该private namespace的manifest section必须删除。构建身份、target hash与report index只保留在workspace reports，artifact audit独立校验private metadata absence与workspace target evidence。
 - packaging 必须保留 manifest、services、module-info 和非 class resources，除非有明确 policy。
 - packaging 使用唯一 Loader + `RegisterNatives`，不导出每个 Java method 的 JNI name symbol。Loader 只包含 native-loading/registration 和按需 field sidecar path；不得包含 hidden/generated class definition 或 blob decode API，也不输出旧 runtime support classes。
 - `embeddedLibraryDirectory` 同时是 native resource 和 Loader JVM package prefix，必须是规范 Java internal package path。输入 base/MR 同名 Loader 必须在 Zig 前分别以 `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION` / `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW` 失败。

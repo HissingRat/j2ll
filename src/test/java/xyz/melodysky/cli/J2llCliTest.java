@@ -501,14 +501,9 @@ class J2llCliTest implements Opcodes {
         assertEquals(0, run.exitCode(), run.stderr());
         assertEquals("42\n", run.stdout());
         try (java.util.jar.JarFile jar = new java.util.jar.JarFile(outputJar.toFile(), false)) {
-            assertTrue(jar.getJarEntry("META-INF/j2ll/build-info.json") != null);
-            assertTrue(jar.getJarEntry("META-INF/j2ll/native-libraries.json") != null);
-            assertTrue(jar.getJarEntry("META-INF/j2ll/reports-manifest.json") != null);
-            String buildInfo = new String(
-                    jar.getInputStream(jar.getJarEntry("META-INF/j2ll/build-info.json")).readAllBytes(),
-                    StandardCharsets.UTF_8);
-            assertTrue(buildInfo.contains("\"protectionSeedHash\""), buildInfo);
-            assertFalse(buildInfo.contains("cli-seed"), buildInfo);
+            assertTrue(jar.stream()
+                    .noneMatch(entry -> entry.getName().toLowerCase(java.util.Locale.ROOT)
+                            .startsWith("meta-inf/j2ll/")));
         }
     }
 

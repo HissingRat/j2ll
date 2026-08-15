@@ -2,6 +2,7 @@ package xyz.melodysky.packaging;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -51,6 +52,98 @@ class JarRepackagerTest {
         assertArrayEquals(entries.get("assets/data.bin"), readEntry(outputJar, "assets/data.bin"));
         try (JarFile jarFile = new JarFile(outputJar.toFile())) {
             assertEquals(entries.size(), jarFile.stream().filter(entry -> !entry.isDirectory()).count());
+        }
+    }
+
+    @Test
+    void stripsEntirePrivateJ2llMetadataSubtreeAndPreservesManifest() throws IOException {
+        Path inputJar = tempDir.resolve("input-private-metadata.jar");
+        Path outputJar = tempDir.resolve("out").resolve("input-private-metadata.jar");
+        byte[] manifest = bytes(
+                "Manifest-Version: 1.0\r\n"
+                        + "Main-Class: pkg.Main\r\n"
+                        + "\r\n"
+                        + "Name: META-INF/j2ll/build-info.json\r\n"
+                        + "SHA-256-Digest: stale\r\n"
+                        + "\r\n"
+                        + "Name: assets/data.bin\r\n"
+                        + "SHA-256-Digest: preserve\r\n"
+                        + "\r\n");
+        writeJar(inputJar, Map.of(
+                "META-INF/MANIFEST.MF", manifest,
+                "META-INF/j2ll/build-info.json", bytes("stale"),
+                "META-INF/j2ll/nested/evidence.bin", new byte[] {1, 2, 3},
+                "META-INF/J2LL/mixed-case.json", bytes("stale"),
+                "META-INF/versions/17/META-INF/j2ll/versioned.json", bytes("stale"),
+                "META-INF/versions/17/pkg/Foo.class", new byte[] {7, 8, 9},
+                "META-INF/j2ll-adjacent.txt", bytes("preserve"),
+                "pkg/Foo.class", new byte[] {4, 5, 6}));
+
+        JarPreservationReport preservation = new JarRepackager().inspectPreservation(inputJar);
+        new JarRepackager().write(inputJar, outputJar, Map.of());
+
+        assertEquals(1, preservation.versionedEntriesPreserved());
+        assertArrayEquals(bytes("preserve"), readEntry(outputJar, "META-INF/j2ll-adjacent.txt"));
+        try (JarFile jarFile = new JarFile(outputJar.toFile(), false)) {
+            assertEquals("pkg.Main", jarFile.getManifest().getMainAttributes().getValue("Main-Class"));
+            assertTrue(jarFile.getManifest().getEntries().containsKey("assets/data.bin"));
+            assertFalse(jarFile.getManifest().getEntries().containsKey("META-INF/j2ll/build-info.json"));
+            assertTrue(jarFile.stream()
+                    .noneMatch(entry -> FinalJarMetadataPolicy.isPrivateJ2llEntry(entry.getName())));
+        }
+    }
+
+    @Test
+    void rejectsAnyAttemptToAddPrivateJ2llMetadata() throws IOException {
+        Path inputJar = tempDir.resolve("input.jar");
+        Path outputJar = tempDir.resolve("out").resolve("input.jar");
+        writeJar(inputJar, Map.of("pkg/Foo.class", new byte[] {1, 2, 3}));
+
+        IOException error = assertThrows(
+                IOException.class,
+                () -> new JarRepackager().write(
+                        inputJar,
+                        outputJar,
+                        Map.of(),
+                        Map.of("META-INF/j2ll/future.json", bytes("forbidden"))));
+
+        assertTrue(error.getMessage().contains("META-INF/j2ll/future.json"), error.getMessage());
+    }
+
+    @Test
+    void sanitizesARewrittenManifestBeforeItReachesTheFinalJar() throws IOException {
+        Path inputJar = tempDir.resolve("rewritten-manifest.jar");
+        Path outputJar = tempDir.resolve("out").resolve("rewritten-manifest.jar");
+        writeJar(inputJar, Map.of(
+                "META-INF/MANIFEST.MF", bytes("Manifest-Version: 1.0\r\n\r\n"),
+                "pkg/Foo.class", new byte[] {1}));
+
+        new JarRepackager().write(
+                inputJar,
+                outputJar,
+                Map.of("META-INF/MANIFEST.MF", manifestWithPrivateSection("Rewritten: true")));
+
+        try (JarFile jarFile = new JarFile(outputJar.toFile(), false)) {
+            assertEquals("true", jarFile.getManifest().getMainAttributes().getValue("Rewritten"));
+            assertTrue(FinalJarMetadataPolicy.privateManifestSections(jarFile.getManifest()).isEmpty());
+        }
+    }
+
+    @Test
+    void sanitizesAnAddedManifestBeforeItReachesTheFinalJar() throws IOException {
+        Path inputJar = tempDir.resolve("added-manifest.jar");
+        Path outputJar = tempDir.resolve("out").resolve("added-manifest.jar");
+        writeJar(inputJar, Map.of("pkg/Foo.class", new byte[] {1}));
+
+        new JarRepackager().write(
+                inputJar,
+                outputJar,
+                Map.of(),
+                Map.of("META-INF/MANIFEST.MF", manifestWithPrivateSection("Added: true")));
+
+        try (JarFile jarFile = new JarFile(outputJar.toFile(), false)) {
+            assertEquals("true", jarFile.getManifest().getMainAttributes().getValue("Added"));
+            assertTrue(FinalJarMetadataPolicy.privateManifestSections(jarFile.getManifest()).isEmpty());
         }
     }
 
@@ -170,5 +263,14 @@ class JarRepackagerTest {
 
     private byte[] bytes(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private byte[] manifestWithPrivateSection(String mainAttribute) {
+        return bytes("Manifest-Version: 1.0\r\n"
+                + mainAttribute + "\r\n"
+                + "\r\n"
+                + "Name: META-INF/j2ll/stale.json\r\n"
+                + "SHA-256-Digest: stale\r\n"
+                + "\r\n");
     }
 }

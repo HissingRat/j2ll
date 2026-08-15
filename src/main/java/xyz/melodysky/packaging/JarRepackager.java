@@ -1,5 +1,7 @@
 package xyz.melodysky.packaging;
 
+import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -27,6 +29,9 @@ public final class JarRepackager {
             boolean moduleInfo = false;
             for (JarEntry entry : jarFile.stream().filter(entry -> !entry.isDirectory()).toList()) {
                 String name = entry.getName();
+                if (FinalJarMetadataPolicy.isPrivateJ2llEntry(name)) {
+                    continue;
+                }
                 if (name.startsWith("META-INF/services/")) {
                     services++;
                 }
@@ -105,12 +110,19 @@ public final class JarRepackager {
                         && isSignatureEntry(inputEntry.getName())) {
                     continue;
                 }
+                if (FinalJarMetadataPolicy.isPrivateJ2llEntry(inputEntry.getName())) {
+                    continue;
+                }
                 JarEntry outputEntry = new JarEntry(inputEntry.getName());
                 outputEntry.setTime(0L);
                 output.putNextEntry(outputEntry);
                 byte[] rewritten = rewrittenEntries.get(inputEntry.getName());
                 if (rewritten != null) {
-                    output.write(rewritten);
+                    output.write(isManifest(inputEntry.getName()) ? sanitizedManifest(rewritten) : rewritten);
+                } else if (isManifest(inputEntry.getName())) {
+                    try (InputStream input = jarFile.getInputStream(inputEntry)) {
+                        output.write(sanitizedManifest(input.readAllBytes()));
+                    }
                 } else {
                     try (InputStream input = jarFile.getInputStream(inputEntry)) {
                         input.transferTo(output);
@@ -122,6 +134,9 @@ public final class JarRepackager {
             for (Map.Entry<String, byte[]> entry : addedEntries.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey())
                     .toList()) {
+                if (FinalJarMetadataPolicy.isPrivateJ2llEntry(entry.getKey())) {
+                    throw new IOException("final JAR private metadata is forbidden: " + entry.getKey());
+                }
                 if (writtenEntries.contains(entry.getKey())) {
                     throw new IOException("added JAR entry collides with input entry: " + entry.getKey());
                 }
@@ -131,7 +146,9 @@ public final class JarRepackager {
                 JarEntry outputEntry = new JarEntry(entry.getKey());
                 outputEntry.setTime(0L);
                 output.putNextEntry(outputEntry);
-                output.write(entry.getValue());
+                output.write(isManifest(entry.getKey())
+                        ? sanitizedManifest(entry.getValue())
+                        : entry.getValue());
                 output.closeEntry();
             }
         }
@@ -171,5 +188,21 @@ public final class JarRepackager {
                 && (entryName.startsWith("j2ll/generated/fallback/")
                         || entryName.contains("/J2llFallback$")
                         || entryName.startsWith("J2llFallback$"));
+    }
+
+    private boolean isManifest(String entryName) {
+        return entryName.equalsIgnoreCase("META-INF/MANIFEST.MF");
+    }
+
+    private byte[] sanitizedManifest(byte[] source) throws IOException {
+        Manifest manifest = new Manifest(new ByteArrayInputStream(source));
+        List<String> privateSections = FinalJarMetadataPolicy.privateManifestSections(manifest);
+        if (privateSections.isEmpty()) {
+            return source;
+        }
+        privateSections.forEach(manifest.getEntries()::remove);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        manifest.write(output);
+        return output.toByteArray();
     }
 }

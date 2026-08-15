@@ -198,7 +198,7 @@ schema v1 继续使用 `protection.seed: null|string`，但语义调整为：
 - registration metadata、runtime metadata 和 business strings；
 - sidecar slot 物理顺序。
 
-报告、JAR metadata 和 diagnostics 只写 mode 与 context-bound hash，不写 root、nonce 或 raw seed。逻辑 report 排序保持 canonical，不跟随物理布局随机化。
+Workspace reports和diagnostics只写mode与context-bound hash，不写root、nonce或raw seed；final JAR不发布private j2ll metadata。逻辑report排序保持canonical，不跟随物理布局随机化。
 
 ## 实现清单
 

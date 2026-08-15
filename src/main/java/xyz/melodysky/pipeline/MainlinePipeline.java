@@ -80,7 +80,6 @@ import xyz.melodysky.packaging.RuntimeLoaderCollisionValidator;
 import xyz.melodysky.packaging.SignatureActionReport;
 import xyz.melodysky.packaging.JarSignatureResigner;
 import xyz.melodysky.packaging.JarSignatureResignResult;
-import xyz.melodysky.packaging.J2llMetadataEntries;
 import xyz.melodysky.packaging.InternalizedFieldClassTransform;
 import xyz.melodysky.packaging.InternalizedMethodClassTransform;
 import xyz.melodysky.packaging.InterfaceMethodHelperClassGenerator;
@@ -1044,7 +1043,10 @@ public final class MainlinePipeline {
             SignatureActionReport signatureAction,
             WholeProgramAnalysisPolicy wholeProgramPolicy)
             throws IOException {
-        NativeBuildPlan buildPlan = new NativeBuildPlanner().plan(workspaceRoot, "j2ll_failed", config.targets());
+        NativeBuildPlan buildPlan = new NativeBuildPlanner().plan(
+                workspaceRoot,
+                NativeLibraryName.derive(config.protection().seed()),
+                config.targets());
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlan(List.of());
         Path outputJar = new WorkspaceLayout(workspaceRoot).outputJar(config.jarFile());
         Files.createDirectories(outputJar.getParent());
@@ -1213,7 +1215,6 @@ public final class MainlinePipeline {
                             rewriteDecisions,
                             implementationPlan)));
         }
-        added.putAll(new J2llMetadataEntries().entries(config, nativeBuildResult));
         return added;
     }
 

@@ -14,10 +14,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
+import xyz.melodysky.packaging.FinalJarMetadataPolicy;
 
 public final class ReleaseReadinessGate {
     private static final Set<String> WEIRD_SEED_COVERED_REASONS = Set.of(
@@ -159,8 +161,7 @@ public final class ReleaseReadinessGate {
             return "artifactAuditNotPassed";
         }
         if (reasonCode.equals("METADATA_CONSISTENCY_FAILED")
-                || reasonCode.equals("J2LL_METADATA_RAW_SEED")
-                || reasonCode.equals("J2LL_REPORTS_MANIFEST_INCOMPLETE")) {
+                || reasonCode.equals("PRIVATE_J2LL_METADATA_PRESENT")) {
             return "metadataConsistencyMissing";
         }
         if (reasonCode.equals("BLOCKING_SENSITIVE_PLAINTEXT_LEAK")
@@ -826,8 +827,8 @@ public final class ReleaseReadinessGate {
                 .filter(path -> Files.isRegularFile(workspaceRoot.resolve(path)))
                 .filter(path -> !indexedPaths.contains(path))
                 .forEach(path -> failures.add(path + ": not indexed"));
-        if (!finalJarReportsManifestMatchesIndex(workspaceRoot, reports, indexedPaths)) {
-            failures.add("final JAR reports-manifest does not match workspace report index contract");
+        if (!finalJarOmitsPrivateJ2llMetadata(workspaceRoot, reports)) {
+            failures.add("final JAR contains forbidden META-INF/j2ll private metadata");
         }
         checks.add(failures.isEmpty()
                 ? ReleaseReadinessCheck.passed(
@@ -840,7 +841,7 @@ public final class ReleaseReadinessGate {
                         "report index failures: " + failures.stream().sorted().toList()));
     }
 
-    private boolean finalJarReportsManifestMatchesIndex(Path workspaceRoot, Path reports, Set<String> indexedPaths)
+    private boolean finalJarOmitsPrivateJ2llMetadata(Path workspaceRoot, Path reports)
             throws IOException {
         Path packaging = reports.resolve("packaging-report.json");
         if (!Files.isRegularFile(packaging)) {
@@ -859,33 +860,23 @@ public final class ReleaseReadinessGate {
             return true;
         }
         try (JarFile jar = new JarFile(jarPath.toFile(), false)) {
-            var entry = jar.getJarEntry("META-INF/j2ll/reports-manifest.json");
-            if (entry == null) {
+            if (jar.stream()
+                    .map(entry -> entry.getName())
+                    .anyMatch(FinalJarMetadataPolicy::isPrivateJ2llEntry)) {
                 return false;
             }
-            JsonObject manifest = JsonParser.parseString(new String(
-                            jar.getInputStream(entry).readAllBytes(),
-                            java.nio.charset.StandardCharsets.UTF_8))
-                    .getAsJsonObject();
-            if (!"reports/index.json".equals(textOrEmpty(manifest, "reportIndex"))
-                    || !"workspaceReportIndexSha256".equals(textOrEmpty(manifest, "reportHashSource"))) {
-                return false;
+            for (var entry : jar.stream()
+                    .filter(candidate -> candidate.getName().equalsIgnoreCase("META-INF/MANIFEST.MF"))
+                    .toList()) {
+                try (var input = jar.getInputStream(entry)) {
+                    if (!FinalJarMetadataPolicy.privateManifestSections(new Manifest(input)).isEmpty()) {
+                        return false;
+                    }
+                }
             }
-            if (!manifest.has("reports") || !manifest.get("reports").isJsonArray()) {
-                return false;
-            }
-            HashSet<String> manifestReports = new HashSet<>();
-            manifest.getAsJsonArray("reports").forEach(item -> manifestReports.add("reports/" + item.getAsString()));
-            return manifestReports.contains("reports/index.json")
-                    && manifestReports.contains("reports/summary.md")
-                    && manifestReports.stream()
-                            .filter(path -> !path.equals("reports/index.json"))
-                            .filter(path -> Files.isRegularFile(workspaceRoot.resolve(path)))
-                            .allMatch(indexedPaths::contains);
-        } catch (IOException exception) {
-            // Some focused readiness tests use a tiny placeholder file for the final artifact.
-            // The full artifact-audit path validates real output JAR metadata.
             return true;
+        } catch (IOException exception) {
+            return false;
         }
     }
 

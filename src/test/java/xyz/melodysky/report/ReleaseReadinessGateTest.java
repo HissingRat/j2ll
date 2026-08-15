@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -278,6 +281,53 @@ class ReleaseReadinessGateTest {
     }
 
     @Test
+    void finalJarPrivateJ2llMetadataFailsReportIndexIntegrity() throws Exception {
+        writeCompleteReports(temp);
+        writeJar(temp.resolve("input.jar"), Map.of(
+                "META-INF/MANIFEST.MF", "Manifest-Version: 1.0\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "META-INF/j2ll/stale.json", "{}\n".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"reasonCode\": \"REPORT_INDEX_INTEGRITY_FAILED\""), json);
+        assertTrue(json.contains("forbidden META-INF/j2ll private metadata"), json);
+    }
+
+    @Test
+    void finalJarManifestPrivateReferenceFailsReportIndexIntegrity() throws Exception {
+        writeCompleteReports(temp);
+        writeJar(temp.resolve("input.jar"), Map.of(
+                "META-INF/MANIFEST.MF",
+                ("Manifest-Version: 1.0\r\n"
+                                + "\r\n"
+                                + "Name: META-INF/j2ll/stale.json\r\n"
+                                + "SHA-256-Digest: stale\r\n"
+                                + "\r\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"reasonCode\": \"REPORT_INDEX_INTEGRITY_FAILED\""), json);
+        assertTrue(json.contains("forbidden META-INF/j2ll private metadata"), json);
+    }
+
+    @Test
+    void unreadableFinalJarFailsReportIndexIntegrity() throws Exception {
+        writeCompleteReports(temp);
+        Files.writeString(temp.resolve("input.jar"), "not a JAR");
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"reasonCode\": \"REPORT_INDEX_INTEGRITY_FAILED\""), json);
+    }
+
+    @Test
     void blockingSensitivePlaintextFailureExplainsReadinessFailure() throws Exception {
         writeCompleteReports(temp);
         Files.writeString(temp.resolve("reports/artifact-audit.json"), """
@@ -294,7 +344,7 @@ class ReleaseReadinessGateTest {
                     }
                   ],
                   "checks": [
-                    {"name":"metadata.reportsManifest","status":"passed","reasonCode":"J2LL_REPORTS_MANIFEST_MATCH","message":"ok"},
+                    {"name":"metadata.privateJ2llEntries","status":"passed","reasonCode":"PRIVATE_J2LL_METADATA_ABSENT","message":"ok"},
                     {"name":"plaintext.forbiddenStrings","status":"failed","reasonCode":"FORBIDDEN_PLAINTEXT_FOUND","message":"hash-only hit"}
                   ]
                 }
@@ -364,7 +414,7 @@ class ReleaseReadinessGateTest {
     private void writeCompleteReports(Path workspace) throws Exception {
         Path reports = workspace.resolve("reports");
         Files.createDirectories(reports);
-        Files.writeString(workspace.resolve("input.jar"), "fixture");
+        writeJar(workspace.resolve("input.jar"), Map.of());
         Files.writeString(reports.resolve("diagnostics.json"), "{\"diagnostics\":[]}\n");
         Files.writeString(reports.resolve("artifact-audit.json"), """
                 {
@@ -372,8 +422,8 @@ class ReleaseReadinessGateTest {
                   "checkedSensitiveFacts": [],
                   "checks": [
                     {"name":"jar.noEmbeddedBytecodeCopies","status":"passed","reasonCode":"NO_EMBEDDED_METHOD_BYTECODE","message":"ok"},
-                    {"name":"metadata.nativeLibrariesTargetArtifacts","status":"passed","reasonCode":"J2LL_NATIVE_METADATA_TARGET_ARTIFACTS_MATCH","message":"ok"},
-                    {"name":"metadata.reportsManifest","status":"passed","reasonCode":"J2LL_REPORTS_MANIFEST_MATCH","message":"ok"}
+                    {"name":"metadata.nativeLibrariesTargetArtifacts","status":"passed","reasonCode":"WORKSPACE_NATIVE_EVIDENCE_MATCH","message":"ok"},
+                    {"name":"metadata.privateJ2llEntries","status":"passed","reasonCode":"PRIVATE_J2LL_METADATA_ABSENT","message":"ok"}
                   ]
                 }
                 """);
@@ -398,6 +448,19 @@ class ReleaseReadinessGateTest {
                 """);
         Files.writeString(reports.resolve("symbol-audit.json"), "{\"libraries\":[]}\n");
         refreshIndex(workspace);
+    }
+
+    private void writeJar(Path path, Map<String, byte[]> entries) throws Exception {
+        Files.createDirectories(path.getParent());
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(path))) {
+            for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+                JarEntry jarEntry = new JarEntry(entry.getKey());
+                jarEntry.setTime(0L);
+                output.putNextEntry(jarEntry);
+                output.write(entry.getValue());
+                output.closeEntry();
+            }
+        }
     }
 
     private void refreshIndex(Path workspace) throws Exception {
@@ -596,7 +659,7 @@ class ReleaseReadinessGateTest {
                         "osClassifier": "macos",
                         "archClassifier": "arm64",
                         "libraryExtension": "dylib",
-                        "libraryName": "j2ll",
+                        "libraryName": "408cc4b89702abf5",
                         "zigTarget": "aarch64-macos.11.0",
                         "expectedArtifactPath": "native/arm64-macos.dylib",
                         "expectedArtifactName": "arm64-macos.dylib",
@@ -637,7 +700,7 @@ class ReleaseReadinessGateTest {
                         "osClassifier": "linux",
                         "archClassifier": "x64",
                         "libraryExtension": "so",
-                        "libraryName": "j2ll",
+                        "libraryName": "408cc4b89702abf5",
                         "zigTarget": "x86_64-linux.3.2-gnu.2.17",
                         "expectedArtifactPath": "native/x64-linux.so",
                         "expectedArtifactName": "x64-linux.so",

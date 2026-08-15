@@ -25,7 +25,7 @@ class ArtifactAuditTest {
     void passesCleanJarAndStableNativeHashAudit() throws Exception {
         Path jar = temp.resolve("output.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                  sha256(nativeBytes),
                  Map.of(
@@ -49,6 +49,7 @@ class ArtifactAuditTest {
         assertTrue(json.contains("\"reasonCode\": \"NATIVE_EXPORT_ALLOWLIST_PASSED\""));
         assertTrue(json.contains("\"reasonCode\": \"NO_EMBEDDED_METHOD_BYTECODE\""));
         assertTrue(json.contains("\"reasonCode\": \"NO_EMBEDDED_BYTECODE_WORKSPACE_SURFACES\""));
+        assertTrue(json.contains("\"reasonCode\": \"PRIVATE_J2LL_METADATA_ABSENT\""));
         assertTrue(json.contains("\"name\": \"surface.outputJarEntries\""));
         assertTrue(json.contains("\"name\": \"surface.nativeLibraryResources\""));
         assertTrue(json.contains("\"name\": \"surface.symbolAuditOutput\""));
@@ -326,7 +327,7 @@ class ArtifactAuditTest {
                         null)
                 .visitEnd();
         writer.visitEnd();
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-linux.so",
                 sha256(nativeBytes),
                 Map.of(
@@ -353,7 +354,7 @@ class ArtifactAuditTest {
     @Test
     void failsEmbeddedBytecodePdbWrongNativeHashHiddenExportAndPlaintext() throws Exception {
         Path jar = temp.resolve("output.jar");
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/windows-x64/x64-windows.dll",
                 "0000",
                 Map.of(
@@ -402,7 +403,7 @@ class ArtifactAuditTest {
     void failsWhenFlatWorkspaceNativeDirectoryContainsWindowsPdb() throws Exception {
         Path jar = temp.resolve("output.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-windows.dll",
                 sha256(nativeBytes),
                 Map.of("native0/x64-windows.dll", nativeBytes)));
@@ -431,7 +432,7 @@ class ArtifactAuditTest {
     void reportsObservedOnlySensitiveFactsWithoutFailingAudit() throws Exception {
         Path jar = temp.resolve("observed.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
@@ -472,7 +473,7 @@ class ArtifactAuditTest {
     void templateStableSurfaceSensitiveFactsAreBlockingAcrossGeneratedCAndJarEntries() throws Exception {
         Path jar = temp.resolve("template-leak.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of(
@@ -515,7 +516,7 @@ class ArtifactAuditTest {
     void classStructuralUtf8WithSensitiveValueDoesNotCountAsExecutablePlaintext() throws Exception {
         Path jar = temp.resolve("structural-name.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-linux.so",
                 sha256(nativeBytes),
                 Map.of(
@@ -549,7 +550,7 @@ class ArtifactAuditTest {
     void generatedCOnlyFactDoesNotBlockUnrelatedClassLdc() throws Exception {
         Path jar = temp.resolve("unrelated-ldc.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-linux.so",
                 sha256(nativeBytes),
                 Map.of(
@@ -583,7 +584,7 @@ class ArtifactAuditTest {
     void classExecutableLdcWithSensitiveValueStillFailsJarAudit() throws Exception {
         Path jar = temp.resolve("executable-ldc.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-linux.so",
                 sha256(nativeBytes),
                 Map.of(
@@ -617,7 +618,7 @@ class ArtifactAuditTest {
     void malformedClassUsesRawFailClosedPlaintextFallback() throws Exception {
         Path jar = temp.resolve("malformed-class.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/x64-linux.so",
                 sha256(nativeBytes),
                 Map.of(
@@ -651,7 +652,7 @@ class ArtifactAuditTest {
     void stringConcatConstantCarrierSensitiveFactsAreBlockingStableGeneratedCSurface() throws Exception {
         Path jar = temp.resolve("string-concat-leak.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
@@ -691,7 +692,7 @@ class ArtifactAuditTest {
     void reflectionAndLambdaMetadataSensitiveFactsRemainObservedOnly() throws Exception {
         Path jar = temp.resolve("metadata-observed.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
@@ -742,7 +743,7 @@ class ArtifactAuditTest {
     void rejectsLegacyFallbackWorkspaceSurfaceAndPackagingMetadata() throws Exception {
         Path jar = temp.resolve("output.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/arm64-macos.dylib", nativeBytes)));
@@ -772,10 +773,10 @@ class ArtifactAuditTest {
     }
 
     @Test
-    void failsRawSeedInFinalJarMetadata() throws Exception {
-        Path jar = temp.resolve("raw-seed.jar");
+    void rejectsPrivateJ2llBuildMetadataInsteadOfPublishingIt() throws Exception {
+        Path jar = temp.resolve("private-metadata.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        Map<String, byte[]> entries = withMetadata(
+        Map<String, byte[]> entries = withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes));
@@ -803,26 +804,19 @@ class ArtifactAuditTest {
 
         assertFalse(result.passed());
         String json = new ArtifactAuditReportWriter().json(result);
-        assertTrue(json.contains("\"reasonCode\": \"J2LL_METADATA_RAW_SEED\""), json);
+        assertTrue(json.contains("\"reasonCode\": \"PRIVATE_J2LL_METADATA_PRESENT\""), json);
         assertFalse(json.contains("raw-secret-seed"), json);
     }
 
     @Test
-    void failsMissingReportsManifestEntry() throws Exception {
-        Path jar = temp.resolve("bad-manifest.jar");
+    void rejectsAnyNestedPrivateJ2llMetadataEntry() throws Exception {
+        Path jar = temp.resolve("nested-private-metadata.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        Map<String, byte[]> entries = withMetadata(
+        Map<String, byte[]> entries = withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes));
-        entries.put("META-INF/j2ll/reports-manifest.json", """
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "reports": ["diagnostics.json"],
-                  "reportsManifestHash": "%s"
-                }
-                """.formatted(sha256("diagnostics.json".getBytes(StandardCharsets.UTF_8))).getBytes(StandardCharsets.UTF_8));
+        entries.put("META-INF/j2ll/nested/stale.json", "{}\n".getBytes(StandardCharsets.UTF_8));
         writeJar(jar, entries);
 
         ArtifactAuditResult result = new ArtifactAudit().audit(
@@ -838,20 +832,68 @@ class ArtifactAuditTest {
 
         assertFalse(result.passed());
         String json = new ArtifactAuditReportWriter().json(result);
-        assertTrue(json.contains("\"reasonCode\": \"J2LL_REPORTS_MANIFEST_INCOMPLETE\""), json);
+        assertTrue(json.contains("\"reasonCode\": \"PRIVATE_J2LL_METADATA_PRESENT\""), json);
+        assertTrue(json.contains("META-INF/j2ll/nested/stale.json"), json);
     }
 
     @Test
-    void failsNativeLibrariesMetadataMismatchWithTargetArtifacts() throws Exception {
+    void rejectsPrivateJ2llDirectoryEntryWithoutAnyFile() throws Exception {
+        Path jar = temp.resolve("private-directory.jar");
+        writeJar(jar, Map.of("META-INF/j2ll/", new byte[0]));
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(),
+                List.of(),
+                List.of());
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"PRIVATE_J2LL_METADATA_PRESENT\""), json);
+        assertTrue(json.contains("META-INF/j2ll/"), json);
+    }
+
+    @Test
+    void rejectsManifestSectionThatStillReferencesPrivateJ2llMetadata() throws Exception {
+        Path jar = temp.resolve("private-manifest-reference.jar");
+        Map<String, byte[]> entries = withRuntimeLoader("", "", Map.of(
+                "META-INF/MANIFEST.MF",
+                ("Manifest-Version: 1.0\r\n"
+                                + "\r\n"
+                                + "Name: META-INF/j2ll/removed.json\r\n"
+                                + "SHA-256-Digest: stale\r\n"
+                                + "\r\n")
+                        .getBytes(StandardCharsets.UTF_8)));
+        writeJar(jar, entries);
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(),
+                List.of(),
+                List.of());
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"PRIVATE_J2LL_METADATA_PRESENT\""), json);
+        assertTrue(json.contains("META-INF/j2ll/removed.json"), json);
+    }
+
+    @Test
+    void failsEmbeddedLibraryEvidenceMismatchWithTargetArtifacts() throws Exception {
         Path jar = temp.resolve("metadata-mismatch.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 "native0/macos-arm64/arm64-macos.dylib",
                 sha256(nativeBytes),
                 Map.of("native0/macos-arm64/arm64-macos.dylib", nativeBytes)));
         writeTargetArtifactPackagingReport(
                 "native0/macos-arm64/other.dylib",
-                sha256(nativeBytes));
+                sha256(nativeBytes),
+                "408cc4b89702abf5");
 
         ArtifactAuditResult result = new ArtifactAudit().audit(
                 temp,
@@ -868,6 +910,28 @@ class ArtifactAuditTest {
         String json = new ArtifactAuditReportWriter().json(result);
         assertTrue(json.contains("\"name\": \"metadata.nativeLibrariesTargetArtifacts\""), json);
         assertTrue(json.contains("\"reasonCode\": \"METADATA_CONSISTENCY_FAILED\""), json);
+    }
+
+    @Test
+    void failsLogicalNativeLibraryNameWithStableProductPrefix() throws Exception {
+        Path jar = temp.resolve("prefixed-library-name.jar");
+        byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
+        String jarPath = "native0/macos-arm64/arm64-macos.dylib";
+        String hash = sha256(nativeBytes);
+        writeJar(jar, withRuntimeLoader(jarPath, hash, Map.of(jarPath, nativeBytes)));
+        writeTargetArtifactPackagingReport(jarPath, hash, "j2ll_408cc4b89702abf5");
+
+        ArtifactAuditResult result = new ArtifactAudit().audit(
+                temp,
+                jar,
+                "native0",
+                List.of(new EmbeddedLibraryReport("macos-arm64", jarPath, hash)),
+                List.of("JNI_OnLoad"),
+                List.of());
+
+        assertFalse(result.passed());
+        String json = new ArtifactAuditReportWriter().json(result);
+        assertTrue(json.contains("\"reasonCode\": \"NATIVE_LIBRARY_NAME_NOT_HASH_ONLY\""), json);
     }
 
     private void writeJar(Path jar, Map<String, byte[]> entries) throws Exception {
@@ -889,7 +953,7 @@ class ArtifactAuditTest {
         Path jar = workspace.resolve("output.jar");
         byte[] nativeBytes = "native".getBytes(StandardCharsets.UTF_8);
         String resourcePath = "native0/x64-linux.so";
-        writeJar(jar, withMetadata(
+        writeJar(jar, withRuntimeLoader(
                 resourcePath,
                 sha256(nativeBytes),
                 Map.of(resourcePath, nativeBytes)));
@@ -952,63 +1016,16 @@ class ArtifactAuditTest {
         return writer.toByteArray();
     }
 
-    private Map<String, byte[]> withMetadata(String jarPath, String sha256, Map<String, byte[]> entries) throws Exception {
+    private Map<String, byte[]> withRuntimeLoader(
+            String ignoredJarPath,
+            String ignoredSha256,
+            Map<String, byte[]> entries) throws Exception {
         java.util.LinkedHashMap<String, byte[]> all = new java.util.LinkedHashMap<>(entries);
         all.putIfAbsent(
                 "native0/Loader.class",
                 new NativeLoaderClassGenerator().generate(
                         RuntimeLoaderPlan.create("native0"),
                         List.of()));
-        List<String> reports = List.of(
-                "diagnostics.json",
-                "artifact-audit.json",
-                "field-internalization-report.json",
-                "skipped-method-report.json",
-                "known-blockers.json",
-                "lowering-report.json",
-                "opcode-support-matrix.json",
-                "packaging-report.json",
-                "protection-report.json",
-                "release-readiness.json",
-                "index.json",
-                "summary.json",
-                "summary.md",
-                "support-matrix.json",
-                "symbol-audit.json");
-        all.put("META-INF/j2ll/build-info.json", """
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "configHash": "%s",
-                  "protectionSeedHash": "%s"
-                }
-                """.formatted("c".repeat(64), "d".repeat(64)).getBytes(StandardCharsets.UTF_8));
-        all.put("META-INF/j2ll/native-libraries.json", """
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "libraries": [
-                    {
-                      "target": "fixture",
-                      "jarPath": "%s",
-                      "sha256": "%s"
-                    }
-                  ]
-                }
-                """.formatted(jarPath, sha256).getBytes(StandardCharsets.UTF_8));
-        all.put("META-INF/j2ll/reports-manifest.json", """
-                {
-                  "schemaVersion": 1,
-                  "reportVersion": 1,
-                  "reports": %s,
-                  "reportsManifestHash": "%s"
-                }
-                """.formatted(
-                        reports.stream()
-                                .map(value -> "\"" + value + "\"")
-                                .collect(java.util.stream.Collectors.joining(", ", "[", "]")),
-                        sha256(String.join("\n", reports).getBytes(StandardCharsets.UTF_8)))
-                .getBytes(StandardCharsets.UTF_8));
         return all;
     }
 
@@ -1016,7 +1033,10 @@ class ArtifactAuditTest {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
-    private void writeTargetArtifactPackagingReport(String actualJarPath, String actualSha256) throws Exception {
+    private void writeTargetArtifactPackagingReport(
+            String actualJarPath,
+            String actualSha256,
+            String libraryName) throws Exception {
         Path report = temp.resolve("reports/packaging-report.json");
         Files.createDirectories(report.getParent());
         Files.writeString(report, """
@@ -1033,7 +1053,7 @@ class ArtifactAuditTest {
                         "osClassifier": "macos",
                         "archClassifier": "arm64",
                         "libraryExtension": "dylib",
-                        "libraryName": "j2ll",
+                        "libraryName": "%3$s",
                         "zigTarget": "aarch64-macos.11.0",
                         "expectedArtifactPath": "native/arm64-macos.dylib",
                         "expectedArtifactName": "arm64-macos.dylib",
@@ -1056,6 +1076,6 @@ class ArtifactAuditTest {
                     ]
                   }
                 }
-                """.formatted(actualJarPath, actualSha256));
+                """.formatted(actualJarPath, actualSha256, libraryName));
     }
 }

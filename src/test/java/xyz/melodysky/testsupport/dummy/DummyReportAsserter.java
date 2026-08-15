@@ -96,14 +96,10 @@ public final class DummyReportAsserter {
             return;
         }
         try (JarFile jar = new JarFile(outputJar.toFile(), false)) {
-            if (jar.getJarEntry("META-INF/j2ll/build-info.json") == null) {
-                failures.add("jar: missing META-INF/j2ll/build-info.json");
-            }
-            if (jar.getJarEntry("META-INF/j2ll/native-libraries.json") == null) {
-                failures.add("jar: missing META-INF/j2ll/native-libraries.json");
-            }
-            if (jar.getJarEntry("META-INF/j2ll/reports-manifest.json") == null) {
-                failures.add("jar: missing META-INF/j2ll/reports-manifest.json");
+            if (jar.stream().anyMatch(entry -> entry.getName()
+                    .toLowerCase(java.util.Locale.ROOT)
+                    .startsWith("meta-inf/j2ll/"))) {
+                failures.add("jar: private META-INF/j2ll metadata subtree is present");
             }
             if (jar.stream().anyMatch(entry -> entry.getName().contains("/J2llFallback$")
                     && entry.getName().endsWith(".class"))) {

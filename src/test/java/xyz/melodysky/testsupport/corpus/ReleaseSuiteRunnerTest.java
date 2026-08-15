@@ -1510,22 +1510,9 @@ class ReleaseSuiteRunnerTest implements Opcodes {
                     .anyMatch(entry -> entry.startsWith("j2ll/generated/")
                             && entry.endsWith("/NativeLoader.class")), entries.toString());
 
-            var manifestEntry = jarFile.getJarEntry("META-INF/j2ll/reports-manifest.json");
-            assertTrue(manifestEntry != null);
-            String manifest;
-            try (var input = jarFile.getInputStream(manifestEntry)) {
-                manifest = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            JsonObject manifestRoot = JsonParser.parseString(manifest).getAsJsonObject();
-            List<String> reports = new java.util.ArrayList<>();
-            manifestRoot.getAsJsonArray("reports").forEach(entry -> reports.add(entry.getAsString()));
-            assertTrue(reports.containsAll(List.of(
-                    "skipped-method-report.json",
-                    "index.json",
-                    "summary.json",
-                    "summary.md")), reports.toString());
-            assertFalse(manifest.contains("nativeEmbeddedClassBlob"), manifest);
-            assertFalse(manifest.contains("fallbackBlobs"), manifest);
+            assertFalse(entries.stream()
+                    .map(entry -> entry.toLowerCase(java.util.Locale.ROOT))
+                    .anyMatch(entry -> entry.startsWith("meta-inf/j2ll/")), entries.toString());
         }
     }
 

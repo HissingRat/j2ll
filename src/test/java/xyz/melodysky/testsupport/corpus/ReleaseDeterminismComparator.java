@@ -65,8 +65,7 @@ public final class ReleaseDeterminismComparator {
     }
 
     private boolean normalizedJarEntry(String entryName) {
-        return isNativeLibrary(entryName)
-                || entryName.equals("META-INF/j2ll/native-libraries.json");
+        return isNativeLibrary(entryName);
     }
 
     private List<String> nativeResourcePaths(Map<String, String> entryHashes) {
