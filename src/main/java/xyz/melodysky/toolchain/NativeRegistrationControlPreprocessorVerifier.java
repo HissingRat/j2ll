@@ -14,7 +14,8 @@ final class NativeRegistrationControlPreprocessorVerifier {
                 .min()
                 .orElse(-1);
         int controlEnd = index.functionEndOffset(
-                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {");
+                NativeRegistrationControlCFunctionPolicy.definitionHeader(
+                        "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)"));
         if (controlStart < 0 || controlEnd <= controlStart) {
             fail("PREPROCESSOR_CONTROL_SPAN_MISSING");
         }
@@ -159,6 +160,7 @@ final class NativeRegistrationControlPreprocessorVerifier {
     private List<String> controlSymbols(
             NativeRegistrationControlTopologyPlan plan) {
         ArrayList<String> symbols = new ArrayList<>();
+        symbols.add("JNI_OnLoad");
         symbols.add(plan.aggregateSymbol());
         symbols.addAll(plan.failureSymbols().symbols());
         for (NativeRegistrationControlTopologyPlan.Owner owner
@@ -168,6 +170,10 @@ final class NativeRegistrationControlPreprocessorVerifier {
         for (NativeRegistrationControlTopologyPlan.Chunk chunk
                 : plan.chunks()) {
             symbols.add(chunk.symbol());
+        }
+        for (NativeRegistrationControlRoutePlan.Route route
+                : plan.routePlan().routes()) {
+            symbols.add(route.symbol());
         }
         return List.copyOf(symbols);
     }

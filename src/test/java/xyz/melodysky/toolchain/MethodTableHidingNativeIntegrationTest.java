@@ -59,7 +59,8 @@ final class MethodTableHidingNativeIntegrationTest {
     private static final String METHOD_GAMMA = "gammaMethod_2c8e391fa7406bd5";
     private static final long SEED = 0x4d54485f494e5447L;
     private static final Pattern EXPORTED_C_ROOT = Pattern.compile(
-            "JNIEXPORT\\s+jint\\s+JNICALL\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(");
+            "JNIEXPORT\\s+jint\\s+JNICALL\\s+([A-Za-z_][A-Za-z0-9_]*)"
+                    + "\\s*\\([^;{}]*\\)\\s*\\{");
 
     @TempDir
     Path temp;

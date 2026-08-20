@@ -17,15 +17,24 @@ final class NativeRegistrationControlLexicalMutationTest {
                 fixture.plan().chunks().get(0).symbol());
         String aggregatePrototype = aggregatePrototype(
                 fixture.plan().aggregateSymbol());
+        String routePrototype = routePrototype(
+                fixture.plan().routePlan().route(0));
+        String rootPrototype = rootPrototype();
         String failurePrototype = failurePrototype(
                 fixture.plan().failureSymbols().ownerRollback());
         String decoys = "\n/* "
                 + ownerPrototype
                 + "\n"
                 + chunkPrototype
+                + "\n"
+                + routePrototype
                 + "\n*/\n"
                 + "static const char* registration_control_decoy = \""
-                + cString(aggregatePrototype + " " + failurePrototype)
+                + cString(aggregatePrototype
+                        + " "
+                        + rootPrototype
+                        + " "
+                        + failurePrototype)
                 + "\";\n";
 
         assertDoesNotThrow(() -> verify(
@@ -165,6 +174,8 @@ final class NativeRegistrationControlLexicalMutationTest {
                 ownerPrototype(plan.owners().get(0).symbol()),
                 chunkPrototype(plan.chunks().get(0).symbol()),
                 aggregatePrototype(plan.aggregateSymbol()),
+                routePrototype(plan.routePlan().route(0)),
+                rootPrototype(),
                 failurePrototype(
                         plan.failureSymbols().ownerRollback()));
     }
@@ -174,6 +185,7 @@ final class NativeRegistrationControlLexicalMutationTest {
         String owner = plan.owners().get(0).symbol();
         String chunk = plan.chunks().get(0).symbol();
         String aggregate = plan.aggregateSymbol();
+        String route = plan.routePlan().route(0).symbol();
         String failure = plan.failureSymbols().ownerRollback();
         return List.of(
                 new FunctionSurface(
@@ -192,6 +204,16 @@ final class NativeRegistrationControlLexicalMutationTest {
                                 fixture.source(),
                                 aggregate)),
                 new FunctionSurface(
+                        route,
+                        NativeRegistrationControlTestFixture.function(
+                                fixture.source(),
+                                route)),
+                new FunctionSurface(
+                        "JNI_OnLoad",
+                        NativeRegistrationControlTestFixture.functionAtHeader(
+                                fixture.source(),
+                                rootDeclaration())),
+                new FunctionSurface(
                         failure,
                         NativeRegistrationControlTestFixture.functionAtHeader(
                                 fixture.source(),
@@ -199,21 +221,33 @@ final class NativeRegistrationControlLexicalMutationTest {
     }
 
     private String ownerPrototype(String symbol) {
-        return "static jint "
-                + symbol
-                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) __attribute__((noinline));";
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                HostNativeOwnerRegistrationSource.declaration(symbol));
     }
 
     private String chunkPrototype(String symbol) {
-        return "static jint "
-                + symbol
-                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count) __attribute__((noinline));";
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                HostNativeRegistrationChunkSource.declaration(symbol));
     }
 
     private String aggregatePrototype(String symbol) {
-        return "static jint "
-                + symbol
-                + "(JavaVM* vm) __attribute__((noinline));";
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                "static jint " + symbol + "(JavaVM* vm)");
+    }
+
+    private String routePrototype(
+            NativeRegistrationControlRoutePlan.Route route) {
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                HostNativeRegistrationRouteSource.declaration(route));
+    }
+
+    private String rootPrototype() {
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                rootDeclaration());
+    }
+
+    private String rootDeclaration() {
+        return "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)";
     }
 
     private String failurePrototype(String symbol) {

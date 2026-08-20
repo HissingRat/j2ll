@@ -181,6 +181,27 @@ public final class HostJniCSourceGenerator implements Opcodes {
             NativeTextBuildKey registrationBuildKey,
             RuntimeHelperReachabilityPlan runtimeReachability,
             NativeBuildProgressListener progressListener) {
+        return generateWithPlan(
+                        implementationPlan,
+                        runtimeLoaderPlan,
+                        methodTablePlan,
+                        buildKey,
+                        businessBuildKey,
+                        registrationBuildKey,
+                        runtimeReachability,
+                        progressListener)
+                .source();
+    }
+
+    Generation generateWithPlan(
+            NativeImplementationPlan implementationPlan,
+            RuntimeLoaderPlan runtimeLoaderPlan,
+            MethodTableHidingPlan methodTablePlan,
+            NativeTextBuildKey buildKey,
+            NativeTextBuildKey businessBuildKey,
+            NativeTextBuildKey registrationBuildKey,
+            RuntimeHelperReachabilityPlan runtimeReachability,
+            NativeBuildProgressListener progressListener) {
         List<Binding> bindings = bindings(implementationPlan);
         java.util.Objects.requireNonNull(buildKey, "buildKey");
         java.util.Objects.requireNonNull(
@@ -342,15 +363,26 @@ public final class HostJniCSourceGenerator implements Opcodes {
                 1L,
                 1L,
                 "done"));
-        return requireHardenedGeneratedSource(
+        String hardened = requireHardenedGeneratedSource(
                 source,
-                (completed, total, detail) ->
-                        progressListener.preparationProgress(
-                                new NativePreparationProgress(
-                                        NativePreparationStep.AUDIT_NATIVE_C,
-                                        completed,
-                                        total,
-                                        detail)));
+                (completed, total, detail) -> progressListener.preparationProgress(
+                        new NativePreparationProgress(
+                                NativePreparationStep.AUDIT_NATIVE_C,
+                                completed,
+                                total,
+                                detail)));
+        return new Generation(hardened, registrationEmission.topologyPlan());
+    }
+
+    record Generation(
+            String source,
+            NativeRegistrationControlTopologyPlan registrationControlPlan) {
+        Generation {
+            java.util.Objects.requireNonNull(source, "source");
+            java.util.Objects.requireNonNull(
+                    registrationControlPlan,
+                    "registrationControlPlan");
+        }
     }
 
     private List<Binding> physicalBindingOrder(

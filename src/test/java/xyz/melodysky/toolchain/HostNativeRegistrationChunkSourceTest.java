@@ -31,7 +31,8 @@ final class HostNativeRegistrationChunkSourceTest {
                 plan.chunks().size(),
                 source.lines()
                         .filter(line -> line.contains(
-                                "__attribute__((noinline));"))
+                                NativeRegistrationControlCFunctionPolicy
+                                        .ATTRIBUTES))
                         .count());
 
         HashSet<String> observedOwners = new HashSet<>();
@@ -87,7 +88,20 @@ final class HostNativeRegistrationChunkSourceTest {
                         .get(chunkIndex + 1)
                         .symbol()
                         + "(env, resolver, registered_owners, registered_count)";
-                assertTrue(body.contains("return " + expectedNext + ";"));
+                assertEquals(
+                        1,
+                        NativeRegistrationControlTestFixture.occurrences(
+                                body,
+                                expectedNext));
+                assertFalse(body.contains("return " + expectedNext + ";"));
+                assertTrue(body.contains("volatile uintptr_t witness"));
+                assertTrue(body.contains(
+                        new NativeRegistrationChunkPostCallCSource()
+                                .callAndReturn(
+                                        chunk.postCallVariant(),
+                                        expectedNext,
+                                        chunk.postCallSalt(),
+                                        "    ")));
             } else {
                 assertTrue(body.contains("return JNI_OK;"));
             }

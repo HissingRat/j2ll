@@ -13,12 +13,14 @@ final class NativeRegistrationControlTopologyPlan {
     private final String aggregateSymbol;
     private final List<Owner> owners;
     private final List<Chunk> chunks;
+    private final NativeRegistrationControlRoutePlan routePlan;
     private final FailureSymbols failureSymbols;
 
     NativeRegistrationControlTopologyPlan(
             String aggregateSymbol,
             List<Owner> owners,
             List<Chunk> chunks,
+            NativeRegistrationControlRoutePlan routePlan,
             FailureSymbols failureSymbols) {
         this.aggregateSymbol = requireSymbol(
                 aggregateSymbol,
@@ -29,6 +31,9 @@ final class NativeRegistrationControlTopologyPlan {
         this.chunks = List.copyOf(Objects.requireNonNull(
                 chunks,
                 "chunks"));
+        this.routePlan = Objects.requireNonNull(
+                routePlan,
+                "routePlan");
         this.failureSymbols = Objects.requireNonNull(
                 failureSymbols,
                 "failureSymbols");
@@ -47,6 +52,10 @@ final class NativeRegistrationControlTopologyPlan {
         return chunks;
     }
 
+    NativeRegistrationControlRoutePlan routePlan() {
+        return routePlan;
+    }
+
     FailureSymbols failureSymbols() {
         return failureSymbols;
     }
@@ -62,6 +71,14 @@ final class NativeRegistrationControlTopologyPlan {
         for (String symbol : failureSymbols.symbols()) {
             addUnique(symbols, symbol);
         }
+        if (owners.isEmpty() == routePlan.enabled()) {
+            throw new IllegalArgumentException(
+                    "registration entry route does not match owner presence");
+        }
+        for (NativeRegistrationControlRoutePlan.Route route
+                : routePlan.routes()) {
+            addUnique(symbols, route.symbol());
+        }
 
         int expectedOwnerIndex = 0;
         for (Owner owner : owners) {
@@ -75,6 +92,8 @@ final class NativeRegistrationControlTopologyPlan {
         int expectedStart = 0;
         int minimumSize = Integer.MAX_VALUE;
         int maximumSize = 0;
+        Set<NativeRegistrationChunkPostCallVariant> chunkVariants =
+                new HashSet<>();
         for (int ordinal = 0; ordinal < chunks.size(); ordinal++) {
             Chunk chunk = chunks.get(ordinal);
             if (chunk.ordinal() != ordinal
@@ -92,6 +111,12 @@ final class NativeRegistrationControlTopologyPlan {
             maximumSize = Math.max(maximumSize, size);
             expectedStart = chunk.endExclusive();
             addUnique(symbols, chunk.symbol());
+            if (!chunkVariants.add(chunk.postCallVariant())
+                    || chunk.witnessSalt() == 0L
+                    || chunk.postCallSalt() == 0L) {
+                throw new IllegalArgumentException(
+                        "registration chunk post-call material is invalid");
+            }
         }
         for (Owner owner : owners) {
             rejectRegistrationSymbolCollision(owner, symbols);
@@ -192,7 +217,10 @@ final class NativeRegistrationControlTopologyPlan {
             int startInclusive,
             int endExclusive,
             String symbol,
-            List<Owner> owners) {
+            List<Owner> owners,
+            NativeRegistrationChunkPostCallVariant postCallVariant,
+            long witnessSalt,
+            long postCallSalt) {
         Chunk {
             if (ordinal < 0
                     || startInclusive < 0
@@ -204,6 +232,7 @@ final class NativeRegistrationControlTopologyPlan {
             owners = List.copyOf(Objects.requireNonNull(
                     owners,
                     "owners"));
+            Objects.requireNonNull(postCallVariant, "postCallVariant");
         }
     }
 

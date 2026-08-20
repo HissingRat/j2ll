@@ -409,24 +409,35 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - aggregate root使用activation-local `jclass[]`和`registered_count`统一执行成功清理与
   失败逆序rollback，不再为每个owner展开重复控制流；每个unregister的status/pending-
   exception检查与原异常恢复合同保持不变。
-- aggregate、每个owner helper、forward chunk和四个failure leaf现在由独立
+- aggregate、每个owner helper、forward chunk、nonzero-owner的三个entry route和四个failure leaf现在由独立
   registration-control KDF purpose派生为exact `[a-p]{32}` symbol；不保留`j2ll`、
-  register/owner/chunk/failure语义前缀。planner先冻结完整control集合，再对全部owner/name/
-  descriptor/text-group/native symbol做collision gate，避免future control symbol漏扫 earlier
-  registration material。
-- `JNI_OnLoad`只直接调用唯一`noinline` aggregate。resolver、activation-local owner array/
-  count、success cleanup、逆序rollback、status/pending-exception验证及原Throwable identity
-  restore仍只位于该activation。aggregate只进入chunk0；chunk按build-derived owner顺序形成
+  route/register/owner/chunk/failure语义前缀。planner先冻结完整control集合，再对全部owner/
+  name/descriptor/text-group/native symbol做collision gate，避免future route/control symbol漏扫
+  earlier registration material。
+- nonzero-owner的`JNI_OnLoad`使用activation-local volatile predicate，只能选择
+  `root -> R0 -> aggregate`或`root -> R1 -> R2 -> aggregate`。root不直达aggregate，R1不绕过
+  R2，每条路径aggregate exact once；三个route只按build-derived参数排列转发`JavaVM*`、整数化
+  但不解引用的reserved和`uintptr_t guard`，不执行JNI，不拥有global/table/function pointer/
+  cookie。resolver、activation-local owner array/count、success cleanup、逆序rollback、status/
+  pending-exception验证及原Throwable identity restore仍只位于唯一aggregate activation。
+  aggregate只进入chunk0；chunk按build-derived owner顺序形成
   exact `min(8, ceil(ownerCount / 4))`个连续balanced slice，并只执行owner direct call、成功后
-  count推进和唯一forward edge。`ownerCount <= 32`时每chunk最多4项；更大输入固定8个chunk
+  count推进和唯一direct forward edge。`ownerCount <= 32`时每chunk最多4项；更大输入固定8个chunk
   作为bounded-depth conservative fallback。chunk不得含JNI exception/resolver/rollback/
-  local-ref/scratch/table/dispatcher/cache；zero-owner不生成chunk、owner array或rollback。
+  local-ref/scratch/table/dispatcher/cache；zero-owner不生成route/chunk、owner array或rollback。
+- root、三个route、aggregate、owner helper和chunk的先行prototype统一携带
+  `noinline,disable_tail_calls`，避免Clang definition-site GCC-compat warning。每个planned root/
+  route/chunk-forward direct call后保留observable volatile result/witness continuation；三个route
+  使用exact三种互异typed/stack recipe，最多八个chunk从独立exact八种closed structural
+  variant中无重复选择，不只依赖不同salt，也不建立shared continuation helper或使用当前Clang
+  不支持的`nooutline` attribute。
 - final generated-C gate先执行C phase-2 line splice，再以一次code-only lexical index验证
   所有control symbol closure，并要求最早control prototype到`JNI_OnLoad`结束处于
   unconditional、无directive span；comment/string/char、trigraph、`#if 0`/替代
-  preprocessor token decoy均不能充当证据。chunk使用exact closed schema，aggregate的
+  preprocessor token decoy均不能充当证据。route/chunk使用exact closed schema，aggregate的
   success cleanup、rollback loop、unregister status/pending exception和failure-exception
-  restore使用exact tail schema；missing/duplicate/bypass/conservation一律fail closed。
+  restore使用exact tail schema；missing/duplicate/bypass/conservation一律fail closed。optimized
+  compile-unit assembly gate另拒绝planned edge的tail collapse和metadata-free outlined helper。
 
 验收：
 
@@ -436,9 +447,11 @@ internalization。fake-JNI动态probe尚未对新DLL复跑，因此H1b保持`IN_
 - 2026-08-10 real Zig/child-JVM fixture直接嵌入由`NativeLoaderClassGenerator`生成的生产`Loader.class`及真实SHA-256动态库resource，并把TCCL设为`null`。测试不预加载Loader，而是先初始化business owner；该owner正在执行的`<clinit>`首条调用为`Loader.ensureLoaded()`，`JNI_OnLoad`以`Class.forName(..., false, definingLoader)`取回这个in-progress owner并完成全部binding，随后同一个`<clinit>`成功调用native helper。第二个未初始化owner的constructor helper同样通过。该链路已在Java 17和Java 25分别真实运行通过。
 - ASan/host integration 不出现 use-after-free、double-free 或明文 lifetime 回归。
 
-本control-topology切片的结构size budget为新增exact
-`min(8, ceil(ownerCount / 4))`个chunk definitions（zero owner为0），不引入table、padding、
-dispatcher或持久data。2026-08-15 fixed-seed受控A/B以
+本control-topology切片的当前结构size budget为nonzero-owner新增exact三个route definitions加
+`min(8, ceil(ownerCount / 4))`个chunk definitions（zero owner两者均为0），不引入table、
+padding、dispatcher或持久data。下面2026-08-15数据发生在entry-route/post-call保形接入之前，
+只作为旧tail-thunk拓扑的历史基线；当前切片必须重新取得真实六目标source/native delta、
+dual-build topology和Ghidra证据后才能宣称体积或攻击者收益。2026-08-15 fixed-seed受控A/B以
 `build_2026-08-15_03-19-21`作为前一版sharded-throw基线，以
 `build_2026-08-15_05-21-34`作为registration-control topology实现；两边
 `config.resolved.json`与intermediates manifest均byte-exact，325个input class的
@@ -464,6 +477,35 @@ aggregate、3个forward chunk、11个owner helper与4个failure leaf；旧
 - focused source/mutation/fake-JNI矩阵91/91执行通过（另2项环境skip），真实managed-Zig
   defining-loader child-JVM与六目标cross-target build均通过；full suite中仅3个要求真实Zig的
   Dummy gate先按设计拒绝，设置`J2LL_REAL_HOME`后3/3通过。
+
+2026-08-16 entry-route/post-call implementation已在source/model层冻结上述两路三route合同、
+route/control symbol collision闭集、zero-owner窄例外、exact八种chunk structural variant和
+`noinline,disable_tail_calls`函数策略。host Clang 22的33-owner/8-chunk translation-unit探针以
+`-O2`通过C语法与attribute检查；LLVM IR中46个root/route/aggregate/chunk/owner definition
+共同携带`disable-tail-calls=true`，对hash-only control symbol的`tail call`为0。
+
+真实Zig 0.15.2首次按target-default outliner policy跑11-owner/3-chunk与33-owner/8-chunk六目标
+optimized assembly时，Linux ARM64把多个route/chunk的volatile spill/reload与owner-success
+bookkeeping抽成`OUTLINED_FUNCTION_*`，严格gate按设计拒绝。这证明不同C recipe、salt、stack
+type、`noinline`和`disable_tail_calls`都不能约束post-RA MachineOutliner；临时signal-fence实验
+虽能改变部分route，仍不能封闭chunk，因此未进入最终合同。修复后，authoritative wrapper C
+input由exact normalized Path绑定到immutable per-input mode
+`REGISTRATION_CONTROL_OUTLINER_FORBIDDEN`，六目标显式使用
+`-mllvm -enable-machine-outliner=never`；tiny runtime C仍保留target-default policy。相同
+11/33-owner × 六目标真实C→optimized assembly矩阵随后12/12通过production gate，未增加任何
+OUTLINED/tail/unknown-edge例外。
+
+2026-08-21正式随机identity v2构建`build_2026-08-21_01-13-55`进一步完成final-artifact复验：
+71/71 method native-lowered、0 skipped、五目标built，artifact audit与release readiness通过，
+最终JAR SHA-256为`6DCBCB09D203B54D664B36F35A25A4AE1F0A143D4223672846C75982DFB6A54E`。
+只复制该JAR并提取其中五库的fresh-project Ghidra 12黑盒审计显示：Windows/Linux/macOS的
+x64与ARM64 `JNI_OnLoad`均有exact两个resolved internal callee和一个conditional branch；x64 root
+为168/171 B、45条instruction，ARM64 root为220 B、55条instruction，不再是历史10 B/4 B单跳
+thunk。五目标root closure均为27个function、73条resolved edge，专用root decompile状态全部为
+`COMPLETE`、coverage complete且未截断。通用audit only因有意设置bulk decompiler预算为0而记录
+`COMPLETE_WITH_PARTIAL_COVERAGE`，其root-closure section本身仍complete。真实managed-Zig
+Dummy E2E 3/3也已通过。fixed-seed dual-build size A/B尚未完成，因此不能把本次随机identity
+单构建尺寸归因于route变换，H3继续保持`IN_PROGRESS`。
 
 这些证据证明导出入口不再直接暴露owner registration/JNI slot调用，并提高跨build静态复用
 成本；它没有阻断攻击者沿aggregate/chunk/owner closure继续遍历，也不阻断运行时hook
@@ -779,9 +821,9 @@ JAR-only Ghidra复验、旧提取器恢复率和人工介入量仍待后续黑�
 
 #### 2026-08-03 focused target-policy 复验
 
-当前tree使用managed Zig 0.15.2完成一次真实六目标matrix cross-target
+当时tree使用managed Zig 0.15.2完成一次真实六目标matrix cross-target
 compile/link，同时开启libc-free source plan、`retainUnwindInfo=false`以及
-Linux/macOS generated-C machine outliner，结果为`SUCCESS`。该证据证明六目标
+Linux/macOS target-default generated-C machine outliner，结果为`SUCCESS`。该证据证明六目标
 build graph与链接policy可共存；它不等价于在五个non-host OS/JVM上都完成
 runtime E2E。
 

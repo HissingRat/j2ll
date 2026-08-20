@@ -328,6 +328,11 @@ test {
     useJUnitPlatform()
     environment 'JAVA_HOME', System.getProperty('java.home')
 
+    String configuredRealZig = System.getProperty('j2ll.realZig')
+    if (configuredRealZig != null && !configuredRealZig.isBlank()) {
+        systemProperty 'j2ll.realZig', configuredRealZig
+    }
+
     maxParallelForks = Math.max(1, Math.min(Runtime.runtime.availableProcessors(), 32))
 
     testLogging {

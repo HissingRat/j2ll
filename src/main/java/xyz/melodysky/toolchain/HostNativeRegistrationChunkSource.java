@@ -29,18 +29,18 @@ final class HostNativeRegistrationChunkSource {
     private void appendPrototype(
             StringBuilder source,
             String symbol) {
-        source.append("static jint ")
-                .append(symbol)
-                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count) __attribute__((noinline));\n");
+        source.append(NativeRegistrationControlCFunctionPolicy.prototype(
+                        declaration(symbol)))
+                .append('\n');
     }
 
     private void appendDefinition(
             StringBuilder source,
             NativeRegistrationControlTopologyPlan.Chunk chunk,
             String nextSymbol) {
-        source.append("static jint ")
-                .append(chunk.symbol())
-                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count) {\n");
+        source.append(NativeRegistrationControlCFunctionPolicy
+                        .definitionHeader(declaration(chunk.symbol())))
+                .append('\n');
         for (NativeRegistrationControlTopologyPlan.Owner owner
                 : chunk.owners()) {
             source.append("    if (")
@@ -57,10 +57,25 @@ final class HostNativeRegistrationChunkSource {
         if (nextSymbol == null) {
             source.append("    return JNI_OK;\n");
         } else {
-            source.append("    return ")
-                    .append(nextSymbol)
-                    .append("(env, resolver, registered_owners, registered_count);\n");
+            source.append("    volatile uintptr_t witness = (uintptr_t)(void*)registered_owners\n")
+                    .append("            ^ (uintptr_t)(void*)registered_count\n")
+                    .append("            ^ ")
+                    .append(NativeRegistrationPostCallCSource.unsignedLong(
+                            chunk.witnessSalt()))
+                    .append(";\n")
+                    .append(new NativeRegistrationChunkPostCallCSource()
+                            .callAndReturn(
+                                    chunk.postCallVariant(),
+                                    nextSymbol
+                                            + "(env, resolver, registered_owners, registered_count)",
+                                    chunk.postCallSalt(),
+                                    "    "));
         }
         source.append("}\n\n");
+    }
+
+    static String declaration(String symbol) {
+        return "static jint " + symbol
+                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count)";
     }
 }

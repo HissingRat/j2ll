@@ -56,6 +56,64 @@ final class NativeRegistrationControlSymbolDeriver {
                 List.of(Objects.requireNonNull(role, "role")));
     }
 
+    String routeSymbol(int ordinal) {
+        return derive(
+                "entry-route",
+                List.of(Integer.toString(requireOrdinal(ordinal))));
+    }
+
+    String routeParameterOrderRank(
+            List<NativeRegistrationControlRoutePlan.Parameter> order) {
+        return derive(
+                "entry-route-parameter-order",
+                Objects.requireNonNull(order, "order").stream()
+                        .map(Enum::name)
+                        .toList());
+    }
+
+    String routeRecipeRank(
+            NativeRegistrationPostCallRecipe recipe) {
+        return derive(
+                "entry-route-post-call-recipe",
+                List.of(Objects.requireNonNull(recipe, "recipe").name()));
+    }
+
+    long rootMaterial(String purpose) {
+        return nonZeroLong(
+                "entry-root-" + Objects.requireNonNull(purpose, "purpose"),
+                List.of("translation-unit"));
+    }
+
+    int rootSelectorShift() {
+        byte[] material = material(
+                "entry-root-selector-shift",
+                List.of("translation-unit"));
+        return Byte.toUnsignedInt(material[0]) % 31 + 1;
+    }
+
+    long routeMaterial(
+            int ordinal,
+            String purpose) {
+        return nonZeroLong(
+                "entry-route-" + Objects.requireNonNull(purpose, "purpose"),
+                List.of(Integer.toString(requireOrdinal(ordinal))));
+    }
+
+    String chunkPostCallVariantRank(
+            NativeRegistrationChunkPostCallVariant variant) {
+        return derive(
+                "forward-chunk-post-call-variant",
+                List.of(Objects.requireNonNull(variant, "variant").name()));
+    }
+
+    long chunkMaterial(
+            int ordinal,
+            String purpose) {
+        return nonZeroLong(
+                "forward-chunk-" + Objects.requireNonNull(purpose, "purpose"),
+                List.of(Integer.toString(requireOrdinal(ordinal))));
+    }
+
     String chunkRemainderRank(int ordinal) {
         return derive(
                 "chunk-remainder-rank",
@@ -63,6 +121,27 @@ final class NativeRegistrationControlSymbolDeriver {
     }
 
     private String derive(
+            String purpose,
+            List<String> components) {
+        byte[] value = material(purpose, components);
+        StringBuilder symbol = new StringBuilder(32);
+        for (int index = 0; index < 16; index++) {
+            symbol.append((char) ('a'
+                    + ((value[index] >>> 4) & 0x0f)));
+            symbol.append((char) ('a'
+                    + (value[index] & 0x0f)));
+        }
+        return symbol.toString();
+    }
+
+    private long nonZeroLong(
+            String purpose,
+            List<String> components) {
+        return ByteBuffer.wrap(material(purpose, components))
+                .getLong() | 1L;
+    }
+
+    private byte[] material(
             String purpose,
             List<String> components) {
         MessageDigest digest = sha256();
@@ -78,15 +157,15 @@ final class NativeRegistrationControlSymbolDeriver {
                     Objects.requireNonNull(component, "component")
                             .getBytes(StandardCharsets.UTF_8));
         }
-        byte[] value = digest.digest();
-        StringBuilder symbol = new StringBuilder(32);
-        for (int index = 0; index < 16; index++) {
-            symbol.append((char) ('a'
-                    + ((value[index] >>> 4) & 0x0f)));
-            symbol.append((char) ('a'
-                    + (value[index] & 0x0f)));
+        return digest.digest();
+    }
+
+    private int requireOrdinal(int ordinal) {
+        if (ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "registration control ordinal must not be negative");
         }
-        return symbol.toString();
+        return ordinal;
     }
 
     private void update(

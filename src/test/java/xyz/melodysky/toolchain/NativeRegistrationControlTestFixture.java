@@ -88,6 +88,9 @@ final class NativeRegistrationControlTestFixture {
             NativeRegistrationControlTopologyPlan plan) {
         ArrayList<String> symbols = new ArrayList<>();
         symbols.add(plan.aggregateSymbol());
+        symbols.addAll(plan.routePlan().routes().stream()
+                .map(NativeRegistrationControlRoutePlan.Route::symbol)
+                .toList());
         symbols.addAll(plan.owners().stream()
                 .map(NativeRegistrationControlTopologyPlan.Owner::symbol)
                 .toList());

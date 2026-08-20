@@ -40,11 +40,77 @@ final class NativeRegistrationControlTopologyPlanner {
                         symbols.failureLeafSymbol("aggregate-rollback"),
                         symbols.failureLeafSymbol(
                                 "aggregate-exception-restore"));
+        NativeRegistrationControlRoutePlan routePlan = sources.isEmpty()
+                ? NativeRegistrationControlRoutePlan.disabled()
+                : entryRoutes(symbols);
         return new NativeRegistrationControlTopologyPlan(
                 symbols.aggregateSymbol(),
                 frozenOwners,
                 chunks,
+                routePlan,
                 failures);
+    }
+
+    private NativeRegistrationControlRoutePlan entryRoutes(
+            NativeRegistrationControlSymbolDeriver symbols) {
+        List<List<NativeRegistrationControlRoutePlan.Parameter>> orders =
+                parameterOrders(symbols);
+        List<NativeRegistrationPostCallRecipe> recipes =
+                java.util.Arrays.stream(
+                                NativeRegistrationPostCallRecipe.values())
+                        .sorted(Comparator.comparing(
+                                symbols::routeRecipeRank))
+                        .toList();
+        if (recipes.size()
+                != NativeRegistrationControlRoutePlan.ROUTE_COUNT) {
+            throw new IllegalStateException(
+                    "registration route recipe family is not closed");
+        }
+        ArrayList<NativeRegistrationControlRoutePlan.Route> routes =
+                new ArrayList<>();
+        for (int ordinal = 0;
+                ordinal < NativeRegistrationControlRoutePlan.ROUTE_COUNT;
+                ordinal++) {
+            routes.add(new NativeRegistrationControlRoutePlan.Route(
+                    ordinal,
+                    symbols.routeSymbol(ordinal),
+                    orders.get(ordinal),
+                    ordinal == 1
+                            ? NativeRegistrationControlRoutePlan.TargetKind.ROUTE
+                            : NativeRegistrationControlRoutePlan.TargetKind.AGGREGATE,
+                    ordinal == 1 ? 2 : -1,
+                    recipes.get(ordinal),
+                    symbols.routeMaterial(ordinal, "witness"),
+                    symbols.routeMaterial(ordinal, "post-call")));
+        }
+        return new NativeRegistrationControlRoutePlan(
+                routes,
+                symbols.rootMaterial("guard"),
+                symbols.rootMaterial("selector"),
+                symbols.rootMaterial("post-call"),
+                symbols.rootSelectorShift());
+    }
+
+    private List<List<NativeRegistrationControlRoutePlan.Parameter>>
+            parameterOrders(
+                    NativeRegistrationControlSymbolDeriver symbols) {
+        NativeRegistrationControlRoutePlan.Parameter vm =
+                NativeRegistrationControlRoutePlan.Parameter.VM;
+        NativeRegistrationControlRoutePlan.Parameter reserved =
+                NativeRegistrationControlRoutePlan.Parameter.RESERVED;
+        NativeRegistrationControlRoutePlan.Parameter guard =
+                NativeRegistrationControlRoutePlan.Parameter.GUARD;
+        return java.util.stream.Stream.of(
+                        List.of(vm, reserved, guard),
+                        List.of(vm, guard, reserved),
+                        List.of(reserved, vm, guard),
+                        List.of(reserved, guard, vm),
+                        List.of(guard, vm, reserved),
+                        List.of(guard, reserved, vm))
+                .sorted(Comparator.comparing(
+                        symbols::routeParameterOrderRank))
+                .limit(NativeRegistrationControlRoutePlan.ROUTE_COUNT)
+                .toList();
     }
 
     private List<NativeRegistrationControlTopologyPlan.Chunk> chunks(
@@ -61,6 +127,17 @@ final class NativeRegistrationControlTopologyPlanner {
                 count,
                 remainder,
                 symbols);
+        List<NativeRegistrationChunkPostCallVariant> variants =
+                java.util.Arrays.stream(
+                                NativeRegistrationChunkPostCallVariant.values())
+                        .sorted(Comparator.comparing(
+                                symbols::chunkPostCallVariantRank))
+                        .toList();
+        if (variants.size()
+                != NativeRegistrationControlTopologyPlan.MAX_CHUNKS) {
+            throw new IllegalStateException(
+                    "registration chunk post-call family is not closed");
+        }
         ArrayList<NativeRegistrationControlTopologyPlan.Chunk> chunks =
                 new ArrayList<>();
         int start = 0;
@@ -78,7 +155,10 @@ final class NativeRegistrationControlTopologyPlanner {
                             members.stream()
                                     .map(member -> member.source().owner())
                                     .toList()),
-                    members));
+                    members,
+                    variants.get(ordinal),
+                    symbols.chunkMaterial(ordinal, "witness"),
+                    symbols.chunkMaterial(ordinal, "post-call")));
             start = end;
         }
         return List.copyOf(chunks);

@@ -6,7 +6,9 @@ final class NativeRegistrationAggregateSourceVerifier {
             NativeRegistrationControlSourceIndex index,
             NativeRegistrationControlTopologyPlan plan) {
         verifyAggregate(index, plan);
-        verifyJniOnLoad(index, plan);
+        new NativeRegistrationRouteSourceVerifier().verify(
+                index,
+                plan);
     }
 
     private void verifyAggregate(
@@ -121,19 +123,11 @@ final class NativeRegistrationAggregateSourceVerifier {
                 fail("AGGREGATE_BYPASSES_CHUNK_CHAIN");
             }
         }
-    }
-
-    private void verifyJniOnLoad(
-            NativeRegistrationControlSourceIndex index,
-            NativeRegistrationControlTopologyPlan plan) {
-        String body = index.functionBody(
-                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {");
-        String expected = "\n    (void)reserved;\n"
-                + "    return "
-                + plan.aggregateSymbol()
-                + "(vm);\n";
-        if (body == null || !body.equals(expected)) {
-            fail("JNI_ONLOAD_CLOSURE");
+        for (NativeRegistrationControlRoutePlan.Route route
+                : plan.routePlan().routes()) {
+            if (bodyIndex.identifierCount(route.symbol()) != 0) {
+                fail("AGGREGATE_BYPASSES_ENTRY_ROUTE");
+            }
         }
     }
 
@@ -155,13 +149,17 @@ final class NativeRegistrationAggregateSourceVerifier {
     }
 
     private String aggregatePrototype(String symbol) {
-        return aggregateHeader(symbol).replace(
-                " {",
-                " __attribute__((noinline));");
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                aggregateDeclaration(symbol));
     }
 
     private String aggregateHeader(String symbol) {
-        return "static jint " + symbol + "(JavaVM* vm) {";
+        return NativeRegistrationControlCFunctionPolicy.definitionHeader(
+                aggregateDeclaration(symbol));
+    }
+
+    private String aggregateDeclaration(String symbol) {
+        return "static jint " + symbol + "(JavaVM* vm)";
     }
 
     private void fail(String code) {

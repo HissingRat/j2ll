@@ -43,6 +43,8 @@ class ZigBuildWriterTest {
                 "const c_optimize = .ReleaseSmall;"));
         assertTrue(buildZig.contains("const progress_markers = b.addWriteFiles();"));
         assertFalse(buildZig.contains(".addCSourceFiles("));
+        assertFalse(buildZig.contains(".addCSourceFile("));
+        assertFalse(buildZig.contains(".getEmittedAsm()"));
         assertTrue(buildZig.contains(".pic = true"));
         assertTrue(buildZig.contains(".implib_dir = .disabled"));
         assertTrue(buildZig.contains("lib_macos_x64.discard_local_symbols = true"));
@@ -58,6 +60,12 @@ class ZigBuildWriterTest {
         assertEquals(4, countOccurrences(
                 buildZig,
                 "\"-outliner-benefit-threshold=16\""));
+        assertEquals(6, countOccurrences(buildZig, ".addOutputFileArg("));
+        assertEquals(6, countOccurrences(buildZig, ".addAssemblyFile(optimized_assembly_"));
+        assertEquals(6, countOccurrences(
+                buildZig,
+                "native/zig-workspace/evidence/optimized-assembly/"));
+        assertFalse(buildZig.contains("optimized_assembly_linux_arm64_llvm_0"));
         for (TargetTriple target : List.of(
                 TargetTriple.LINUX_ARM64,
                 TargetTriple.MACOS_X64,
@@ -268,9 +276,13 @@ class ZigBuildWriterTest {
         assertEquals(2, countOccurrences(
                 buildZig,
                 "\"-fno-asynchronous-unwind-tables\""));
-        String windowsCUnit = sourceBlock(buildZig, "module_windows_x64_c_0.addCSourceFile");
+        String windowsCUnit = sourceBlock(
+                buildZig,
+                "compile_assembly_windows_x64_c_0_c_0.addArgs");
         assertFalse(windowsCUnit.contains("-fno-unwind-tables"));
-        String linuxCUnit = sourceBlock(buildZig, "module_linux_x64_c_0.addCSourceFile");
+        String linuxCUnit = sourceBlock(
+                buildZig,
+                "compile_assembly_linux_x64_c_0_c_0.addArgs");
         assertTrue(linuxCUnit.contains("-fno-unwind-tables"));
 
         String manifest = Files.readString(workspace.manifest());
@@ -493,6 +505,19 @@ class ZigBuildWriterTest {
         assertTrue(buildZig.contains(
                 "install_linking_marker_" + symbol
                         + ".step.dependOn(&install_compile_marker_" + symbol + "_c_0.step)"));
+        assertTrue(buildZig.contains(
+                "const compile_assembly_" + symbol + "_c_0_c_0"
+                        + " = b.addSystemCommand(&.{ b.graph.zig_exe, \"cc\" });"));
+        assertTrue(buildZig.contains(
+                "module_" + symbol + "_c_0.addAssemblyFile(optimized_assembly_"
+                        + symbol + "_c_0_c_0);"));
+        assertTrue(buildZig.contains(
+                "install_compile_marker_" + symbol
+                        + "_c_0.step.dependOn(&install_optimized_assembly_" + symbol
+                        + "_c_0_c_0.step)"));
+        assertTrue(buildZig.contains(
+                "\"native/zig-workspace/evidence/optimized-assembly/"
+                        + target.directoryName() + "/c-0.s\""));
         assertTrue(buildZig.contains(
                 "lib_" + symbol + ".step.dependOn(&install_linking_marker_" + symbol + ".step)"));
         assertTrue(buildZig.contains(

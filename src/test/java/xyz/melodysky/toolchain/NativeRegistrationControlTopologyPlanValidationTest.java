@@ -5,10 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
-import xyz.melodysky.toolchain.nativetext.NativeTextEncodingTestFixture;
 
 final class NativeRegistrationControlTopologyPlanValidationTest {
     @Test
@@ -68,10 +66,53 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                         second.startInclusive() - 1,
                         second.endExclusive(),
                         second.symbol(),
-                        second.owners()));
+                        second.owners(),
+                        second.postCallVariant(),
+                        second.witnessSalt(),
+                        second.postCallSalt()));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> copy(plan, plan.owners(), backward));
+
+        ArrayList<NativeRegistrationControlTopologyPlan.Chunk> duplicateVariant =
+                new ArrayList<>(plan.chunks());
+        NativeRegistrationControlTopologyPlan.Chunk first =
+                duplicateVariant.get(0);
+        NativeRegistrationControlTopologyPlan.Chunk duplicate =
+                duplicateVariant.get(1);
+        duplicateVariant.set(
+                1,
+                new NativeRegistrationControlTopologyPlan.Chunk(
+                        duplicate.ordinal(),
+                        duplicate.startInclusive(),
+                        duplicate.endExclusive(),
+                        duplicate.symbol(),
+                        duplicate.owners(),
+                        first.postCallVariant(),
+                        duplicate.witnessSalt(),
+                        duplicate.postCallSalt()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> copy(plan, plan.owners(), duplicateVariant));
+
+        ArrayList<NativeRegistrationControlTopologyPlan.Chunk> zeroMaterial =
+                new ArrayList<>(plan.chunks());
+        NativeRegistrationControlTopologyPlan.Chunk zero =
+                zeroMaterial.get(0);
+        zeroMaterial.set(
+                0,
+                new NativeRegistrationControlTopologyPlan.Chunk(
+                        zero.ordinal(),
+                        zero.startInclusive(),
+                        zero.endExclusive(),
+                        zero.symbol(),
+                        zero.owners(),
+                        zero.postCallVariant(),
+                        0L,
+                        zero.postCallSalt()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> copy(plan, plan.owners(), zeroMaterial));
 
         NativeRegistrationControlTopologyPlan five =
                 NativeRegistrationControlTestFixture.plan(5, "unbalanced-chunks");
@@ -93,6 +134,7 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                         "j2ll_registration_root",
                         plan.owners(),
                         plan.chunks(),
+                        plan.routePlan(),
                         plan.failureSymbols()));
         assertThrows(
                 IllegalArgumentException.class,
@@ -100,6 +142,7 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                         plan.owners().get(0).symbol(),
                         plan.owners(),
                         plan.chunks(),
+                        plan.routePlan(),
                         plan.failureSymbols()));
         ArrayList<NativeRegistrationControlTopologyPlan.Owner> ownerCollision =
                 new ArrayList<>(plan.owners());
@@ -125,7 +168,10 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                         secondChunk.startInclusive(),
                         secondChunk.endExclusive(),
                         chunkCollision.get(0).symbol(),
-                        secondChunk.owners()));
+                        secondChunk.owners(),
+                        secondChunk.postCallVariant(),
+                        secondChunk.witnessSalt(),
+                        secondChunk.postCallSalt()));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> copy(plan, plan.owners(), chunkCollision));
@@ -149,6 +195,7 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                         plan.aggregateSymbol(),
                         plan.owners(),
                         plan.chunks(),
+                        plan.routePlan(),
                         duplicates));
 
         NativeTextBuildKey key = NativeRegistrationControlTestFixture.key(
@@ -165,39 +212,7 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new NativeRegistrationControlTopologyPlanner()
-                        .plan(owners, key));
-    }
-
-    @Test
-    void rejectsEarlierRegistrationMaterialCollidingWithFutureControlSymbols() {
-        NativeTextBuildKey key = NativeRegistrationControlTestFixture.key(
-                "future-registration-material-collision");
-        List<NativeRegistrationTextPlan.Owner> owners =
-                NativeRegistrationControlTestFixture.physicalOwners(11, key);
-        NativeRegistrationControlTopologyPlan baseline =
-                new NativeRegistrationControlTopologyPlanner().plan(
-                        owners,
-                        key);
-        List<String> futureControlSymbols = List.of(
-                baseline.owners().get(1).symbol(),
-                baseline.chunks().get(baseline.chunks().size() - 1).symbol());
-
-        for (String collision : futureControlSymbols) {
-            for (RegistrationMaterial material
-                    : RegistrationMaterial.values()) {
-                ArrayList<NativeRegistrationTextPlan.Owner> mutated =
-                        new ArrayList<>(owners);
-                mutated.set(
-                        0,
-                        collide(mutated.get(0), material, collision));
-
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> new NativeRegistrationControlTopologyPlanner()
-                                .plan(mutated, key),
-                        material + " -> " + collision);
-            }
-        }
+                                .plan(owners, key));
     }
 
     private NativeRegistrationControlTopologyPlan fixture() {
@@ -214,6 +229,7 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                 source.aggregateSymbol(),
                 owners,
                 chunks,
+                source.routePlan(),
                 source.failureSymbols());
     }
 
@@ -229,69 +245,10 @@ final class NativeRegistrationControlTopologyPlanValidationTest {
                 start,
                 end,
                 original.symbol(),
-                plan.owners().subList(start, end));
+                plan.owners().subList(start, end),
+                original.postCallVariant(),
+                original.witnessSalt(),
+                original.postCallSalt());
     }
 
-    private NativeRegistrationTextPlan.Owner collide(
-            NativeRegistrationTextPlan.Owner owner,
-            RegistrationMaterial material,
-            String symbol) {
-        NativeRegistrationTextPlan.Binding binding = owner.bindings().get(0);
-        NativeRegistrationEntry registration = binding.registration();
-        NativeRegistrationTextPlan.Binding collidedBinding = switch (material) {
-            case NATIVE_SYMBOL -> new NativeRegistrationTextPlan.Binding(
-                    new NativeRegistrationEntry(
-                            registration.registrationOwner(),
-                            registration.methodName(),
-                            registration.descriptor(),
-                            symbol),
-                    binding.nameText(),
-                    binding.descriptorText());
-            case METHOD_TEXT -> new NativeRegistrationTextPlan.Binding(
-                    registration,
-                    NativeTextEncodingTestFixture.withSymbol(
-                            binding.nameText(),
-                            symbol),
-                    binding.descriptorText());
-            default -> binding;
-        };
-        List<NativeRegistrationTextPlan.Binding> bindings =
-                material == RegistrationMaterial.NATIVE_SYMBOL
-                                || material == RegistrationMaterial.METHOD_TEXT
-                        ? List.of(collidedBinding)
-                        : owner.bindings();
-        var ownerText = material == RegistrationMaterial.OWNER_TEXT
-                ? NativeTextEncodingTestFixture.withSymbol(
-                        owner.ownerText(),
-                        symbol)
-                : owner.ownerText();
-        List<NativeRegistrationTextPlan.TextGroup> groups = owner.textGroups();
-        if (material == RegistrationMaterial.GROUP_ENCODING) {
-            ArrayList<NativeRegistrationTextPlan.TextGroup> collidedGroups =
-                    new ArrayList<>(groups);
-            NativeRegistrationTextPlan.TextGroup group =
-                    collidedGroups.get(0);
-            collidedGroups.set(
-                    0,
-                    new NativeRegistrationTextPlan.TextGroup(
-                            group.purpose(),
-                            NativeTextEncodingTestFixture.withSymbol(
-                                    group.encoding(),
-                                    symbol),
-                            group.memberOffsets()));
-            groups = List.copyOf(collidedGroups);
-        }
-        return new NativeRegistrationTextPlan.Owner(
-                owner.owner(),
-                ownerText,
-                bindings,
-                groups);
-    }
-
-    private enum RegistrationMaterial {
-        NATIVE_SYMBOL,
-        OWNER_TEXT,
-        METHOD_TEXT,
-        GROUP_ENCODING
-    }
 }

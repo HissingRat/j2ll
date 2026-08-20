@@ -475,7 +475,7 @@ final class HostNativeRegistrationSourceTest {
         assertFalse(source.contains(
                 "native registration exception restore failed"));
         assertEquals(
-                1,
+                2,
                 occurrences(
                         source,
                         "JNIEXPORT jint JNICALL JNI_OnLoad"));

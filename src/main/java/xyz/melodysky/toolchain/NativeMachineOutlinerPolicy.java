@@ -16,17 +16,23 @@ public record NativeMachineOutlinerPolicy(
                     "-enable-machine-outliner=always",
                     "-mllvm",
                     "-outliner-benefit-threshold=" + MINIMUM_BENEFIT_THRESHOLD);
+    private static final List<String> LLVM_DISABLED_FLAGS =
+            List.of("-mllvm", "-enable-machine-outliner=never");
 
     public NativeMachineOutlinerPolicy {
         cFlags = List.copyOf(Objects.requireNonNull(cFlags, "cFlags"));
         Objects.requireNonNull(reasonCode, "reasonCode");
-        if (enabled != !cFlags.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "machine-outliner state and C flags must agree");
-        }
         if (minimumBenefitThreshold != (enabled ? MINIMUM_BENEFIT_THRESHOLD : 0)) {
             throw new IllegalArgumentException(
                     "machine-outliner threshold must match its enabled state");
+        }
+        if (enabled && !cFlags.equals(LLVM_FLAGS)) {
+            throw new IllegalArgumentException(
+                    "enabled machine outliner must use the closed target flags");
+        }
+        if (!enabled && !cFlags.isEmpty() && !cFlags.equals(LLVM_DISABLED_FLAGS)) {
+            throw new IllegalArgumentException(
+                    "disabled machine outliner must be implicit or explicitly forbidden");
         }
     }
 
@@ -44,5 +50,21 @@ public record NativeMachineOutlinerPolicy(
                 MINIMUM_BENEFIT_THRESHOLD,
                 LLVM_FLAGS,
                 "MACHINE_OUTLINER_ELF_MACHO_ENABLED");
+    }
+
+    static NativeMachineOutlinerPolicy forSource(
+            TargetTriple target,
+            ZigCInputMachinePolicyPlan.Mode sourcePolicy) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(sourcePolicy, "sourcePolicy");
+        if (sourcePolicy
+                == ZigCInputMachinePolicyPlan.Mode.REGISTRATION_CONTROL_OUTLINER_FORBIDDEN) {
+            return new NativeMachineOutlinerPolicy(
+                    false,
+                    0,
+                    LLVM_DISABLED_FLAGS,
+                    "REGISTRATION_MACHINE_TOPOLOGY_OUTLINER_FORBIDDEN");
+        }
+        return forTarget(target);
     }
 }

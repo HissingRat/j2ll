@@ -120,9 +120,10 @@ final class NativeRegistrationControlTranslationPhaseMutationTest {
     }
 
     private String aggregatePrototype(Fixture fixture) {
-        return "static jint "
-                + fixture.plan().aggregateSymbol()
-                + "(JavaVM* vm) __attribute__((noinline));";
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                "static jint "
+                        + fixture.plan().aggregateSymbol()
+                        + "(JavaVM* vm)");
     }
 
     private String aggregateDefinition(Fixture fixture) {

@@ -1,5 +1,6 @@
 package xyz.melodysky.toolchain;
 
+import java.util.List;
 import java.util.stream.IntStream;
 
 final class NativeRegistrationControlChunkExecutionFixture {
@@ -10,13 +11,74 @@ final class NativeRegistrationControlChunkExecutionFixture {
             int lastInFirstChunk,
             int firstInSecondChunk,
             int firstInThirdChunk) {
-        String nativeFunctions = IntStream.range(0, OWNER_COUNT)
+        return harness(
+                registration,
+                lastInFirstChunk,
+                firstInSecondChunk,
+                firstInThirdChunk,
+                List.of("JNI_OnLoad(&fake_vm, NULL)"));
+    }
+
+    String harness(
+            int ownerCount,
+            String registration,
+            int lastInFirstChunk,
+            int firstInSecondChunk,
+            int firstInThirdChunk) {
+        return harness(
+                ownerCount,
+                registration,
+                lastInFirstChunk,
+                firstInSecondChunk,
+                firstInThirdChunk,
+                List.of("JNI_OnLoad(&fake_vm, NULL)"));
+    }
+
+    String harness(
+            String registration,
+            int lastInFirstChunk,
+            int firstInSecondChunk,
+            int firstInThirdChunk,
+            List<String> entryExpressions) {
+        return harness(
+                OWNER_COUNT,
+                registration,
+                lastInFirstChunk,
+                firstInSecondChunk,
+                firstInThirdChunk,
+                entryExpressions);
+    }
+
+    String harness(
+            int ownerCount,
+            String registration,
+            int lastInFirstChunk,
+            int firstInSecondChunk,
+            int firstInThirdChunk,
+            List<String> entryExpressions) {
+        if (ownerCount <= 0) {
+            throw new IllegalArgumentException(
+                    "owner count must be positive");
+        }
+        List<String> entries = List.copyOf(entryExpressions);
+        if (entries.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "at least one registration entry expression is required");
+        }
+        String nativeFunctions = IntStream.range(0, ownerCount)
                 .mapToObj(index -> "static void native_fixture_"
                         + index
                         + "(JNIEnv* env, jclass owner) {\n"
                         + "    (void)env;\n"
                         + "    (void)owner;\n"
                         + "}\n")
+                .collect(java.util.stream.Collectors.joining());
+        String entrySwitch = IntStream.range(0, entries.size())
+                .mapToObj(index -> "        case "
+                        + index
+                        + ": return "
+                        + entries.get(index)
+                        + ";\n")
                 .collect(java.util.stream.Collectors.joining());
         return """
                 #include <jni.h>
@@ -36,6 +98,7 @@ final class NativeRegistrationControlChunkExecutionFixture {
                 static int exception_delete_count = 0;
                 static int fatal_count = 0;
                 static int resolver_close_count = 0;
+                static int get_env_count = 0;
                 static jthrowable pending_exception = NULL;
                 static const uintptr_t owner_base = (uintptr_t)0x1000u;
                 static const uintptr_t failure_id = (uintptr_t)0x9000u;
@@ -175,6 +238,7 @@ final class NativeRegistrationControlChunkExecutionFixture {
                 static jint JNICALL fake_get_env(
                         JavaVM* vm, void** result, jint version) {
                     (void)vm;
+                    get_env_count++;
                     if (version != JNI_VERSION_1_8) {
                         return JNI_EVERSION;
                     }
@@ -189,6 +253,12 @@ final class NativeRegistrationControlChunkExecutionFixture {
 
                 %s
 
+                static jint invoke_registration(int entry_index) {
+                    switch (entry_index) {
+                %s        default: return JNI_ERR;
+                    }
+                }
+
                 static void reset_case(int requested_failure) {
                     resolve_count = 0;
                     register_count = 0;
@@ -197,6 +267,7 @@ final class NativeRegistrationControlChunkExecutionFixture {
                     exception_delete_count = 0;
                     fatal_count = 0;
                     resolver_close_count = 0;
+                    get_env_count = 0;
                     pending_exception = NULL;
                     failure_at = requested_failure;
                     memset(owner_delete_count, 0, sizeof(owner_delete_count));
@@ -207,14 +278,15 @@ final class NativeRegistrationControlChunkExecutionFixture {
                             sizeof(partial_binding_count));
                 }
 
-                static int run_success(void) {
+                static int run_success(int entry_index) {
                     reset_case(0);
-                    if (JNI_OnLoad(&fake_vm, NULL) != JNI_VERSION_1_8) {
+                    if (invoke_registration(entry_index) != JNI_VERSION_1_8) {
                         return 1;
                     }
                     if (resolve_count != owner_count
                             || register_count != owner_count
-                            || unregister_count != 0) {
+                            || unregister_count != 0
+                            || get_env_count != 1) {
                         return 2;
                     }
                     for (int index = 0; index < owner_count; index++) {
@@ -233,13 +305,16 @@ final class NativeRegistrationControlChunkExecutionFixture {
                     return 0;
                 }
 
-                static int run_case(int requested_failure) {
+                static int run_case(
+                        int entry_index,
+                        int requested_failure) {
                     reset_case(requested_failure);
-                    if (JNI_OnLoad(&fake_vm, NULL) != JNI_ERR) {
+                    if (invoke_registration(entry_index) != JNI_ERR) {
                         return 1;
                     }
                     if (resolve_count != requested_failure
-                            || register_count != requested_failure) {
+                            || register_count != requested_failure
+                            || get_env_count != 1) {
                         return 2;
                     }
                     if (unregister_count != requested_failure) {
@@ -273,27 +348,38 @@ final class NativeRegistrationControlChunkExecutionFixture {
                 }
 
                 int main(void) {
-                    int success = run_success();
-                    if (success != 0) {
-                        return success;
-                    }
                     const int failures[] = {%d, %d, %d};
-                    for (size_t index = 0;
-                            index < sizeof(failures) / sizeof(failures[0]);
-                            index++) {
-                        int result = run_case(failures[index]);
-                        if (result != 0) {
-                            return (int)(index + 1u) * 10 + result + 4;
+                    for (int entry_index = 0;
+                            entry_index < %d;
+                            entry_index++) {
+                        int success = run_success(entry_index);
+                        if (success != 0) {
+                            return entry_index * 100 + success;
+                        }
+                        for (size_t index = 0;
+                                index < sizeof(failures) / sizeof(failures[0]);
+                                index++) {
+                            int result = run_case(
+                                    entry_index,
+                                    failures[index]);
+                            if (result != 0) {
+                                return entry_index * 100
+                                        + (int)(index + 1u) * 10
+                                        + result
+                                        + 4;
+                            }
                         }
                     }
                     return 0;
                 }
                 """.formatted(
-                OWNER_COUNT,
+                ownerCount,
                 nativeFunctions,
                 registration,
+                entrySwitch,
                 lastInFirstChunk,
                 firstInSecondChunk,
-                firstInThirdChunk);
+                firstInThirdChunk,
+                entries.size());
     }
 }

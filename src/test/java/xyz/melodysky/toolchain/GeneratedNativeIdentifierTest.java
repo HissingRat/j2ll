@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
@@ -153,7 +154,10 @@ class GeneratedNativeIdentifierTest {
         assertFalse(source.contains("secretMethod"));
         assertTrue(source.matches(
                 "(?s).*static jint [a-p]{32}\\(JavaVM\\* vm\\) "
-                        + "__attribute__\\(\\(noinline\\)\\);.*"));
+                        + Pattern.quote(
+                                NativeRegistrationControlCFunctionPolicy
+                                        .ATTRIBUTES)
+                        + ";.*"));
         assertFalse(source.contains("j2ll_register_"));
         assertFalse(source.contains("JNIEXPORT jint JNICALL j2ll_register(JavaVM* vm)"));
         assertTrue(source.contains("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)"));

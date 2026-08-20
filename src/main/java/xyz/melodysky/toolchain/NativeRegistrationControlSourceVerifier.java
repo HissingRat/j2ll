@@ -18,7 +18,9 @@ final class NativeRegistrationControlSourceVerifier {
         verifySymbolClosure(index, plan);
         verifyFailureLeaves(index, plan);
         verifyOwners(index, plan);
-        verifyChunks(index, plan);
+        new NativeRegistrationChunkSourceVerifier().verify(
+                index,
+                plan);
         new NativeRegistrationAggregateSourceVerifier().verify(
                 index,
                 plan);
@@ -70,7 +72,14 @@ final class NativeRegistrationControlSourceVerifier {
     private void verifySymbolClosure(
             NativeRegistrationControlSourceIndex index,
             NativeRegistrationControlTopologyPlan plan) {
-        requireCount(index, plan.aggregateSymbol(), 3);
+        requireCount(
+                index,
+                plan.aggregateSymbol(),
+                plan.routePlan().enabled() ? 4 : 3);
+        for (NativeRegistrationControlRoutePlan.Route route
+                : plan.routePlan().routes()) {
+            requireCount(index, route.symbol(), 3);
+        }
         for (NativeRegistrationControlTopologyPlan.Owner owner
                 : plan.owners()) {
             requireCount(index, owner.symbol(), 3);
@@ -134,55 +143,6 @@ final class NativeRegistrationControlSourceVerifier {
         }
     }
 
-    private void verifyChunks(
-            NativeRegistrationControlSourceIndex index,
-            NativeRegistrationControlTopologyPlan plan) {
-        for (int ordinal = 0; ordinal < plan.chunks().size(); ordinal++) {
-            NativeRegistrationControlTopologyPlan.Chunk chunk =
-                    plan.chunks().get(ordinal);
-            if (index.codeCountExactAtIdentifier(
-                    chunkPrototype(chunk.symbol()),
-                    chunk.symbol()) != 1) {
-                fail("CHUNK_NOINLINE_CLOSURE");
-            }
-            String body = index.functionBody(chunkHeader(chunk.symbol()));
-            String next = ordinal + 1 < plan.chunks().size()
-                    ? plan.chunks().get(ordinal + 1).symbol()
-                    : null;
-            if (body == null
-                    || !body.equals(expectedChunkBody(chunk, next))) {
-                fail("CHUNK_CLOSED_SCHEMA");
-            }
-        }
-    }
-
-    private String expectedChunkBody(
-            NativeRegistrationControlTopologyPlan.Chunk chunk,
-            String nextSymbol) {
-        StringBuilder expected = new StringBuilder("\n");
-        for (NativeRegistrationControlTopologyPlan.Owner owner
-                : chunk.owners()) {
-            expected.append("    if (")
-                    .append(owner.symbol())
-                    .append("(env, resolver, &registered_owners[")
-                    .append(owner.index())
-                    .append("]) != JNI_OK) {\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    *registered_count = ")
-                    .append(owner.index() + 1)
-                    .append("u;\n");
-        }
-        if (nextSymbol == null) {
-            expected.append("    return JNI_OK;\n");
-        } else {
-            expected.append("    return ")
-                    .append(nextSymbol)
-                    .append("(env, resolver, registered_owners, registered_count);\n");
-        }
-        return expected.toString();
-    }
-
     private void requireCount(
             NativeRegistrationControlSourceIndex index,
             String symbol,
@@ -220,21 +180,13 @@ final class NativeRegistrationControlSourceVerifier {
     }
 
     private String ownerPrototype(String symbol) {
-        return ownerHeader(symbol).replace(" {", " __attribute__((noinline));");
+        return NativeRegistrationControlCFunctionPolicy.prototype(
+                HostNativeOwnerRegistrationSource.declaration(symbol));
     }
 
     private String ownerHeader(String symbol) {
-        return "static jint " + symbol
-                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) {";
-    }
-
-    private String chunkPrototype(String symbol) {
-        return chunkHeader(symbol).replace(" {", " __attribute__((noinline));");
-    }
-
-    private String chunkHeader(String symbol) {
-        return "static jint " + symbol
-                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count) {";
+        return NativeRegistrationControlCFunctionPolicy.definitionHeader(
+                HostNativeOwnerRegistrationSource.declaration(symbol));
     }
 
     private void fail(String code) {

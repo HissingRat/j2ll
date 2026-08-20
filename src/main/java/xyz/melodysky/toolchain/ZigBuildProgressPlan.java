@@ -18,12 +18,23 @@ final class ZigBuildProgressPlan {
     }
 
     static ZigBuildProgressPlan forSources(NativeBuildPlan buildPlan, ZigSourceSet sources) {
+        return forInventory(buildPlan, inventory(sources));
+    }
+
+    static ZigBuildProgressPlan forInventory(
+            NativeBuildPlan buildPlan,
+            CompileInputInventory inventory) {
         Objects.requireNonNull(buildPlan, "buildPlan");
+        Objects.requireNonNull(inventory, "inventory");
+        return forUnits(buildPlan, balancedUnits(inventory.inputs()), true);
+    }
+
+    static CompileInputInventory inventory(ZigSourceSet sources) {
         Objects.requireNonNull(sources, "sources");
         ArrayList<CompileInput> compileInputs = new ArrayList<>();
         addInputs(compileInputs, CompileInputKind.C, sources.cSources());
         addInputs(compileInputs, CompileInputKind.LLVM, sources.llvmSources());
-        return forUnits(buildPlan, balancedUnits(compileInputs), true);
+        return new CompileInputInventory(compileInputs);
     }
 
     static ZigBuildProgressPlan linkOnly(NativeBuildPlan buildPlan) {
@@ -191,6 +202,12 @@ final class ZigBuildProgressPlan {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(source, "source");
+        }
+    }
+
+    record CompileInputInventory(List<CompileInput> inputs) {
+        CompileInputInventory {
+            inputs = List.copyOf(inputs);
         }
     }
 

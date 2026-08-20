@@ -223,30 +223,54 @@
   hash-only `noinline,cold` leaf发出，leaf只接收`JNIEnv*`。`JNI_OnLoad`使用activation-
   local `jclass[]`与`registered_count`逆序cleanup/rollback，不展开per-owner重复控制流。
 - Registration control topology必须在全部physical owner顺序冻结后形成一个immutable
-  build-scoped plan。aggregate、每个owner helper、每个forward chunk和四个failure leaf的
-  C symbol均使用独立registration-control purpose派生的exact `[a-p]{32}`；不得包含
-  `j2ll`/owner/chunk/register/failure语义前缀。planner必须先收齐全部control symbol并验证
-  唯一，再对所有owner/name/descriptor/group encoding/native implementation symbol做完整
-  collision scan，不能让未来owner/chunk symbol漏过此前registration material。
-- `JNI_OnLoad`只直接调用唯一`noinline` aggregate。resolver、activation-local
-  `registered_owners[]`/`registered_count`、success cleanup、逆序rollback、status/pending-
-  exception检查和原Throwable恢复继续只存在于该aggregate activation；不得移动、拆分、
-  复制或改变其顺序。zero-owner不生成chunk、owner array或rollback路径。非空owner按已冻结
+  build-scoped plan。aggregate、每个owner helper、每个forward chunk、nonzero-owner的三个
+  entry route和四个failure leaf的C symbol均使用独立registration-control purpose派生的
+  exact `[a-p]{32}`；不得包含`j2ll`/route/owner/chunk/register/failure语义前缀。planner必须
+  先收齐全部control symbol并验证唯一，再对所有owner/name/descriptor/group encoding/native
+  implementation symbol做完整collision scan，不能让未来route/owner/chunk symbol漏过此前
+  registration material。
+- Nonzero-owner的`JNI_OnLoad`只允许exact两条非对称direct-call路径：
+  `root -> R0 -> aggregate`或`root -> R1 -> R2 -> aggregate`；exact三个route symbol都来自同一
+  immutable plan，每条路径aggregate exact once，root不得直接调用aggregate，R1不得绕过R2。
+  root使用activation-local volatile predicate；route只转发`JavaVM*`、`void* reserved`和
+  `uintptr_t guard`的build-derived参数排列，reserved只允许整数化而不得解引用。route不得执行
+  JNI、读写global、建立table/function pointer/cookie、共享post-call helper或outliner edge。
+  zero-owner保持窄例外：不生成route/chunk/owner array/rollback，root仍直接调用zero-owner
+  aggregate并在call后读取volatile result。
+- resolver、activation-local `registered_owners[]`/`registered_count`、success cleanup、逆序
+  rollback、status/pending-exception检查和原Throwable恢复继续只存在于唯一aggregate
+  activation；不得移动、拆分、复制或改变其顺序。非空owner按已冻结
   build-derived顺序切成exact `min(8, ceil(ownerCount / 4))`个连续balanced chunk；余数落在哪些
   ordinal由build material派生。同build plan稳定；不同build只宣称derived/diversified，且
   单chunk或hash/order碰撞窄例外不宣称membership必然变化。chunk只允许按plan直接调用连续
-  owner、在owner成功后推进count并forward到唯一next chunk或返回；不得执行JNI exception、
+  owner、在owner成功后推进count并direct-call唯一next chunk或返回；next call后必须执行
+  observable volatile result/witness continuation，不得退化为tail return。不得执行JNI exception、
   resolver、rollback、local-ref、scratch、table、dispatcher或cache逻辑。owner超过32时使用
   固定最多8层的balanced conservative fallback，因此只有`ownerCount <= 32`时才保证每chunk
   最多4个owner。
+- `JNI_OnLoad`、三个route、aggregate、owner helper和chunk统一通过先行prototype携带
+  `__attribute__((noinline, disable_tail_calls))`，definition不得用会触发Clang GCC-compat
+  warning的post-declarator attribute。每个root/route/chunk-forward planned call之后必须有
+  observable volatile result与witness continuation；三个route使用exact三种互异typed/stack
+  recipe，最多八个chunk从独立exact八种closed structural variant中无重复选择，不能只靠不同
+  immediate salt宣称保形。不得使用未知`nooutline` attribute。承载registration control的exact
+  wrapper C input必须在immutable per-input policy中标记为
+  `REGISTRATION_CONTROL_OUTLINER_FORBIDDEN`，并由managed Zig显式传递
+  `-mllvm -enable-machine-outliner=never`；不得只依赖目标默认值、文件名、source排序或recipe偶然
+  阻止post-RA outlining。其他runtime C input继续消费target-default policy。最终optimized
+  compile-unit assembly gate必须绑定该exact input，拒绝planned edge的tail collapse、跨input
+  definition与该wrapper assembly code surface中的任何`OUTLINED_FUNCTION_*` artifact；四个
+  failure leaf在nonzero-owner下同样必须exact-one绑定该input。逐call volatile continuation的
+  stack slot必须在未改写对应stack/frame base的情况下完成same-slot store→readback。
 - Registration final-C gate必须在完整translation unit追加完毕后，以一次phase-2 line-splice、
   code-only lexical index和无条件preprocessor control span验证control symbol/prototype/
-  definition/call closure、exact root→chunk0→… chain、owner conservation、chunk closed schema及
-  aggregate exact success/rollback tail；comment/string/char、trigraph、inactive preprocessor
+  definition/call closure、exact `root→{R0,R1→R2}→aggregate→chunk0→…` graph、owner conservation、
+  route/chunk closed schema、function policy及aggregate exact success/rollback tail；
+  comment/string/char、trigraph、inactive preprocessor
   decoy、missing/duplicate/residual/collision/bypass一律fail closed。该加固的结构size budget为
-  exact `min(8, ceil(ownerCount / 4))`个新增chunk definition（zero owner为0），无table、
-  padding、dispatcher或持久data；source/native dual-build增量必须另做真实六目标记录，未实测
-  前不得宣称size或attacker收益。
+  nonzero-owner exact三个route definition加`min(8, ceil(ownerCount / 4))`个chunk definition
+  （zero owner两者均为0），无table、padding、dispatcher或持久data；source/native dual-build
+  增量必须另做真实六目标记录，未实测前不得宣称size或attacker收益。
 - `LLVM_NATIVE_PATH` JNI physical entry 与规范 LLVM body 之间使用 build-scoped local ABI topology。final native ABI传递`JNIEnv*`、owner `jclass`、Java reference/array或具有field/call/exception/pending/local-reference语义时，强制使用bounded branched参数重排；pure-native scalar binding仍从direct canonical、单层、双层与branched四种形态中派生，以保留较低成本的build diversity。默认physical entry与bridges可由generated C发出；final plan证明为ordinary standalone `NATIVE_ORIGINAL`且descriptor只含`V/I/J/F/D/L/[`可物理直传类型时，可把等价结构迁入同owner final LLVM module。Static proxy可把physical `JNIEnv* + jclass`投影给semantic env/owner；instance proxy可投影`JNIEnv* + jobject self`，但需要额外defining-owner `jclass`的instance body仍fail closed。Reference/array handle和reference return只按`ptr`原样转发，proxy/bridge不创建、删除或提升local ref。`Z/B/C/S` scalar、initializer/interface/internal-only与synchronized method不进入该路径。`RegisterNatives`必须指向独立build-scoped hash-only `EXTERNAL/HIDDEN/NOINLINE` JNI proxy，proxy经与原planner完全相同的bounded topology进入独立`EXTERNAL/HIDDEN/NOINLINE` semantic body，LLVM bridges为hash-only `INTERNAL/DEFAULT/NOINLINE`。不得把registration直接指向semantic body、alias/inline/shortcut任一hop，也不得新增`llvm.used`或其他集中code-pointer retention root。branched形态只在physical-entry activation内从两条最多双层的local route中选择；generated-C bridge最多三个`static __attribute__((noinline, used))`，LLVM bridge最多三个结构化`NOINLINE` function；不得使用`optnone`阻止正常size optimization。两种emission都只允许重排真实原生参数，不得添加cookie、持久function-pointer data slot，bridge不得执行JNI、改变reference lifetime或观察/清除pending exception。field/call/exception/local-reference与native-caller语义完整保留在原semantic body或既有安全caller路径中。该变换只提高静态分类成本，不是安全边界。
 - 静态分析难度优先于产物大小，但每个加固必须有明确size budget：优先选择
   table-free、bounded topology和同值组内复用；攻击者回归记录final native与
@@ -272,8 +296,12 @@
   decision、LLVM omitted/retained counts、unmodeled object count、final omission
   expectation与reason；若Linux/macOS预期完全省略，final ELF的`.eh_frame`/
   `.eh_frame_hdr`或Mach-O的`__eh_frame`/`__unwind_info`仍非空必须阻断构建。
-  Linux/macOS generated-C另启用最低收益阈值为16的bounded machine outliner，避免为
-  少量字节收益共享native-text短片段；Windows因SEH directive边界禁用。
+  Linux/macOS target-default generated-C input另启用最低收益阈值为16的bounded machine
+  outliner，避免为少量字节收益共享native-text短片段；Windows因SEH directive边界默认禁用。
+  承载registration control的wrapper C input是独立的mandatory例外，六目标均显式禁用outliner；
+  workspace manifest必须逐C input记录mode、effective `machineOutlinerCFlags`/reason与
+  optimized-assembly evidence，
+  不能用target级摘要暗示所有generated C共享同一决策。
 - Final generated-C surface经`NativeLibcRequirementPlan`闭集检查；无libc调用时使用freestanding/minimal compile-only headers、禁止implicit call和shared-library undefined、`.link_libc=false`。Windows使用minimal DLL entry，Linux/Windows最终库不得有libc/CRT dependency。macOS无业务libc调用时仍有平台强制`libSystem`，manifest必须以`MACOS_PLATFORM_LIBSYSTEM_REQUIRED`区分source requirement与effective dependency；新增/漏扫外部routine必须fail closed。
 - Production Zig source generation从final validated LLVM module model的真实symbol
   references计算runtime-helper family reachability，只发出闭包所需family；仅有

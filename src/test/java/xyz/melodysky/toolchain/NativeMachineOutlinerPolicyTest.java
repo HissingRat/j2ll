@@ -44,4 +44,25 @@ final class NativeMachineOutlinerPolicyTest {
                     policy.reasonCode());
         }
     }
+
+    @Test
+    void registrationControlSourceExplicitlyForbidsTheOutlinerOnAllSixTargets() {
+        for (TargetTriple target : TargetTriple.values()) {
+            NativeMachineOutlinerPolicy policy =
+                    NativeMachineOutlinerPolicy.forSource(
+                            target,
+                            ZigCInputMachinePolicyPlan.Mode
+                                    .REGISTRATION_CONTROL_OUTLINER_FORBIDDEN);
+            assertFalse(policy.enabled(), target.toString());
+            assertEquals(0, policy.minimumBenefitThreshold(), target.toString());
+            assertEquals(
+                    List.of("-mllvm", "-enable-machine-outliner=never"),
+                    policy.cFlags(),
+                    target.toString());
+            assertEquals(
+                    "REGISTRATION_MACHINE_TOPOLOGY_OUTLINER_FORBIDDEN",
+                    policy.reasonCode(),
+                    target.toString());
+        }
+    }
 }

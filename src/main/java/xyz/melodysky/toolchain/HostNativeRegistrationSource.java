@@ -112,12 +112,11 @@ public final class HostNativeRegistrationSource {
         }
         source.append(new HostNativeRegistrationChunkSource().emit(
                 topologyPlan));
-        appendRootRegistration(
-                source,
+        source.append(new HostNativeRegistrationRootSource().emit(
                 topologyPlan,
                 failureLeaves,
                 resolverPlan,
-                resolverEmitter);
+                resolverEmitter));
         Emission emission = new Emission(
                 source.toString(),
                 topologyPlan);
@@ -162,120 +161,6 @@ public final class HostNativeRegistrationSource {
             throw new IllegalArgumentException(
                     "method-table hiding plan does not match the native registration plan");
         }
-    }
-
-    private void appendRootRegistration(
-            StringBuilder source,
-            NativeRegistrationControlTopologyPlan topologyPlan,
-            HostNativeRegistrationFailureLeafSource.Plan failureLeaves,
-            NativeRegistrationResolverPlan resolverPlan,
-            HostNativeRegistrationResolverSource resolverEmitter) {
-        List<NativeRegistrationControlTopologyPlan.Owner> owners =
-                topologyPlan.owners();
-        String aggregateSymbol = topologyPlan.aggregateSymbol();
-        source.append("static jint ")
-                .append(aggregateSymbol)
-                .append("(JavaVM* vm) __attribute__((noinline));\n");
-        source.append("static jint ")
-                .append(aggregateSymbol)
-                .append("(JavaVM* vm) {\n")
-                .append("    JNIEnv* env = NULL;\n")
-                .append("    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_8) != JNI_OK) {\n")
-                .append("        return JNI_ERR;\n")
-                .append("    }\n");
-        if (owners.isEmpty()) {
-            source.append("    return JNI_VERSION_1_8;\n");
-        } else {
-            resolverEmitter.appendOpen(source, resolverPlan);
-            source.append("    jthrowable failure_exception = NULL;\n")
-                    .append("    jthrowable rollback_exception = NULL;\n")
-                    .append("    jthrowable observed_exception = NULL;\n")
-                    .append("    jclass rollback_owner = NULL;\n")
-                    .append("    jboolean rollback_failed = JNI_FALSE;\n")
-                    .append("    jint unregister_status = JNI_ERR;\n")
-                    .append("    jint throw_status = JNI_ERR;\n")
-                    .append("    size_t registered_count = 0u;\n")
-                    .append("    jclass registered_owners[")
-                    .append(owners.size())
-                    .append("] = {NULL};\n");
-        }
-        if (!topologyPlan.chunks().isEmpty()) {
-            source.append("    if (")
-                    .append(topologyPlan.chunks().get(0).symbol())
-                    .append("(env, &resolver, registered_owners, &registered_count) != JNI_OK) {\n")
-                    .append("        goto rollback;\n")
-                    .append("    }\n");
-        }
-        if (!owners.isEmpty()) {
-            source.append("    while (registered_count != 0u) {\n")
-                    .append("        registered_count--;\n")
-                    .append("        (*env)->DeleteLocalRef(env, registered_owners[registered_count]);\n")
-                    .append("        registered_owners[registered_count] = NULL;\n")
-                    .append("    }\n");
-            resolverEmitter.appendClose(source, "    ");
-            source.append("    return JNI_VERSION_1_8;\n")
-                    .append("rollback:\n")
-                    .append("    if ((*env)->ExceptionCheck(env)) {\n")
-                    .append("        failure_exception = (*env)->ExceptionOccurred(env);\n")
-                    .append("        (*env)->ExceptionClear(env);\n")
-                    .append("    }\n")
-                    .append("    while (registered_count != 0u) {\n")
-                    .append("        registered_count--;\n")
-                    .append("        rollback_owner = registered_owners[registered_count];\n")
-                    .append("        unregister_status = (*env)->UnregisterNatives(env, rollback_owner);\n")
-                    .append("        if (unregister_status != JNI_OK) {\n")
-                    .append("            rollback_failed = JNI_TRUE;\n")
-                    .append("        }\n")
-                    .append("        if ((*env)->ExceptionCheck(env)) {\n")
-                    .append("            rollback_failed = JNI_TRUE;\n")
-                    .append("            observed_exception = (*env)->ExceptionOccurred(env);\n")
-                    .append("            (*env)->ExceptionClear(env);\n")
-                    .append("            if (rollback_exception == NULL) {\n")
-                    .append("                rollback_exception = observed_exception;\n")
-                    .append("            } else {\n")
-                    .append("                (*env)->DeleteLocalRef(env, observed_exception);\n")
-                    .append("            }\n")
-                    .append("            observed_exception = NULL;\n")
-                    .append("        }\n")
-                    .append("        (*env)->DeleteLocalRef(env, rollback_owner);\n")
-                    .append("        registered_owners[registered_count] = NULL;\n")
-                    .append("        rollback_owner = NULL;\n")
-                    .append("    }\n");
-            resolverEmitter.appendClose(source, "    ");
-            source.append("    if (rollback_failed) {\n")
-                    .append("        if (failure_exception != NULL) {\n")
-                    .append("            (*env)->DeleteLocalRef(env, failure_exception);\n")
-                    .append("            failure_exception = NULL;\n")
-                    .append("        }\n")
-                    .append("        if (rollback_exception != NULL) {\n")
-                    .append("            (*env)->DeleteLocalRef(env, rollback_exception);\n")
-                    .append("            rollback_exception = NULL;\n")
-                    .append("        }\n");
-            source.append("        ")
-                    .append(failureLeaves.aggregateRollback().symbol())
-                    .append("(env);\n")
-                    .append("        return JNI_ERR;\n")
-                    .append("    }\n")
-                    .append("    if (failure_exception != NULL) {\n")
-                    .append("        throw_status = (*env)->Throw(env, failure_exception);\n")
-                    .append("        (*env)->DeleteLocalRef(env, failure_exception);\n")
-                    .append("        failure_exception = NULL;\n")
-                    .append("        if (throw_status != JNI_OK || !(*env)->ExceptionCheck(env)) {\n");
-            source.append("            ")
-                    .append(failureLeaves.aggregateExceptionRestore().symbol())
-                    .append("(env);\n")
-                    .append("            return JNI_ERR;\n")
-                    .append("        }\n")
-                    .append("    }\n")
-                    .append("    return JNI_ERR;\n");
-        }
-        source.append("}\n\n")
-                .append("JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {\n")
-                .append("    (void)reserved;\n")
-                .append("    return ")
-                .append(aggregateSymbol)
-                .append("(vm);\n")
-                .append("}\n");
     }
 
     record Emission(

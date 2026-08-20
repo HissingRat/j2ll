@@ -481,7 +481,7 @@ public final class ZigNativeLibraryBuilder {
         ZigBuildWorkspace workspace = ZigBuildWorkspace.under(workspaceRoot);
         prepareDirectories(workspace);
         String libraryName = buildPlan.units().get(0).libraryName();
-        Path wrapper = writeJniWrapper(
+        JniWrapperEmission wrapperEmission = writeJniWrapperWithPlan(
                 workspace,
                 libraryName,
                 runtimeLoaderPlan,
@@ -493,6 +493,7 @@ public final class ZigNativeLibraryBuilder {
                 RuntimeHelperReachabilityPlan.from(
                         llvmCompilation),
                 progressListener);
+        Path wrapper = wrapperEmission.path();
         NativeLlvmSourcePlan llvmSources = writeLlvmSources(
                 workspace,
                 llvmCompilation,
@@ -531,11 +532,15 @@ public final class ZigNativeLibraryBuilder {
                 headers,
                 libcRequirement,
                 llvmSources);
+        ZigInputSet inputs = new ZigInputSet(sources);
+        ZigCInputMachinePolicyPlan cMachinePolicies =
+                ZigCInputMachinePolicyPlan.forRegistrationWrapper(inputs, wrapper);
         buildWriter.write(
                 workspace,
                 libraryName,
                 buildPlan,
-                new ZigInputSet(sources),
+                inputs,
+                cMachinePolicies,
                 strip,
                 unwindRetentionPolicy);
         progressListener.preparationProgress(new NativePreparationProgress(
@@ -554,6 +559,12 @@ public final class ZigNativeLibraryBuilder {
         } catch (IOException exception) {
             throw ZigBuildException.from(buildPlan, workspace, exception);
         }
+        new NativeRegistrationOptimizedAssemblyGate().verify(
+                workspace,
+                buildPlan,
+                inputs,
+                cMachinePolicies,
+                wrapperEmission.registrationControlPlan());
         List<NativeLibraryArtifact> artifacts = collectArtifacts(
                 runtimeLoaderPlan.embeddedLibraryDirectory(),
                 buildPlan,
@@ -631,7 +642,7 @@ public final class ZigNativeLibraryBuilder {
             NativeTextBuildKey nativeTextBuildKey,
             NativeTextBuildKey businessTextBuildKey,
             NativeTextBuildKey registrationBuildKey) throws IOException {
-        return writeJniWrapper(
+        return writeJniWrapperWithPlan(
                 workspace,
                 libraryName,
                 runtimeLoaderPlan,
@@ -641,10 +652,10 @@ public final class ZigNativeLibraryBuilder {
                 businessTextBuildKey,
                 registrationBuildKey,
                 RuntimeHelperReachabilityPlan.conservative(),
-                NativeBuildProgressListener.none());
+                NativeBuildProgressListener.none()).path();
     }
 
-    private Path writeJniWrapper(
+    private JniWrapperEmission writeJniWrapperWithPlan(
             ZigBuildWorkspace workspace,
             String libraryName,
             RuntimeLoaderPlan runtimeLoaderPlan,
@@ -680,19 +691,19 @@ public final class ZigNativeLibraryBuilder {
         if (!wrapper.startsWith(jniDirectory)) {
             throw new IOException("native wrapper path escapes the Zig JNI workspace: " + wrapper);
         }
-        Files.writeString(
+        HostJniCSourceGenerator.Generation generation = sourceGenerator.generateWithPlan(
+                implementationPlan,
+                runtimeLoaderPlan,
+                methodTablePlan,
+                nativeTextBuildKey,
+                businessTextBuildKey,
+                registrationBuildKey,
+                runtimeReachability,
+                progressListener);
+        Files.writeString(wrapper, generation.source(), StandardCharsets.UTF_8);
+        return new JniWrapperEmission(
                 wrapper,
-                sourceGenerator.generate(
-                        implementationPlan,
-                        runtimeLoaderPlan,
-                        methodTablePlan,
-                        nativeTextBuildKey,
-                        businessTextBuildKey,
-                        registrationBuildKey,
-                        runtimeReachability,
-                        progressListener),
-                StandardCharsets.UTF_8);
-        return wrapper;
+                generation.registrationControlPlan());
     }
 
     private void prepareDirectories(ZigBuildWorkspace workspace) throws IOException {
@@ -788,6 +799,17 @@ public final class ZigNativeLibraryBuilder {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 digest is not available", exception);
+        }
+    }
+
+    private record JniWrapperEmission(
+            Path path,
+            NativeRegistrationControlTopologyPlan registrationControlPlan) {
+        private JniWrapperEmission {
+            Objects.requireNonNull(path, "path");
+            Objects.requireNonNull(
+                    registrationControlPlan,
+                    "registrationControlPlan");
         }
     }
 }

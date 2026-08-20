@@ -59,9 +59,15 @@ final class NativeRegistrationControlTopologyPlannerTest {
                 NativeRegistrationControlTestFixture.plan(33, "boundary-33");
 
         assertEquals(0, empty.chunks().size());
+        assertFalse(empty.routePlan().enabled());
+        assertTrue(empty.routePlan().routes().isEmpty());
         assertPartition(empty, 0);
 
         assertEquals(1, one.chunks().size());
+        assertTrue(one.routePlan().enabled());
+        assertEquals(
+                NativeRegistrationControlRoutePlan.ROUTE_COUNT,
+                one.routePlan().routes().size());
         assertEquals(List.of(1), chunkSizes(one));
         assertPartition(one, 1);
 
@@ -78,6 +84,14 @@ final class NativeRegistrationControlTopologyPlannerTest {
         assertEquals(
                 List.of(4, 4, 4, 4, 4, 4, 4, 5),
                 sortedChunkSizes(thirtyThree));
+        assertEquals(
+                NativeRegistrationControlTopologyPlan.MAX_CHUNKS,
+                new HashSet<>(thirtyThree.chunks().stream()
+                        .map(NativeRegistrationControlTopologyPlan.Chunk::postCallVariant)
+                        .toList()).size());
+        assertTrue(thirtyThree.chunks().stream().allMatch(chunk ->
+                chunk.witnessSalt() != 0L
+                        && chunk.postCallSalt() != 0L));
         assertPartition(thirtyThree, 33);
     }
 
@@ -98,6 +112,7 @@ final class NativeRegistrationControlTopologyPlannerTest {
                         || symbol.contains("register")
                         || symbol.contains("owner")
                         || symbol.contains("chunk")
+                        || symbol.contains("route")
                         || symbol.contains("failure")));
     }
 
@@ -126,8 +141,27 @@ final class NativeRegistrationControlTopologyPlannerTest {
                                 chunk.symbol(),
                                 chunk.owners().stream()
                                         .map(NativeRegistrationControlTopologyPlan.Owner::symbol)
-                                        .toList()))
+                                        .toList(),
+                                chunk.postCallVariant(),
+                                chunk.witnessSalt(),
+                                chunk.postCallSalt()))
                         .toList(),
+                new RoutePlanSnapshot(
+                        plan.routePlan().rootGuardSalt(),
+                        plan.routePlan().rootSelectorSalt(),
+                        plan.routePlan().rootPostCallSalt(),
+                        plan.routePlan().rootSelectorShift(),
+                        plan.routePlan().routes().stream()
+                                .map(route -> new RouteSnapshot(
+                                        route.ordinal(),
+                                        route.symbol(),
+                                        route.parameterOrder(),
+                                        route.targetKind(),
+                                        route.targetRouteOrdinal(),
+                                        route.postCallRecipe(),
+                                        route.witnessSalt(),
+                                        route.postCallSalt()))
+                                .toList()),
                 plan.failureSymbols().symbols());
     }
 
@@ -181,6 +215,7 @@ final class NativeRegistrationControlTopologyPlannerTest {
             List<String> logicalOwnerOrder,
             List<String> ownerSymbols,
             List<ChunkSnapshot> chunks,
+            RoutePlanSnapshot routes,
             List<String> failureSymbols) {}
 
     private record ChunkSnapshot(
@@ -188,5 +223,25 @@ final class NativeRegistrationControlTopologyPlannerTest {
             int start,
             int end,
             String symbol,
-            List<String> ownerSymbols) {}
+            List<String> ownerSymbols,
+            NativeRegistrationChunkPostCallVariant postCallVariant,
+            long witnessSalt,
+            long postCallSalt) {}
+
+    private record RoutePlanSnapshot(
+            long rootGuardSalt,
+            long rootSelectorSalt,
+            long rootPostCallSalt,
+            int rootSelectorShift,
+            List<RouteSnapshot> routes) {}
+
+    private record RouteSnapshot(
+            int ordinal,
+            String symbol,
+            List<NativeRegistrationControlRoutePlan.Parameter> parameterOrder,
+            NativeRegistrationControlRoutePlan.TargetKind targetKind,
+            int targetRouteOrdinal,
+            NativeRegistrationPostCallRecipe postCallRecipe,
+            long witnessSalt,
+            long postCallSalt) {}
 }

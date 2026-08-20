@@ -53,12 +53,13 @@ final class HostNativeOwnerRegistrationSource {
                 NativeRegistrationStoragePlan.plan(
                         owner.bindings().size(),
                         textScratchSize);
-        source.append("static jint ")
-                .append(symbol)
-                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) __attribute__((noinline));\n")
-                .append("static jint ")
-                .append(symbol)
-                .append("(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) {\n")
+        String declaration = declaration(symbol);
+        source.append(NativeRegistrationControlCFunctionPolicy.prototype(
+                        declaration))
+                .append('\n')
+                .append(NativeRegistrationControlCFunctionPolicy
+                        .definitionHeader(declaration))
+                .append('\n')
                 .append("    const int count = ")
                 .append(owner.bindings().size())
                 .append(";\n")
@@ -250,6 +251,11 @@ final class HostNativeOwnerRegistrationSource {
                 encoding,
                 destination,
                 "    "));
+    }
+
+    static String declaration(String symbol) {
+        return "static jint " + symbol
+                + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner)";
     }
 
 }

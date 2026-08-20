@@ -654,6 +654,8 @@ build_yyyy-MM-dd_HH-mm-ss[-n]/
     x64-macos.dylib
     arm64-macos.dylib
     zig-workspace/
+      evidence/
+        optimized-assembly/<target>/<c-id>.s
     zig-cache/
   intermediates/
     classes/
@@ -674,6 +676,10 @@ Final repacked JAR at the workspace root. This is the primary output artifact an
 The final JAR never contains `META-INF/j2ll/**`, including case variants and multi-release counterparts. Reprocessing an older output strips that reserved private subtree, and future packaging code is forbidden from adding it. `META-INF/MANIFEST.MF` remains a normal preserved JAR artifact; any manifest section whose `Name` points into the removed private subtree is stripped while unrelated main attributes and sections remain. Build identity, report inventory and target hashes stay in the workspace reports rather than being published inside the application JAR.
 
 `logs/zig-build.log` is written when the managed Zig build is invoked and retains its command plus compiler/linker output for failure diagnosis. `logs/zig-progress/` is not an output artifact: it contains short-lived build-graph markers only while the matrix invocation is running and the whole directory is deleted after success, failure or interruption.
+
+`native/zig-workspace/evidence/optimized-assembly/<target>/<c-id>.s` is workspace-private build evidence. Each generated-C input is compiled exactly once through the managed Zig compiler at `-Oz` to this assembly; that same `LazyPath` is both consumed by the registration machine-topology gate and passed to `addAssemblyFile` as the actual link input. A second C compilation and `getEmittedAsm()` are forbidden because neither would bind the audit to the linked machine code. Missing, duplicate, ambiguous or unsupported evidence fails the build after Zig returns and before native artifacts are collected. These files are never copied into the final JAR or serialized into a report.
+
+`native/zig-workspace/j2ll-build-manifest.json` keeps the existing `cSources` string array and target-level machine-outliner fields for append compatibility; those target fields describe the target-default policy, not every C input. Each target also writes `machineOutlinerPolicyScope: "PER_C_INPUT"` and a `cSourceMachinePolicies` array. Every row binds `source` and `compileInputId` to its closed `mode`, effective enabled state, threshold, reason, exact `machineOutlinerCFlags` and `optimizedAssemblyEvidence`. The registration-bearing wrapper row must be `REGISTRATION_CONTROL_OUTLINER_FORBIDDEN` and explicitly select `-mllvm -enable-machine-outliner=never`; all other C inputs remain `TARGET_DEFAULT`. Both the manifest and build graph consume the same immutable compile-input inventory; the binding is derived from the authoritative wrapper emission path and must survive source sorting/batching without relying on a file name or reconstructed `c-id`.
 
 `native/zig-cache/**` is Zig-owned duplicate build cache, not a canonical
 delivery or audit surface and is never packaged. Canonical native plaintext
@@ -1289,7 +1295,7 @@ loader/native registration 需要解决三件事：
 - `<init>` and `<clinit>` body helpers are registered as generated private static native helper methods on the owner class, not as native constructors or native class initializers.
 - Loader state is per classloader and thread-safe, using fail-closed `UNLOADED`, `LOADING`, `READY`, and `FAILED` states. It enters `LOADING` before `System.load`, reaches `READY` only after `JNI_OnLoad` has completed, rejects same-thread reentry before a second load, and never retries after `FAILED`.
 - Extraction paths must not be user-controlled relative paths; temp files should use restrictive permissions where the platform supports them.
-- The generated libraries export only the JVM-required `JNI_OnLoad` root, apart from platform-inherent runtime symbols explicitly tolerated by the target audit. The aggregate registration root and per-owner registration helpers are static/internal and are reached only from `JNI_OnLoad`. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
+- The generated libraries export only the JVM-required `JNI_OnLoad` root, apart from platform-inherent runtime symbols explicitly tolerated by the target audit. For non-empty registration, that root selects one of two activation-local paths through exactly three static hash-only routes (`R0 -> aggregate` or `R1 -> R2 -> aggregate`); every path enters the same aggregate exactly once. The routes, aggregate, forward chunks and per-owner helpers remain static/internal, carry the generated-C noinline/disable-tail policy, and preserve each planned direct call with a post-call volatile continuation. Zero-owner output generates no routes or chunks. Java method implementation functions, dispatchers and protection tables stay internal/hidden.
 - Loader, extraction and `RegisterNatives` failures throw `UnsatisfiedLinkError` with a clear message.
 
 The reserved base/MR loader-entry collision checks run before Zig. A base collision reports `GENERATED_RUNTIME_LOADER_ENTRY_COLLISION`; a multi-release shadow reports `GENERATED_RUNTIME_LOADER_VERSIONED_SHADOW`. Because the loader binary name is directory-derived rather than artifact-derived, multiple different artifacts using the same `embeddedLibraryDirectory` in one defining `ClassLoader` remain an explicit known boundary. Applications that load such artifacts together should assign application-unique directories.

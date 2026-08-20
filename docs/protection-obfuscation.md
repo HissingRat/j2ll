@@ -352,25 +352,53 @@ IR `callIndirection` 当前已实现为显式 Java-call-semantics plan，但受 
 owner/name/descriptor 是 JVM registration 必需信息，运行时仍会短暂形成明文；最终 generated C/native 不再使用全局 metadata 目录或 aggregate decode-all。每个 owner 独立保存 registration-domain、build-scoped encoded bytes，在该 owner 的注册窗口内解码到临时 scratch；owner name 在 defining-loader lookup 返回后立即清零，method/descriptor scratch 和 `JNINativeMethod[]` 则在 `RegisterNatives` 成功或失败后以 volatile zeroizer 清理再释放。aggregate root、per-owner helper 和 implementation symbol 均为 internal/hidden，动态导出仅保留 `JNI_OnLoad`。aggregate root使用activation-local `jclass[]`与`registered_count`统一执行成功清理和逆序rollback，避免按owner展开重复控制流。multi-owner rollback仍检查每次 `UnregisterNatives` 的 status 与 pending exception；rollback 不完整时通过 `FatalError` fail closed，完整时恢复原始 pending exception，并检查 `Throw` status 与 pending-exception evidence，恢复失败同样 fail closed。四种rollback/exception-restore失败文案由registration-domain、build-scoped、hash-only `noinline,cold` leaf拥有，每个leaf只接收`JNIEnv*`并只在对应`FatalError`路径恢复；`GeneratedNativeHardeningAudit` 以 `STABLE_REGISTRATION_DIAGNOSTIC` 阻断历史稳定明文及任意 direct/adjacent `FatalError` C string literal 重新成为跨构建 xref 锚点。这仍是 at-rest obfuscation，不是运行时内存保密。`protection-report.json` 使用 `METHOD_TABLE_HIDING_TRANSIENT_OWNER_LAYOUT`，`packaging-report.json` 明确写入 transient strategy、未生成 runtime token/function table，以及 hash/token-only report evidence。当前 gated real-Zig host E2E 已覆盖多 method 注册和双 ClassLoader；六目标专项已覆盖 two-owner generated-C/build-graph/privacy/export。多 owner + virtual/interface 的真实 runtime 与 non-host JVM runtime 仍待补。
 
 Registration control flow另消费一次冻结的immutable build plan：aggregate、owner helper、
-forward chunk和四个failure leaf全部使用无语义前缀的exact `[a-p]{32}` symbol，并在完整
-control-symbol set形成后统一拒绝与owner/name/descriptor/group/native symbol碰撞。
-`JNI_OnLoad`只调用`noinline` aggregate；resolver、`registered_owners[]`、count、success
-cleanup、逆序rollback和原异常恢复仍只在这一activation中。owner按build-derived物理顺序
-切成`min(8, ceil(ownerCount / 4))`个连续balanced chunk，root只进入chunk0，每个chunk只
-按顺序调用本slice owner、在成功后推进count并forward到唯一下一chunk。`ownerCount <= 32`
-时每chunk最多4项；更大输入固定8个balanced chunk以保持call depth有界。chunk不允许JNI
-exception/resolver/rollback/local-ref/scratch/table/dispatcher/cache；zero-owner没有chunk、
-owner array或rollback。不同build的symbol与排序均为build-derived/diversified，但单chunk
-membership及理论hash/order碰撞不作“必然变化”承诺。
+forward chunk、nonzero-owner的三个entry route和四个failure leaf全部使用无语义前缀的exact
+`[a-p]{32}` symbol，并在完整control-symbol set形成后统一拒绝与owner/name/descriptor/group/
+native symbol碰撞。nonzero-owner的`JNI_OnLoad`使用activation-local volatile predicate，只能
+选择`root -> R0 -> aggregate`或`root -> R1 -> R2 -> aggregate`；root不直达aggregate，R1不
+绕过R2，每条路径aggregate exact once。route只按build-derived排列转发`JavaVM*`、整数化但
+不解引用的reserved和`uintptr_t guard`，不拥有JNI/global/table/function pointer/cookie。
+resolver、`registered_owners[]`、count、success cleanup、逆序rollback和原异常恢复仍只在唯一
+aggregate activation中。
+
+owner按build-derived物理顺序切成`min(8, ceil(ownerCount / 4))`个连续balanced chunk，
+aggregate只进入chunk0，每个chunk只按顺序调用本slice owner、在成功后推进count并direct-call
+唯一下一chunk。`ownerCount <= 32`时每chunk最多4项；更大输入固定8个balanced chunk以保持
+call depth有界。chunk不允许JNI exception/resolver/rollback/local-ref/scratch/table/
+dispatcher/cache；zero-owner没有route、chunk、owner array或rollback。不同build的symbol与
+排序均为build-derived/diversified，但单chunk membership及理论hash/order碰撞不作“必然变化”
+承诺。
+
+root、三个route、aggregate、owner helper和chunk的先行prototype统一携带
+`noinline,disable_tail_calls`；每个planned entry/route/chunk-forward call后都有observable
+volatile result/witness continuation。三个route使用exact三种互异typed/stack recipe，最多八个
+chunk从独立exact八种closed structural variant中无重复选择，不以不同salt代替结构差异，且不
+引入shared continuation helper或未知`nooutline` attribute。
 
 Plan gate和完整translation-unit source gate共同验证owner顺序/连续partition/all-once、
-exact root→chunk chain、每个hash symbol的prototype/definition/call closure、chunk closed
-schema与aggregate固定success/rollback tail。source gate先执行C phase-2 line splice，再建立
+exact `root→{R0,R1→R2}→aggregate→chunk` graph、每个hash symbol的prototype/definition/call
+closure、route/chunk closed schema、function policy与aggregate固定success/rollback tail。
+source gate先执行C phase-2 line splice，再建立
 一次comment/string/char-free词法索引，并拒绝trigraph、conditional/preprocessor decoy、
 collision、missing/duplicate、direct bypass及守恒失败。结构size budget是新增exact
-`min(8, ceil(ownerCount / 4))`个chunk definition（zero owner为0），不增加table、padding、
-dispatcher或持久data。该切片的真实六目标source/native delta、dual-build topology和Ghidra
-复验尚未记录，因此下方历史size数据不能作为本拓扑的收益或体积结论。
+三个route definition加`min(8, ceil(ownerCount / 4))`个chunk definition（zero owner两者均为
+0），不增加table、padding、dispatcher或持久data。optimized compile-unit assembly gate另
+拒绝planned edge的tail collapse与metadata-free outlined helper。该route切片的真实六目标
+source/native delta、dual-build topology和Ghidra复验尚未记录，因此下方历史size数据不能
+作为本拓扑的收益或体积结论。
+
+该optimized-assembly gate消费实际链接链上的证据，而不是旁路反编译：每个generated-C input
+由managed Zig `cc -Oz -S`单次生成
+`native/zig-workspace/evidence/optimized-assembly/<target>/<c-id>.s`，同一`LazyPath`随后直接作为
+`addAssemblyFile`输入。gate按immutable registration topology plan验证root/routes/chunks的direct
+edge closure、local CFG和逐call的stack-local volatile same-slot store→load/RMW continuation；
+store到readback之间对应stack/frame base的任意改写都会fail closed。nonzero-owner的四个failure
+leaf也必须exact-one绑定该wrapper evidence，且gate在该exact wrapper的全部code token/label surface
+拒绝`OUTLINED_FUNCTION_*`，因此aggregate/owner/failure路径不能借未索引helper绕开；runtime evidence
+不受这一wrapper-specific禁令影响。missing、duplicate、alias、indirect/code-pointer、unknown local
+edge、tail/outliner artifact或不支持target均fail closed。禁止第二次C compile和`getEmittedAsm()`
+旁证；evidence只留workspace，不进入JAR或report。该gate证明的是optimized actual-link input，不能
+外推为尚未实测的final-binary攻击者收益。
 
 method name 与 descriptor 的同值复用严格限制在同一 owner 和各自 purpose domain；
 不同 owner 即使文本相同也会获得独立 encoding/scratch。去重文本按最多8项、最多
@@ -641,9 +669,12 @@ Linux ELF的`.eh_frame`/`.eh_frame_hdr`或macOS Mach-O的`__eh_frame`/
   external call不能静默进入成品。Linux/Windows可形成无libc/CRT import的库，
   Windows使用最小generated DLL entry。macOS仍强制platform `libSystem`例外，
   report不得将它声称为无系统依赖。
-- machine outliner只对Linux/macOS generated-C `ReleaseSmall` unit开启，并使用
-  16-byte最低收益阈值过滤低收益的短片段共享；Windows因SEH directive边界禁用，
-  per-class LLVM `.ll`不参与。这个后端变换只合并
+- machine outliner只对Linux/macOS target-default generated-C `ReleaseSmall` input开启，并使用
+  16-byte最低收益阈值过滤低收益的短片段共享；Windows因SEH directive边界默认禁用，
+  per-class LLVM `.ll`不参与。承载registration control的exact wrapper C input通过immutable
+  per-input plan在六目标显式使用`-mllvm -enable-machine-outliner=never`；runtime C仍使用目标默认
+  决策。该例外不能按文件名、排序下标或source regex推断，manifest逐input记录effective
+  `machineOutlinerCFlags`和reason。这个后端变换只合并
   目标机重复指令序列，不改变JNI/export ABI，也不允许source generator重新
   引入generic decoder、plaintext cache或集中metadata table。generated-C source audit与
   final binary/plaintext/export audit仍为blocking；outliner的攻击成本影响只能用实际

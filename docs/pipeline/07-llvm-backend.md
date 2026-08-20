@@ -98,13 +98,17 @@ Linux/macOS generated C上添加`-fno-unwind-tables -fno-asynchronous-unwind-tab
 Windows因SEH必须强制保留，`--debug`和config requested retention也强制effective
 retention。LLVM input不会继承C compile flags：只有下述final-model proof完整时，
 Linux/macOS target才选择对应的no-unwind LLVM text variant。该开关不等价于生成native
-debug symbols。machine outliner在Linux/macOS generated C上使用
-`-mllvm -enable-machine-outliner=always -mllvm -outliner-benefit-threshold=16`；最低
-收益阈值阻止只节省少量字节的短片段被共享为新的静态分析锚点。Windows路径因
-Zig/LLVM的SEH directive边界
-保守禁用并记录`MACHINE_OUTLINER_WINDOWS_SEH_UNSUPPORTED`。outliner不作用于
-per-class LLVM input，也不改变JNI/export ABI。manifest按target记录enabled、
-minimum-benefit threshold与reason。
+debug symbols。machine outliner按exact generated-C input解析：承载registration-control
+闭包的authoritative wrapper C input在六目标均显式使用
+`-mllvm -enable-machine-outliner=never`，阻止post-RA outlining破坏已经验证的
+root/route/chunk机器拓扑；其他generated-C input沿用target-default policy。当前tiny runtime C
+在Linux/macOS使用
+`-mllvm -enable-machine-outliner=always -mllvm -outliner-benefit-threshold=16`，最低
+收益阈值阻止只节省少量字节的短片段被共享为新的静态分析锚点；Windows default路径因
+Zig/LLVM的SEH directive边界保守禁用并记录
+`MACHINE_OUTLINER_WINDOWS_SEH_UNSUPPORTED`。outliner不作用于per-class LLVM input，
+也不改变JNI/export ABI。manifest保留target-default摘要，并逐C input记录mode、effective
+`machineOutlinerCFlags`、reason与实际参与链接的optimized-assembly evidence。
 
 ### LLVM native-unwind proof 与 target variant
 

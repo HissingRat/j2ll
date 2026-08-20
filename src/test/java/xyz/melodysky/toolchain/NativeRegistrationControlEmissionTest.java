@@ -24,7 +24,7 @@ final class NativeRegistrationControlEmissionTest {
     }
 
     @Test
-    void onLoadCallsOnlyTheUniqueAggregateAndAggregateCallsOnlyFirstChunk() {
+    void onLoadSelectsOnlyRouteZeroOrOneAndBothPathsReachOneAggregate() {
         HostNativeRegistrationSource.Emission emission =
                 NativeRegistrationControlTestFixture.emission(
                         11,
@@ -34,23 +34,39 @@ final class NativeRegistrationControlEmissionTest {
         String source = emission.source();
         String onLoad = NativeRegistrationControlTestFixture.functionAtHeader(
                 source,
-                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {");
+                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)");
         String aggregate = NativeRegistrationControlTestFixture.function(
                 source,
                 plan.aggregateSymbol());
+        NativeRegistrationControlRoutePlan routes = plan.routePlan();
 
         assertEquals(
-                1,
+                2,
                 NativeRegistrationControlTestFixture.occurrences(
                         source,
                         "JNIEXPORT jint JNICALL JNI_OnLoad"));
+        assertTrue(onLoad.contains("if ("));
         assertEquals(
-                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {\n"
-                        + "    (void)reserved;\n"
-                        + "    return "
-                        + plan.aggregateSymbol()
-                        + "(vm);\n}",
-                onLoad);
+                1,
+                NativeRegistrationControlTestFixture.occurrences(
+                        onLoad,
+                        HostNativeRegistrationRouteSource.routeCall(
+                                routes.route(0))));
+        assertEquals(
+                1,
+                NativeRegistrationControlTestFixture.occurrences(
+                        onLoad,
+                        HostNativeRegistrationRouteSource.routeCall(
+                                routes.route(1))));
+        assertFalse(onLoad.contains(routes.route(2).symbol() + "("));
+        assertFalse(onLoad.contains(plan.aggregateSymbol() + "("));
+        assertTrue(onLoad.contains("volatile uintptr_t guard"));
+        assertTrue(onLoad.contains("volatile uintptr_t witness"));
+        assertTrue(onLoad.contains("volatile jint result"));
+
+        assertRouteEdge(source, plan, 0, plan.aggregateSymbol());
+        assertRouteEdge(source, plan, 1, routes.route(2).symbol());
+        assertRouteEdge(source, plan, 2, plan.aggregateSymbol());
         assertTrue(aggregate.contains(
                 plan.chunks().get(0).symbol()
                         + "(env, &resolver, registered_owners, &registered_count)"));
@@ -58,6 +74,10 @@ final class NativeRegistrationControlEmissionTest {
                 : plan.owners()) {
             assertFalse(aggregate.contains(owner.symbol()));
             assertFalse(onLoad.contains(owner.symbol()));
+        }
+        for (NativeRegistrationControlRoutePlan.Route route
+                : routes.routes()) {
+            assertFalse(aggregate.contains(route.symbol()));
         }
         for (int ordinal = 1; ordinal < plan.chunks().size(); ordinal++) {
             assertFalse(aggregate.contains(
@@ -68,7 +88,7 @@ final class NativeRegistrationControlEmissionTest {
     }
 
     @Test
-    void aggregateChunksOwnersAndFailureLeavesAreHashOnlyNoinlineAndTableFree() {
+    void aggregateRoutesChunksOwnersAndFailureLeavesAreHashOnlyAndTableFree() {
         HostNativeRegistrationSource.Emission emission =
                 NativeRegistrationControlTestFixture.emission(
                         11,
@@ -83,22 +103,37 @@ final class NativeRegistrationControlEmissionTest {
         assertTrue(symbols.stream().allMatch(symbol ->
                 symbol.matches("[a-p]{32}")));
         assertTrue(source.contains(
-                "static jint "
-                        + plan.aggregateSymbol()
-                        + "(JavaVM* vm) __attribute__((noinline));"));
+                NativeRegistrationControlCFunctionPolicy.prototype(
+                        "static jint "
+                                + plan.aggregateSymbol()
+                                + "(JavaVM* vm)")));
+        assertTrue(source.contains(
+                NativeRegistrationControlCFunctionPolicy.prototype(
+                        "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)")));
+        for (NativeRegistrationControlRoutePlan.Route route
+                : plan.routePlan().routes()) {
+            assertTrue(source.contains(
+                    NativeRegistrationControlCFunctionPolicy.prototype(
+                            HostNativeRegistrationRouteSource.declaration(
+                                    route))));
+            assertRouteHasNoRegistrationStateMachine(
+                    NativeRegistrationControlTestFixture.function(
+                            source,
+                            route.symbol()));
+        }
         for (NativeRegistrationControlTopologyPlan.Owner owner
                 : plan.owners()) {
             assertTrue(source.contains(
-                    "static jint "
-                            + owner.symbol()
-                            + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owner) __attribute__((noinline));"));
+                    NativeRegistrationControlCFunctionPolicy.prototype(
+                            HostNativeOwnerRegistrationSource.declaration(
+                                    owner.symbol()))));
         }
         for (NativeRegistrationControlTopologyPlan.Chunk chunk
                 : plan.chunks()) {
             assertTrue(source.contains(
-                    "static jint "
-                            + chunk.symbol()
-                            + "(JNIEnv* env, const j2ll_registration_resolver* resolver, jclass* registered_owners, size_t* registered_count) __attribute__((noinline));"));
+                    NativeRegistrationControlCFunctionPolicy.prototype(
+                            HostNativeRegistrationChunkSource.declaration(
+                                    chunk.symbol()))));
         }
         for (String failure : plan.failureSymbols().symbols()) {
             assertTrue(source.contains(
@@ -114,5 +149,85 @@ final class NativeRegistrationControlEmissionTest {
                 "(?s).*static\\s+(?:const\\s+)?JNINativeMethod\\s+.*"));
         assertFalse(source.matches(
                 "(?s).*static\\s+[^;{}]*\\(\\*[^)]*\\)\\s*\\[[^]]*].*"));
+    }
+
+    @Test
+    void zeroOwnersHaveNoRouteSurfaceOrConditionalDispatch() {
+        HostNativeRegistrationSource.Emission emission =
+                NativeRegistrationControlTestFixture.emission(
+                        0,
+                        "registration-zero-route-na");
+        NativeRegistrationControlTopologyPlan plan =
+                emission.topologyPlan();
+        String onLoad = NativeRegistrationControlTestFixture.functionAtHeader(
+                emission.source(),
+                "JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)");
+
+        assertFalse(plan.routePlan().enabled());
+        assertTrue(plan.routePlan().routes().isEmpty());
+        assertFalse(onLoad.contains("if ("));
+        assertEquals(
+                1,
+                NativeRegistrationControlTestFixture.occurrences(
+                        onLoad,
+                        plan.aggregateSymbol() + "(vm)"));
+    }
+
+    private void assertRouteEdge(
+            String source,
+            NativeRegistrationControlTopologyPlan plan,
+            int ordinal,
+            String expectedTarget) {
+        NativeRegistrationControlRoutePlan.Route route =
+                plan.routePlan().route(ordinal);
+        String body = NativeRegistrationControlTestFixture.function(
+                source,
+                route.symbol());
+
+        assertEquals(
+                1,
+                NativeRegistrationControlTestFixture.occurrences(
+                        body,
+                        expectedTarget + "("));
+        for (String controlSymbol : NativeRegistrationControlTestFixture
+                .controlSymbols(plan)) {
+            if (!controlSymbol.equals(route.symbol())
+                    && !controlSymbol.equals(expectedTarget)) {
+                assertFalse(
+                        body.contains(controlSymbol + "("),
+                        ordinal + " -> " + controlSymbol);
+            }
+        }
+        assertTrue(body.contains("volatile uintptr_t witness"));
+        assertTrue(body.contains("volatile jint result")
+                || body.contains("volatile jlong result_wide"));
+        int call = body.indexOf(expectedTarget + "(");
+        int witnessContinuation = body.indexOf("witness", call);
+        int returnOffset = body.lastIndexOf("return ");
+        assertTrue(witnessContinuation > call);
+        assertTrue(returnOffset > witnessContinuation);
+        assertFalse(body.contains("return " + expectedTarget + "("));
+        assertRouteHasNoRegistrationStateMachine(body);
+    }
+
+    private void assertRouteHasNoRegistrationStateMachine(String body) {
+        for (String forbidden : List.of(
+                "(*env)->",
+                "RegisterNatives",
+                "UnregisterNatives",
+                "ExceptionCheck",
+                "ExceptionOccurred",
+                "ExceptionClear",
+                "j2ll_registration_resolver_open",
+                "j2ll_registration_resolver_close",
+                "JNINativeMethod",
+                "rollback:",
+                "goto rollback",
+                "fnPtr",
+                "(*")) {
+            assertFalse(body.contains(forbidden), forbidden);
+        }
+        assertFalse(body.matches(
+                "(?s).*static\\s+(?:const\\s+)?[^;{}]*\\[[^]]*].*"));
     }
 }

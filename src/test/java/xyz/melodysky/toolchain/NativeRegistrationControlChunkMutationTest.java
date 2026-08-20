@@ -51,8 +51,8 @@ final class NativeRegistrationControlChunkMutationTest {
         Fixture fixture = fixture();
         List<NativeRegistrationControlTopologyPlan.Chunk> chunks =
                 fixture.plan().chunks();
-        String zeroToOne = edge(chunks.get(1).symbol());
-        String oneToTwo = edge(chunks.get(2).symbol());
+        String zeroToOne = edge(chunks.get(0), chunks.get(1).symbol());
+        String oneToTwo = edge(chunks.get(1), chunks.get(2).symbol());
         String terminal = "    return JNI_OK;\n";
 
         assertRejected(
@@ -60,22 +60,48 @@ final class NativeRegistrationControlChunkMutationTest {
                 replaceOnce(
                         fixture.source(),
                         zeroToOne,
-                        edge(chunks.get(2).symbol())),
+                        edge(chunks.get(0), chunks.get(2).symbol())),
                 "SYMBOL_REFERENCE_CLOSURE");
         assertRejected(
                 fixture,
                 replaceOnce(
                         fixture.source(),
                         terminal,
-                        edge(chunks.get(2).symbol())),
+                        edge(chunks.get(2), chunks.get(2).symbol())),
                 "SYMBOL_REFERENCE_CLOSURE");
         assertRejected(
                 fixture,
                 replaceOnce(
                         fixture.source(),
                         oneToTwo,
-                        edge(chunks.get(0).symbol())),
+                        edge(chunks.get(1), chunks.get(0).symbol())),
                 "SYMBOL_REFERENCE_CLOSURE");
+    }
+
+    @Test
+    void rejectsTailShortcutAndMissingVolatileForwardContinuation() {
+        Fixture fixture = fixture();
+        NativeRegistrationControlTopologyPlan.Chunk chunk =
+                fixture.plan().chunks().get(0);
+        String next = fixture.plan().chunks().get(1).symbol();
+        String forward = edge(chunk, next);
+        String call = next
+                + "(env, resolver, registered_owners, registered_count)";
+
+        assertRejected(
+                fixture,
+                replaceOnce(
+                        fixture.source(),
+                        forward,
+                        "    return " + call + ";\n"),
+                "CHUNK_CLOSED_SCHEMA");
+        assertRejected(
+                fixture,
+                replaceOnce(
+                        fixture.source(),
+                        forward,
+                        forward.replace("volatile ", "")),
+                "CHUNK_CLOSED_SCHEMA");
     }
 
     @Test
@@ -108,7 +134,9 @@ final class NativeRegistrationControlChunkMutationTest {
     @Test
     void rejectsJniResolverRollbackAndTableLogicInsideChunks() {
         Fixture fixture = fixture();
-        String forward = edge(fixture.plan().chunks().get(1).symbol());
+        String forward = edge(
+                fixture.plan().chunks().get(0),
+                fixture.plan().chunks().get(1).symbol());
         for (String injection : List.of(
                 "    (void)(*env)->ExceptionCheck(env);\n",
                 "    (void)(*env)->UnregisterNatives(env, registered_owners[0]);\n",
@@ -148,10 +176,23 @@ final class NativeRegistrationControlChunkMutationTest {
                 + "u;\n";
     }
 
-    private String edge(String symbol) {
-        return "    return "
-                + symbol
-                + "(env, resolver, registered_owners, registered_count);\n";
+    private String edge(
+            NativeRegistrationControlTopologyPlan.Chunk chunk,
+            String symbol) {
+        String call = symbol
+                + "(env, resolver, registered_owners, registered_count)";
+        return "    volatile uintptr_t witness = (uintptr_t)(void*)registered_owners\n"
+                + "            ^ (uintptr_t)(void*)registered_count\n"
+                + "            ^ "
+                + NativeRegistrationPostCallCSource.unsignedLong(
+                        chunk.witnessSalt())
+                + ";\n"
+                + new NativeRegistrationChunkPostCallCSource()
+                        .callAndReturn(
+                                chunk.postCallVariant(),
+                                call,
+                                chunk.postCallSalt(),
+                                "    ");
     }
 
     private String replaceOnce(
