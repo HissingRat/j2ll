@@ -144,7 +144,7 @@ Windows的`.pdata`/`.xdata`也进入结构化inspection/report，但SEH policy�
 
 当前已有最小 `LLVM_NATIVE_PATH`：
 
-- `NativeImplementationPlanner` 为每个注册方法记录 implementation path：`LLVM_NATIVE_PATH` 或 `TEMPLATE_JNI_PATH`，并写入 lowering report。两者都必须是完整、可执行的 native implementation，成功时 method 状态统一为 `nativeLowered`。
+- `NativeImplementationPlanner` 为每个注册方法记录 implementation path：`LLVM_NATIVE_PATH` 或 `TEMPLATE_JNI_PATH`，并写入 lowering report。它只负责编排；descriptor/opcode闭集由按领域拆分的`NativeLlvmInstructionSupport` policy组合，每个method的keys、reason facts与JNIEnv/owner ABI由`NativeImplementationEvidenceCollector`单次遍历冻结。两种path都必须是完整、可执行的 native implementation，成功时 method 状态统一为 `nativeLowered`。
 - `LLVM_NATIVE_PATH` 覆盖 ordinary static 和 instance method 的第一层 primitive/reference-handle shape：primitive scalar 参数和返回支持 `boolean` / `int` / `long` / `float` / `double` / `void`，reference/String/primitive-array/reference-array 值作为 opaque JNI handle 传递、返回或交给已登记 helper，不能 dereference。
 - 已接实的常规运行路径是 Bytecode -> SSA IR -> per-class LLVM module / `.ll` -> hidden semantic LLVM function -> generated-C JNI wrapper或validated LLVM JNI proxy -> `RegisterNatives` -> output JAR child JVM E2E。Proxy路径仍保留build-scoped bounded local-ABI topology，不把registration直接映射到semantic body。`internalNativeOnly`方法不再保留Java declaration或registration binding；默认保留hidden LLVM function，严格single-call-site coalescing批准后则把实现合并进caller且完全不发出callee function/declaration/reference或C wrapper。
 - 启用 `protection.llvm.nameObfuscation` 时，`LlvmNameMangler` 在 planner、LLVM lowerer、Zig workspace writer 和 JNI wrapper generator 之间共享同一 deterministic symbol 来源；C wrapper 调用 `j2ll_f_<sha256>` hidden linkable function，raw Java method symbol 不作为 native ABI 公开。

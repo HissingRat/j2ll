@@ -852,6 +852,10 @@ JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 runtime 
 intermediate artifacts，`MainlineProtectionEvidenceClassifier`负责把保护证据映射到最终
 native surface；`NativeImplementationBodyPlanner`、`NativeDirectCallTargetResolver`与
 `NativeImplementationReasonClassifier`分别负责body选择、direct target闭包与稳定reason。
+`NativeImplementationPlanner`只编排final plan；每个IR method的keys、helper facts与冻结ABI
+由`NativeImplementationEvidenceCollector`单次遍历形成immutable snapshot，instruction闭集由
+`NativeLlvmInstructionSupport`组合type/field/array/call/String/JDK/dynamic/metadata等小型policy，
+不得恢复成planner内重复整method扫描或单一giant opcode switch。
 
 子包：
 

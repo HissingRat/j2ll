@@ -38,6 +38,11 @@ ClassFileSource
 
 `SkippedMethodConfirmation` 是 CLI/build boundary，不是 compiler pass。它只在 final implementation plan 已确定且即将进入 Zig 时运行，避免前端 provisional decision 与最终可注册方法集合不一致。
 
+Final native planning只消费稳定IR与analysis artifacts：`NativeImplementationPlanner`负责
+闭包编排，`NativeLlvmInstructionSupport`组合按领域拆分的closed support policy，
+`NativeImplementationEvidenceCollector`则以一次method traversal冻结helper keys、reason facts
+和JNIEnv/owner ABI。support判定与evidence不得各自重复扫描或维护漂移的opcode清单。
+
 ## 分阶段 guide
 
 1. [`00-overview.md`](00-overview.md)：主线编排、source tree、clean-room bootstrap。
