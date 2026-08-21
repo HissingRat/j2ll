@@ -59,7 +59,9 @@ The three Dummy outcome contracts are asserted by exact owner, method name and d
 
 The exact matrix includes representative primitive and numeric conversions, typed catches and single/multi/nested finally paths, constructor and class-initializer rewrites, final/volatile field initialization, private instance calls, a Code-bearing default interface method, a compiler-generated generic bridge, reference identity, reflection field access, MethodHandle adapters and an ordinary captured `Runnable` lambda invoked through JVM interface dispatch. Stable explicit unsupported boundaries cover thread construction/start/join, wait/notify, serializable `altMetafactory` semantics, raw Unsafe memory, dynamic VarHandle access, multi-dimensional array allocation, NIO/stream APIs without an exact bridge policy, default-interface super calls and multi-release classes. It also selects real top-level interface declarations (`zoo.Case` and `zoo.services.ZooService`) as ineligible evidence rather than relying only on nested fixtures.
 
-On Windows these runtime tests need a real managed Zig home because the test-only fake Zig fixture supports Linux and macOS only. Point it at a j2ll distribution containing `zig/zig.exe` before running the task:
+These tasks prefer an explicitly configured real managed Zig home. Without one, they download the pinned Zig 0.15.2 archive, verify its SHA-256 and reuse a platform-specific cache below the Gradle user home. Parallel Gradle processes serialize cache publication. `--offline` uses an already populated cache and fails clearly when none exists. This automatic Dummy cache is not published as global `j2ll.realHome`, so it does not opt other heavyweight real-Zig suites into the default test run.
+
+To use an existing j2ll distribution instead:
 
 ```powershell
 $env:J2LL_REAL_HOME = 'C:\path\to\j2ll-distribution'

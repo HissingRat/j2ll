@@ -29,13 +29,12 @@ import org.junit.jupiter.api.io.TempDir;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.protection.audit.HashOnlyEvidence;
-import xyz.melodysky.testsupport.FakeManagedZig;
+import xyz.melodysky.testsupport.DummyManagedZigTestSupport;
 import xyz.melodysky.testsupport.dummy.DummyMethodExpectation;
 import xyz.melodysky.testsupport.dummy.DummyMethodMatrix;
 import xyz.melodysky.testsupport.dummy.DummyMethodOutcomeAsserter;
 import xyz.melodysky.testsupport.dummy.DummyReportAsserter;
 import xyz.melodysky.toolchain.HostPlatform;
-import xyz.melodysky.toolchain.J2llHomeResolver;
 import xyz.melodysky.toolchain.TargetTriple;
 
 class DummyE2eTest {
@@ -66,7 +65,7 @@ class DummyE2eTest {
 
         Path workspace = workspace(profile);
         MainlinePipelineResult pipeline;
-        try (AutoCloseable ignored = useManagedZig(profile)) {
+        try (AutoCloseable ignored = DummyManagedZigTestSupport.use()) {
             pipeline = new MainlinePipeline().run(
                     config(inputJar, DummyMethodMatrix.selectors(expectations)),
                     workspace,
@@ -419,49 +418,6 @@ class DummyE2eTest {
         return isWindows()
                 ? "java.exe"
                 : "java";
-    }
-
-    private AutoCloseable useManagedZig(String profile) throws Exception {
-        Path realHome = realJ2llHome();
-        if (realHome != null && Files.isRegularFile(zigExecutable(realHome))) {
-            return useJ2llHome(realHome);
-        }
-        HostPlatform host = HostPlatform.detect().orElse(null);
-        if (!FakeManagedZig.supportsCurrentHostFixture(host)) {
-            String detail = realHome == null
-                    ? "no real toolchain was configured"
-                    : "configured home has no " + zigExecutable(realHome);
-            throw new IllegalStateException(
-                    "Dummy E2E requires a real managed Zig 0.15.2 toolchain on this host ("
-                            + detail + "). Set J2LL_REAL_HOME to the j2ll distribution directory containing zig/.");
-        }
-        return FakeManagedZig.installAndUse(temp.resolve("j2ll-home-" + profile));
-    }
-
-    private Path realJ2llHome() {
-        String configured = System.getProperty("j2ll.realHome");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("J2LL_REAL_HOME");
-        }
-        return configured == null || configured.isBlank()
-                ? null
-                : Path.of(configured).toAbsolutePath().normalize();
-    }
-
-    private Path zigExecutable(Path home) {
-        return home.resolve("zig").resolve(isWindows() ? "zig.exe" : "zig");
-    }
-
-    private AutoCloseable useJ2llHome(Path home) {
-        String previous = System.getProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
-        System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, home.toString());
-        return () -> {
-            if (previous == null) {
-                System.clearProperty(J2llHomeResolver.OVERRIDE_PROPERTY);
-            } else {
-                System.setProperty(J2llHomeResolver.OVERRIDE_PROPERTY, previous);
-            }
-        };
     }
 
     private boolean isWindows() {

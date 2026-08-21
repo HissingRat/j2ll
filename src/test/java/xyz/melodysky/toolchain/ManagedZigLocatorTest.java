@@ -1,5 +1,6 @@
 package xyz.melodysky.toolchain;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -14,6 +15,7 @@ import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -149,6 +151,55 @@ class ManagedZigLocatorTest {
     }
 
     @Test
+    void concurrentEnsuresDownloadExtractAndPublishOnce() throws Exception {
+        byte[] archiveBytes = "shared valid archive".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        ZigArchiveMetadata archive = archive(archiveBytes);
+        AtomicInteger downloads = new AtomicInteger();
+        AtomicInteger extractions = new AtomicInteger();
+        ZigDownloader downloader = (uri, destination) -> {
+            downloads.incrementAndGet();
+            Files.write(destination, archiveBytes);
+        };
+        ZigArchiveExtractor extractor = new ZigArchiveExtractor() {
+            @Override
+            public void extractNormalized(
+                    ZigArchiveMetadata metadata,
+                    Path archivePath,
+                    Path destination) throws IOException {
+                extractions.incrementAndGet();
+                Files.createDirectories(destination);
+                Files.writeString(destination.resolve("zig"), "");
+            }
+        };
+        ManagedZigLocator first = locator(
+                new RecordingRunner(List.of("0.15.2")),
+                downloader,
+                extractor,
+                archive,
+                ZigArchiveVerifier.sha256());
+        ManagedZigLocator second = locator(
+                new RecordingRunner(List.of("0.15.2")),
+                downloader,
+                extractor,
+                archive,
+                ZigArchiveVerifier.sha256());
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var one = executor.submit(() -> first.ensure(temp));
+            var two = executor.submit(() -> second.ensure(temp));
+            assertEquals("0.15.2", one.get().version());
+            assertEquals("0.15.2", two.get().version());
+        }
+
+        assertEquals(1, downloads.get());
+        assertEquals(1, extractions.get());
+        assertArrayEquals(archiveBytes, Files.readAllBytes(temp.resolve(archive.archiveName())));
+        try (var files = Files.list(temp)) {
+            assertFalse(files.anyMatch(path -> path.getFileName().toString().endsWith(".downloading")));
+        }
+    }
+
+    @Test
     void unsupportedHostArchiveMetadataFailsClearly() {
         IOException error = assertThrows(IOException.class, () -> new ManagedZigLocator(
                         new ZigArchiveResolver() {
@@ -184,6 +235,27 @@ class ManagedZigLocatorTest {
                         temp.resolve("zig")));
 
         assertTrue(error.getMessage().contains("escapes destination"));
+    }
+
+    @Test
+    void failedExtractionDoesNotDeleteExistingInstall() throws Exception {
+        Path archive = temp.resolve("zig-test.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.putNextEntry(new ZipEntry("../evil"));
+            zip.write("bad".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        Path destination = temp.resolve("installed-zig");
+        Files.createDirectories(destination);
+        Files.writeString(destination.resolve("zig"), "existing");
+
+        assertThrows(IOException.class, () -> new ZigArchiveExtractor()
+                .extractNormalized(
+                        new ZigArchiveMetadata("zig-test.zip", URI.create("https://example.test/zig-test.zip"), true, ""),
+                        archive,
+                        destination));
+
+        assertEquals("existing", Files.readString(destination.resolve("zig")));
     }
 
     private ManagedZigLocator locator(

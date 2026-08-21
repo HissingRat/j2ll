@@ -1,12 +1,18 @@
 package xyz.melodysky.toolchain;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ManagedZigLocator {
+    private static final ConcurrentHashMap<Path, Object> PROCESS_LOCKS = new ConcurrentHashMap<>();
+
     private final ZigArchiveResolver archiveResolver;
     private final ZigDownloader downloader;
     private final ZigArchiveExtractor extractor;
@@ -41,9 +47,22 @@ public final class ManagedZigLocator {
 
     public ManagedZig ensure(Path j2llHome) throws IOException {
         Path home = j2llHome.toAbsolutePath().normalize();
+        Files.createDirectories(home);
+        Object processLock = PROCESS_LOCKS.computeIfAbsent(home, ignored -> new Object());
+        synchronized (processLock) {
+            try (FileChannel channel = FileChannel.open(
+                            home.resolve(".managed-zig.lock"),
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.WRITE);
+                    var ignored = channel.lock()) {
+                return ensureLocked(home);
+            }
+        }
+    }
+
+    private ManagedZig ensureLocked(Path home) throws IOException {
         java.util.ArrayList<ManagedZigBootstrapEvent> events = new java.util.ArrayList<>();
         events.add(event("CHECKSUM_SIGNATURE_POLICY", "managed Zig verification policy: " + verifier.policy()));
-        Files.createDirectories(home);
         Path zigHome = home.resolve("zig");
         Path executable = zigHome.resolve(windows ? "zig.exe" : "zig");
         if (Files.exists(executable) && isExpectedVersion(executable)) {
@@ -78,11 +97,18 @@ public final class ManagedZigLocator {
                     metadata,
                     source,
                     "pending"));
+            Path download = Files.createTempFile(home, metadata.archiveName() + ".", ".downloading");
             try {
-                downloader.download(metadata.downloadUri(), archive);
-            } catch (IOException exception) {
-                throw new IOException("failed to download managed Zig " + ZigArchiveResolver.ZIG_VERSION
-                        + " from " + metadata.downloadUri(), exception);
+                try {
+                    downloader.download(metadata.downloadUri(), download);
+                } catch (IOException exception) {
+                    throw new IOException("failed to download managed Zig " + ZigArchiveResolver.ZIG_VERSION
+                            + " from " + metadata.downloadUri(), exception);
+                }
+                verifier.verify(download, metadata);
+                publish(download, archive);
+            } finally {
+                Files.deleteIfExists(download);
             }
         } else {
             source = "localArchive";
@@ -115,6 +141,18 @@ public final class ManagedZigLocator {
 
     private ManagedZigBootstrapEvent event(String code, String message) {
         return new ManagedZigBootstrapEvent(code, message);
+    }
+
+    private void publish(Path source, Path destination) throws IOException {
+        try {
+            Files.move(
+                    source,
+                    destination,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private ManagedZigBootstrapEvent archiveEvent(

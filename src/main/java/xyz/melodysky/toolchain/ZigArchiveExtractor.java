@@ -24,38 +24,38 @@ public class ZigArchiveExtractor {
 
     public void extractNormalized(ZigArchiveMetadata metadata, Path archive, Path destination) throws IOException {
         Path parent = destination.toAbsolutePath().normalize().getParent();
-        Path temporary = parent.resolve(destination.getFileName() + ".extracting");
-        deleteRecursively(temporary);
-        Files.createDirectories(temporary);
-        if (metadata.zipArchive()) {
-            extractZip(archive, temporary);
-        } else {
-            extractTarXz(archive, temporary);
-        }
-        Path root = singleExtractedRoot(temporary);
-        deleteRecursively(destination);
-        Files.createDirectories(destination);
-        try (var stream = Files.walk(root)) {
-            for (Path source : stream.sorted().toList()) {
-                Path relative = root.relativize(source);
-                if (relative.toString().isEmpty()) {
-                    continue;
-                }
-                Path target = destination.resolve(relative).normalize();
-                ensureInside(destination, target);
-                if (Files.isDirectory(source)) {
-                    Files.createDirectories(target);
-                } else {
-                    Files.createDirectories(target.getParent());
-                    Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
-                }
+        Files.createDirectories(parent);
+        Path temporary = Files.createTempDirectory(parent, destination.getFileName() + ".extracting-");
+        try {
+            if (metadata.zipArchive()) {
+                extractZip(archive, temporary);
+            } else {
+                extractTarXz(archive, temporary);
             }
+            Path root = singleExtractedRoot(temporary);
+            Path staged = parent.resolve(destination.getFileName() + ".staged-" + temporary.getFileName());
+            Files.move(root, staged);
+            try {
+                deleteRecursively(destination);
+                publish(staged, destination);
+            } finally {
+                deleteRecursively(staged);
+            }
+            Path executable = destination.resolve(isWindowsArchive(metadata) ? "zig.exe" : "zig");
+            if (Files.exists(executable)) {
+                executable.toFile().setExecutable(true);
+            }
+        } finally {
+            deleteRecursively(temporary);
         }
-        Path executable = destination.resolve(isWindowsArchive(metadata) ? "zig.exe" : "zig");
-        if (Files.exists(executable)) {
-            executable.toFile().setExecutable(true);
+    }
+
+    private void publish(Path source, Path destination) throws IOException {
+        try {
+            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(source, destination);
         }
-        deleteRecursively(temporary);
     }
 
     private void extractZip(Path archive, Path destination) throws IOException {

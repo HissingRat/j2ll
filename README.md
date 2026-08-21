@@ -154,6 +154,8 @@ CLI stdout stays short and points to these files; full-build progress and failur
 ./gradlew clean build     # clean build plus verification
 ```
 
+The default Dummy E2E tests use an explicitly configured `j2ll.realHome` / `J2LL_REAL_HOME` when present. Otherwise they download the pinned Zig 0.15.2 archive, verify its SHA-256, and reuse a platform-specific cache under the Gradle user home. `--offline` reuses that cache and fails clearly when it has not been populated; other opt-in real-Zig suites are not enabled by this test-only cache.
+
 Support boundaries and internal design are documented separately:
 
 - [Java/JVM support tiers](docs/java-support-tiers.md)
@@ -309,6 +311,8 @@ CLI stdout 只给出稳定摘要和这些报告路径；完整 build 的进度�
 ./gradlew betaAcceptance  # 使用 distribution JAR 做端到端验收
 ./gradlew clean build     # clean build 与验证
 ```
+
+默认 Dummy E2E 会优先使用显式配置的 `j2ll.realHome` / `J2LL_REAL_HOME`；未配置时自动下载固定 Zig 0.15.2、校验 SHA-256，并复用 Gradle 用户目录下按平台隔离的缓存。`--offline` 只复用已有缓存，缓存不存在时明确失败；该测试专用缓存不会自动启用其他 opt-in real-Zig suite。
 
 更多文档：
 

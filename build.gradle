@@ -216,6 +216,13 @@ tasks.register('dTestMethodInternalization', Test) {
 
 ['dTestBasic', 'dTestAdvanced', 'dummyTest', 'dTestMethodInternalization'].each { taskName ->
     tasks.named(taskName, Test) {
+        systemProperty 'j2ll.testZigCacheRoot',
+                new File(gradle.gradleUserHomeDir, 'caches/j2ll/zig').absolutePath
+        systemProperty 'j2ll.gradleOffline', gradle.startParameter.offline.toString()
+        String configuredRealHome = System.getProperty('j2ll.realHome')
+        if (configuredRealHome != null && !configuredRealHome.isBlank()) {
+            systemProperty 'j2ll.realHome', configuredRealHome
+        }
         testLogging {
             events = ['failed']
             exceptionFormat = 'full'
@@ -328,6 +335,14 @@ test {
     useJUnitPlatform()
     environment 'JAVA_HOME', System.getProperty('java.home')
     systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
+    systemProperty 'j2ll.testZigCacheRoot',
+            new File(gradle.gradleUserHomeDir, 'caches/j2ll/zig').absolutePath
+    systemProperty 'j2ll.gradleOffline', gradle.startParameter.offline.toString()
+
+    String configuredRealHome = System.getProperty('j2ll.realHome')
+    if (configuredRealHome != null && !configuredRealHome.isBlank()) {
+        systemProperty 'j2ll.realHome', configuredRealHome
+    }
 
     String configuredRealZig = System.getProperty('j2ll.realZig')
     if (configuredRealZig != null && !configuredRealZig.isBlank()) {

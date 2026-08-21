@@ -37,9 +37,8 @@ import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
 import xyz.melodysky.config.ConfigLoader;
 import xyz.melodysky.config.ResolvedConfig;
-import xyz.melodysky.testsupport.FakeManagedZig;
+import xyz.melodysky.testsupport.DummyManagedZigTestSupport;
 import xyz.melodysky.toolchain.HostPlatform;
-import xyz.melodysky.toolchain.J2llHomeResolver;
 import xyz.melodysky.toolchain.TargetTriple;
 
 class DummyMethodInternalizationE2eTest {
@@ -57,7 +56,7 @@ class DummyMethodInternalizationE2eTest {
         ChildRun original = runJar(inputJar, "basic");
         Path workspace = temp.resolve("public-static-workspace");
         MainlinePipelineResult pipeline;
-        try (AutoCloseable ignored = useManagedZig("public-static")) {
+        try (AutoCloseable ignored = DummyManagedZigTestSupport.use()) {
             pipeline = new MainlinePipeline().run(
                     config(
                             inputJar,
@@ -150,7 +149,7 @@ class DummyMethodInternalizationE2eTest {
         ChildRun original = runJar(inputJar, "fixture");
         Path workspace = temp.resolve("closed-world-workspace");
         MainlinePipelineResult pipeline;
-        try (AutoCloseable ignored = useManagedZig("closed-world")) {
+        try (AutoCloseable ignored = DummyManagedZigTestSupport.use()) {
             pipeline = new MainlinePipeline().run(
                     config(
                             inputJar,
@@ -608,52 +607,6 @@ class DummyMethodInternalizationE2eTest {
             index += needle.length();
         }
         return result;
-    }
-
-    private AutoCloseable useManagedZig(String profile)
-            throws Exception {
-        Path realHome = realJ2llHome();
-        if (realHome != null
-                && Files.isRegularFile(zigExecutable(realHome))) {
-            return useJ2llHome(realHome);
-        }
-        return FakeManagedZig.installAndUse(
-                temp.resolve("j2ll-home-" + profile));
-    }
-
-    private Path realJ2llHome() {
-        String configured = System.getProperty("j2ll.realHome");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("J2LL_REAL_HOME");
-        }
-        return configured == null || configured.isBlank()
-                ? null
-                : Path.of(configured)
-                        .toAbsolutePath()
-                        .normalize();
-    }
-
-    private Path zigExecutable(Path home) {
-        return home.resolve("zig")
-                .resolve(isWindows() ? "zig.exe" : "zig");
-    }
-
-    private AutoCloseable useJ2llHome(Path home) {
-        String previous = System.getProperty(
-                J2llHomeResolver.OVERRIDE_PROPERTY);
-        System.setProperty(
-                J2llHomeResolver.OVERRIDE_PROPERTY,
-                home.toString());
-        return () -> {
-            if (previous == null) {
-                System.clearProperty(
-                        J2llHomeResolver.OVERRIDE_PROPERTY);
-            } else {
-                System.setProperty(
-                        J2llHomeResolver.OVERRIDE_PROPERTY,
-                        previous);
-            }
-        };
     }
 
     private String hostTargetJson() {
