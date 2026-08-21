@@ -61,6 +61,7 @@ final class RuntimeHelperSiteClassifier {
             IrOpcode.PUT_FIELD,
             IrOpcode.CALL_STATIC,
             IrOpcode.CALL_SPECIAL,
+            IrOpcode.CALL_DIRECT,
             IrOpcode.CALL_VIRTUAL,
             IrOpcode.CALL_INTERFACE,
             IrOpcode.CALL_DYNAMIC);
@@ -105,7 +106,7 @@ final class RuntimeHelperSiteClassifier {
             IrOpcode.NEW_OBJECT, IrOpcode.NEW_ARRAY, IrOpcode.NEW_MULTI_ARRAY);
     private static final Set<IrOpcode> TYPE_OPCODES = EnumSet.of(IrOpcode.CHECKCAST, IrOpcode.INSTANCEOF);
     private static final Set<IrOpcode> DEFERRED_CALL_OPCODES = EnumSet.of(
-            IrOpcode.CALL_VIRTUAL, IrOpcode.CALL_INTERFACE, IrOpcode.CALL_DYNAMIC);
+            IrOpcode.CALL_DIRECT, IrOpcode.CALL_VIRTUAL, IrOpcode.CALL_INTERFACE, IrOpcode.CALL_DYNAMIC);
 
     private final JvmCallBoundaryClassifier callBoundaries = new JvmCallBoundaryClassifier();
 

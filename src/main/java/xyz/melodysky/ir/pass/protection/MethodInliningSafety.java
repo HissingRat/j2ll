@@ -145,6 +145,7 @@ final class MethodInliningSafety {
                 .map(instruction -> instruction.opcode())
                 .anyMatch(opcode -> opcode == IrOpcode.CALL_STATIC
                         || opcode == IrOpcode.CALL_SPECIAL
+                        || opcode == IrOpcode.CALL_DIRECT
                         || opcode == IrOpcode.CALL_VIRTUAL
                         || opcode == IrOpcode.CALL_INTERFACE
                         || opcode == IrOpcode.CALL_DYNAMIC

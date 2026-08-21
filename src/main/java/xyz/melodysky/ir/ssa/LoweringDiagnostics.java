@@ -22,6 +22,8 @@ public final class LoweringDiagnostics {
     public static final DiagnosticCode SSA_MERGE_TYPE_MISMATCH = DiagnosticCode.of("SSA_MERGE_TYPE_MISMATCH");
     public static final DiagnosticCode SSA_MERGE_LOCAL_SLOT_MISMATCH = DiagnosticCode.of("SSA_MERGE_LOCAL_SLOT_MISMATCH");
     public static final DiagnosticCode STACK_UNDERFLOW = DiagnosticCode.of("STACK_UNDERFLOW");
+    public static final DiagnosticCode CALL_ANALYSIS_PLAN_MISMATCH =
+            DiagnosticCode.of("CALL_ANALYSIS_PLAN_MISMATCH");
 
     private LoweringDiagnostics() {
     }

@@ -94,11 +94,17 @@ validator 至少要检查：
 invoke lowering 应消费 runtime analysis facts：
 
 - `STATIC` / `SPECIAL`：可直接 lower。
-- `VIRTUAL` / `INTERFACE` 单目标：按 `DevirtualizationPlan` lower 成 direct call 或 direct helper。
+- `VIRTUAL` / `INTERFACE` 单目标：按exact call-site的`DevirtualizationPlan` lower成
+  `CALL_DIRECT`，保留receiver/null与exception语义；同owner且final native ABI允许时进入
+  LLVM direct call，否则仍可按descriptor-safe JVM dispatch helper执行。
 - 多目标但目标集合完整：保留 runtime dispatch helper 或 method table helper。
 - unknown、external 或 skipped target：只有在已实现 JNI dispatch ABI 能完整表达其语义时才允许继续；否则包含该 call site 的完整 method 记录为 `skipped`。
 
 class initialization、null check、access check、exception behavior 必须在 lowering 或 runtime helper 中有明确归属。不能因为 devirtualized 就丢失 JVM 可见语义。
+
+正常mainline lowering必须为每个实际invoke找到同一份分析decision。相同caller中声明目标完全
+相同的多个invoke也以各自instruction index独立匹配，禁止按owner/name/descriptor模糊合并。
+测试或独立工具可使用planless lowerer保留原opcode，但生产pipeline不得省略该plan。
 
 selected 且有 Code 的 method 在 final implementation plan 中只有两种结果：
 

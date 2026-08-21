@@ -9,10 +9,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import xyz.melodysky.analysis.callgraph.CallGraph;
-import xyz.melodysky.analysis.callgraph.CallResolution;
-import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
-import xyz.melodysky.analysis.callgraph.InvokeKind;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.config.IrProtectionConfig;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
@@ -70,8 +66,6 @@ public final class ProgramIrProtectionCoordinator {
             NativeImplementationPlan preliminaryImplementationPlan,
             ParsedProgram parsedProgram,
             ReflectionPlan reflectionPlan,
-            CallGraph callGraph,
-            DevirtualizationPlan devirtualizationPlan,
             IrProtectionConfig config,
             long seed) {
         Map<String, IrMethod> methods = orderedMethods(inputMethods);
@@ -107,10 +101,7 @@ public final class ProgramIrProtectionCoordinator {
         boolean callIndirectionEnabled = config.enabled() && config.callIndirection();
         IrCallIndirectionResult callIndirection = new IrCallIndirectionPass().run(
                 callInput,
-                directCallFacts(
-                        callInput,
-                        callGraph,
-                        devirtualizationPlan),
+                directCallFacts(callInput),
                 new IrNativeDirectTargets(nativeFunctionAbis),
                 IrCallIndirectionMode.TABLE,
                 seed,
@@ -138,84 +129,25 @@ public final class ProgramIrProtectionCoordinator {
                 callIndirection.diagnostics());
     }
 
-    private IrDirectCallFacts directCallFacts(
-            IrProgram program,
-            CallGraph callGraph,
-            DevirtualizationPlan devirtualizationPlan) {
+    private IrDirectCallFacts directCallFacts(IrProgram program) {
         ArrayList<IrDirectCallFact> facts = new ArrayList<>();
         for (IrClass irClass : program.classes()) {
             for (IrMethod method : irClass.methods()) {
                 for (var block : method.blocks()) {
                     for (int index = 0; index < block.instructions().size(); index++) {
                         var instruction = block.instructions().get(index);
-                        if (instruction.opcode() != IrOpcode.CALL_VIRTUAL
-                                && instruction.opcode() != IrOpcode.CALL_INTERFACE) {
-                            continue;
-                        }
-                        String declaredTarget = instruction.symbol().orElse("");
-                        IrCallInvokeKind instructionKind =
-                                IrCallInvokeKind.fromOpcode(instruction.opcode());
-                        List<CallResolution> resolutions = callGraph.resolutions().stream()
-                                .filter(resolution -> callerKey(resolution).equals(method.methodKey()))
-                                .filter(resolution -> callGraphKind(resolution.callSite().kind())
-                                        .filter(instructionKind::equals)
-                                        .isPresent())
-                                .filter(resolution -> declaredTarget(resolution).equals(declaredTarget))
-                                .toList();
-                        List<xyz.melodysky.analysis.callgraph.DevirtualizationDecision>
-                                decisions = resolutions.stream()
-                                        .map(resolution -> devirtualizationPlan
-                                                .decisionFor(
-                                                        resolution.callSite().id()))
-                                        .flatMap(Optional::stream)
-                                        .toList();
-                        Set<String> knownTargets = decisions.stream()
-                                .flatMap(decision -> decision.directTarget().stream())
-                                .map(target -> target.owner().orElseThrow()
-                                        + "#"
-                                        + target.signature().orElseThrow().name()
-                                        + "!"
-                                        + target.signature().orElseThrow().descriptor())
-                                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-                        boolean unavailable = decisions.size() != resolutions.size()
-                                || decisions.stream().anyMatch(decision ->
-                                        decision.directNativeTargetUnavailable()
-                                                || decision.jvmDispatchRequired());
-                        if (resolutions.isEmpty()
-                                || unavailable
-                                || knownTargets.size() != 1) {
+                        if (instruction.opcode() != IrOpcode.CALL_DIRECT) {
                             continue;
                         }
                         facts.add(IrDirectCallFact.devirtualized(
                                 new IrCallSiteId(method.methodKey(), block.name(), index),
-                                instructionKind,
-                                knownTargets.iterator().next()));
+                                IrCallInvokeKind.DIRECT,
+                                instruction.symbol().orElseThrow()));
                     }
                 }
             }
         }
         return new IrDirectCallFacts(facts);
-    }
-
-    private String callerKey(CallResolution resolution) {
-        var site = resolution.callSite();
-        return site.callerOwner() + "#" + site.caller().name() + "!" + site.caller().descriptor();
-    }
-
-    private String declaredTarget(CallResolution resolution) {
-        var site = resolution.callSite();
-        return site.declaredOwner() + "#" + site.declaredTarget().name()
-                + "!" + site.declaredTarget().descriptor();
-    }
-
-    private Optional<IrCallInvokeKind> callGraphKind(InvokeKind kind) {
-        return switch (kind) {
-            case STATIC -> Optional.of(IrCallInvokeKind.STATIC);
-            case SPECIAL -> Optional.of(IrCallInvokeKind.SPECIAL);
-            case VIRTUAL -> Optional.of(IrCallInvokeKind.VIRTUAL);
-            case INTERFACE -> Optional.of(IrCallInvokeKind.INTERFACE);
-            case DYNAMIC -> Optional.empty();
-        };
     }
 
     private ProtectionPassReport callIndirectionReport(

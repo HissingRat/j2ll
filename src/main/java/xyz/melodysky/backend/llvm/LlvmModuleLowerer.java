@@ -1121,7 +1121,8 @@ public final class LlvmModuleLowerer {
                     ARRAY_STORE_I32, ARRAY_STORE_I64, ARRAY_STORE_F32, ARRAY_STORE_F64, ARRAY_STORE_REF,
                     CHECKCAST, INSTANCEOF -> throw new IllegalStateException("handled earlier");
             case GET_STATIC, PUT_STATIC, GET_NATIVE_STATIC, PUT_NATIVE_STATIC, GET_FIELD, PUT_FIELD,
-                    CALL_STATIC, CALL_SPECIAL, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC, CALL_RUNTIME_HELPER ->
+                    CALL_STATIC, CALL_SPECIAL, CALL_DIRECT, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC,
+                    CALL_RUNTIME_HELPER ->
                     throw new IllegalStateException("handled earlier");
             case MONITOR_ENTER, MONITOR_EXIT, MONITOR_EXIT_ON_EXCEPTION -> throw new IllegalStateException("handled earlier");
             case VOLATILE_READ_BARRIER, VOLATILE_WRITE_BARRIER, FINAL_FIELD_PUBLICATION,
@@ -1294,6 +1295,7 @@ public final class LlvmModuleLowerer {
     private boolean isCall(IrOpcode opcode) {
         return opcode == IrOpcode.CALL_STATIC
                 || opcode == IrOpcode.CALL_SPECIAL
+                || opcode == IrOpcode.CALL_DIRECT
                 || opcode == IrOpcode.CALL_VIRTUAL
                 || opcode == IrOpcode.CALL_INTERFACE
                 || opcode == IrOpcode.CALL_DYNAMIC
@@ -1428,7 +1430,9 @@ public final class LlvmModuleLowerer {
             xyz.melodysky.ir.model.IrInstruction instruction,
             Set<String> directCallMethodKeys,
             Map<String, LlvmFunctionAbi> functionAbis) {
-        if ((instruction.opcode() == IrOpcode.CALL_STATIC || isDirectSpecialCallInstruction(instruction))
+        if ((instruction.opcode() == IrOpcode.CALL_STATIC
+                        || instruction.opcode() == IrOpcode.CALL_DIRECT
+                        || isDirectSpecialCallInstruction(instruction))
                 && instruction.symbol().filter(directCallMethodKeys::contains).isPresent()) {
             String methodKey = instruction.symbol().orElseThrow();
             String target = nameMangler.functionName(methodKey);
@@ -2111,7 +2115,7 @@ public final class LlvmModuleLowerer {
     private String callPrefix(IrOpcode opcode) {
         return switch (opcode) {
             case CALL_STATIC, CALL_SPECIAL -> "j2ll_call_";
-            case CALL_VIRTUAL -> "j2ll_call_virtual_";
+            case CALL_DIRECT, CALL_VIRTUAL -> "j2ll_call_virtual_";
             case CALL_INTERFACE -> "j2ll_call_interface_";
             case CALL_DYNAMIC -> "j2ll_call_dynamic_";
             case CALL_RUNTIME_HELPER -> "";
@@ -2173,7 +2177,8 @@ public final class LlvmModuleLowerer {
     }
 
     private boolean isDispatchHelperInstruction(xyz.melodysky.ir.model.IrInstruction instruction) {
-        return (instruction.opcode() == IrOpcode.CALL_VIRTUAL
+        return (instruction.opcode() == IrOpcode.CALL_DIRECT
+                        || instruction.opcode() == IrOpcode.CALL_VIRTUAL
                         || instruction.opcode() == IrOpcode.CALL_INTERFACE)
                 && dispatchHelperName(instruction) != null;
     }
@@ -2523,6 +2528,7 @@ public final class LlvmModuleLowerer {
                         || isStaticCallBridgeInstruction(instruction, staticCallMethodKeys)
                         || isDispatchHelperInstruction(instruction)
                         || ((instruction.opcode() == IrOpcode.CALL_STATIC
+                                        || instruction.opcode() == IrOpcode.CALL_DIRECT
                                         || isDirectSpecialCallInstruction(instruction))
                                 && instruction.symbol().filter(directCallMethodKeys::contains).isPresent())
                         || (instruction.opcode() == IrOpcode.CALL_RUNTIME_HELPER

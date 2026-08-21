@@ -47,7 +47,8 @@ final class HostJniDispatchRuntimeSource {
                             .flatMap(method -> method.blocks().stream())
                             .flatMap(block -> block.instructions().stream())
                             .filter(instruction ->
-                                    instruction.opcode() == IrOpcode.CALL_VIRTUAL
+                                    instruction.opcode() == IrOpcode.CALL_DIRECT
+                                            || instruction.opcode() == IrOpcode.CALL_VIRTUAL
                                             || instruction.opcode()
                                                     == IrOpcode.CALL_INTERFACE)
                             .filter(instruction -> instruction.symbol().isPresent())

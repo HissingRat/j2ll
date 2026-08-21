@@ -28,6 +28,10 @@ import org.objectweb.asm.tree.MultiANewArrayInsnNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import xyz.melodysky.analysis.callgraph.CallSiteIds;
+import xyz.melodysky.analysis.callgraph.DevirtualizationDecision;
+import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
+import xyz.melodysky.analysis.callgraph.InvokeKind;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticCode;
 import xyz.melodysky.diagnostic.DiagnosticLocation;
@@ -53,6 +57,7 @@ import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.pipeline.LoweringStatus;
 import xyz.melodysky.pipeline.StageResult;
+import xyz.melodysky.jvm.MethodSignature;
 import xyz.melodysky.runtime.RuntimeHelperCatalog;
 import xyz.melodysky.runtime.RuntimeTokenDomain;
 import xyz.melodysky.runtime.RuntimeTokenMapper;
@@ -80,11 +85,29 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private final BytecodeExceptionSemantics bytecodeExceptionSemantics =
             new BytecodeExceptionSemantics();
     private final RuntimeTokenMapper runtimeTokens;
+    private final java.util.Optional<DevirtualizationPlan> devirtualizationPlan;
 
     public BytecodeToSsaLowerer(RuntimeTokenMapper runtimeTokens) {
+        this(runtimeTokens, java.util.Optional.empty());
+    }
+
+    public BytecodeToSsaLowerer(
+            RuntimeTokenMapper runtimeTokens,
+            DevirtualizationPlan devirtualizationPlan) {
+        this(runtimeTokens, java.util.Optional.of(java.util.Objects.requireNonNull(
+                devirtualizationPlan,
+                "devirtualizationPlan")));
+    }
+
+    private BytecodeToSsaLowerer(
+            RuntimeTokenMapper runtimeTokens,
+            java.util.Optional<DevirtualizationPlan> devirtualizationPlan) {
         this.runtimeTokens = java.util.Objects.requireNonNull(
                 runtimeTokens,
                 "runtimeTokens");
+        this.devirtualizationPlan = java.util.Objects.requireNonNull(
+                devirtualizationPlan,
+                "devirtualizationPlan");
     }
 
     public StageResult<SsaMethodResult> lower(MethodCfgResult cfgResult) {
@@ -160,6 +183,13 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                         "exception handler state merge failed: " + failure.getMessage());
             }
             return skipped(method, failure.reasonCode, failure.getMessage());
+        } catch (CallDecisionFailure failure) {
+            Diagnostic diagnostic = Diagnostic.error(
+                            DiagnosticStage.LOWERING,
+                            LoweringDiagnostics.CALL_ANALYSIS_PLAN_MISMATCH,
+                            failure.getMessage())
+                    .at(location(method));
+            return StageResult.failed(DiagnosticStage.LOWERING, List.of(diagnostic));
         } catch (IllegalStateException exception) {
             Diagnostic diagnostic = Diagnostic.error(
                             DiagnosticStage.LOWERING,
@@ -290,7 +320,10 @@ public final class BytecodeToSsaLowerer implements Opcodes {
         List<AbstractInsnNode> bytecode = cfg.instructions().subList(
                 block.startInstructionIndex(),
                 block.endInstructionIndexExclusive());
-        for (AbstractInsnNode instruction : bytecode) {
+        for (int instructionIndex = block.startInstructionIndex();
+                instructionIndex < block.endInstructionIndexExclusive();
+                instructionIndex++) {
+            AbstractInsnNode instruction = cfg.instructions().get(instructionIndex);
             Set<IrInstruction> existingInstructions = identitySnapshot(instructions);
             Map<Integer, IrValue> localsAtThrowSite = locals.snapshot();
             int opcode = instruction.getOpcode();
@@ -322,6 +355,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                 lowerStackInstruction(
                         cfg.method(),
                         instruction,
+                        instructionIndex,
                         values,
                         stack,
                         locals,
@@ -419,6 +453,7 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private void lowerStackInstruction(
             ParsedMethod method,
             AbstractInsnNode instruction,
+            int instructionIndex,
             ValueFactory values,
             StackState stack,
             LocalState locals,
@@ -513,9 +548,24 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             lowerFieldInstruction(method, fieldInsn, opcode, values, stack, instructions);
         } else if (instruction instanceof MethodInsnNode methodInsn
                 && (opcode == INVOKESTATIC || opcode == INVOKESPECIAL || opcode == INVOKEVIRTUAL || opcode == INVOKEINTERFACE)) {
-            lowerMethodCall(method, methodInsn, opcode, values, stack, instructions, diagnostics);
+            lowerMethodCall(
+                    method,
+                    methodInsn,
+                    opcode,
+                    instructionIndex,
+                    values,
+                    stack,
+                    instructions,
+                    diagnostics);
         } else if (instruction instanceof InvokeDynamicInsnNode invokeDynamicInsn) {
-            lowerDynamicCall(method, invokeDynamicInsn, values, stack, instructions, diagnostics);
+            lowerDynamicCall(
+                    method,
+                    invokeDynamicInsn,
+                    instructionIndex,
+                    values,
+                    stack,
+                    instructions,
+                    diagnostics);
         } else if (opcode == MONITORENTER || opcode == MONITOREXIT) {
             lowerMonitorInstruction(opcode, stack, exceptionEdges, instructions, exceptionalMonitorCleanup);
         } else {
@@ -749,10 +799,15 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             ParsedMethod currentMethod,
             MethodInsnNode methodInsn,
             int opcode,
+            int instructionIndex,
             ValueFactory values,
             StackState stack,
             List<IrInstruction> instructions,
             List<Diagnostic> diagnostics) {
+        java.util.Optional<DevirtualizationDecision> callDecision = callDecision(
+                currentMethod,
+                instructionIndex,
+                InvokeKind.fromOpcode(opcode));
         if (opcode == INVOKESTATIC && !currentMethod.owner().equals(methodInsn.owner)) {
             appendClassInitGuard(currentMethod, methodInsn.owner, values, instructions);
         }
@@ -826,14 +881,32 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     "JDK method has no native policy yet",
                     diagnostics);
         }
+        IrOpcode callOpcode = SsaOpcodeSemantics.callOpcode(opcode);
+        String callTarget = methodKey;
+        if ((opcode == INVOKEVIRTUAL || opcode == INVOKEINTERFACE)
+                && callDecision.flatMap(DevirtualizationDecision::directTarget).isPresent()) {
+            IrValue nonNullReceiver = values.next(IrType.REFERENCE);
+            instructions.add(IrInstruction.call(
+                    java.util.Optional.of(nonNullReceiver),
+                    IrOpcode.CALL_RUNTIME_HELPER,
+                    List.of(operands.get(0)),
+                    runtimeHelperSymbol(
+                            xyz.melodysky.runtime.RuntimeHelperKind.OBJECTS_REQUIRE_NON_NULL)));
+            operands.set(0, nonNullReceiver);
+            callOpcode = IrOpcode.CALL_DIRECT;
+            callTarget = callDecision.orElseThrow()
+                    .directTarget()
+                    .orElseThrow()
+                    .displayName();
+        }
         IrInstruction call = appendOrdinaryCall(
-                SsaOpcodeSemantics.callOpcode(opcode),
+                callOpcode,
                 operands,
                 returnType,
                 values,
                 stack,
                 instructions,
-                methodKey);
+                callTarget);
         if (isThreadStart(methodInsn, opcode) && !operands.isEmpty()) {
             instructions.add(memoryMarker(IrOpcode.THREAD_START_HAPPENS_BEFORE, List.of(operands.get(0)), methodKey));
         } else if (isThreadJoin(methodInsn, opcode) && !operands.isEmpty()) {
@@ -1714,10 +1787,12 @@ public final class BytecodeToSsaLowerer implements Opcodes {
     private void lowerDynamicCall(
             ParsedMethod currentMethod,
             InvokeDynamicInsnNode invokeDynamicInsn,
+            int instructionIndex,
             ValueFactory values,
             StackState stack,
             List<IrInstruction> instructions,
             List<Diagnostic> diagnostics) {
+        callDecision(currentMethod, instructionIndex, InvokeKind.DYNAMIC);
         ArrayList<IrValue> operands = new ArrayList<>();
         List<IrType> parameterTypes = JvmToIrTypes.parameterTypes(invokeDynamicInsn.desc);
         for (int index = parameterTypes.size() - 1; index >= 0; index--) {
@@ -1782,6 +1857,37 @@ public final class BytecodeToSsaLowerer implements Opcodes {
                     operands,
                     methodKey));
             stack.push(result);
+        }
+    }
+
+    private java.util.Optional<DevirtualizationDecision> callDecision(
+            ParsedMethod method,
+            int instructionIndex,
+            InvokeKind expectedKind) {
+        if (devirtualizationPlan.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        String callSiteId = CallSiteIds.forInstruction(
+                method.owner(),
+                new MethodSignature(method.name(), method.descriptor()),
+                instructionIndex);
+        DevirtualizationDecision decision = devirtualizationPlan
+                .orElseThrow()
+                .decisionFor(callSiteId)
+                .orElseThrow(() -> new CallDecisionFailure(
+                        "devirtualization plan is missing exact call site " + callSiteId));
+        if (decision.originalKind() != expectedKind) {
+            throw new CallDecisionFailure(
+                    "devirtualization kind mismatch at " + callSiteId
+                            + ": expected " + expectedKind
+                            + " but plan contains " + decision.originalKind());
+        }
+        return java.util.Optional.of(decision);
+    }
+
+    private static final class CallDecisionFailure extends RuntimeException {
+        private CallDecisionFailure(String message) {
+            super(message);
         }
     }
 

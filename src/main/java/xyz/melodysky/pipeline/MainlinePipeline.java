@@ -389,7 +389,7 @@ public final class MainlinePipeline {
         RuntimeTokenMapper runtimeTokens =
                 RuntimeTokenMapper.fromBytes(nativeTextBuildKey.bytes());
         BytecodeToSsaLowerer ssaLowerer =
-                new BytecodeToSsaLowerer(runtimeTokens);
+                new BytecodeToSsaLowerer(runtimeTokens, devirtualizationPlan);
         InitializerImplementationPlanner initializerPlanner =
                 new InitializerImplementationPlanner(runtimeTokens);
         boolean llvmNameObfuscationEnabled = config.protection().enabled()
@@ -570,8 +570,6 @@ public final class MainlinePipeline {
                         preliminaryImplementationPlan,
                         program,
                         reflectionPlan,
-                        callGraph,
-                        devirtualizationPlan,
                         config.protection().ir(),
                         programProtectionSeed);
         diagnostics.addAll(programProtection.diagnostics());

@@ -215,7 +215,7 @@ public final class NativeImplementationPlanner {
                         irMethod,
                         directCallTargets,
                         jvmBridgeMethodKeys);
-                List<String> dispatchKeys = dispatchKeys(irMethod);
+                List<String> dispatchKeys = dispatchKeys(irMethod, directCallTargets);
                 List<String> stringHelperSymbols = stringHelperSymbols(irMethod);
                 boolean jdkScalarHelper = containsJdkScalarHelper(irMethod);
                 boolean allocationHelper = containsAllocationHelper(irMethod);
@@ -490,6 +490,14 @@ public final class NativeImplementationPlanner {
         }
         if (isJdkScalarHelperInstruction(instruction)) {
             return supportsJdkScalarHelperInstruction(instruction);
+        }
+        if (instruction.opcode() == IrOpcode.CALL_DIRECT) {
+            return instruction.symbol().filter(directCallTargets::contains).isPresent()
+                            && instruction.result().map(IrValue::type)
+                                    .filter(type -> !isSupportedValueType(type)).isEmpty()
+                            && instruction.operands().stream().map(IrValue::type)
+                                    .allMatch(this::isSupportedValueType)
+                    || supportsDispatchHelperInstruction(instruction);
         }
         if (isDispatchHelperInstruction(instruction)) {
             return supportsDispatchHelperInstruction(instruction);
@@ -1537,7 +1545,9 @@ public final class NativeImplementationPlanner {
     }
 
     private boolean isDispatchHelperInstruction(IrInstruction instruction) {
-        return instruction.opcode() == IrOpcode.CALL_VIRTUAL || instruction.opcode() == IrOpcode.CALL_INTERFACE;
+        return instruction.opcode() == IrOpcode.CALL_DIRECT
+                || instruction.opcode() == IrOpcode.CALL_VIRTUAL
+                || instruction.opcode() == IrOpcode.CALL_INTERFACE;
     }
 
     private boolean supportsDispatchHelperInstruction(IrInstruction instruction) {
@@ -1679,10 +1689,12 @@ public final class NativeImplementationPlanner {
                 .toList();
     }
 
-    private List<String> dispatchKeys(IrMethod method) {
+    private List<String> dispatchKeys(IrMethod method, List<String> directCallTargets) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
                 .filter(this::supportsDispatchHelperInstruction)
+                .filter(instruction -> instruction.opcode() != IrOpcode.CALL_DIRECT
+                        || instruction.symbol().filter(directCallTargets::contains).isEmpty())
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .distinct()
                 .sorted()

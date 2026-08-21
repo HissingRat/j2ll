@@ -24,6 +24,10 @@ public record DevirtualizationDecision(
                 throw new IllegalArgumentException(
                         "directTarget must be present in resolvedTargets");
             }
+            if (target.unknownExternal()) {
+                throw new IllegalArgumentException(
+                        "directTarget must identify a known program method");
+            }
         });
         if (directTarget.isPresent()
                 && (directNativeTargetUnavailable || jvmDispatchRequired)) {

@@ -405,6 +405,7 @@ public final class NativeLlvmCompiler {
                 .filter(instruction -> switch (instruction.opcode()) {
                     case CALL_STATIC,
                             CALL_SPECIAL,
+                            CALL_DIRECT,
                             CALL_VIRTUAL,
                             CALL_INTERFACE,
                             CALL_DYNAMIC,

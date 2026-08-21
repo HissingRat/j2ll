@@ -82,6 +82,13 @@
 
 每个 stage只消费稳定 artifact，不回读上层 mutable builder state。ASM只留在 frontend；backend不修复非法 SSA、不重新推断 Java语义；LLVM protection只操作 module model，不做 `.ll` regex。
 
+Call analysis必须在SSA lowering入口按exact bytecode call-site id消费。只有immutable
+`DevirtualizationPlan`证明为unguarded single target的virtual/interface invoke才能生成
+`CALL_DIRECT`；该IR仍保留receiver以及原null/exception语义，并把symbol绑定到exact resolved
+method key。missing/duplicate/kind drift一律在lowering阶段fail closed。后续protection、native
+planner与LLVM backend只消费`CALL_DIRECT`事实，不得重新按target数量或模糊caller/declared-target
+匹配恢复devirtualization决策；不能形成validated same-owner direct ABI时必须保留JVM dispatch bridge。
+
 ## Field Internalization
 
 - `fieldInternalization`已进入 schema，默认 `false`；只在 declared `CLOSED_WORLD`或本次 build明确 Y授权 current-input-JAR-only scope时分析。

@@ -106,9 +106,13 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 
 如果未来引入 guarded devirtualization，plan 还需要描述 guard condition 和 slow-path target。第一版可以只做 unguarded safe devirtualization。
 
-当前`ProgramIrProtectionCoordinator`消费这一immutable plan决定哪些call site可进入direct
-call protection facts；它不再按resolved-target数量自行重新判定。method internalization同样
-消费RTA后冻结的effective call graph，LLVM backend只消费最终plan/IR。
+当前`BytecodeToSsaLowerer`按exact bytecode call-site id消费这一immutable plan。已证明为
+unguarded single target的virtual/interface site会生成保留receiver操作数、但symbol绑定exact
+resolved method key的`CALL_DIRECT`；其余site保持`CALL_VIRTUAL`/`CALL_INTERFACE`并走既有
+JVM dispatch边界。plan缺失、invoke kind漂移或重复site在lowering阶段fail closed。
+`ProgramIrProtectionCoordinator`只消费已经冻结进IR的`CALL_DIRECT`，不再回读call graph或按
+resolved-target数量重新判定。method internalization仍消费RTA后的effective call graph，LLVM
+backend只消费最终plan/IR。
 
 正常build的`lowering-report.json.callAnalysis`必须逐项记录exact bytecode call-site id、
 caller、instruction index、declared/resolved/direct target、reachability与决策reason；只写

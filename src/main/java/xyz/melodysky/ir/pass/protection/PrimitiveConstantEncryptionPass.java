@@ -173,6 +173,7 @@ public final class PrimitiveConstantEncryptionPass implements ProtectionPass {
         return opcode == IrOpcode.CALL_RUNTIME_HELPER
                 || opcode == IrOpcode.CALL_STATIC
                 || opcode == IrOpcode.CALL_SPECIAL
+                || opcode == IrOpcode.CALL_DIRECT
                 || opcode == IrOpcode.CALL_VIRTUAL
                 || opcode == IrOpcode.CALL_INTERFACE
                 || opcode == IrOpcode.CALL_DYNAMIC

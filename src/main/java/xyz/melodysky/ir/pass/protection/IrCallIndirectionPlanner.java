@@ -111,11 +111,14 @@ public final class IrCallIndirectionPlanner {
         if (fact.resolutionKind() == IrDirectCallResolutionKind.MULTIPLE_TARGETS) {
             return CandidateDecision.skip(IrCallIndirectionReasons.MULTIPLE_TARGETS);
         }
-        if ((invokeKind == IrCallInvokeKind.VIRTUAL || invokeKind == IrCallInvokeKind.INTERFACE)
+        if ((invokeKind == IrCallInvokeKind.DIRECT
+                        || invokeKind == IrCallInvokeKind.VIRTUAL
+                        || invokeKind == IrCallInvokeKind.INTERFACE)
                 && fact.resolutionKind() != IrDirectCallResolutionKind.DEVIRTUALIZED_SINGLE_TARGET) {
             return CandidateDecision.skip(IrCallIndirectionReasons.UNRESOLVED_TARGET);
         }
-        if ((invokeKind == IrCallInvokeKind.STATIC || invokeKind == IrCallInvokeKind.SPECIAL)
+        if ((invokeKind == IrCallInvokeKind.STATIC
+                        || invokeKind == IrCallInvokeKind.SPECIAL)
                 && fact.resolutionKind() != IrDirectCallResolutionKind.BYTECODE_DIRECT) {
             return CandidateDecision.skip(IrCallIndirectionReasons.FACT_KIND_MISMATCH);
         }
@@ -125,7 +128,9 @@ public final class IrCallIndirectionPlanner {
         }
 
         String targetMethodKey = fact.directTargetMethodKey().orElseThrow();
-        if ((invokeKind == IrCallInvokeKind.STATIC || invokeKind == IrCallInvokeKind.SPECIAL)
+        if ((invokeKind == IrCallInvokeKind.STATIC
+                        || invokeKind == IrCallInvokeKind.SPECIAL
+                        || invokeKind == IrCallInvokeKind.DIRECT)
                 && instruction.symbol().filter(targetMethodKey::equals).isEmpty()) {
             return CandidateDecision.skip(IrCallIndirectionReasons.FACT_TARGET_MISMATCH);
         }
@@ -175,7 +180,8 @@ public final class IrCallIndirectionPlanner {
             IrCallSiteId siteId,
             IrCallInvokeKind invokeKind,
             IrInstruction instruction) {
-        if (invokeKind == IrCallInvokeKind.VIRTUAL
+        if (invokeKind == IrCallInvokeKind.DIRECT
+                || invokeKind == IrCallInvokeKind.VIRTUAL
                 || invokeKind == IrCallInvokeKind.INTERFACE) {
             return IrDirectCallFact.unresolved(
                     siteId,
@@ -313,6 +319,7 @@ public final class IrCallIndirectionPlanner {
     private boolean isCallOpcode(IrOpcode opcode) {
         return opcode == IrOpcode.CALL_STATIC
                 || opcode == IrOpcode.CALL_SPECIAL
+                || opcode == IrOpcode.CALL_DIRECT
                 || opcode == IrOpcode.CALL_VIRTUAL
                 || opcode == IrOpcode.CALL_INTERFACE
                 || opcode == IrOpcode.CALL_DYNAMIC

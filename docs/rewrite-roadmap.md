@@ -328,9 +328,11 @@ xyz.melodysky.toolchain.symbols
 - Devirtualization 单测覆盖单目标、多目标、外部未知目标。
 
 当前主线由`ProgramCallGraphAnalysisCoordinator`冻结CHA/RTA与devirtualization结果，
-`ProgramIrProtectionCoordinator`只消费该plan决定direct-call protection facts，backend不再
-从target数量临时重建dispatch决策。正常lowering report同时保存逐exact-call-site的
-resolution/devirtualization/reachability证据，plan与effective graph缺失、重复或漂移均拒绝。
+`BytecodeToSsaLowerer`按exact bytecode call-site消费该plan，并把已证明的single-target
+virtual/interface site显式写成`CALL_DIRECT`；`ProgramIrProtectionCoordinator`及backend只消费
+这一冻结IR事实，不再从target数量临时重建dispatch决策。正常lowering report同时保存逐
+exact-call-site的resolution/devirtualization/reachability证据，plan与effective graph缺失、
+重复、kind或target漂移均拒绝。
 
 ### Phase 5：栈式 Bytecode -> 三地址 SSA IR
 

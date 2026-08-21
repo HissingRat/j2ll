@@ -55,7 +55,8 @@ public final class RuntimeHelperSiteAnalyzer {
                 .forEach(sites::add);
         method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
-                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_VIRTUAL
+                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_DIRECT
+                        || instruction.opcode() == IrOpcode.CALL_VIRTUAL
                         || instruction.opcode() == IrOpcode.CALL_INTERFACE)
                 .map(instruction -> new RuntimeHelperSite(
                         "dispatch:" + instruction.symbol().orElse(instruction.opcode().name()),

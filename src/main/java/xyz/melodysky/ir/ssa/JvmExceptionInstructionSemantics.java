@@ -20,7 +20,7 @@ public final class JvmExceptionInstructionSemantics {
                     ARRAY_STORE_F64, ARRAY_STORE_REF,
                     CHECKCAST, INSTANCEOF,
                     GET_STATIC, PUT_STATIC, GET_NATIVE_STATIC, PUT_NATIVE_STATIC, GET_FIELD, PUT_FIELD,
-                    CALL_STATIC, CALL_SPECIAL, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC,
+                    CALL_STATIC, CALL_SPECIAL, CALL_DIRECT, CALL_VIRTUAL, CALL_INTERFACE, CALL_DYNAMIC,
                     CALL_RUNTIME_HELPER,
                     MONITOR_ENTER, MONITOR_EXIT, MONITOR_EXIT_ON_EXCEPTION -> true;
             default -> false;

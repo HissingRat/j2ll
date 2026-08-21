@@ -188,7 +188,9 @@ public final class IrCallIndirectionValidator {
             diagnostics.add(error(location, "IR call-indirection site targets a missing plan entry"));
             return;
         }
-        if ((actualKind == IrCallInvokeKind.STATIC || actualKind == IrCallInvokeKind.SPECIAL)
+        if ((actualKind == IrCallInvokeKind.STATIC
+                        || actualKind == IrCallInvokeKind.SPECIAL
+                        || actualKind == IrCallInvokeKind.DIRECT)
                 && instruction.symbol().filter(target.targetMethodKey()::equals).isEmpty()) {
             diagnostics.add(error(
                     location,

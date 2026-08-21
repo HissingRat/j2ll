@@ -9,13 +9,6 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.MethodNode;
-import xyz.melodysky.analysis.callgraph.CallGraph;
-import xyz.melodysky.analysis.callgraph.CallResolution;
-import xyz.melodysky.analysis.callgraph.CallSite;
-import xyz.melodysky.analysis.callgraph.CallTarget;
-import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
-import xyz.melodysky.analysis.callgraph.DevirtualizationPlanner;
-import xyz.melodysky.analysis.callgraph.InvokeKind;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.config.IrProtectionConfig;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
@@ -29,7 +22,6 @@ import xyz.melodysky.ir.model.IrType;
 import xyz.melodysky.ir.model.IrValue;
 import xyz.melodysky.ir.pass.protection.IrCallIndirectionReasons;
 import xyz.melodysky.jvm.AccessFlags;
-import xyz.melodysky.jvm.MethodSignature;
 import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewriteStrategy;
 import xyz.melodysky.packaging.NativeRegistrationEntry;
@@ -79,8 +71,6 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                 implementationPlan,
                 new ParsedProgram(List.of()),
                 new ReflectionPlan(List.of(), List.of(), List.of(), List.of()),
-                new CallGraph(List.of()),
-                new DevirtualizationPlan(List.of()),
                 callIndirectionOnly(),
                 29L);
 
@@ -97,7 +87,7 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
     }
 
     @Test
-    void invokedynamicResolutionInTheSameCallerDoesNotEnterDirectCallClassification() {
+    void explicitDirectCallFactDoesNotBypassCrossOwnerBackendBoundary() {
         IrValue receiver = new IrValue("%receiver", IrType.REFERENCE);
         IrValue callResult = new IrValue("%call_result", IrType.I32);
         IrMethod caller = new IrMethod(
@@ -110,7 +100,7 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                         "entry",
                         List.of(IrInstruction.call(
                                 Optional.of(callResult),
-                                IrOpcode.CALL_VIRTUAL,
+                                IrOpcode.CALL_DIRECT,
                                 List.of(receiver),
                                 "pkg/Target#value!()I")),
                         IrTerminator.returnValue(callResult))));
@@ -127,35 +117,6 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                         List.of(IrInstruction.constInt(targetResult, 7)),
                         IrTerminator.returnValue(targetResult))));
 
-        MethodSignature callerSignature =
-                new MethodSignature(caller.name(), caller.descriptor());
-        MethodSignature targetSignature =
-                new MethodSignature(target.name(), target.descriptor());
-        CallResolution dynamicResolution = new CallResolution(
-                new CallSite(
-                        "dynamic",
-                        caller.owner(),
-                        callerSignature,
-                        0,
-                        InvokeKind.DYNAMIC,
-                        "java/lang/invoke/StringConcatFactory",
-                        new MethodSignature("makeConcat", "()Ljava/lang/String;")),
-                List.of(CallTarget.unknownExternal("invokedynamic bootstrap")),
-                true,
-                "dynamic");
-        CallResolution virtualResolution = new CallResolution(
-                new CallSite(
-                        "virtual",
-                        caller.owner(),
-                        callerSignature,
-                        1,
-                        InvokeKind.VIRTUAL,
-                        target.owner(),
-                        targetSignature),
-                List.of(CallTarget.known(target.owner(), targetSignature)),
-                false,
-                "single target");
-
         ProgramIrProtectionResult result =
                 new ProgramIrProtectionCoordinator().run(
                         Map.of(
@@ -168,11 +129,6 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                                 List.of(),
                                 List.of(),
                                 List.of()),
-                        new CallGraph(List.of(dynamicResolution, virtualResolution)),
-                        new DevirtualizationPlanner().plan(
-                                new CallGraph(List.of(
-                                        dynamicResolution,
-                                        virtualResolution))),
                         callIndirectionOnly(),
                         19L);
 
@@ -193,7 +149,7 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                                 == ProtectionApplicability.NOT_APPLICABLE
                         && fact.status().equals("SKIPPED")));
         assertEquals(
-                IrOpcode.CALL_VIRTUAL,
+                IrOpcode.CALL_DIRECT,
                 result.javaMethods()
                         .get(caller.methodKey())
                         .blocks()

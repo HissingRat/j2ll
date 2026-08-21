@@ -36,6 +36,7 @@ final class NativeDirectCallTargetResolver {
                 .flatMap(block -> block.instructions().stream())
                 .filter(instruction ->
                         instruction.opcode() == IrOpcode.CALL_STATIC
+                                || instruction.opcode() == IrOpcode.CALL_DIRECT
                                 || isDirectSpecialCall(instruction))
                 .map(instruction -> instruction.symbol().orElseThrow())
                 .filter(supportedLlvmMethods::contains)
