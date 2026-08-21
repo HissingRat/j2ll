@@ -48,6 +48,10 @@ public record HierarchyClass(
         return accessFlags.isFinal();
     }
 
+    public boolean isAbstract() {
+        return accessFlags.isAbstract();
+    }
+
     public Optional<HierarchyMethod> declaresMethod(MethodSignature signature) {
         return methods.stream()
                 .filter(method -> method.signature().equals(signature))

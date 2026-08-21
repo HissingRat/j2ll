@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
@@ -27,6 +29,8 @@ class ProgramCallGraphAnalysisCoordinatorTest implements Opcodes {
         var virtual = analysis.callGraph().resolutions().stream()
                 .filter(resolution -> resolution.callSite().callerOwner()
                         .equals("pkg/Caller"))
+                .filter(resolution -> resolution.callSite().declaredTarget().name()
+                        .equals("run"))
                 .findFirst()
                 .orElseThrow();
         var decision = analysis.devirtualizationPlan()
@@ -43,6 +47,13 @@ class ProgramCallGraphAnalysisCoordinatorTest implements Opcodes {
                 "pkg/Child#run!()V",
                 decision.directTarget().orElseThrow().displayName());
         assertFalse(decision.jvmDispatchRequired());
+        assertEquals(
+                java.util.Set.of("pkg/Child"),
+                analysis.runtimeTypes().instantiatedClasses());
+        assertTrue(analysis.reachability().reachableMethodKeys()
+                .contains("pkg/Caller#call!()V"));
+        assertTrue(analysis.reachability().unreachableMethodKeys()
+                .contains("pkg/Allocator#make!()V"));
     }
 
     @Test
@@ -55,6 +66,8 @@ class ProgramCallGraphAnalysisCoordinatorTest implements Opcodes {
         var virtual = analysis.callGraph().resolutions().stream()
                 .filter(resolution -> resolution.callSite().callerOwner()
                         .equals("pkg/Caller"))
+                .filter(resolution -> resolution.callSite().declaredTarget().name()
+                        .equals("run"))
                 .findFirst()
                 .orElseThrow();
         var decision = analysis.devirtualizationPlan()
@@ -82,7 +95,12 @@ class ProgramCallGraphAnalysisCoordinatorTest implements Opcodes {
                 program,
                 hierarchy,
                 metadata,
-                world);
+                world,
+                program.classes().stream()
+                        .filter(parsedClass -> parsedClass.internalName().equals("pkg/Caller"))
+                        .flatMap(parsedClass -> parsedClass.methods().stream())
+                        .filter(method -> method.hasCode())
+                        .toList());
     }
 
     private ParsedProgram program() {
@@ -100,17 +118,37 @@ class ProgramCallGraphAnalysisCoordinatorTest implements Opcodes {
                 entry("pkg/Other", methodClass("pkg/Other", "pkg/Base")),
                 entry(
                         "pkg/Caller",
-                        AsmFixtureBuilder.classWithVirtualCall(
-                                "pkg/Caller",
-                                "pkg/Base")),
+                        callerAllocatingChild()),
                 entry(
                         "pkg/Allocator",
                         AsmFixtureBuilder.classWithAllocation(
                                 "pkg/Allocator",
-                                "pkg/Child")))
+                                "pkg/Other")))
                 .stream()
                 .map(entry -> parser.parse(entry).artifact().orElseThrow())
                 .toList());
+    }
+
+    private byte[] callerAllocatingChild() {
+        ClassWriter writer = new ClassWriter(
+                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        writer.visit(V17, ACC_PUBLIC | ACC_SUPER, "pkg/Caller", null, "java/lang/Object", null);
+        MethodVisitor method = writer.visitMethod(
+                ACC_PUBLIC | ACC_STATIC,
+                "call",
+                "()V",
+                null,
+                null);
+        method.visitCode();
+        method.visitTypeInsn(NEW, "pkg/Child");
+        method.visitInsn(DUP);
+        method.visitMethodInsn(INVOKESPECIAL, "pkg/Child", "<init>", "()V", false);
+        method.visitMethodInsn(INVOKEVIRTUAL, "pkg/Base", "run", "()V", false);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private byte[] methodClass(String owner, String superName) {

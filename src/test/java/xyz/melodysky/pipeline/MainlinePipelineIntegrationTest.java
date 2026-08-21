@@ -103,9 +103,17 @@ class MainlinePipelineIntegrationTest implements Opcodes {
         assertTrue(result.successful());
         assertTrue(Files.exists(result.outputJar()));
         assertRewrittenAddIsNative(result.outputJar());
-        assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("\"status\": \"nativeLowered\""));
-        assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("\"rewriteStrategy\": \"nativeOriginal\""));
-        assertTrue(Files.readString(workspace.resolve("reports/lowering-report.json")).contains("JNI_ABI_REGISTER_NATIVES"));
+        String loweringReport = Files.readString(
+                workspace.resolve("reports/lowering-report.json"));
+        assertTrue(loweringReport.contains("\"status\": \"nativeLowered\""));
+        assertTrue(loweringReport.contains("\"rewriteStrategy\": \"nativeOriginal\""));
+        assertTrue(loweringReport.contains("JNI_ABI_REGISTER_NATIVES"));
+        JsonObject callAnalysis = JsonParser.parseString(loweringReport)
+                .getAsJsonObject()
+                .getAsJsonObject("callAnalysis");
+        assertEquals("completed", callAnalysis.get("status").getAsString());
+        assertEquals(1, callAnalysis.get("entryMethodCount").getAsInt());
+        assertTrue(callAnalysis.has("decisions"));
         assertTrue(Files.readString(workspace.resolve("reports/packaging-report.json")).contains("\"rewrittenClasses\""));
         assertTrue(Files.readString(workspace.resolve("reports/packaging-report.json")).contains("\"zigToolchain\""));
         assertTrue(Files.readString(workspace.resolve("reports/symbol-audit.json")).contains("\"status\": \"passed\""));

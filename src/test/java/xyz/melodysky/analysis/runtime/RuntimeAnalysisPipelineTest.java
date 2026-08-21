@@ -19,7 +19,10 @@ class RuntimeAnalysisPipelineTest {
                 AsmFixtureBuilder.classWithAllocation("pkg/Factory", "pkg/Product"),
                 "fixture")));
 
-        RuntimeTypeResult result = new RuntimeAnalysisPipeline().analyze(program);
+        RuntimeTypeResult result = new RuntimeAnalysisPipeline().analyze(
+                program,
+                Set.of("pkg/Factory#make!()V"),
+                Set.of());
 
         assertEquals(Set.of("pkg/Product"), result.instantiatedClasses());
         assertEquals(1, result.allocationSites().size());
@@ -32,7 +35,10 @@ class RuntimeAnalysisPipelineTest {
                 AsmFixtureBuilder.classWithReferenceArrayAllocation("pkg/Factory", "pkg/Product"),
                 "fixture")));
 
-        RuntimeTypeResult result = new RuntimeAnalysisPipeline().analyze(program);
+        RuntimeTypeResult result = new RuntimeAnalysisPipeline().analyze(
+                program,
+                Set.of("pkg/Factory#array!()V"),
+                Set.of());
 
         assertTrue(result.conservative());
         assertTrue(result.allocationSites().get(0).unknown());

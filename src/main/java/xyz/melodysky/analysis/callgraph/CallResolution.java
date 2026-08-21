@@ -11,6 +11,7 @@ public record CallResolution(
         String reason) {
     public CallResolution {
         Objects.requireNonNull(callSite, "callSite");
+        Objects.requireNonNull(reason, "reason");
         targets = targets.stream()
                 .filter(Objects::nonNull)
                 .distinct()

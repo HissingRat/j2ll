@@ -1272,6 +1272,15 @@ World model 是分析阶段对“程序类世界是否完整”的假设。它�
 - `JDK_EXTERNAL_WORLD`：应用 class 可分析，JDK class 主要作为外部 runtime/library 处理。
 - `UNKNOWN_DYNAMIC_WORLD`：允许 reflection、custom classloader、runtime generated class 改变类型世界。只能做非常保守的 dispatch 优化。
 
+Declared `CLOSED_WORLD`下的RTA以冻结的保守entry plan联合求解reachable methods与reachable
+allocation types。entry plan包括selected Code-bearing methods、non-private Code methods、
+`<clinit>`、closed-catalog JVM/JDK callbacks和exact reflection targets；unsupported reflection
+使其回退为全部Code methods。不可达method里的allocation不参与收窄，instance entry和
+reference参数会seed complete hierarchy中的具体receiver候选。normal build的
+`lowering-report.json.callAnalysis`必须包含world/RTA/fixed-point汇总、entry/reachable methods，
+以及每个exact bytecode call-site的instruction index、declared/resolved/direct target与reason。
+该证据来自同一`ProgramCallGraphAnalysis`，不得从LLVM/backend或target-count事后重建。
+
 `worldModel` 是 required config field，推荐值为 `PARTIAL_WORLD`。需要 whole-program scope 的功能统一通过 execution requirement 描述。当前 field/method internalization 在 build 中分别允许用户显式 Y 接受 current-JAR-only 边界；method decision覆盖private/protected及exact allowlisted public static，public instance仍只接受declared `CLOSED_WORLD`。两个决定独立、按稳定顺序询问。其他未实现降级的 requirement 仍应 fail closed。任何批准都必须 feature-scoped、仅本次 invocation 有效并进入 diagnostics/report，不能把配置改写为 `CLOSED_WORLD`。
 
 ### Loader And Native Registration

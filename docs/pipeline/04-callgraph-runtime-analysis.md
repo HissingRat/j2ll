@@ -58,13 +58,21 @@ CHA 是第一版主线能力。
 
 ## RTA
 
-主线通过`ProgramCallGraphAnalysisCoordinator`先建立CHA与runtime facts。只有声明为
-`CLOSED_WORLD`时才让`RtaCallResolver`收窄virtual/interface targets；partial或unknown
-world始终保留CHA结果，不能因当前allocation集合较小而假定外部subtype不存在。
+主线先通过`ProgramEntryPointPlanner`冻结保守entry集合，再由
+`ProgramCallGraphAnalysisCoordinator`建立CHA并做method/allocation固定点。entry集合包含
+本次selector命中的全部Code-bearing method、全部non-private Code方法、所有`<clinit>`、
+closed catalog识别的JVM/JDK callback和已精确解析的reflection invoke/new-instance target；
+存在unsupported reflection site时回退为全部Code方法。只有声明为`CLOSED_WORLD`时
+才让`RtaCallResolver`收窄virtual/interface targets；每一轮只扫描当前reachable method的
+allocation，已知direct/RTA target再扩展下一轮reachability，直到method与runtime-type集合
+同时稳定。未被entry-rooted call closure触达的方法不能仅凭其中的`new`影响RTA。
+instance entry及reference参数会把closed hierarchy中的具体receiver候选作为初始runtime
+type，避免把JVM调用方传入的合法subtype误判为“不可能”。partial或unknown world始终保留
+CHA结果，不能因当前allocation集合较小而假定外部subtype不存在。
 
 规则：
 
-- 从 selected/native-lowered entry methods 出发做 reachability。
+- 从冻结的selected/external/JVM-lifecycle/reflection entry methods出发做reachability。
 - 扫描 allocation site，记录 instantiated classes。
 - virtual/interface target 集合 = CHA targets 与 instantiated classes 的交集。
 - 遇到反射、JNI callback、class loading、unknown allocation 时标注 conservative mode。
@@ -101,6 +109,11 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 当前`ProgramIrProtectionCoordinator`消费这一immutable plan决定哪些call site可进入direct
 call protection facts；它不再按resolved-target数量自行重新判定。method internalization同样
 消费RTA后冻结的effective call graph，LLVM backend只消费最终plan/IR。
+
+正常build的`lowering-report.json.callAnalysis`必须逐项记录exact bytecode call-site id、
+caller、instruction index、declared/resolved/direct target、reachability与决策reason；只写
+汇总计数或仅在可选intermediates中写证据不算主线收口。`DevirtualizationPlan`与effective
+`CallGraph`必须对每个call-site id一一覆盖，duplicate/missing/kind/target drift均fail closed。
 
 当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。只要完整方法最终拥有可执行 native implementation，这种 JVM/JNI helper-backed 路径仍记录为 `nativeLowered`。当前 child JVM E2E 已覆盖 class inherited default-interface method 和 class override default method。conflict/diamond 或更复杂 descriptor、incomplete-hierarchy-sensitive shape 无法由当前 helper 保持语义时，完整 caller 记录为 `skipped`，保留原 Code，不生成 native registration，并报告明确 reason。
 

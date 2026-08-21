@@ -23,6 +23,13 @@ public final class RtaCallResolver {
         if (!callSite.kind().dispatchesDynamically()) {
             return chaResolution;
         }
+        if (chaResolution.hasUnknownTarget()) {
+            return new CallResolution(
+                    callSite,
+                    chaResolution.targets(),
+                    true,
+                    "RTA_PRESERVED_CHA_UNKNOWN");
+        }
         if (runtimeTypes.conservative()) {
             ArrayList<CallTarget> targets = new ArrayList<>(chaResolution.targets());
             targets.add(CallTarget.unknownExternal("RTA_UNKNOWN_ALLOCATION"));

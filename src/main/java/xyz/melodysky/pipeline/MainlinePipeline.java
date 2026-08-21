@@ -22,6 +22,7 @@ import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.analysis.reflection.StaticReflectionResolver;
+import xyz.melodysky.analysis.runtime.ProgramEntryPointPlanner;
 import xyz.melodysky.analysis.runtime.RuntimeTypeResult;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
@@ -329,12 +330,18 @@ public final class MainlinePipeline {
         diagnostics.addAll(metadataResult.diagnostics());
         RuntimeMetadataIndex metadataIndex = metadataResult.artifact().orElseThrow();
         ReflectionPlan reflectionPlan = new StaticReflectionResolver().resolve(program, metadataIndex);
+        List<ParsedMethod> analysisEntryMethods = new ProgramEntryPointPlanner().plan(
+                program,
+                hierarchy,
+                selection.requestedMethods(),
+                reflectionPlan);
         ProgramCallGraphAnalysis callAnalysis =
                 new ProgramCallGraphAnalysisCoordinator().analyze(
                         program,
                         hierarchy,
                         metadataIndex,
-                        config.worldModel());
+                        config.worldModel(),
+                        analysisEntryMethods);
         CallGraph callGraph = callAnalysis.callGraph();
         RuntimeTypeResult runtimeTypes = callAnalysis.runtimeTypes();
         DevirtualizationPlan devirtualizationPlan =
@@ -947,6 +954,7 @@ public final class MainlinePipeline {
                 selection,
                 ssaResults,
                 program,
+                callAnalysis,
                 layout,
                 nativeIr,
                 rewriteDecisions,
@@ -1252,6 +1260,7 @@ public final class MainlinePipeline {
             SelectorMatchResult selection,
             List<SsaMethodResult> ssaResults,
             ParsedProgram program,
+            ProgramCallGraphAnalysis callAnalysis,
             IntermediateArtifactLayout layout,
             Map<String, IrMethod> finalNativeIr,
             List<MethodRewriteDecision> rewriteDecisions,
@@ -1294,7 +1303,9 @@ public final class MainlinePipeline {
                         implementedRegistrationPlan,
                         implementationPlan),
                 selection.ineligible(),
-                selection.excluded()));
+                selection.excluded(),
+                callAnalysis,
+                config.worldModel()));
         Files.writeString(reports.resolve("packaging-report.json"), new PackagingReportWriter().packagingJson(
                 workspaceRoot.relativize(outputJar),
                 config.signaturePolicy(),

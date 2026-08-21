@@ -83,6 +83,43 @@ class RtaCallResolverTest implements Opcodes {
         assertTrue(rta.hasUnknownTarget());
     }
 
+    @Test
+    void chaUnknownTargetIsNeverDiscardedByPreciseRuntimeTypes() {
+        ClassHierarchy hierarchy = hierarchy(List.of(
+                objectEntry(),
+                entry("pkg/Base", AsmFixtureBuilder.classWithVoidMethod(
+                        "pkg/Base",
+                        "java/lang/Object",
+                        null,
+                        ACC_PUBLIC,
+                        "run",
+                        ACC_PUBLIC))));
+        CallSite site = new CallSite(
+                "site",
+                "pkg/Caller",
+                CALLER,
+                0,
+                InvokeKind.VIRTUAL,
+                "pkg/Base",
+                RUN);
+        CallResolution cha = new CallResolution(
+                site,
+                List.of(
+                        CallTarget.known("pkg/Base", RUN),
+                        CallTarget.unknownExternal("HIERARCHY_INCOMPLETE")),
+                true,
+                "CHA_VIRTUAL");
+
+        CallResolution rta = new RtaCallResolver(
+                        hierarchy,
+                        new RuntimeTypeResult(Set.of("pkg/Base"), false, List.of()))
+                .refine(cha);
+
+        assertEquals("RTA_PRESERVED_CHA_UNKNOWN", rta.reason());
+        assertEquals(cha.targets(), rta.targets());
+        assertTrue(rta.hasUnknownTarget());
+    }
+
     private ClassHierarchy hierarchy(List<ClassFileEntry> entries) {
         AsmClassParser parser = new AsmClassParser();
         ParsedProgram program = new ParsedProgram(entries.stream()

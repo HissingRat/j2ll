@@ -2,6 +2,8 @@ package xyz.melodysky.analysis.runtime;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -12,10 +14,17 @@ import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.jvm.MethodSignature;
 
 public final class AllocationSiteCollector implements Opcodes {
-    public RuntimeTypeResult collect(ParsedProgram program) {
+    public RuntimeTypeResult collect(
+            ParsedProgram program,
+            Set<String> reachableMethodKeys) {
+        Objects.requireNonNull(program, "program");
+        Objects.requireNonNull(reachableMethodKeys, "reachableMethodKeys");
         ArrayList<AllocationSite> allocationSites = new ArrayList<>();
         for (ParsedClass parsedClass : program.classes()) {
             for (ParsedMethod method : parsedClass.methods()) {
+                if (!reachableMethodKeys.contains(method.methodKey())) {
+                    continue;
+                }
                 allocationSites.addAll(collect(method));
             }
         }

@@ -313,8 +313,11 @@ xyz.melodysky.toolchain.symbols
 建议迁移：
 
 - 先实现 CHA：根据 declared receiver type 和 class hierarchy 找到保守目标集合。
-- 已接入的 RTA 从 runtime allocation facts 收窄 CHA；只有 declared `CLOSED_WORLD`
-  才允许收窄，partial/unknown world继续保留保守CHA结果。
+- 已接入的RTA从冻结的保守entry plan做reachable-method/allocation固定点后收窄CHA；roots
+  包含selected、non-private、`<clinit>`、known JVM callback与exact reflection target，遇到
+  unsupported reflection则回退全部Code methods。只有declared `CLOSED_WORLD`才允许收窄，
+  partial/unknown world继续保留保守CHA结果。不可达method内的allocation不得污染runtime
+  type集合，instance/reference entry边界必须seed closed hierarchy中的具体receiver候选。
 - Points-to 和 escape analysis 保持可选，不影响第一版主线。
 - Devirtualization 输出 `DevirtualizationPlan`，只描述哪些 call site 可以变成 direct/special/static-like call，不直接改 ASM。
 
@@ -326,7 +329,8 @@ xyz.melodysky.toolchain.symbols
 
 当前主线由`ProgramCallGraphAnalysisCoordinator`冻结CHA/RTA与devirtualization结果，
 `ProgramIrProtectionCoordinator`只消费该plan决定direct-call protection facts，backend不再
-从target数量临时重建dispatch决策。
+从target数量临时重建dispatch决策。正常lowering report同时保存逐exact-call-site的
+resolution/devirtualization/reachability证据，plan与effective graph缺失、重复或漂移均拒绝。
 
 ### Phase 5：栈式 Bytecode -> 三地址 SSA IR
 

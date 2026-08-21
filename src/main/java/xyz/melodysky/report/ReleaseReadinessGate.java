@@ -62,6 +62,8 @@ public final class ReleaseReadinessGate {
                 "fieldInternalization.decisions",
                 "\"decisions\"",
                 "FIELD_INTERNALIZATION_REPORTED");
+        checks.add(new CallAnalysisReportGate().verify(
+                reports.resolve("lowering-report.json")));
         checkArtifactAuditStatus(checks, reports);
         checkReportIndexIntegrity(checks, workspaceRoot, reports);
         checkContains(checks, reports.resolve("packaging-report.json"), "packaging.signatureAction", "\"signatureAction\"", "SIGNATURE_ACTION_REPORTED");

@@ -18,6 +18,13 @@ public record CallSite(
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(declaredOwner, "declaredOwner");
         Objects.requireNonNull(declaredTarget, "declaredTarget");
+        if (id.isBlank()) {
+            throw new IllegalArgumentException("call-site id must not be blank");
+        }
+        if (instructionIndex < 0) {
+            throw new IllegalArgumentException(
+                    "call-site instructionIndex must be non-negative");
+        }
     }
 
     @Override

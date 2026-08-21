@@ -7,10 +7,13 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
+import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticHints;
 import xyz.melodysky.diagnostic.DiagnosticLocation;
 import xyz.melodysky.pipeline.MethodEligibility;
+import xyz.melodysky.pipeline.ProgramCallGraphAnalysis;
 
 public final class ReportJsonWriter {
     private static final Gson GSON = new GsonBuilder()
@@ -33,6 +36,15 @@ public final class ReportJsonWriter {
             List<LoweringReportMethod> requestedMethods,
             List<MethodEligibility> ineligible,
             List<MethodEligibility> excluded) {
+        return loweringJson(requestedMethods, ineligible, excluded, null, null);
+    }
+
+    public String loweringJson(
+            List<LoweringReportMethod> requestedMethods,
+            List<MethodEligibility> ineligible,
+            List<MethodEligibility> excluded,
+            ProgramCallGraphAnalysis callAnalysis,
+            AnalysisWorld world) {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
         root.addProperty("reportVersion", 1);
@@ -47,6 +59,13 @@ public final class ReportJsonWriter {
         root.add("requestedMethods", requestedArray);
         root.add("ineligible", eligibilityArray(ineligible));
         root.add("excluded", eligibilityArray(excluded));
+        if (callAnalysis != null) {
+            root.add(
+                    "callAnalysis",
+                    new CallAnalysisReportWriter().json(
+                            callAnalysis,
+                            Objects.requireNonNull(world, "world")));
+        }
         return GSON.toJson(root) + "\n";
     }
 

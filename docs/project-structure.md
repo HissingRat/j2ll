@@ -381,11 +381,18 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 - `CallGraphBuilder`：统一构建入口。
 - `ChaCallResolver`：CHA resolution。
 - `RtaCallResolver`：RTA-aware resolution。
+- `ProgramEntryPointPlanner`：冻结selected、外部可调用、JVM lifecycle/callback及reflection
+  roots；unsupported reflection回退全部Code methods。
+- `EntryRootedRtaAnalyzer`：从冻结的保守roots联合求解method reachability与
+  reachable allocation/runtime-type固定点。
+- `ReachabilityAnalyzer` / `ReachabilityResult`：partial-world CHA closure及统一可报告的
+  entry/reachable/unreachable method集合。
 - `CallResolutionPolicy`：unknown/external/helper-or-skipped policy。
 - `DevirtualizationPlanner`：生成 plan。
 - `DevirtualizationPlan`：call site 到 direct/JNI-dispatch/skipped decision。
 - `ProgramCallGraphAnalysisCoordinator`：主线唯一协调入口；先建立 CHA 与 runtime facts，
-  仅在 declared `CLOSED_WORLD` 下应用 RTA 收窄，再冻结 devirtualization plan。
+  仅在 declared `CLOSED_WORLD` 下应用entry-rooted RTA收窄，再冻结exact-call-site
+  devirtualization plan；正常lowering report消费同一artifact，不重新推断。
 
 应抽工具：
 

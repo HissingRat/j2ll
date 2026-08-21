@@ -18,5 +18,21 @@ public record DevirtualizationDecision(
         resolvedTargets = List.copyOf(Objects.requireNonNull(resolvedTargets, "resolvedTargets"));
         Objects.requireNonNull(directTarget, "directTarget");
         Objects.requireNonNull(reason, "reason");
+        List<CallTarget> stableTargets = resolvedTargets;
+        directTarget.ifPresent(target -> {
+            if (!stableTargets.contains(target)) {
+                throw new IllegalArgumentException(
+                        "directTarget must be present in resolvedTargets");
+            }
+        });
+        if (directTarget.isPresent()
+                && (directNativeTargetUnavailable || jvmDispatchRequired)) {
+            throw new IllegalArgumentException(
+                    "direct devirtualization cannot require JVM dispatch or report an unavailable target");
+        }
+        if (directTarget.isEmpty() && !directNativeTargetUnavailable) {
+            throw new IllegalArgumentException(
+                    "non-direct devirtualization decision must report unavailable direct target");
+        }
     }
 }

@@ -67,6 +67,23 @@ class ReleaseReadinessGateTest {
     }
 
     @Test
+    void exactCallAnalysisIsRequiredReadinessEvidence() throws Exception {
+        writeCompleteReports(temp);
+        Files.writeString(
+                temp.resolve("reports/lowering-report.json"),
+                "{\"requestedMethods\":[],\"ineligible\":[],\"excluded\":[]}\n");
+        new ReportIndexWriter().write(temp);
+
+        ReleaseReadinessResult result = new ReleaseReadinessGate().evaluate(temp);
+        String json = new ReleaseReadinessWriter().json(result);
+
+        assertFalse(result.passed(), json);
+        assertTrue(json.contains("\"name\": \"callAnalysis.decisions\""), json);
+        assertTrue(json.contains(
+                "\"reasonCode\": \"CALL_ANALYSIS_MISSING_OR_INVALID\""), json);
+    }
+
+    @Test
     void strictSuiteModeRequiresReleaseSuiteSummary() throws Exception {
         writeCompleteReports(temp);
 
@@ -439,7 +456,18 @@ class ReleaseReadinessGateTest {
         Files.writeString(reports.resolve("known-blockers.json"), """
                 {"blockers":[{"id":"raw","reasonCode":"UNSAFE_RAW_MEMORY_UNSUPPORTED","severity":"rc-blocker","targetMilestone":"rc","currentBehavior":"skipped","reportLocation":"reports/skipped-method-report.json","suggestedFuturePath":"helper"}]}
                 """);
-        Files.writeString(reports.resolve("lowering-report.json"), "{\"methods\":[]}\n");
+        Files.writeString(
+                reports.resolve("lowering-report.json"),
+                """
+                {"methods":[],"callAnalysis":{
+                  "status":"completed","worldModel":"PARTIAL_WORLD","rtaApplied":false,
+                  "fixedPointIterations":0,"entryMethodCount":0,"reachableMethodCount":0,
+                  "unreachableMethodCount":0,"instantiatedClassCount":0,
+                  "runtimeTypesConservative":false,"callSiteCount":0,
+                  "directCallSiteCount":0,"jvmDispatchCallSiteCount":0,
+                  "unknownTargetCallSiteCount":0,"entryMethods":[],
+                  "reachableMethods":[],"decisions":[]}}
+                """);
         Files.writeString(reports.resolve("opcode-support-matrix.json"), "{\"opcodes\":[]}\n");
         Files.writeString(reports.resolve("packaging-report.json"), successfulPackagingReport());
         Files.writeString(reports.resolve("protection-report.json"), "{\"passes\":[]}\n");
