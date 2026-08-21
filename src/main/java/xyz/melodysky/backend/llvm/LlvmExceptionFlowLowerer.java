@@ -38,10 +38,6 @@ final class LlvmExceptionFlowLowerer {
     private final RuntimeTokenMapper runtimeTokens;
     private int generatedBlockOrdinal;
 
-    LlvmExceptionFlowLowerer(Set<String> existingBlockNames) {
-        this(existingBlockNames, RuntimeTokenMapper.compatibility());
-    }
-
     LlvmExceptionFlowLowerer(
             Set<String> existingBlockNames,
             RuntimeTokenMapper runtimeTokens) {

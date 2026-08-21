@@ -23,7 +23,7 @@ class MethodRewritePlannerTest implements Opcodes {
     void ordinaryClassMethodUsesNativeOriginal() {
         ParsedClass parsedClass = parsed("pkg/Foo", AsmFixtureBuilder.classWithIntMethod("pkg/Foo", "answer", 1));
 
-        MethodRewriteDecision decision = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision decision = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();
@@ -37,8 +37,8 @@ class MethodRewritePlannerTest implements Opcodes {
         ParsedClass constructorClass = parsed("pkg/Foo", AsmFixtureBuilder.minimalClass("pkg/Foo"));
         ParsedClass clinitClass = parsed("pkg/WithClinit", AsmFixtureBuilder.classWithClassInitializer("pkg/WithClinit"));
 
-        assertEquals(MethodRewriteStrategy.CONSTRUCTOR_STUB, planner.planClass(constructorClass).get(0).strategy());
-        assertEquals(MethodRewriteStrategy.CLASS_INITIALIZER_STUB, planner.planClass(clinitClass).get(0).strategy());
+        assertEquals(MethodRewriteStrategy.CONSTRUCTOR_STUB, planner.planClass(constructorClass, 0x6a326c6cL).get(0).strategy());
+        assertEquals(MethodRewriteStrategy.CLASS_INITIALIZER_STUB, planner.planClass(clinitClass, 0x6a326c6cL).get(0).strategy());
     }
 
     @Test
@@ -95,7 +95,7 @@ class MethodRewritePlannerTest implements Opcodes {
     void interfaceDefaultMethodUsesInterfaceStubAndAbstractIsNotApplicable() {
         ParsedClass parsedClass = parsed("pkg/Api", AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"));
 
-        var decisions = planner.planClass(parsedClass);
+        var decisions = planner.planClass(parsedClass, 0x6a326c6cL);
 
         assertEquals(MethodRewriteStrategy.NOT_APPLICABLE, decisions.stream()
                 .filter(decision -> decision.method().name().equals("call"))
@@ -118,7 +118,7 @@ class MethodRewritePlannerTest implements Opcodes {
     void interfaceDefaultStaticAndPrivateMethodsWithCodeUseStubs() {
         ParsedClass parsedClass = parsed("pkg/CodeApi", interfaceWithCodeMethods("pkg/CodeApi"));
 
-        var decisions = planner.planClass(parsedClass);
+        var decisions = planner.planClass(parsedClass, 0x6a326c6cL);
 
         assertEquals(3, decisions.size());
         assertTrue(decisions.stream().allMatch(decision ->
@@ -164,7 +164,7 @@ class MethodRewritePlannerTest implements Opcodes {
                 "call",
                 ACC_PUBLIC | ACC_NATIVE));
 
-        MethodRewriteDecision decision = planner.planClass(parsedClass).get(0);
+        MethodRewriteDecision decision = planner.planClass(parsedClass, 0x6a326c6cL).get(0);
 
         assertEquals(MethodRewriteStrategy.NOT_APPLICABLE, decision.strategy());
         assertEquals("ALREADY_NATIVE", decision.reasonCode());
@@ -174,7 +174,7 @@ class MethodRewritePlannerTest implements Opcodes {
     void registrationPlanSkipsNotApplicableAndUsesHelperNames() {
         ParsedClass parsedClass = parsed("pkg/Api", AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"));
 
-        NativeRegistrationPlan plan = new NativeRegistrationPlanner().plan(planner.planClass(parsedClass));
+        NativeRegistrationPlan plan = new NativeRegistrationPlanner().plan(planner.planClass(parsedClass, 0x6a326c6cL));
 
         assertEquals(1, plan.entries().size());
         assertTrue(plan.entries().get(0).methodName().matches("j2ll_m_[0-9a-f]{32}"));

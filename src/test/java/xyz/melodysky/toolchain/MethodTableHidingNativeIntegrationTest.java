@@ -73,7 +73,9 @@ final class MethodTableHidingNativeIntegrationTest {
         String source = new HostJniCSourceGenerator().generate(
                 fixture.implementationPlan(),
                 fixture.runtimeLoaderPlan(),
-                hidingPlan);
+                hidingPlan,
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .nativeTextBuildKey());
 
         assertGeneratedSourceMatchesPlan(source, fixture, hidingPlan);
 
@@ -88,7 +90,9 @@ final class MethodTableHidingNativeIntegrationTest {
                 () -> new HostJniCSourceGenerator().generate(
                         fixture.implementationPlan(),
                         fixture.runtimeLoaderPlan(),
-                        mismatched));
+                        mismatched,
+                        xyz.melodysky.testsupport.TestProtectionMaterials
+                                .nativeTextBuildKey()));
         assertTrue(mismatch.getMessage().contains("does not match"));
 
         MethodTableHidingPlan enabledButEmpty =
@@ -98,7 +102,9 @@ final class MethodTableHidingNativeIntegrationTest {
                 () -> new HostJniCSourceGenerator().generate(
                         fixture.implementationPlan(),
                         fixture.runtimeLoaderPlan(),
-                        enabledButEmpty));
+                        enabledButEmpty,
+                        xyz.melodysky.testsupport.TestProtectionMaterials
+                                .nativeTextBuildKey()));
         assertTrue(emptyMismatch.getMessage().contains("does not cover"));
     }
 
@@ -312,13 +318,13 @@ final class MethodTableHidingNativeIntegrationTest {
                 parse(OWNER_BETA, betaClass()));
         MethodRewritePlanner rewritePlanner = new MethodRewritePlanner();
         List<MethodRewriteDecision> decisions = classes.stream()
-                .flatMap(parsedClass -> rewritePlanner.planClass(parsedClass).stream())
+                .flatMap(parsedClass -> rewritePlanner.planClass(parsedClass, 0x6a326c6cL).stream())
                 .toList();
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(decisions);
         Map<String, IrMethod> irMethods = new LinkedHashMap<>();
         for (MethodRewriteDecision decision : decisions) {
-            IrMethod method = new BytecodeToSsaLowerer()
+            IrMethod method = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                     .lower(new MethodCfgBuilder().build(decision.method()).artifact().orElseThrow())
                     .artifact()
                     .orElseThrow()
@@ -326,7 +332,7 @@ final class MethodTableHidingNativeIntegrationTest {
                     .orElseThrow();
             irMethods.put(decision.method().methodKey(), method);
         }
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 decisions,
                 irMethods);

@@ -187,7 +187,9 @@ final class BuildProtectionRealZigDiversityIntegrationTest {
                 new NativeImplementationPlanner(
                         mangler,
                         BusinessStringSymbolMapper.fromBytes(
-                                businessTextKey.bytes()))
+                                businessTextKey.bytes()),
+                        xyz.melodysky.runtime.RuntimeTokenMapper.fromBytes(
+                                nativeTextKey.bytes()))
                         .plan(
                                 registrationPlan,
                                 semantic.decisions(),
@@ -277,13 +279,13 @@ final class BuildProtectionRealZigDiversityIntegrationTest {
                 .artifact()
                 .orElseThrow();
         List<MethodRewriteDecision> decisions =
-                new MethodRewritePlanner().planClass(parsed).stream()
+                new MethodRewritePlanner().planClass(parsed, 0x6a326c6cL).stream()
                         .filter(decision ->
                                 decision.method().name().equals("selectMerged"))
                         .toList();
         LinkedHashMap<String, IrMethod> irMethods = new LinkedHashMap<>();
         for (MethodRewriteDecision decision : decisions) {
-            IrMethod irMethod = new BytecodeToSsaLowerer()
+            IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                     .lower(new MethodCfgBuilder()
                             .build(decision.method())
                             .artifact()

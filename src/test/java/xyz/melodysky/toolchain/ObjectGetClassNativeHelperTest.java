@@ -34,7 +34,7 @@ class ObjectGetClassNativeHelperTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -46,7 +46,7 @@ class ObjectGetClassNativeHelperTest implements Opcodes {
         assertTrue(implementation.passesJniEnv());
 
         String llvm = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass("pkg/ObjectHelpers", List.of(irMethod))));
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/ObjectHelpers", List.of(irMethod))));
         assertTrue(llvm.contains(
                 "declare ptr @j2ll_rt_object_get_class(ptr, ptr) ; objectGetClass"));
         assertTrue(llvm.contains(
@@ -61,7 +61,7 @@ class ObjectGetClassNativeHelperTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -92,7 +92,7 @@ class ObjectGetClassNativeHelperTest implements Opcodes {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals(name))
                 .findFirst()
                 .orElseThrow();
@@ -103,7 +103,7 @@ class ObjectGetClassNativeHelperTest implements Opcodes {
                 .filter(candidate -> candidate.name().equals(name))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()

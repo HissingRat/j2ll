@@ -20,7 +20,7 @@ class InterfaceMethodHelperClassGeneratorTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsed).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsed, 0x6a326c6cL).stream()
                 .filter(candidate -> candidate.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();

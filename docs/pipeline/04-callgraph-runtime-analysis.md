@@ -58,7 +58,9 @@ CHA 是第一版主线能力。
 
 ## RTA
 
-RTA 是第二步增强。
+主线通过`ProgramCallGraphAnalysisCoordinator`先建立CHA与runtime facts。只有声明为
+`CLOSED_WORLD`时才让`RtaCallResolver`收窄virtual/interface targets；partial或unknown
+world始终保留CHA结果，不能因当前allocation集合较小而假定外部subtype不存在。
 
 规则：
 
@@ -95,6 +97,10 @@ Escape analysis 只在 points-to facts 足够稳定后加入。输出应当是 o
 - whether the unsupported call shape makes the complete caller method `skipped`
 
 如果未来引入 guarded devirtualization，plan 还需要描述 guard condition 和 slow-path target。第一版可以只做 unguarded safe devirtualization。
+
+当前`ProgramIrProtectionCoordinator`消费这一immutable plan决定哪些call site可进入direct
+call protection facts；它不再按resolved-target数量自行重新判定。method internalization同样
+消费RTA后冻结的effective call graph，LLVM backend只消费最终plan/IR。
 
 当前 JVM-hosted runtime dispatch helper subset 不实现 native vtable 或 object layout。对无法安全 devirtualize 但 descriptor 在 helper matrix 内的 virtual/interface call，plan/lowering 可以选择 `DISPATCH_HELPER` / `DEFERRED_DISPATCH_HELPER`：no-arg int、int-arg int、reference return、single-reference-argument/reference-return 通过 tokenized JNI helper 执行 `GetObjectClass` / `GetMethodID` / `Call<Type>Method`，保留 JVM override/interface dispatch 和 pending-exception 语义。只要完整方法最终拥有可执行 native implementation，这种 JVM/JNI helper-backed 路径仍记录为 `nativeLowered`。当前 child JVM E2E 已覆盖 class inherited default-interface method 和 class override default method。conflict/diamond 或更复杂 descriptor、incomplete-hierarchy-sensitive shape 无法由当前 helper 保持语义时，完整 caller 记录为 `skipped`，保留原 Code，不生成 native registration，并报告明确 reason。
 

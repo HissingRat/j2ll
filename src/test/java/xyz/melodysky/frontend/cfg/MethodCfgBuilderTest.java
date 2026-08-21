@@ -10,7 +10,6 @@ import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassFileEntry;
 import xyz.melodysky.frontend.classfile.ParsedClass;
 import xyz.melodysky.frontend.classfile.ParsedMethod;
-import xyz.melodysky.pipeline.StageValidation;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.testsupport.ExceptionFlowAsmFixtures;
 
@@ -145,9 +144,6 @@ class MethodCfgBuilderTest {
     }
 
     private void assertValidatorPasses(MethodCfgResult result) {
-        var validated = StageValidation.validate(
-                xyz.melodysky.pipeline.StageResult.complete(xyz.melodysky.diagnostic.DiagnosticStage.CFG, result),
-                new BytecodeCfgValidator());
-        assertEquals(List.of(), validated.diagnostics());
+        assertEquals(List.of(), new BytecodeCfgValidator().validate(result));
     }
 }

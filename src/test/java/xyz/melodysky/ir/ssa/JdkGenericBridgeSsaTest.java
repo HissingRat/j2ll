@@ -39,7 +39,7 @@ class JdkGenericBridgeSsaTest {
                     .filter(method -> method.name().equals(spec.wrapperName()))
                     .findFirst()
                     .orElseThrow();
-            var result = new BytecodeToSsaLowerer().lower(
+            var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(
                     new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow());
             assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status(), spec.wrapperName());
             assertTrue(result.diagnostics().isEmpty(), () -> spec.wrapperName() + ": " + result.diagnostics());

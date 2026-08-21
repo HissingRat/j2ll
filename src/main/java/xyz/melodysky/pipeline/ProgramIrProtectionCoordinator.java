@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.function.Function;
 import xyz.melodysky.analysis.callgraph.CallGraph;
 import xyz.melodysky.analysis.callgraph.CallResolution;
+import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
 import xyz.melodysky.analysis.callgraph.InvokeKind;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.config.IrProtectionConfig;
@@ -70,6 +71,7 @@ public final class ProgramIrProtectionCoordinator {
             ParsedProgram parsedProgram,
             ReflectionPlan reflectionPlan,
             CallGraph callGraph,
+            DevirtualizationPlan devirtualizationPlan,
             IrProtectionConfig config,
             long seed) {
         Map<String, IrMethod> methods = orderedMethods(inputMethods);
@@ -105,7 +107,10 @@ public final class ProgramIrProtectionCoordinator {
         boolean callIndirectionEnabled = config.enabled() && config.callIndirection();
         IrCallIndirectionResult callIndirection = new IrCallIndirectionPass().run(
                 callInput,
-                directCallFacts(callInput, callGraph),
+                directCallFacts(
+                        callInput,
+                        callGraph,
+                        devirtualizationPlan),
                 new IrNativeDirectTargets(nativeFunctionAbis),
                 IrCallIndirectionMode.TABLE,
                 seed,
@@ -133,7 +138,10 @@ public final class ProgramIrProtectionCoordinator {
                 callIndirection.diagnostics());
     }
 
-    private IrDirectCallFacts directCallFacts(IrProgram program, CallGraph callGraph) {
+    private IrDirectCallFacts directCallFacts(
+            IrProgram program,
+            CallGraph callGraph,
+            DevirtualizationPlan devirtualizationPlan) {
         ArrayList<IrDirectCallFact> facts = new ArrayList<>();
         for (IrClass irClass : program.classes()) {
             for (IrMethod method : irClass.methods()) {
@@ -154,17 +162,28 @@ public final class ProgramIrProtectionCoordinator {
                                         .isPresent())
                                 .filter(resolution -> declaredTarget(resolution).equals(declaredTarget))
                                 .toList();
-                        Set<String> knownTargets = resolutions.stream()
-                                .flatMap(resolution -> resolution.targets().stream())
-                                .filter(target -> !target.unknownExternal())
+                        List<xyz.melodysky.analysis.callgraph.DevirtualizationDecision>
+                                decisions = resolutions.stream()
+                                        .map(resolution -> devirtualizationPlan
+                                                .decisionFor(
+                                                        resolution.callSite().id()))
+                                        .flatMap(Optional::stream)
+                                        .toList();
+                        Set<String> knownTargets = decisions.stream()
+                                .flatMap(decision -> decision.directTarget().stream())
                                 .map(target -> target.owner().orElseThrow()
                                         + "#"
                                         + target.signature().orElseThrow().name()
                                         + "!"
                                         + target.signature().orElseThrow().descriptor())
                                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-                        boolean unknown = resolutions.stream().anyMatch(CallResolution::hasUnknownTarget);
-                        if (resolutions.isEmpty() || unknown || knownTargets.size() != 1) {
+                        boolean unavailable = decisions.size() != resolutions.size()
+                                || decisions.stream().anyMatch(decision ->
+                                        decision.directNativeTargetUnavailable()
+                                                || decision.jvmDispatchRequired());
+                        if (resolutions.isEmpty()
+                                || unavailable
+                                || knownTargets.size() != 1) {
                             continue;
                         }
                         facts.add(IrDirectCallFact.devirtualized(

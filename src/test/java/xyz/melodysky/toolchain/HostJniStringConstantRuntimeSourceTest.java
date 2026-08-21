@@ -79,13 +79,13 @@ final class HostJniStringConstantRuntimeSourceTest {
     }
 
     @Test
-    void buildKeyDiversifiesBusinessCiphertextAndCompatibilityOverloadIsStable() {
+    void buildKeyDiversifiesBusinessCiphertextAndExplicitTestKeyIsStable() {
         List<HostJniCSourceGenerator.Binding> bindings =
                 List.of(binding(stringMethod("value", "same-sensitive-value")));
         StringBuilder first = new StringBuilder();
         StringBuilder second = new StringBuilder();
-        StringBuilder compatibilityOne = new StringBuilder();
-        StringBuilder compatibilityTwo = new StringBuilder();
+        StringBuilder stableOne = new StringBuilder();
+        StringBuilder stableTwo = new StringBuilder();
 
         HostJniStringConstantRuntimeSource.append(
                 first,
@@ -95,11 +95,19 @@ final class HostJniStringConstantRuntimeSourceTest {
                 second,
                 bindings,
                 NativeTextBuildKey.fromUtf8("build-two"));
-        HostJniStringConstantRuntimeSource.append(compatibilityOne, bindings);
-        HostJniStringConstantRuntimeSource.append(compatibilityTwo, bindings);
+        NativeTextBuildKey stableKey = NativeTextBuildKey.fromUtf8(
+                "stable-build");
+        HostJniStringConstantRuntimeSource.append(
+                stableOne,
+                bindings,
+                stableKey);
+        HostJniStringConstantRuntimeSource.append(
+                stableTwo,
+                bindings,
+                stableKey);
 
         assertNotEquals(first.toString(), second.toString());
-        assertEquals(compatibilityOne.toString(), compatibilityTwo.toString());
+        assertEquals(stableOne.toString(), stableTwo.toString());
         assertNotEquals(
                 helperDefinition(first.toString()),
                 helperDefinition(second.toString()));
@@ -133,7 +141,11 @@ final class HostJniStringConstantRuntimeSourceTest {
         String helper = BusinessStringConstantRef.of("a\0\uD83D\uDE00")
                 .helperSymbol(mapper);
         String llvm = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer(new LlvmNameMangler(), mapper)
+                new LlvmModuleLowerer(
+                        new LlvmNameMangler(),
+                        mapper,
+                        xyz.melodysky.runtime.RuntimeTokenMapper.fromBytes(
+                                buildKey.bytes()))
                         .lowerClass(new IrClass("sample/Strings", List.of(method))));
         StringBuilder source = new StringBuilder();
 

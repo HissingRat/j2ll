@@ -46,7 +46,7 @@ class HostJniCSourceGeneratorTest {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(
@@ -107,12 +107,13 @@ class HostJniCSourceGeneratorTest {
                 AsmFixtureBuilder.classWithStaticFieldRead("pkg/StaticFields"));
         MethodRewriteDecision decision = decision(parsedClass, "getValue");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod(parsedClass, "getValue")));
 
-        String source = new HostJniCSourceGenerator().generate(implementationPlan);
+        String source = xyz.melodysky.testsupport.TestProtectionMaterials
+                .hostJniSource(implementationPlan);
         List<String> orderedMarkers = List.of(
                 "static void j2ll_throw_new",
                 "int32_t j2ll_rt_div_i32",
@@ -166,8 +167,9 @@ class HostJniCSourceGeneratorTest {
                 List.of(),
                 Optional.of(method));
 
-        String source = new HostJniCSourceGenerator().generate(
-                new NativeImplementationPlan(List.of(implementation)));
+        String source = xyz.melodysky.testsupport.TestProtectionMaterials
+                .hostJniSource(
+                        new NativeImplementationPlan(List.of(implementation)));
 
         assertEquals(
                 2,
@@ -194,7 +196,7 @@ class HostJniCSourceGeneratorTest {
                 new NativeRegistrationPlanner().plan(
                         List.of(staticLiteral, instanceLiteral));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(staticLiteral, instanceLiteral),
                         Map.of(
@@ -266,14 +268,15 @@ class HostJniCSourceGeneratorTest {
         MethodRewriteDecision staticDecision = decision(staticClass, "getValue");
         MethodRewriteDecision instanceDecision = decision(instanceClass, "read");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(staticDecision, instanceDecision));
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(staticDecision, instanceDecision),
                 Map.of(
                         staticDecision.method().methodKey(), irMethod(staticClass, "getValue"),
                         instanceDecision.method().methodKey(), irMethod(instanceClass, "read")));
 
-        String source = new HostJniCSourceGenerator().generate(implementationPlan);
+        String source = xyz.melodysky.testsupport.TestProtectionMaterials
+                .hostJniSource(implementationPlan);
         NativeMethodImplementation staticImplementation = implementationPlan
                 .implementationFor(staticDecision.method().methodKey())
                 .orElseThrow();
@@ -336,7 +339,7 @@ class HostJniCSourceGeneratorTest {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
         NativeMethodImplementation planned =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                                 registrationPlan,
                                 List.of(decision),
                                 Map.of(
@@ -389,7 +392,7 @@ class HostJniCSourceGeneratorTest {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(
@@ -458,11 +461,15 @@ class HostJniCSourceGeneratorTest {
                 NativeTextBuildKey.fromUtf8("registration-domain-b");
         NativeImplementationPlan planA = new NativeImplementationPlanner(
                 new LlvmNameMangler(),
-                BusinessStringSymbolMapper.fromBytes(businessA.bytes()))
+                BusinessStringSymbolMapper.fromBytes(businessA.bytes()),
+                xyz.melodysky.runtime.RuntimeTokenMapper.fromBytes(
+                        generalKey.bytes()))
                 .plan(registrationPlan, List.of(decision), methods);
         NativeImplementationPlan planB = new NativeImplementationPlanner(
                 new LlvmNameMangler(),
-                BusinessStringSymbolMapper.fromBytes(businessB.bytes()))
+                BusinessStringSymbolMapper.fromBytes(businessB.bytes()),
+                xyz.melodysky.runtime.RuntimeTokenMapper.fromBytes(
+                        generalKey.bytes()))
                 .plan(registrationPlan, List.of(decision), methods);
         MethodTableHidingPlan methodTablePlan =
                 new MethodTableHidingPlanner().plan(
@@ -555,7 +562,7 @@ class HostJniCSourceGeneratorTest {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(
@@ -567,7 +574,9 @@ class HostJniCSourceGeneratorTest {
 
         HostJniAllocationRuntimeSource.append(
                 source,
-                List.of(binding(implementation)));
+                List.of(binding(implementation)),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .runtimeTokens());
 
         assertTrue(source.toString().contains("\"[B\""));
         assertTrue(source.toString().contains(
@@ -586,7 +595,7 @@ class HostJniCSourceGeneratorTest {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals(name))
                 .findFirst()
                 .orElseThrow();
@@ -597,7 +606,7 @@ class HostJniCSourceGeneratorTest {
                 .filter(candidate -> candidate.name().equals(name))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()

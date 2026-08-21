@@ -153,7 +153,7 @@ class ActiveUseCarrierFusionPassTest {
                 .run(input, PassContext.empty());
         IrMethod fused = result.artifact().orElseThrow();
         String llvm = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(
                         fused.owner(),
                         List.of(fused))));
 
@@ -288,7 +288,7 @@ class ActiveUseCarrierFusionPassTest {
                 .filter(candidate -> candidate.name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()

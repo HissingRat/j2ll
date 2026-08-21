@@ -20,8 +20,6 @@ class FakeJniRegistrationProbeTest {
         RegistrationCaptureMetric metric = probe.observe(
                 List.of("JNI_OnLoad"),
                 observer -> fixtureJniOnLoad(vm.attach(observer)));
-        String json = new RegistrationCaptureReportWriter().json(metric);
-
         assertTrue(metric.passed());
         assertEquals(
                 FakeJniRegistrationProbe.CAPTURED_VIA_JNI_ONLOAD,
@@ -31,12 +29,6 @@ class FakeJniRegistrationProbeTest {
         assertEquals(3, metric.capturedBindingCount());
         assertTrue(metric.mappingAvailableOnlyAfterJniOnLoadObservation());
         assertFalse(metric.stableDirectRegistrationExportPresent());
-        assertTrue(json.contains("\"observationChannel\": \"dynamicFakeJniOnLoad\""));
-        assertTrue(json.contains("\"capturedBindingCount\": 3"));
-        assertFalse(json.contains("app/First"));
-        assertFalse(json.contains("authenticate"));
-        assertFalse(json.contains("(Ljava/lang/String;)Z"));
-        assertFalse(json.contains("0x140010000"));
     }
 
     @Test

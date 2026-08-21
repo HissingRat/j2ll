@@ -13,6 +13,8 @@ import xyz.melodysky.analysis.callgraph.CallGraph;
 import xyz.melodysky.analysis.callgraph.CallResolution;
 import xyz.melodysky.analysis.callgraph.CallSite;
 import xyz.melodysky.analysis.callgraph.CallTarget;
+import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
+import xyz.melodysky.analysis.callgraph.DevirtualizationPlanner;
 import xyz.melodysky.analysis.callgraph.InvokeKind;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.config.IrProtectionConfig;
@@ -78,6 +80,7 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                 new ParsedProgram(List.of()),
                 new ReflectionPlan(List.of(), List.of(), List.of(), List.of()),
                 new CallGraph(List.of()),
+                new DevirtualizationPlan(List.of()),
                 callIndirectionOnly(),
                 29L);
 
@@ -166,6 +169,10 @@ class ProgramIrProtectionCoordinatorTest implements Opcodes {
                                 List.of(),
                                 List.of()),
                         new CallGraph(List.of(dynamicResolution, virtualResolution)),
+                        new DevirtualizationPlanner().plan(
+                                new CallGraph(List.of(
+                                        dynamicResolution,
+                                        virtualResolution))),
                         callIndirectionOnly(),
                         19L);
 

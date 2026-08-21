@@ -78,7 +78,7 @@ class InterfaceMethodHelperCollisionValidatorTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        return new MethodRewritePlanner().planClass(parsed).stream()
+        return new MethodRewritePlanner().planClass(parsed, 0x6a326c6cL).stream()
                 .filter(decision -> decision.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();

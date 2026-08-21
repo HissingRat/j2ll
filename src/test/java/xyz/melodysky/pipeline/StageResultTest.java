@@ -30,27 +30,4 @@ class StageResultTest {
         assertEquals(List.of(skipped), result.diagnostics());
     }
 
-    @Test
-    void validatorDiagnosticsAreMergedIntoStageResult() {
-        StageResult<String> result = StageResult.complete(DiagnosticStage.CFG, "cfg");
-        StageValidator<String> validator = new StageValidator<>() {
-            @Override
-            public DiagnosticStage stage() {
-                return DiagnosticStage.VALIDATION;
-            }
-
-            @Override
-            public List<Diagnostic> validate(String artifact) {
-                return List.of(Diagnostic.info(
-                        DiagnosticStage.VALIDATION,
-                        DiagnosticCode.BOOTSTRAP_VALIDATION,
-                        "validated " + artifact));
-            }
-        };
-
-        StageResult<String> validated = StageValidation.validate(result, validator);
-
-        assertEquals(1, validated.diagnostics().size());
-        assertEquals(DiagnosticStage.VALIDATION, validated.diagnostics().get(0).stage());
-    }
 }

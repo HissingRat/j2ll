@@ -2,7 +2,6 @@ package xyz.melodysky.toolchain.symbols;
 
 import java.util.ArrayList;
 import java.util.List;
-import xyz.melodysky.packaging.JniOnLoadPlan;
 import xyz.melodysky.toolchain.TargetTriple;
 
 public final class SymbolVisibilityPlanner {
@@ -17,9 +16,5 @@ public final class SymbolVisibilityPlanner {
             exports.add(new ExportedSymbol("_mh_dylib_header"));
         }
         return new ExportList(exports);
-    }
-
-    public ExportList jniExports(JniOnLoadPlan plan) {
-        return new ExportList(List.of(new ExportedSymbol(plan.onLoadSymbol())));
     }
 }

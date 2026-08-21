@@ -30,14 +30,14 @@ class JdkGenericBridgeNativePlannerTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        List<MethodRewriteDecision> decisions = new MethodRewritePlanner().planClass(parsedClass);
+        List<MethodRewriteDecision> decisions = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL);
         Map<String, IrMethod> methods = new LinkedHashMap<>();
         for (JdkGenericBridgeFixture.CallSpec spec : JdkGenericBridgeFixture.calls()) {
             ParsedMethod parsedMethod = parsedClass.methods().stream()
                     .filter(method -> method.name().equals(spec.wrapperName()))
                     .findFirst()
                     .orElseThrow();
-            IrMethod method = new BytecodeToSsaLowerer()
+            IrMethod method = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                     .lower(new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow())
                     .artifact()
                     .orElseThrow()
@@ -46,7 +46,7 @@ class JdkGenericBridgeNativePlannerTest {
             methods.put(parsedMethod.methodKey(), method);
         }
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 new NativeRegistrationPlanner().plan(decisions),
                 decisions,
                 methods);

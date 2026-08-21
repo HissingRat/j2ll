@@ -22,10 +22,11 @@ import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.testsupport.FakeManagedZig;
 
-class HostNativeLibraryBuilderTest {
+class ZigNativeLibraryBuilderHostIntegrationTest {
     @TempDir
     Path temp;
 
@@ -42,7 +43,7 @@ class HostNativeLibraryBuilderTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("add"))
                 .findFirst()
                 .orElseThrow();
@@ -52,20 +53,27 @@ class HostNativeLibraryBuilderTest {
                 .filter(method -> method.name().equals("add"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(add).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
         Map<String, IrMethod> irMethods = Map.of(decision.method().methodKey(), irMethod);
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner()
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner()
                 .plan(registrationPlan, List.of(decision), irMethods);
 
         NativeLibraryArtifact artifact;
         try (AutoCloseable ignored = FakeManagedZig.installAndUse(temp.resolve("j2ll-home"))) {
-            artifact = new HostNativeLibraryBuilder()
-                    .buildIfHostTargetSelected(temp, "native0", buildPlan, implementationPlan, irMethods)
+            artifact = new ZigNativeLibraryBuilder()
+                    .build(
+                            temp,
+                            RuntimeLoaderPlan.create("native0"),
+                            buildPlan,
+                            implementationPlan,
+                            irMethods)
+                    .orElseThrow()
+                    .artifactFor(host.target())
                     .orElseThrow();
         }
 

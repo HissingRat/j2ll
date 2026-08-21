@@ -50,7 +50,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "add");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -69,7 +69,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(
@@ -100,7 +100,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 decision.method().methodKey(),
                 irMethod(parsedClass, decision.method().name())));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 new NativeRegistrationPlanner().plan(decisions),
                 decisions,
                 methods);
@@ -133,7 +133,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(same, isNull));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(same, isNull),
                 Map.of(
@@ -178,7 +178,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 irMethod(parsedClass, "instanceLiteral"));
 
         NativeImplementationPlan plan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(staticLiteral, instanceLiteral),
                         irMethods);
@@ -213,7 +213,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision decision = decision(parsedClass, "echo");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of());
@@ -238,7 +238,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 optimizedMethod,
                 ProtectionConfig.enabled(seed));
         NativeImplementationPlan preliminaryPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(decision.method().methodKey(), protectedMethod),
@@ -257,7 +257,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 decision.method().methodKey(), split.caller(),
                 helperKey, split.helpers().get(0).body());
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 finalIr,
@@ -298,7 +298,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 localReferences.plan().isPresent(),
                 localReferences.failureReason().orElse("missing local-reference plan"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 new NativeRegistrationPlanner().plan(List.of(decision)),
                 List.of(decision),
                 Map.of(decision.method().methodKey(), protectedMethod));
@@ -321,7 +321,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod staticIr = irMethod(staticClass, "getValue");
         NativeRegistrationPlan staticRegistration = new NativeRegistrationPlanner().plan(List.of(staticDecision));
 
-        NativeImplementationPlan staticPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan staticPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 staticRegistration,
                 List.of(staticDecision),
                 Map.of(staticDecision.method().methodKey(), staticIr));
@@ -337,7 +337,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod instanceIr = irMethod(instanceClass, "read");
         NativeRegistrationPlan instanceRegistration = new NativeRegistrationPlanner().plan(List.of(instanceDecision));
 
-        NativeImplementationPlan instancePlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan instancePlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 instanceRegistration,
                 List.of(instanceDecision),
                 Map.of(instanceDecision.method().methodKey(), instanceIr));
@@ -361,7 +361,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(read.method().methodKey(), irMethod(parsedClass, "read"));
         irMethods.put(write.method().methodKey(), irMethod(parsedClass, "write"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(read, write),
                 irMethods);
@@ -385,7 +385,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "locked");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -405,7 +405,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod instanceIr = irMethod(instanceClass, "syncInstance");
         NativeRegistrationPlan instanceRegistration = new NativeRegistrationPlanner().plan(List.of(instanceDecision));
 
-        NativeImplementationPlan instancePlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan instancePlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 instanceRegistration,
                 List.of(instanceDecision),
                 Map.of(instanceDecision.method().methodKey(), instanceIr));
@@ -424,7 +424,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod staticIr = irMethod(staticClass, "sync");
         NativeRegistrationPlan staticRegistration = new NativeRegistrationPlanner().plan(List.of(staticDecision));
 
-        NativeImplementationPlan staticPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan staticPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 staticRegistration,
                 List.of(staticDecision),
                 Map.of(staticDecision.method().methodKey(), staticIr));
@@ -448,7 +448,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(value.method().methodKey(), irMethod(parsedClass, "value"));
         irMethods.put(call.method().methodKey(), irMethod(parsedClass, "call"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(value, call),
                 irMethods);
@@ -477,7 +477,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 irMethod(parsedClass, "call"));
 
         NativeImplementationPlan plan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(identity, call),
                         irMethods);
@@ -570,7 +570,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 callerIr);
 
         NativeImplementationPlan plan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(leaf, caller),
                         irMethods);
@@ -595,7 +595,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(helper.method().methodKey(), irMethod(parsedClass, "helper"));
         irMethods.put(call.method().methodKey(), irMethod(parsedClass, "call"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(helper, call),
                 irMethods);
@@ -613,7 +613,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "div");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -628,7 +628,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     void reflectionMetadataHelperPathAllowsStaticallyResolvedParameterizedMember() {
         ParsedClass parsedClass = parse("pkg/ReflectionPlan.class", reflectionPlanClass());
         MethodRewriteDecision decision = decision(parsedClass, "member");
-        NativeImplementationPlanner planner = new NativeImplementationPlanner();
+        NativeImplementationPlanner planner = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner();
 
         assertTrue(planner.supportsLlvmNativePath(decision, reflectionMemberIr(
                 "j2ll_rt_get_declared_method|method:pkg/Target#value!()I")));
@@ -643,7 +643,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "firstPlusLength");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -663,7 +663,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "copy");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -684,7 +684,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(bytes.method().methodKey(), irMethod(parsedClass, "byteAt"));
         irMethods.put(refs.method().methodKey(), irMethod(parsedClass, "stringRoundtrip"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(bytes, refs),
                 irMethods);
@@ -711,7 +711,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(doubles.method().methodKey(), irMethod(parsedClass, "doubleRoundtrip"));
         irMethods.put(makeLongs.method().methodKey(), irMethod(parsedClass, "makeLongs"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(longs, doubles, makeLongs),
                 irMethods);
@@ -738,7 +738,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "makeInts");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -758,7 +758,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision decision = decision(parsedClass, "multi");
         IrMethod irMethod = irMethod(parsedClass, "multi");
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner()
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner()
                 .plan(
                         new NativeRegistrationPlanner().plan(
                                 List.of(decision)),
@@ -786,7 +786,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -811,7 +811,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -834,7 +834,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "make");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -857,7 +857,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(cast.method().methodKey(), irMethod(parsedClass, "castString"));
         irMethods.put(instanceOf.method().methodKey(), irMethod(parsedClass, "isString"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(cast, instanceOf),
                 irMethods);
@@ -923,7 +923,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeMethodImplementation implementation = new NativeImplementationPlanner()
+        NativeMethodImplementation implementation = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner()
                 .plan(
                         registrationPlan,
                         List.of(decision),
@@ -959,7 +959,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(starts.method().methodKey(), irMethod(parsedClass, "starts"));
         irMethods.put(substring.method().methodKey(), irMethod(parsedClass, "substring"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(length, same, charAt, starts, substring),
                 irMethods);
@@ -991,7 +991,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "concatRecipe");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -1018,7 +1018,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "staticReference");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -1040,7 +1040,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(ints.method().methodKey(), irMethod(parsedClass, "ints"));
         irMethods.put(longs.method().methodKey(), irMethod(parsedClass, "longs"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(ints, longs),
                 irMethods);
@@ -1064,7 +1064,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "virtualValue");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -1083,7 +1083,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         IrMethod irMethod = irMethod(parsedClass, "virtualAdd");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -1101,7 +1101,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision decision = decision(parsedClass, "read");
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), unsafeGetIntIr()));
@@ -1126,7 +1126,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         irMethods.put(set.method().methodKey(), irMethod(parsedClass, "setInt"));
         irMethods.put(cas.method().methodKey(), irMethod(parsedClass, "compareAndSetInt"));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(get, set, cas),
                 irMethods);
@@ -1151,7 +1151,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision virtualDecision = decision(virtualClass, "call");
         NativeRegistrationPlan virtualRegistration = new NativeRegistrationPlanner().plan(List.of(virtualDecision));
 
-        NativeImplementationPlan virtualPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan virtualPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 virtualRegistration,
                 List.of(virtualDecision),
                 Map.of(virtualDecision.method().methodKey(), irMethod(virtualClass, "call")));
@@ -1168,7 +1168,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision interfaceDecision = decision(interfaceClass, "call");
         NativeRegistrationPlan interfaceRegistration = new NativeRegistrationPlanner().plan(List.of(interfaceDecision));
 
-        NativeImplementationPlan interfacePlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan interfacePlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 interfaceRegistration,
                 List.of(interfaceDecision),
                 Map.of(interfaceDecision.method().methodKey(), irMethod(interfaceClass, "call")));
@@ -1186,12 +1186,13 @@ class NativeImplementationPlannerTest implements Opcodes {
         MethodRewriteDecision decision = decision(parsedClass, "<init>");
         IrMethod constructorIr = irMethod(parsedClass, "<init>");
         assertTrue(
-                new xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner()
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .initializerPlanner()
                         .plan(decision, constructorIr)
                         .isPresent(),
                 () -> "initializer plan missing for " + constructorIr);
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), constructorIr));
@@ -1218,7 +1219,7 @@ class NativeImplementationPlannerTest implements Opcodes {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), initializerIr));
@@ -1247,7 +1248,7 @@ class NativeImplementationPlannerTest implements Opcodes {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals(name))
                 .findFirst()
                 .orElseThrow();
@@ -1258,7 +1259,7 @@ class NativeImplementationPlannerTest implements Opcodes {
                 .filter(candidate -> candidate.name().equals(name))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()

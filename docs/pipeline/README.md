@@ -28,9 +28,7 @@ ClassFileSource
   -> BytecodeToSsaLowerer
   -> OptimizationPipeline
   -> ProtectionPipeline
-  -> LlvmModuleLowerer
-  -> LlvmProtectionPipeline
-  -> LlvmTextEmitter
+  -> NativeLlvmCompiler (LLVM lowering + ordered passes + emission)
   -> FinalNativeImplementationPlan
   -> MethodInternalizationPlan
   -> SkippedMethodConfirmation

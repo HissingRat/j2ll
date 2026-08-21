@@ -53,25 +53,6 @@ public final class LlvmModuleLowerer {
     private final RuntimeLocalAbiPlanner runtimeLocalAbi =
             new RuntimeLocalAbiPlanner();
 
-    public LlvmModuleLowerer() {
-        this(
-                new LlvmNameMangler(),
-                BusinessStringSymbolMapper.compatibility());
-    }
-
-    public LlvmModuleLowerer(LlvmNameMangler nameMangler) {
-        this(nameMangler, BusinessStringSymbolMapper.compatibility());
-    }
-
-    public LlvmModuleLowerer(
-            LlvmNameMangler nameMangler,
-            BusinessStringSymbolMapper businessStringSymbols) {
-        this(
-                nameMangler,
-                businessStringSymbols,
-                RuntimeTokenMapper.compatibility());
-    }
-
     public LlvmModuleLowerer(
             LlvmNameMangler nameMangler,
             BusinessStringSymbolMapper businessStringSymbols,

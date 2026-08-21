@@ -23,6 +23,7 @@ import xyz.melodysky.packaging.MethodRewriteDecision;
 import xyz.melodysky.packaging.MethodRewritePlanner;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.packaging.NativeRegistrationPlanner;
+import xyz.melodysky.packaging.RuntimeLoaderPlan;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 import xyz.melodysky.testsupport.FakeManagedZig;
 
@@ -74,13 +75,15 @@ final class FakeManagedZigAssemblyGateIntegrationTest {
                 root,
                 "native0",
                 List.of(host.target()));
-        return new HostNativeLibraryBuilder()
-                .buildIfHostTargetSelected(
+        return new ZigNativeLibraryBuilder()
+                .build(
                         root,
-                        "native0",
+                        RuntimeLoaderPlan.create("native0"),
                         buildPlan,
                         fixture.implementationPlan(),
                         fixture.irMethods())
+                .orElseThrow()
+                .artifactFor(host.target())
                 .orElseThrow();
     }
 
@@ -92,7 +95,7 @@ final class FakeManagedZigAssemblyGateIntegrationTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("add"))
                 .findFirst()
                 .orElseThrow();
@@ -102,14 +105,14 @@ final class FakeManagedZigAssemblyGateIntegrationTest {
                 .filter(method -> method.name().equals("add"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(add).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
         Map<String, IrMethod> irMethods = Map.of(decision.method().methodKey(), irMethod);
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner()
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner()
                 .plan(registrationPlan, List.of(decision), irMethods);
         return new Fixture(implementationPlan, irMethods);
     }

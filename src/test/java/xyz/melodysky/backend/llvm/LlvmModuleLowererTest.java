@@ -48,7 +48,7 @@ class LlvmModuleLowererTest {
                         List.of(IrInstruction.binary(sum, IrOpcode.ADD_I32, left, right)),
                         IrTerminator.returnValue(sum))));
 
-        var module = new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Mathy", List.of(method)));
+        var module = xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Mathy", List.of(method)));
         String text = new LlvmTextEmitter().emit(module);
 
         assertEquals("pkg/Mathy", module.identifier());
@@ -75,7 +75,7 @@ class LlvmModuleLowererTest {
                         List.of(IrInstruction.binary(sum, IrOpcode.ADD_I32, left, right)),
                         IrTerminator.returnValue(sum))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Mathy", List.of(method)),
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN));
@@ -120,7 +120,7 @@ class LlvmModuleLowererTest {
                         IrTerminator.returnValue(instanceResult))));
 
         String text = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(
                         "pkg/ClassLiteralOps",
                         List.of(staticLiteral, instanceLiteral))));
 
@@ -132,7 +132,7 @@ class LlvmModuleLowererTest {
                 "define external hidden ptr @"
                         + new LlvmNameMangler().functionName(instanceLiteral)
                         + "(ptr %j2ll_env, ptr %this)"));
-        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String helper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_OBJECT,
                 "class_object",
                 "Ljava/lang/String;");
@@ -167,10 +167,10 @@ class LlvmModuleLowererTest {
                         IrTerminator.returnValue(array))));
 
         String text = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(
                         method.owner(),
                         List.of(method))));
-        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String helper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_RUNTIME,
                 "new_object_array",
                 allocationKey);
@@ -209,10 +209,10 @@ class LlvmModuleLowererTest {
                         IrTerminator.returnValue(lambda))));
 
         String text = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(
                         method.owner(),
                         List.of(method))));
-        String helper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String helper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.LAMBDA,
                 "lambda_new",
                 identity);
@@ -246,7 +246,7 @@ class LlvmModuleLowererTest {
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> new LlvmModuleLowerer().lowerClass(
+                () -> xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass("pkg/ClassLiteralOps", List.of(method)),
                         LlvmLinkage.EXTERNAL,
                         LlvmVisibility.HIDDEN,
@@ -278,7 +278,7 @@ class LlvmModuleLowererTest {
                         new IrBlock("seven", List.of(), IrTerminator.returnVoid()),
                         new IrBlock("default", List.of(), IrTerminator.returnVoid())));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Switchy", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Switchy", List.of(method))));
 
         assertTrue(text.contains("switch i32 %p0, label %default ["));
         assertTrue(text.contains("i32 7, label %seven"));
@@ -310,7 +310,7 @@ class LlvmModuleLowererTest {
                                 List.of(),
                                 IrTerminator.returnValue(merged))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Merge", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Merge", List.of(method))));
 
         assertTrue(text.contains("%merged = phi i32 [ %left, %left ], [ %right, %right ]"));
     }
@@ -329,7 +329,7 @@ class LlvmModuleLowererTest {
                         List.of(),
                         IrTerminator.throwValue(thrown))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Raise", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Raise", List.of(method))));
 
         assertTrue(text.contains("call void @j2ll_rt_rethrow(ptr %j2ll_env, ptr %p0)"));
         assertTrue(text.contains("ret void"));
@@ -363,13 +363,13 @@ class LlvmModuleLowererTest {
                         List.of(IrInstruction.fieldGet(fieldValue, IrOpcode.GET_FIELD, List.of(self), instanceFieldKey)),
                         IrTerminator.returnValue(fieldValue))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Fields", List.of(readStatic, readInstance))));
 
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(readStatic)));
         assertTrue(text.contains("(ptr %j2ll_env, ptr %j2ll_owner)"));
         RuntimeTokenMapper runtimeTokens =
-                RuntimeTokenMapper.compatibility();
+                xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens();
         String staticHelper = runtimeTokens.helperSymbol(
                 RuntimeTokenDomain.FIELD_RUNTIME,
                 "field_get_static_i32",
@@ -481,7 +481,7 @@ class LlvmModuleLowererTest {
                 List.of(i32, i64, f32, f64, ref),
                 List.of(new IrBlock("entry", instructions, IrTerminator.returnVoid())));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/State", List.of(method))));
 
         for (String helper : List.of(
@@ -544,7 +544,7 @@ class LlvmModuleLowererTest {
                         List.of(read),
                         IrTerminator.gotoBlock("entry"))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/State", List.of(method))));
 
         assertEquals(1, occurrences(text, "%j2ll_nfs_ref_cache = alloca ptr"), text);
@@ -576,7 +576,7 @@ class LlvmModuleLowererTest {
 
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
-                () -> new LlvmModuleLowerer().lowerClass(
+                () -> xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass("pkg/State", List.of(method))));
 
         assertTrue(error.getMessage().contains("does not match slot kind BYTE"));
@@ -621,7 +621,7 @@ class LlvmModuleLowererTest {
                                 IrInstruction.binary(sum, IrOpcode.ADD_I32, quotient, remainder)),
                         IrTerminator.returnValue(sum))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Div", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Div", List.of(method))));
 
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
         assertFalse(text.contains("pkg_Div"));
@@ -671,7 +671,7 @@ class LlvmModuleLowererTest {
                                 IrInstruction.unary(doubleValue, IrOpcode.BITCAST_I64_TO_F64, doubleBits)),
                         IrTerminator.returnValue(doubleValue))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/ProtectedConstants", List.of(floatMethod, doubleMethod))));
 
         assertTrue(text.contains("%float_bits = xor i32 %float_encoded, %float_key"));
@@ -713,7 +713,7 @@ class LlvmModuleLowererTest {
                                 Double.longBitsToDouble(negativeZeroBits))),
                         IrTerminator.returnValue(doubleValue))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer()
                 .lowerClass(new IrClass(
                         "pkg/RawConstants",
                         List.of(floatMethod, doubleMethod))));
@@ -745,7 +745,7 @@ class LlvmModuleLowererTest {
                                 IrInstruction.operation(Optional.empty(), IrOpcode.MONITOR_HAPPENS_BEFORE, List.of(monitor), "monitorExit")),
                         IrTerminator.returnVoid())));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Locks", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Locks", List.of(method))));
 
         assertTrue(text.contains("define external hidden void @" + new LlvmNameMangler().functionName(method)));
         assertFalse(text.contains("pkg_Locks"));
@@ -781,7 +781,7 @@ class LlvmModuleLowererTest {
                                 IrInstruction.binary(result, IrOpcode.ADD_I32, length, first)),
                         IrTerminator.returnValue(result))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
 
         assertTrue(text.contains("define external hidden i32 @" + new LlvmNameMangler().functionName(method)));
         assertFalse(text.contains("pkg_Arrays"));
@@ -835,7 +835,7 @@ class LlvmModuleLowererTest {
                                         "reference")),
                         IrTerminator.returnValue(loadedRef))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
 
         assertTrue(text.contains("call i32 @j2ll_rt_array_load_i8(ptr %j2ll_env"));
         assertTrue(text.contains("call void @j2ll_rt_array_store_i8(ptr %j2ll_env"));
@@ -897,7 +897,7 @@ class LlvmModuleLowererTest {
                                         "double")),
                         IrTerminator.returnValue(loadedDouble))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass("pkg/Arrays", List.of(method))));
 
         assertTrue(text.contains("call i64 @j2ll_rt_array_load_i64(ptr %j2ll_env"));
         assertTrue(text.contains("call void @j2ll_rt_array_store_i64(ptr %j2ll_env"));
@@ -937,7 +937,7 @@ class LlvmModuleLowererTest {
                         List.of(IrInstruction.call(Optional.of(callResult), IrOpcode.CALL_STATIC, List.of(callerArg), calleeKey)),
                         IrTerminator.returnValue(callResult))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Calls", List.of(callee, caller)),
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN,
@@ -979,7 +979,7 @@ class LlvmModuleLowererTest {
                                 calleeKey)),
                         IrTerminator.returnValue(result))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Calls", List.of(callee, caller)),
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN,
@@ -1023,7 +1023,7 @@ class LlvmModuleLowererTest {
                                 calleeKey)),
                         IrTerminator.returnValue(callResult))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Calls", List.of(callee, caller)),
                 LlvmLinkage.EXTERNAL,
                 LlvmVisibility.HIDDEN,
@@ -1063,11 +1063,11 @@ class LlvmModuleLowererTest {
                                         "pkg/I#name!(Ljava/lang/String;)Ljava/lang/String;")),
                         IrTerminator.returnValue(refResult))));
 
-        String text = new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        String text = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass("pkg/Dispatch", List.of(method))));
 
         RuntimeTokenMapper runtimeTokens =
-                RuntimeTokenMapper.compatibility();
+                xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens();
         String virtualHelper = runtimeTokens.helperSymbol(
                 RuntimeTokenDomain.DISPATCH_METHOD,
                 "virtual_dispatch_i32",
@@ -1147,7 +1147,7 @@ class LlvmModuleLowererTest {
                                 IrTerminator.gotoBlock("loop"))));
 
         String text = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass(
                                 "pkg/LoopDispatch",
                                 List.of(method))));
@@ -1199,7 +1199,7 @@ class LlvmModuleLowererTest {
                                 IrTerminator.returnValue(merged))));
 
         String text = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass("pkg/Parallel", List.of(method))));
 
         assertEquals(

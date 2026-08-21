@@ -14,7 +14,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.jar.JarFile;
 import xyz.melodysky.analysis.callgraph.CallGraph;
-import xyz.melodysky.analysis.callgraph.CallGraphBuilder;
+import xyz.melodysky.analysis.callgraph.DevirtualizationPlan;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchy;
 import xyz.melodysky.analysis.hierarchy.ClassHierarchyStage;
@@ -22,7 +22,6 @@ import xyz.melodysky.analysis.method.NativeMethodInternalizationPlan;
 import xyz.melodysky.analysis.method.NativeOnlyMethodCoalescingPlan;
 import xyz.melodysky.analysis.reflection.ReflectionPlan;
 import xyz.melodysky.analysis.reflection.StaticReflectionResolver;
-import xyz.melodysky.analysis.runtime.RuntimeAnalysisPipeline;
 import xyz.melodysky.analysis.runtime.RuntimeTypeResult;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisFeature;
 import xyz.melodysky.analysis.world.WholeProgramAnalysisPolicy;
@@ -109,7 +108,6 @@ import xyz.melodysky.report.ReleaseReadinessWriter;
 import xyz.melodysky.report.ReportIndexWriter;
 import xyz.melodysky.report.ReportJsonWriter;
 import xyz.melodysky.report.ResolvedConfigReportWriter;
-import xyz.melodysky.report.SensitivePlaintextFact;
 import xyz.melodysky.report.SummaryMarkdownWriter;
 import xyz.melodysky.report.SummaryReportWriter;
 import xyz.melodysky.report.SymbolAuditReportWriter;
@@ -331,8 +329,16 @@ public final class MainlinePipeline {
         diagnostics.addAll(metadataResult.diagnostics());
         RuntimeMetadataIndex metadataIndex = metadataResult.artifact().orElseThrow();
         ReflectionPlan reflectionPlan = new StaticReflectionResolver().resolve(program, metadataIndex);
-        CallGraph callGraph = new CallGraphBuilder().buildCha(program, hierarchy, metadataIndex);
-        RuntimeTypeResult runtimeTypes = new RuntimeAnalysisPipeline().analyze(program);
+        ProgramCallGraphAnalysis callAnalysis =
+                new ProgramCallGraphAnalysisCoordinator().analyze(
+                        program,
+                        hierarchy,
+                        metadataIndex,
+                        config.worldModel());
+        CallGraph callGraph = callAnalysis.callGraph();
+        RuntimeTypeResult runtimeTypes = callAnalysis.runtimeTypes();
+        DevirtualizationPlan devirtualizationPlan =
+                callAnalysis.devirtualizationPlan();
 
         int requestedMethodCount = selection.requestedMethods().size();
         buildProgress.methodLowering(requestedMethodCount);
@@ -505,7 +511,8 @@ public final class MainlinePipeline {
         NativeImplementationPlanner implementationPlanner =
                 new NativeImplementationPlanner(
                         llvmNameMangler,
-                        businessStringSymbols);
+                        businessStringSymbols,
+                        runtimeTokens);
         Set<String> availableProgramMethodKeys = program.classes().stream()
                 .flatMap(parsedClass -> parsedClass.methods().stream())
                 .map(ParsedMethod::methodKey)
@@ -557,6 +564,7 @@ public final class MainlinePipeline {
                         program,
                         reflectionPlan,
                         callGraph,
+                        devirtualizationPlan,
                         config.protection().ir(),
                         programProtectionSeed);
         diagnostics.addAll(programProtection.diagnostics());
@@ -622,7 +630,8 @@ public final class MainlinePipeline {
                         nativeIr,
                         methodInternalizationPlan,
                         implementationPlan,
-                        programProtectionSeed);
+                        programProtectionSeed,
+                        llvmLowerer);
         nativeIr = methodCoalescing.methods();
         implementationPlan = methodCoalescing.implementationPlan();
         implementationPlan = new NativeJniEntryFusionPlanner().plan(
@@ -769,7 +778,7 @@ public final class MainlinePipeline {
         Map<String, LoweringStatus> statuses = methodStatuses(ssaResults);
         IntermediateArtifactLayout layout = new IntermediateArtifactLayoutPlanner().plan(classArtifactInputs(program, statuses));
         buildProgress.intermediateWriting(config.intermediates().enabled());
-        writeIntermediates(
+        new MainlineIntermediateWriter().write(
                 workspaceRoot,
                 config.intermediates(),
                 layout,
@@ -780,6 +789,8 @@ public final class MainlinePipeline {
                 llvmTextByClass,
                 callGraph,
                 runtimeTypes,
+                devirtualizationPlan,
+                callAnalysis.rtaApplied(),
                 metadataIndex,
                 reflectionPlan);
 
@@ -909,7 +920,9 @@ public final class MainlinePipeline {
                     config.embeddedLibraryDirectory(),
                     embeddedLibraryReports,
                     nativeBuildResult.map(ZigNativeBuildResult::exportedSymbols).orElse(List.of()),
-                    sensitivePlaintextFacts(protectionReports, implementationPlan),
+                    new MainlineProtectionEvidenceClassifier().sensitivePlaintextFacts(
+                            protectionReports,
+                            implementationPlan),
                     fieldInternalizationPlan,
                     methodInternalizationPlan,
                     methodCoalescingPlan,
@@ -1300,7 +1313,9 @@ public final class MainlinePipeline {
                 new ProtectionReportWriter().json(
                         config.protection().seedMode(),
                         BuildProtectionIdentity.from(config.protection()).identityHash(),
-                        classifiedProtectionReports(protectionReports, implementationPlan)));
+                        new MainlineProtectionEvidenceClassifier().classifiedReports(
+                                protectionReports,
+                                implementationPlan)));
         Files.writeString(
                 reports.resolve("field-internalization-report.json"),
                 new FieldInternalizationReportWriter().json(
@@ -1323,114 +1338,6 @@ public final class MainlinePipeline {
                 !diagnostics.hasErrors() && Files.isRegularFile(outputJar));
     }
 
-    private List<SensitivePlaintextFact> sensitivePlaintextFacts(
-            List<ProtectionPassReport> protectionReports,
-            NativeImplementationPlan implementationPlan) {
-        Map<String, NativeMethodImplementation> implementationsByMethod = implementationPlan.implementations().stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        NativeMethodImplementation::methodKey,
-                        implementation -> implementation,
-                        (left, right) -> left,
-                        java.util.LinkedHashMap::new));
-        Set<String> llvmNativeMethods = implementationsByMethod.values().stream()
-                .filter(implementation -> implementation.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
-                .filter(implementation -> implementation.stringHelperSymbols().isEmpty())
-                .map(NativeMethodImplementation::methodKey)
-                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
-        Set<String> semanticSensitiveMethods = semanticSensitiveMethods(protectionReports);
-        List<SensitivePlaintextFact> protectionFacts = protectionReports.stream()
-                .flatMap(report -> report.sensitivePlaintextFacts().stream())
-                .map(fact -> classifiedSensitiveFact(
-                        fact, llvmNativeMethods, semanticSensitiveMethods, implementationsByMethod))
-                .toList();
-        return java.util.stream.Stream.concat(
-                        protectionFacts.stream(),
-                        nativeMetadataPlaintextFacts(implementationPlan).stream())
-                .distinct()
-                .sorted(java.util.Comparator
-                        .comparing(SensitivePlaintextFact::literalHash)
-                        .thenComparing(SensitivePlaintextFact::sourceMethod)
-                        .thenComparing(SensitivePlaintextFact::pathKind)
-                        .thenComparing(SensitivePlaintextFact::gateMode)
-                        .thenComparing(SensitivePlaintextFact::promotionReason))
-                .toList();
-    }
-
-    private List<SensitivePlaintextFact> nativeMetadataPlaintextFacts(
-            NativeImplementationPlan implementationPlan) {
-        ArrayList<SensitivePlaintextFact> facts = new ArrayList<>();
-        for (NativeMethodImplementation implementation : implementationPlan.implementations()) {
-            String methodKey = implementation.methodKey();
-            addNativeMetadataFact(facts, implementation.entry().registrationOwner(), methodKey);
-            if (implementation.entry().methodName().length() >= 8) {
-                addNativeMetadataFact(facts, implementation.entry().methodName(), methodKey);
-            }
-            java.util.stream.Stream.of(
-                            implementation.fieldKeys(),
-                            implementation.allocationKeys(),
-                            implementation.typeCheckKeys(),
-                            implementation.classObjectKeys(),
-                            implementation.runtimeMetadataKeys(),
-                            implementation.constructorCallKeys(),
-                            implementation.staticCallKeys(),
-                            implementation.dispatchKeys())
-                    .flatMap(List::stream)
-                    .forEach(value -> addInternalNamesAsMetadataFacts(facts, value, methodKey));
-            for (String fieldKey : implementation.fieldKeys()) {
-                int ownerEnd = fieldKey.indexOf('#');
-                int descriptorStart = fieldKey.indexOf('!');
-                if (ownerEnd >= 0 && descriptorStart > ownerEnd + 1) {
-                    String fieldName = fieldKey.substring(ownerEnd + 1, descriptorStart);
-                    if (fieldName.length() >= 8) {
-                        addNativeMetadataFact(facts, fieldName, methodKey);
-                    }
-                }
-            }
-        }
-        for (String runtimeMetadata : List.of(
-                "java/lang/NoSuchFieldError",
-                "unknown j2ll field token",
-                "java/lang/NullPointerException",
-                "java/lang/ArithmeticException",
-                "/ by zero",
-                "java/lang/ArrayIndexOutOfBoundsException")) {
-            addNativeMetadataFact(facts, runtimeMetadata, "<native-runtime>");
-        }
-        return facts.stream().distinct().toList();
-    }
-
-    private void addInternalNamesAsMetadataFacts(
-            List<SensitivePlaintextFact> facts,
-            String value,
-            String methodKey) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("(?:[A-Za-z_$][A-Za-z0-9_$]*/)+[A-Za-z_$][A-Za-z0-9_$]*")
-                .matcher(value);
-        while (matcher.find()) {
-            addNativeMetadataFact(facts, matcher.group(), methodKey);
-        }
-    }
-
-    private void addNativeMetadataFact(
-            List<SensitivePlaintextFact> facts,
-            String plaintext,
-            String methodKey) {
-        if (plaintext == null || plaintext.isBlank()) {
-            return;
-        }
-        facts.add(new SensitivePlaintextFact(
-                plaintext,
-                null,
-                methodKey,
-                "nativeMetadataStringEncoding",
-                List.of("generated-c", "native-library"),
-                "NATIVE_METADATA_STRING",
-                "blocking",
-                "GENERATED_C",
-                "NATIVE_METADATA_PLAINTEXT",
-                "nativeMetadataSurface"));
-    }
-
     private Set<String> versionedClassNames(Path jarFile) throws IOException {
         try (JarFile jar = new JarFile(jarFile.toFile(), false)) {
             return jar.stream()
@@ -1441,146 +1348,6 @@ public final class MainlinePipeline {
                     .map(name -> name.substring(0, name.length() - ".class".length()))
                     .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
         }
-    }
-
-    private List<ProtectionPassReport> classifiedProtectionReports(
-            List<ProtectionPassReport> protectionReports,
-            NativeImplementationPlan implementationPlan) {
-        Map<String, NativeMethodImplementation> implementationsByMethod = implementationPlan.implementations().stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        NativeMethodImplementation::methodKey,
-                        implementation -> implementation,
-                        (left, right) -> left,
-                        java.util.LinkedHashMap::new));
-        Set<String> llvmNativeMethods = implementationsByMethod.values().stream()
-                .filter(implementation -> implementation.path() == NativeImplementationPath.LLVM_NATIVE_PATH)
-                .filter(implementation -> implementation.stringHelperSymbols().isEmpty())
-                .map(NativeMethodImplementation::methodKey)
-                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
-        Set<String> semanticSensitiveMethods = semanticSensitiveMethods(protectionReports);
-        return protectionReports.stream()
-                .map(report -> new ProtectionPassReport(
-                        report.passName(),
-                        report.layer(),
-                        report.status(),
-                        report.reasonCode(),
-                        report.affectedMethods(),
-                        report.affectedSymbols(),
-                        report.seed(),
-                        report.sensitivePlaintextFacts().stream()
-                                .map(fact -> classifiedSensitiveFact(
-                                        fact, llvmNativeMethods, semanticSensitiveMethods, implementationsByMethod))
-                                .toList(),
-                        report.coverageFacts()))
-                .toList();
-    }
-
-    private Set<String> semanticSensitiveMethods(List<ProtectionPassReport> protectionReports) {
-        return protectionReports.stream()
-                .filter(report -> report.reasonCode().equals("PROTECTION_SEMANTICALLY_SENSITIVE_METHOD"))
-                .flatMap(report -> report.affectedMethods().stream())
-                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
-    }
-
-    private SensitivePlaintextFact classifiedSensitiveFact(
-            SensitivePlaintextFact fact,
-            Set<String> llvmNativeMethods,
-            Set<String> semanticSensitiveMethods,
-            Map<String, NativeMethodImplementation> implementationsByMethod) {
-        if (!isStableBlockingPlaintext(fact.plaintext())) {
-            NativeMethodImplementation implementation = implementationsByMethod.get(fact.sourceMethod());
-            return fact.withAuditClassification(
-                    implementation == null ? "HELPER_PATH" : implementation.path().name(),
-                    "observedOnly",
-                    "PLAINTEXT_LITERAL_TOO_SHORT_FOR_BLOCKING_GATE",
-                    "metadataSensitiveObservedOnly");
-        }
-        NativeMethodImplementation implementation = implementationsByMethod.get(fact.sourceMethod());
-        if (isJvmMetadataBridgePlaintext(implementation)) {
-            return fact.withAuditClassification(
-                    implementation == null ? "HELPER_PATH" : implementation.path().name(),
-                    "observedOnly",
-                    "JVM_METADATA_BRIDGE_PLAINTEXT",
-                    "metadataSensitiveObservedOnly");
-        }
-        if (semanticSensitiveMethods.contains(fact.sourceMethod())) {
-            return fact.withAuditClassification(
-                    implementation == null ? "HELPER_PATH" : implementation.path().name(),
-                    "observedOnly",
-                    "PROTECTION_SEMANTICALLY_SENSITIVE_METHOD",
-                    "metadataSensitiveObservedOnly");
-        }
-        if (implementation != null && implementation.reasonCode().equals("LLVM_EXCEPTION_HELPER_IR")) {
-            return fact.withAuditClassification(
-                    implementation.path().name(),
-                    "observedOnly",
-                    "EXCEPTION_HELPER_PLAINTEXT",
-                    "metadataSensitiveObservedOnly");
-        }
-        if (llvmNativeMethods.contains(fact.sourceMethod())) {
-            return fact.withAuditClassification(
-                    "LLVM_NATIVE_PATH",
-                    "blocking",
-                    "LLVM_NATIVE_PATH_CONNECTED_SURFACE",
-                    "llvmNativeSurface");
-        }
-        if (implementation != null
-                && implementation.path() == NativeImplementationPath.TEMPLATE_JNI_PATH
-                && implementation.reasonCode().equals("GENERIC_CONSTRUCTOR_BODY_HELPER")) {
-            return fact.withAuditClassification(
-                    "TEMPLATE_JNI_PATH_STABLE_SURFACE",
-                    "blocking",
-                    "TEMPLATE_CONSTRUCTOR_BODY_STABLE_SURFACE",
-                    "templateStableSurface");
-        }
-        if (implementation != null
-                && implementation.stringHelperSymbols().stream()
-                        .map(this::runtimeHelperBaseSymbol)
-                        .anyMatch(symbol -> symbol.equals("j2ll_rt_string_constant")
-                                || symbol.startsWith("j2ll_rt_string_constant_"))) {
-            return fact.withAuditClassification(
-                    "HELPER_PATH_STABLE_GENERATED_C_SURFACE",
-                    "blocking",
-                    "STRING_CONCAT_CONSTANT_CARRIER_STABLE_SURFACE",
-                    "stableGeneratedCSurface");
-        }
-        return fact.withAuditClassification(
-                implementation == null ? "HELPER_PATH" : implementation.path().name(),
-                "observedOnly",
-                "NON_BLOCKING_PATH_KIND_UNTIL_SURFACE_CONNECTED",
-                "metadataSensitiveObservedOnly");
-    }
-
-    private boolean isStableBlockingPlaintext(String plaintext) {
-        return plaintext != null && plaintext.length() >= 8;
-    }
-
-    private boolean isJvmMetadataBridgePlaintext(NativeMethodImplementation implementation) {
-        if (implementation == null) {
-            return false;
-        }
-        return java.util.stream.Stream.of(
-                        implementation.staticCallKeys(),
-                        implementation.dispatchKeys(),
-                        implementation.stringHelperSymbols())
-                .flatMap(java.util.Collection::stream)
-                .anyMatch(symbol -> symbol.contains("java/lang/invoke/MethodHandles")
-                        || symbol.contains("java/lang/invoke/MethodType")
-                        || symbol.contains("java/lang/invoke/MethodHandle")
-                        || symbol.contains("java/util/ResourceBundle"));
-    }
-
-    private String runtimeHelperBaseSymbol(String symbol) {
-        int separator = symbol.indexOf('|');
-        return separator < 0 ? symbol : symbol.substring(0, separator);
-    }
-
-    private String implementationPath(String methodKey, NativeImplementationPlan implementationPlan) {
-        return implementationPlan.implementations().stream()
-                .filter(implementation -> implementation.methodKey().equals(methodKey))
-                .map(implementation -> implementation.path().name())
-                .findFirst()
-                .orElse("HELPER_PATH");
     }
 
     private String failedArtifactAuditReasons(ArtifactAuditResult result) {
@@ -1707,82 +1474,4 @@ public final class MainlinePipeline {
         }
         return inputs;
     }
-
-    private void writeIntermediates(
-            Path workspaceRoot,
-            xyz.melodysky.config.IntermediatesConfig intermediates,
-            IntermediateArtifactLayout layout,
-            Map<String, MethodCfgResult> cfgByMethod,
-            Map<String, IrMethod> rawIr,
-            Map<String, IrMethod> optimizedIr,
-            Map<String, IrMethod> protectedIr,
-            Map<String, String> llvmTextByClass,
-            CallGraph callGraph,
-            RuntimeTypeResult runtimeTypes,
-            RuntimeMetadataIndex metadataIndex,
-            ReflectionPlan reflectionPlan) throws IOException {
-        IntermediateArtifactIndexWriter indexWriter = new IntermediateArtifactIndexWriter();
-        Files.createDirectories(workspaceRoot.resolve("intermediates"));
-        if (!intermediates.enabled()) {
-            Files.writeString(
-                    workspaceRoot.resolve("intermediates/intermediates-manifest.json"),
-                    indexWriter.manifestJson(workspaceRoot, intermediates, layout));
-            return;
-        }
-        if (intermediates.includeDebugDumps()) {
-            Files.createDirectories(workspaceRoot.resolve("intermediates/runtime"));
-            Files.writeString(
-                    workspaceRoot.resolve("intermediates/runtime/runtime-metadata.json"),
-                    new RuntimeMetadataDumpWriter().write(metadataIndex, reflectionPlan));
-        }
-        for (ClassArtifact classArtifact : layout.classes()) {
-            Path classDir = workspaceRoot.resolve("intermediates/classes").resolve(classArtifact.directory());
-            Files.createDirectories(classDir.resolve("cfg"));
-            Files.createDirectories(classDir.resolve("ir"));
-            Files.createDirectories(classDir.resolve("llvm"));
-            Files.createDirectories(classDir.resolve("c"));
-            Files.createDirectories(classDir.resolve("reports"));
-            Files.writeString(classDir.resolve("class-index.json"), indexWriter.classIndexJson(classArtifact));
-            Files.writeString(classDir.resolve("method-index.json"), indexWriter.methodIndexJson(classArtifact, layout));
-            Files.writeString(classDir.resolve("hierarchy.json"), "{\"schemaVersion\":1}\n");
-            Files.writeString(classDir.resolve("call-sites.json"),
-                    "{\"schemaVersion\":1,\"callSiteCount\":" + callGraph.callSites().size()
-                            + ",\"instantiatedClassCount\":" + runtimeTypes.instantiatedClasses().size() + "}\n");
-            for (MethodArtifact method : layout.methodsFor(classArtifact.internalName())) {
-                String key = method.owner() + "#" + method.name() + "!" + method.descriptor();
-                MethodCfgResult cfg = cfgByMethod.get(key);
-                if (cfg != null && intermediates.includeDebugDumps()) {
-                    Files.writeString(classDir.resolve("cfg").resolve(method.methodId() + ".cfg.txt"), cfg.toString());
-                    Files.writeString(classDir.resolve("cfg").resolve(method.methodId() + ".cfg.json"),
-                            "{\"schemaVersion\":1,\"method\":\"" + method.name() + "\"}\n");
-                }
-            }
-            if (intermediates.includePerClassIr()) {
-                Files.writeString(classDir.resolve("ir/raw.ssa.ir"), irDump(rawIr, classArtifact.internalName()));
-                Files.writeString(classDir.resolve("ir/optimized.ssa.ir"), irDump(optimizedIr, classArtifact.internalName()));
-                Files.writeString(classDir.resolve("ir/protected.ssa.ir"), irDump(protectedIr, classArtifact.internalName()));
-            }
-            if (intermediates.includePerClassLlvm()) {
-                Files.writeString(classDir.resolve("llvm/class.ll"), llvmTextByClass.getOrDefault(classArtifact.internalName(), ""));
-                Files.writeString(classDir.resolve("llvm/protected.class.ll"), llvmTextByClass.getOrDefault(classArtifact.internalName(), ""));
-            }
-            if (intermediates.includePerClassC()) {
-                Files.writeString(classDir.resolve("c/class.c"), "/* planned C wrapper artifact */\n");
-            }
-            Files.writeString(classDir.resolve("reports/lowering.json"), "{\"schemaVersion\":1}\n");
-            Files.writeString(classDir.resolve("reports/protection.json"), "{\"schemaVersion\":1}\n");
-        }
-        Files.writeString(
-                workspaceRoot.resolve("intermediates/intermediates-manifest.json"),
-                indexWriter.manifestJson(workspaceRoot, intermediates, layout));
-    }
-
-    private String irDump(Map<String, IrMethod> methods, String owner) {
-        StringBuilder builder = new StringBuilder();
-        methods.values().stream()
-                .filter(method -> method.owner().equals(owner))
-                .forEach(method -> builder.append(method).append('\n'));
-        return builder.toString();
-    }
-
 }

@@ -22,10 +22,6 @@ public final class InitializerImplementationPlanner {
             new ConstructorPrefixAnalyzer();
     private final ConstructorIrBodySplitter bodySplitter;
 
-    public InitializerImplementationPlanner() {
-        this(RuntimeTokenMapper.compatibility());
-    }
-
     /**
      * Uses the build-scoped runtime token identity shared by the source SSA
      * lowerer. Constructor splitting compares the independently lowered Java

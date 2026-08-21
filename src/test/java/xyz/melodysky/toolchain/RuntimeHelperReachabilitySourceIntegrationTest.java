@@ -41,7 +41,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 .artifact()
                 .orElseThrow();
         MethodRewriteDecision decision =
-                new MethodRewritePlanner().planClass(parsedClass).stream()
+                new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                         .filter(item -> item.method().name()
                                 .equals("add"))
                         .findFirst()
@@ -50,7 +50,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 .filter(method -> method.name().equals("add"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -63,7 +63,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 new NativeRegistrationPlanner().plan(
                         List.of(decision));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(
@@ -71,7 +71,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                                 irMethod));
         NativeLlvmCompilation compilation =
                 new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                         .compile(
                                 implementationPlan,
@@ -146,7 +146,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 .artifact()
                 .orElseThrow();
         MethodRewriteDecision decision =
-                new MethodRewritePlanner().planClass(parsedClass).stream()
+                new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                         .filter(item -> item.method().name().equals("same"))
                         .findFirst()
                         .orElseThrow();
@@ -154,7 +154,7 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
                 .filter(method -> method.name().equals("same"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -166,12 +166,12 @@ final class RuntimeHelperReachabilitySourceIntegrationTest {
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrationPlan,
                         List.of(decision),
                         Map.of(decision.method().methodKey(), irMethod));
         NativeLlvmCompilation compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         implementationPlan,

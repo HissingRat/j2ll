@@ -17,19 +17,6 @@ import xyz.melodysky.toolchain.nativetext.NativeTextCEmitter;
  * owns whole-plan validation and root registration ordering.</p>
  */
 public final class HostNativeRegistrationSource {
-    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
-            NativeTextBuildKey.fromUtf8("j2ll-registration-text-compatibility-v1");
-
-    public String emit(
-            NativeRegistrationPlan registrationPlan,
-            MethodTableHidingPlan hidingPlan) {
-        return emit(
-                registrationPlan,
-                hidingPlan,
-                RuntimeLoaderPlan.create("native0"),
-                COMPATIBILITY_BUILD_KEY);
-    }
-
     public String emit(
             NativeRegistrationPlan registrationPlan,
             MethodTableHidingPlan hidingPlan,
@@ -39,17 +26,6 @@ public final class HostNativeRegistrationSource {
                 hidingPlan,
                 RuntimeLoaderPlan.create("native0"),
                 buildKey);
-    }
-
-    public String emit(
-            NativeRegistrationPlan registrationPlan,
-            MethodTableHidingPlan hidingPlan,
-            RuntimeLoaderPlan runtimeLoaderPlan) {
-        return emit(
-                registrationPlan,
-                hidingPlan,
-                runtimeLoaderPlan,
-                COMPATIBILITY_BUILD_KEY);
     }
 
     public String emit(

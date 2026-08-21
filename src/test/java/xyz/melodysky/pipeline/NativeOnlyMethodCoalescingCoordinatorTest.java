@@ -59,7 +59,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                 Map.of());
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, callee),
                         internalization(caller, callee),
                         implementations,
@@ -92,7 +92,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
         assertFalse(mergedCallerImplementation.passesOwnerClass());
 
         var compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         result.implementationPlan(),
@@ -153,7 +153,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
         IrMethod caller = caller("entry", callee, 1);
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, callee),
                         internalization(caller, callee),
                         implementationPlan(caller, callee, Map.of()),
@@ -185,7 +185,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
         IrMethod caller = caller("entry", invalidCallee, 1);
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, invalidCallee),
                         internalization(caller, invalidCallee),
                         implementationPlan(caller, invalidCallee, Map.of()),
@@ -260,7 +260,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                         List.of(internalizationDecision(callee, caller, false)));
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, callee),
                         internalization,
                         implementations,
@@ -324,7 +324,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                                 internalizationDecision(second, caller)));
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, first, second),
                         internalization,
                         implementations,
@@ -374,7 +374,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
         IrMethod caller = caller("wideEntry", callee, 1);
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(caller, callee),
                         internalization(caller, callee),
                         implementationPlan(caller, callee, Map.of()),
@@ -392,7 +392,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
         IrMethod callee = increment("helper");
         IrMethod twoSites = caller("twoSites", callee, 2);
         NativeOnlyMethodCoalescingResult multiple =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(twoSites, callee),
                         internalization(twoSites, callee),
                         implementationPlan(twoSites, callee, Map.of()),
@@ -410,7 +410,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                         Map.of(),
                         Map.of());
         NativeOnlyMethodCoalescingResult references =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(oneSite, callee),
                         internalization(oneSite, callee),
                         implementationPlan(
@@ -463,7 +463,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                                 internalizationDecision(leaf, lowerMiddle)));
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(entry, upperMiddle, lowerMiddle, leaf),
                         internalization,
                         implementations,
@@ -496,7 +496,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                 upperMiddle.methodKey()));
 
         var compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         result.implementationPlan(),
@@ -563,7 +563,7 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                 Map.of());
 
         NativeOnlyMethodCoalescingResult result =
-                new NativeOnlyMethodCoalescingCoordinator().run(
+                run(
                         methods(initializer, callee),
                         internalization(initializer, callee),
                         implementations,
@@ -791,6 +791,20 @@ class NativeOnlyMethodCoalescingCoordinatorTest {
                 returnType,
                 parameters,
                 List.of(blocks));
+    }
+
+    private NativeOnlyMethodCoalescingResult run(
+            Map<String, IrMethod> methods,
+            NativeMethodInternalizationPlan internalizationPlan,
+            NativeImplementationPlan implementationPlan,
+            long seed) {
+        return new NativeOnlyMethodCoalescingCoordinator().run(
+                methods,
+                internalizationPlan,
+                implementationPlan,
+                seed,
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .llvmLowerer());
     }
 
     private IrValue value(String name, IrType type) {

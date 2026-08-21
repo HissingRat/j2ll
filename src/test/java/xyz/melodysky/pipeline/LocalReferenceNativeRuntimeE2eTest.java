@@ -535,7 +535,7 @@ class LocalReferenceNativeRuntimeE2eTest {
                 .filter(candidate -> candidate.name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(method)
                         .artifact()

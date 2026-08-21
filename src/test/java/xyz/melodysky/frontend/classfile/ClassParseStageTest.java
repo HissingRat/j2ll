@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.pipeline.PipelineContext;
-import xyz.melodysky.pipeline.StageValidation;
 import xyz.melodysky.testsupport.AsmFixtureBuilder;
 
 class ClassParseStageTest {
@@ -32,10 +31,10 @@ class ClassParseStageTest {
                 new ClassFileEntry("pkg/AlphaCopy.class", AsmFixtureBuilder.minimalClass("pkg/Alpha"), "memory")));
 
         var parsed = new ClassParseStage().run(source, PipelineContext.bootstrap());
-        var validated = StageValidation.validate(parsed, new ParsedProgramValidator());
+        var diagnostics = new ParsedProgramValidator().validate(parsed.artifact().orElseThrow());
 
-        assertTrue(validated.hasErrors());
-        assertEquals(ClassParseDiagnostics.DUPLICATE_CLASS, validated.diagnostics().get(0).code());
+        assertFalse(diagnostics.isEmpty());
+        assertEquals(ClassParseDiagnostics.DUPLICATE_CLASS, diagnostics.get(0).code());
     }
 
     private record InMemoryClassFileSource(List<ClassFileEntry> entries) implements ClassFileSource {

@@ -18,10 +18,6 @@ final class HostJniAllocationRuntimeSource {
                 .anyMatch(key -> key.startsWith("class:"));
     }
 
-    static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
-        append(builder, bindings, RuntimeTokenMapper.compatibility());
-    }
-
     static void append(
             StringBuilder builder,
             List<HostJniCSourceGenerator.Binding> bindings,

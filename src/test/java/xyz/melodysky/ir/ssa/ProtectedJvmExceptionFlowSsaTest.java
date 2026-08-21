@@ -202,7 +202,7 @@ class ProtectedJvmExceptionFlowSsaTest {
                 .findFirst()
                 .orElseThrow();
         var cfg = new MethodCfgBuilder().build(method).artifact().orElseThrow();
-        var stage = new BytecodeToSsaLowerer().lower(cfg);
+        var stage = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         assertFalse(stage.hasErrors(), stage.diagnostics().toString());
         SsaMethodResult result = stage.artifact().orElseThrow();
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.status(), result.reason());

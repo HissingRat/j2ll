@@ -48,7 +48,7 @@ class NativeLlvmCompilerTest {
         RecordingListener listener = new RecordingListener();
 
         NativeLlvmCompilation compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(implementationPlan, irMethods, config, listener);
 
@@ -72,11 +72,11 @@ class NativeLlvmCompilerTest {
                 implementation(llvmMethod, NativeImplementationPath.LLVM_NATIVE_PATH),
                 implementation(templateMethod, NativeImplementationPath.TEMPLATE_JNI_PATH)));
         NativeLlvmCompilation repeated = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(reconstructedPlan, Map.copyOf(irMethods), config);
         NativeLlvmCompilation changedConfig = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         implementationPlan,
@@ -121,7 +121,7 @@ class NativeLlvmCompilerTest {
         IOException exception = assertThrows(
                 IOException.class,
                 () -> new NativeLlvmCompiler(
-                                new LlvmModuleLowerer(),
+                                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                                 new LlvmTextEmitter())
                         .compile(
                                 new NativeImplementationPlan(List.of(withOutlinedTarget)),

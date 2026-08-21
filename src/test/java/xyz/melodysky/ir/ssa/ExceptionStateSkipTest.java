@@ -29,7 +29,7 @@ class ExceptionStateSkipTest implements Opcodes {
                 .orElseThrow();
 
         var cfg = new MethodCfgBuilder().build(method).artifact().orElseThrow();
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         var artifact = result.artifact().orElseThrow();
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, artifact.status());

@@ -324,9 +324,10 @@ publishing {
 ConcurrentHashMap<TestDescriptor, StringBuffer> testOutputs = new ConcurrentHashMap<>()
 
 test {
-    dependsOn(shadowJar, distJ2ll)
+    dependsOn(shadowJar, distJ2ll, tasks.named('buildDummy'))
     useJUnitPlatform()
     environment 'JAVA_HOME', System.getProperty('java.home')
+    systemProperty 'j2ll.dummy.jar', tasks.named('buildDummy').flatMap { it.archiveFile }.get().asFile.absolutePath
 
     String configuredRealZig = System.getProperty('j2ll.realZig')
     if (configuredRealZig != null && !configuredRealZig.isBlank()) {

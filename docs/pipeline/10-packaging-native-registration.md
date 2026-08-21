@@ -52,7 +52,6 @@ xyz.melodysky.packaging
 - `NativeRegistrationPlanner`
 - `InternalizedMethodClassTransform`
 - `InternalizedMethodArtifactVerifier`
-- `RegisterNativesTableBuilder`
 - `SkippedMethodCollector`
 - `SkippedMethodGate`
 - `SkippedMethodApproval`

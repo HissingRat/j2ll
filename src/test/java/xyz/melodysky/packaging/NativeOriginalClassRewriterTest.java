@@ -31,7 +31,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
     @Test
     void nativeOriginalRemovesCodeAndSetsNativeFlag() {
         ParsedClass parsedClass = parsed("pkg/Mathy", AsmFixtureBuilder.classWithAddMethod("pkg/Mathy"));
-        MethodRewriteDecision decision = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision decision = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("add"))
                 .findFirst()
                 .orElseThrow();
@@ -52,7 +52,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
     @Test
     void nativeOriginalCanInjectLoaderTriggerIntoGeneratedClassInitializer() {
         ParsedClass parsedClass = parsed("pkg/Mathy", AsmFixtureBuilder.classWithAddMethod("pkg/Mathy"));
-        MethodRewriteDecision decision = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision decision = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("add"))
                 .findFirst()
                 .orElseThrow();
@@ -79,7 +79,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
         ParsedClass parsedClass = parsed(
                 "pkg/Api",
                 AsmFixtureBuilder.interfaceWithAbstractAndDefault("pkg/Api"));
-        MethodRewriteDecision decision = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision decision = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();
@@ -126,7 +126,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
                 "pkg/CodeApi",
                 InterfaceMethodAsmFixtures.interfaceWithDefaultStaticAndPrivate(
                         "pkg/CodeApi"));
-        var decisions = planner.planClass(parsedClass).stream()
+        var decisions = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(decision -> decision.method().name().equals("staticAnswer")
                         || decision.method().name().equals("privateAnswer"))
                 .toList();
@@ -185,7 +185,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
     @Test
     void constructorStubInjectsPrivateStaticNativeBodyHelper() {
         ParsedClass parsedClass = parsed("pkg/Foo", AsmFixtureBuilder.minimalClass("pkg/Foo"));
-        MethodRewriteDecision constructor = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision constructor = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("<init>"))
                 .findFirst()
                 .orElseThrow();
@@ -271,7 +271,7 @@ class NativeOriginalClassRewriterTest implements Opcodes {
     @Test
     void constructorStubPreservesParameterizedSuperPrefixAndOriginalHelperArguments() {
         ParsedClass parsedClass = parsed("pkg/Child", parameterizedSuperConstructor());
-        MethodRewriteDecision constructor = planner.planClass(parsedClass).stream()
+        MethodRewriteDecision constructor = planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("<init>"))
                 .findFirst()
                 .orElseThrow();
@@ -327,13 +327,13 @@ class NativeOriginalClassRewriterTest implements Opcodes {
 
     private InitializerImplementationPlan initializerPlan(MethodRewriteDecision decision) {
         var cfg = new MethodCfgBuilder().build(decision.method()).artifact().orElseThrow();
-        var ir = new BytecodeToSsaLowerer()
+        var ir = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(cfg)
                 .artifact()
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
-        return new InitializerImplementationPlanner()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.initializerPlanner()
                 .plan(decision, ir)
                 .orElseThrow(() -> new AssertionError("initializer plan missing for " + ir));
     }

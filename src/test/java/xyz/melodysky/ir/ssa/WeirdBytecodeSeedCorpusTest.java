@@ -65,7 +65,7 @@ class WeirdBytecodeSeedCorpusTest {
                         LoweringDiagnostics.UNSUPPORTED_FINALLY_SUBROUTINE))) {
             ParsedMethod parsedMethod = parseMethod(seed.classBytes(), seed.methodName());
             MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
-            var result = new BytecodeToSsaLowerer().lower(cfg);
+            var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
             SsaMethodResult artifact = result.artifact().orElseThrow();
 
             assertFalse(result.hasErrors(), seed.name());
@@ -89,7 +89,7 @@ class WeirdBytecodeSeedCorpusTest {
     private SsaMethodResult lower(byte[] classBytes, String methodName) {
         ParsedMethod parsedMethod = parseMethod(classBytes, methodName);
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         assertFalse(result.hasErrors());
         return result.artifact().orElseThrow();
     }

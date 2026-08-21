@@ -45,7 +45,10 @@ class LlvmExceptionFlowLowererTest {
                 Optional.empty(),
                 "call void @j2ll_test_cleanup()");
 
-        var lowered = new LlvmExceptionFlowLowerer(Set.of("entry")).lower(
+        var lowered = new LlvmExceptionFlowLowerer(
+                Set.of("entry"),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .runtimeTokens()).lower(
                 block,
                 List.of(new LlvmExceptionFlowLowerer.InstructionChunk(
                         source,
@@ -90,7 +93,10 @@ class LlvmExceptionFlowLowererTest {
                 Optional.empty(),
                 "call void @j2ll_test_cleanup()");
 
-        var lowered = new LlvmExceptionFlowLowerer(Set.of("entry", "catch")).lower(
+        var lowered = new LlvmExceptionFlowLowerer(
+                Set.of("entry", "catch"),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .runtimeTokens()).lower(
                 block,
                 List.of(new LlvmExceptionFlowLowerer.InstructionChunk(
                         source,
@@ -105,7 +111,7 @@ class LlvmExceptionFlowLowererTest {
                 .filter(candidate -> candidate.name().startsWith("j2ll.ex.check."))
                 .findFirst()
                 .orElseThrow();
-        String matcherHelper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String matcherHelper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_RUNTIME,
                 "instanceof",
                 "instanceof:java/lang/RuntimeException");

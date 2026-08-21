@@ -46,7 +46,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 .filter(method -> method.name().equals("encode"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod raw = new BytecodeToSsaLowerer()
+        IrMethod raw = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -98,14 +98,14 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                         && instruction.intLiteral().orElse(-1) == 4));
 
         MethodRewriteDecision decision = new MethodRewritePlanner()
-                .planClass(parsedClass)
+                .planClass(parsedClass, 0x6a326c6cL)
                 .stream()
                 .filter(item -> item.method().methodKey()
                         .equals(parsedMethod.methodKey()))
                 .findFirst()
                 .orElseThrow();
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         new NativeRegistrationPlanner().plan(
                                 List.of(decision)),
                         List.of(decision),
@@ -146,7 +146,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                         .orElseThrow());
 
         NativeLlvmCompilation compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         implementationPlan,
@@ -245,7 +245,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 .filter(method -> method.name().equals("encodeCaught"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod raw = new BytecodeToSsaLowerer()
+        IrMethod raw = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -315,7 +315,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 .filter(method -> method.name().equals("encodeLoop"))
                 .findFirst()
                 .orElseThrow();
-        IrMethod raw = new BytecodeToSsaLowerer()
+        IrMethod raw = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -333,7 +333,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 .artifact()
                 .orElseThrow();
         MethodRewriteDecision decision = new MethodRewritePlanner()
-                .planClass(parsedClass)
+                .planClass(parsedClass, 0x6a326c6cL)
                 .stream()
                 .filter(item -> item.method().methodKey()
                         .equals(parsedMethod.methodKey()))
@@ -346,7 +346,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 directLocalReferencePlan.failureReason()::toString);
 
         NativeImplementationPlan implementationPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         new NativeRegistrationPlanner().plan(
                                 List.of(decision)),
                         List.of(decision),
@@ -380,7 +380,7 @@ final class PureNativeJdkIntrinsicIntegrationTest {
                 .filter(candidate -> candidate.name().equals("encode"))
                 .findFirst()
                 .orElseThrow();
-        return new BytecodeToSsaLowerer()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(method)
                         .artifact()

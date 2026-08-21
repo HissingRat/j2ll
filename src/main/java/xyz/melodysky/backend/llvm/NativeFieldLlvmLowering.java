@@ -22,10 +22,6 @@ final class NativeFieldLlvmLowering {
     static final String REFERENCE_SIDECAR_CACHE = "%j2ll_nfs_ref_cache";
     private final RuntimeTokenMapper runtimeTokens;
 
-    NativeFieldLlvmLowering() {
-        this(RuntimeTokenMapper.compatibility());
-    }
-
     NativeFieldLlvmLowering(RuntimeTokenMapper runtimeTokens) {
         this.runtimeTokens = java.util.Objects.requireNonNull(
                 runtimeTokens,

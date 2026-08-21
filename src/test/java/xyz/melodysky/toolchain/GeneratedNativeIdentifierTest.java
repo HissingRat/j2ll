@@ -129,22 +129,23 @@ class GeneratedNativeIdentifierTest {
                 .filter(candidate -> candidate.name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planMethod(parsedClass, parsedMethod);
+        MethodRewriteDecision decision = new MethodRewritePlanner().planMethod(parsedClass, parsedMethod, 0x6a326c6cL);
         NativeRegistrationPlan registrationPlan = new NativeRegistrationPlanner().plan(List.of(decision));
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow())
                 .artifact()
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
-        NativeImplementationPlan implementationPlan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan implementationPlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(parsedMethod.methodKey(), irMethod));
 
         NativeRegistrationEntry entry = registrationPlan.entries().get(0);
         String llvmSymbol = implementationPlan.implementations().get(0).llvmFunctionSymbol().orElseThrow();
-        String source = new HostJniCSourceGenerator().generate(implementationPlan);
+        String source = xyz.melodysky.testsupport.TestProtectionMaterials
+                .hostJniSource(implementationPlan);
 
         assertTrue(entry.nativeSymbol().matches("j2ll_n_[0-9a-f]{32}"));
         assertTrue(llvmSymbol.matches("j2ll_f_[0-9a-f]{32}"));

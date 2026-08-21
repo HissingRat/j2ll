@@ -213,7 +213,7 @@ class FieldInternalizationPipelineTest implements Opcodes {
                 .findFirst()
                 .orElseThrow();
         ParsedProgram program = new ParsedProgram(List.of(parsedClass));
-        IrMethod irMethod = new BytecodeToSsaLowerer()
+        IrMethod irMethod = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder()
                         .build(parsedMethod)
                         .artifact()
@@ -241,7 +241,7 @@ class FieldInternalizationPipelineTest implements Opcodes {
         Map<String, IrMethod> optimizedMethods =
                 Map.of(irMethod.methodKey(), irMethod);
         NativeImplementationPlanner implementationPlanner =
-                new NativeImplementationPlanner();
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner();
         NativeImplementationPlan probe = implementationPlanner.plan(
                 new NativeRegistrationPlan(List.of(entry)),
                 List.of(decision),
@@ -327,7 +327,7 @@ class FieldInternalizationPipelineTest implements Opcodes {
         }
         FieldInternalizationPipelineResult result =
                 new FieldInternalizationPreparationCoordinator(
-                                new NativeImplementationPlanner())
+                                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner())
                         .run(
                                 config(inputJar, temp.resolve("missing-reflection-dependency.jar")),
                                 program,

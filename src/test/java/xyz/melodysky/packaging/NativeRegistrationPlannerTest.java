@@ -55,7 +55,7 @@ class NativeRegistrationPlannerTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(candidate -> candidate.method().name().equals("answer"))
                 .findFirst()
                 .orElseThrow();
@@ -79,7 +79,7 @@ class NativeRegistrationPlannerTest {
                         "fixture"))
                 .artifact()
                 .orElseThrow();
-        var decisions = new MethodRewritePlanner().planClass(parsedClass);
+        var decisions = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL);
         var entries = new NativeRegistrationPlanner().plan(decisions).entries();
 
         assertEquals(
@@ -113,7 +113,7 @@ class NativeRegistrationPlannerTest {
             NativeRegistrationPlanner planner,
             ParsedClass parsedClass,
             Long buildScopedSeed) {
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(candidate -> !candidate.method().name().equals("<init>"))
                 .findFirst()
                 .orElseThrow();

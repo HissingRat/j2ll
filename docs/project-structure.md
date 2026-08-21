@@ -384,6 +384,8 @@ call site 收集、CHA/RTA resolution 和 devirtualization plan。
 - `CallResolutionPolicy`：unknown/external/helper-or-skipped policy。
 - `DevirtualizationPlanner`：生成 plan。
 - `DevirtualizationPlan`：call site 到 direct/JNI-dispatch/skipped decision。
+- `ProgramCallGraphAnalysisCoordinator`：主线唯一协调入口；先建立 CHA 与 runtime facts，
+  仅在 declared `CLOSED_WORLD` 下应用 RTA 收窄，再冻结 devirtualization plan。
 
 应抽工具：
 
@@ -754,7 +756,6 @@ LLVM module model pass 基础设施。
 
 - `LlvmModulePass`
 - `LlvmFunctionPass`
-- `LlvmModulePassPipeline`
 - `LlvmPassContext`
 - `LlvmPassDiagnostics`
 - `LlvmModelRewriter`
@@ -771,7 +772,6 @@ LLVM module model 级保护/混淆。
 
 推荐类：
 
-- `LlvmProtectionPipeline`
 - `LlvmProtectionConfig`
 - `LlvmNameObfuscationPass`
 - `LlvmOpaquePredicatePass`
@@ -825,21 +825,24 @@ Build identity与独立的攻击者视角回归工具。这里不生成JNI/runti
 
 ## runtime
 
-JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 stub 生成。该包不实现独立 VM；Java-visible object、array、Class、String、Throwable、Thread、monitor 和 GC 语义都必须通过 JVM/JNI helper 维护。
+JVM/JNI helper catalog、runtime metadata、JNI ABI、Unsafe policy 和 runtime implementation。该包不实现独立 VM；Java-visible object、array、Class、String、Throwable、Thread、monitor 和 GC 语义都必须通过 JVM/JNI helper 维护。
 
 推荐类：
 
 - `RuntimeHelperCatalog`：所有 helper 的注册表。
-- `RuntimeHelperDeclarationEmitter`：从 catalog 生成 LLVM/runtime declaration text。
 - `RuntimeHelperSignature`：helper name、args、return、exception behavior。
-- `RuntimeStubGenerator`：JVM/JNI helper C stub 生成。
 - `RuntimeAbi`：Java/JNI/native helper ABI 约定；reference value 必须表示 JVM object / JNI reference。
 - `RuntimeTokenMapper`：以 invocation build key 和封闭的 `RuntimeTokenDomain`
   为 class/field/method/reflection/lambda binding 派生 build-scoped 64-bit token
   与纯哈希 helper symbol；同 domain 截断碰撞在生成阶段 fail closed。旧的固定
   `ClassIdentityToken` / `MethodIdentityToken` / `FieldIdentityToken` 已删除，
   避免跨构建留下稳定 join key。
-- `RuntimeHelperCatalog` 中的 div/rem ArithmeticException helper、pending-exception/clear/rethrow helper、field helper、`int[]`/`byte[]`/reference array helper、allocation helper、String helper、`Object.getClass()` helper 和 dispatch helper 必须共享同一签名来源；LLVM declaration、runtime header/C skeleton 和 JNI wrapper C 不能各自手写不一致 ABI。
+- `RuntimeHelperCatalog` 中的 div/rem ArithmeticException helper、pending-exception/clear/rethrow helper、field helper、`int[]`/`byte[]`/reference array helper、allocation helper、String helper、`Object.getClass()` helper 和 dispatch helper 必须共享同一签名来源；LLVM declaration、generated runtime C 和 JNI wrapper C 不能各自手写不一致 ABI。
+
+主线编排的辅助职责不得继续回填到 giant class：`MainlineIntermediateWriter`负责
+intermediate artifacts，`MainlineProtectionEvidenceClassifier`负责把保护证据映射到最终
+native surface；`NativeImplementationBodyPlanner`、`NativeDirectCallTargetResolver`与
+`NativeImplementationReasonClassifier`分别负责body选择、direct target闭包与稳定reason。
 
 子包：
 
@@ -899,7 +902,6 @@ JAR rewrite、loader、native registration。
 - `NativeRegistrationPlan`
 - `MethodTableHidingPlanner`
 - `MethodTableHidingPlan`
-- `RegisterNativesTableBuilder`
 - `InternalizedFieldClassTransform`
 - `InternalizedFieldArtifactVerifier`
 - `NativeLibraryExtractor`
@@ -1110,7 +1112,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - managed Zig layout 必须规范化为 `<j2ll-home>/zig/zig(.exe)` 和 `<j2ll-home>/zig/lib`。
 - archive extraction 必须防 path traversal；checksum 校验失败必须 preflight error；signature verification 当前明确记录 `notVerifiedBoundary`，不能静默宣称已验签。
 - toolchain 接收 per-class LLVM `.ll` 和已生成 `.o` 作为输入，但 linking/export/strip/symbol audit 仍由 Zig build plan 统一编排。
-- 外部 `cc` / `clang` / `llc` / platform linker 不暴露为 public toolchain contract；实现不能在 `ZigNativeLibraryBuilder` / `HostNativeLibraryBuilder` 中新增这些直接命令。
+- 外部 `cc` / `clang` / `llc` / platform linker 不暴露为 public toolchain contract；`ZigNativeLibraryBuilder` 只能通过受管的 Zig build graph 使用这些能力。
 - toolchain 只生成供 JVM loader 加载的动态库，不生成可直接运行的 executable 或独立 Java runtime artifact。
 
 ## toolchain.symbols
@@ -1130,8 +1132,6 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 - `PeExportTable`
 - `ElfExportTable`
 - `MachOExportTable`
-- `StripPlan`
-- `StripCommandPlanner`
 - `PlatformSymbolPolicy`
 - `ElfSymbolPolicy`
 - `MachOSymbolPolicy`
@@ -1141,7 +1141,7 @@ Zig-driven JNI dynamic library build orchestration。Schema version 1 的正式 
 边界：
 
 - Java method 对应 LLVM function 默认 internal/hidden。
-- 只有loader/bootstrap所需JNI/C ABI root进入dynamic export list；普通C wrapper与LLVM
+- 只有 `JNI_OnLoad` 与平台必需runtime symbol进入dynamic export list；普通C wrapper与LLVM
   JNI proxy都保持local/hidden。
 - hidden/internal linkage 与最终 dynamic export allowlist audit 是不可关闭的 native build 基线，不受 protection master、LLVM protection 或 binary-hardening 开关影响。
 - Linux 使用 hidden visibility、version script 或 linker export list。

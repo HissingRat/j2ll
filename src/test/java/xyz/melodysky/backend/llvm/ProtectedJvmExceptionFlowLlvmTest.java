@@ -103,7 +103,7 @@ class ProtectedJvmExceptionFlowLlvmTest {
         assertTrue(cleanup.contains("call void @j2ll_rt_clear_exception("), cleanup);
         assertFalse(cleanup.contains("; localizedCatchTypeCheck"), cleanup);
         assertTrue(cleanup.contains("call void @j2ll_rt_rethrow("), cleanup);
-        String cleanupFieldHelper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String cleanupFieldHelper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.FIELD_RUNTIME,
                 "field_put_static_i32",
                 "pkg/ProtectedExceptionOps#cleanupMarker!I");
@@ -125,7 +125,7 @@ class ProtectedJvmExceptionFlowLlvmTest {
 
     private String emit(String methodName) {
         IrMethod method = lowerNative(methodName);
-        return new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(
+        return new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                 new IrClass(method.owner(), List.of(method))));
     }
 
@@ -134,7 +134,7 @@ class ProtectedJvmExceptionFlowLlvmTest {
                 .filter(candidate -> candidate.name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
-        var stage = new BytecodeToSsaLowerer().lower(
+        var stage = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(
                 new MethodCfgBuilder().build(method).artifact().orElseThrow());
         assertFalse(stage.hasErrors(), stage.diagnostics().toString());
         var result = stage.artifact().orElseThrow();
@@ -153,7 +153,7 @@ class ProtectedJvmExceptionFlowLlvmTest {
     }
 
     private String catchTypeHelper(String internalName) {
-        return RuntimeTokenMapper.compatibility().helperSymbol(
+        return xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_RUNTIME,
                 "instanceof",
                 "instanceof:" + internalName);

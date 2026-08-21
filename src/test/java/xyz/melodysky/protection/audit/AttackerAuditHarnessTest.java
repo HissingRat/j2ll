@@ -79,8 +79,6 @@ class AttackerAuditHarnessTest {
 
         AttackerAuditMetrics first = harness.audit(request);
         AttackerAuditMetrics repeated = harness.audit(request);
-        String json = new AttackerAuditReportWriter().json(first);
-
         assertEquals(first, repeated);
         assertFalse(first.passed());
         assertEquals(Files.size(nativeLibrary), first.nativeSizeBytes());
@@ -95,12 +93,6 @@ class AttackerAuditHarnessTest {
         assertEquals(List.of("j2ll_register"), first.unexpectedExports());
         assertTrue(first.generatedCHardeningFindings().contains(
                 GeneratedNativeHardeningAudit.FALLBACK_BYTECODE_CARRIER));
-        assertEquals(json, new AttackerAuditReportWriter().json(repeated));
-        assertTrue(json.contains("\"schemaVersion\": 1"));
-        assertTrue(json.contains("\"nativeSizeBytes\""));
-        assertTrue(json.contains("\"generatedCSizeBytes\""));
-        assertTrue(json.contains("\"literalHash\""));
-        assertFalse(json.contains(secret));
     }
 
     @Test
@@ -227,8 +219,6 @@ class AttackerAuditHarnessTest {
                 nativeLibrary,
                 generatedC,
                 List.of()));
-        String json = new AttackerAuditReportWriter().json(metrics);
-
         assertTrue(metrics.passed(), metrics.toString());
         assertEquals(siteCount, metrics.generatedNativeTextCipherArrayCount());
         assertEquals(siteCount, metrics.generatedNativeTextSiteCodecCount());
@@ -239,10 +229,6 @@ class AttackerAuditHarnessTest {
         assertEquals(
                 0,
                 metrics.generatedNativeTextAdjacentSeedCipherOccurrences());
-        assertTrue(json.contains(
-                "\"generatedNativeTextCodecFamilyCount\""));
-        assertTrue(json.contains(
-                "\"generatedNativeTextLargestDecoderFanout\""));
     }
 
     private byte[] concat(byte[]... parts) {

@@ -93,7 +93,7 @@ class NativeJniProxyIndirectionEvidenceTest {
                 DirectJniEntryTestFixture.ineligibleClass(),
                 List.of("callee", "caller"));
         NativeLlvmCompilation compilation = new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         source.implementationPlan(),

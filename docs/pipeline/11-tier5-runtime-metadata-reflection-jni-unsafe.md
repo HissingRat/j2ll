@@ -28,9 +28,9 @@
 - `JniTypeMapper` 实现 JVM descriptor 到 JNI C type 映射。
 - `JniMethodDescriptor` 记录 static/instance implicit `JNIEnv*` + `jclass` / `jobject` ABI。
 - `JniReferencePolicy`、`JniLocalFramePlan` 和 pending exception policy 记录引用生命周期和异常传播策略。
-- `RegisterNativesTableBuilder`、`JniOnLoadPlanner`、`BootstrapWrapperPlanner` 生成稳定 registration/bootstrap plan。
-- Symbol allowlist 只允许 `JNI_OnLoad`、aggregate/register/bootstrap wrappers；Java method internal symbol 默认不能导出。
-- `RuntimeHelperCatalog` 的 signature 是 helper ABI 的单一来源：Java reference token 使用 `jobject`、`jclass`、`jarray`、`jthrowable` 等 JNI handle；LLVM declaration 映射为 opaque `ptr`，C header/skeleton 显式接收 `JNIEnv* env`，并保留 local frame / pending exception policy TODO。
+- `HostNativeRegistrationSource` 只消费已冻结的 `NativeRegistrationControlTopologyPlan`；owner table 在activation内构造，control symbol 使用build-scoped hash-only名称，不再生成稳定bootstrap/table前缀。
+- Symbol allowlist 只允许 `JNI_OnLoad` 和平台必需runtime symbol；aggregate、route、chunk、owner helper与Java method implementation 都不得导出。
+- `RuntimeHelperCatalog` 的 signature 是 helper ABI 的单一来源：Java reference token 使用 `jobject`、`jclass`、`jarray`、`jthrowable` 等 JNI handle；LLVM declaration 映射为 opaque `ptr`，generated runtime C 显式接收 `JNIEnv* env` 并执行已验证的local-reference / pending-exception策略。
 - Pipeline lowering report 会为 native registration 写入 `JNI_ABI_REGISTER_NATIVES` helper-backed fact，避免 JNI ABI 决策只存在于 packaging 内部。virtual/interface dispatch helper 当前只覆盖 tokenized no-arg int、int-arg int、reference return 和 single-reference-argument/reference-return subset，并通过 JNI `GetObjectClass` / `GetMethodID` / `Call<Type>Method` 执行 JVM dispatch；native runtime 不实现 vtable 或 object layout。
 
 ## MethodHandle / ConstantDynamic

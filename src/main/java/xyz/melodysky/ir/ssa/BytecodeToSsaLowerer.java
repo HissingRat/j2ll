@@ -81,10 +81,6 @@ public final class BytecodeToSsaLowerer implements Opcodes {
             new BytecodeExceptionSemantics();
     private final RuntimeTokenMapper runtimeTokens;
 
-    public BytecodeToSsaLowerer() {
-        this(RuntimeTokenMapper.compatibility());
-    }
-
     public BytecodeToSsaLowerer(RuntimeTokenMapper runtimeTokens) {
         this.runtimeTokens = java.util.Objects.requireNonNull(
                 runtimeTokens,

@@ -30,7 +30,7 @@ import xyz.melodysky.toolchain.NativeImplementationPlanner;
 
 class InitializerImplementationPlannerTest implements Opcodes {
     private final InitializerImplementationPlanner planner =
-            new InitializerImplementationPlanner();
+            xyz.melodysky.testsupport.TestProtectionMaterials.initializerPlanner();
 
     @Test
     void splitsAfterTheActualParameterizedSuperInvocation() {
@@ -103,7 +103,7 @@ class InitializerImplementationPlannerTest implements Opcodes {
                 .findAny()
                 .isEmpty());
 
-        var nativePlan = new NativeImplementationPlanner().plan(
+        var nativePlan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 new NativeRegistrationPlanner().plan(List.of(decision)),
                 List.of(decision),
                 Map.of(decision.method().methodKey(), initializerPlan.nativeBody()),
@@ -152,14 +152,14 @@ class InitializerImplementationPlannerTest implements Opcodes {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String name) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(candidate -> candidate.method().name().equals(name))
                 .findFirst()
                 .orElseThrow();
     }
 
     private IrMethod irMethod(ParsedMethod method) {
-        return irMethod(method, RuntimeTokenMapper.compatibility());
+        return irMethod(method, xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens());
     }
 
     private IrMethod irMethod(

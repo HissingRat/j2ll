@@ -54,7 +54,7 @@ final class DirectJniEntryTestFixture {
             List<String> methodNames,
             NativeTextBuildKey buildKey) {
         List<MethodRewriteDecision> decisions =
-                new MethodRewritePlanner().planClass(parsedClass).stream()
+                new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                         .filter(decision -> methodNames.contains(
                                 decision.method().name()))
                         .toList();
@@ -69,7 +69,7 @@ final class DirectJniEntryTestFixture {
         NativeRegistrationPlan registrations =
                 new NativeRegistrationPlanner().plan(decisions);
         NativeImplementationPlan semanticPlan =
-                new NativeImplementationPlanner().plan(
+                xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                         registrations,
                         decisions,
                         irMethods);
@@ -89,7 +89,7 @@ final class DirectJniEntryTestFixture {
     static NativeLlvmCompilation compileModel(Fixture fixture)
             throws Exception {
         return new NativeLlvmCompiler(
-                        new LlvmModuleLowerer(),
+                        xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer(),
                         new LlvmTextEmitter())
                 .compile(
                         fixture.implementationPlan(),
@@ -135,7 +135,7 @@ final class DirectJniEntryTestFixture {
                                 + method.methodKey()
                                 + ": "
                                 + cfgResult.diagnostics()));
-        var lowering = new BytecodeToSsaLowerer().lower(cfg);
+        var lowering = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         SsaMethodResult result = lowering.artifact().orElseThrow(() ->
                 new IllegalStateException(
                         "SSA fixture produced no result for "

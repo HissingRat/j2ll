@@ -178,12 +178,10 @@ xyz.melodysky.ir.pass
 xyz.melodysky.backend.llvm
   LlvmTextBackend
   model/LlvmModule
-  protection/LlvmProtectionPipeline
+  protection/LlvmModulePass
 
 xyz.melodysky.runtime
   RuntimeHelperCatalog
-  RuntimeHelperDeclarationEmitter
-  RuntimeStubGenerator
 
 xyz.melodysky.packaging
   Repackager
@@ -208,7 +206,6 @@ xyz.melodysky.toolchain
 xyz.melodysky.toolchain.symbols
   SymbolVisibilityPlanner
   SymbolAudit
-  StripCommandPlanner
 ```
 
 旧 `frontend.bytecode` 只作为 legacy reference。若需要保留兼容 API，应在 `src/main/java` 中重建薄 facade；新增的 CFG、hierarchy、call graph、SSA 能力不要继续堆进旧 `MethodIrBuilder`。
@@ -316,7 +313,8 @@ xyz.melodysky.toolchain.symbols
 建议迁移：
 
 - 先实现 CHA：根据 declared receiver type 和 class hierarchy 找到保守目标集合。
-- 再实现 RTA：从 entry/native-lowered methods 出发，只把 reachable allocation types 纳入 virtual dispatch 目标集合。
+- 已接入的 RTA 从 runtime allocation facts 收窄 CHA；只有 declared `CLOSED_WORLD`
+  才允许收窄，partial/unknown world继续保留保守CHA结果。
 - Points-to 和 escape analysis 保持可选，不影响第一版主线。
 - Devirtualization 输出 `DevirtualizationPlan`，只描述哪些 call site 可以变成 direct/special/static-like call，不直接改 ASM。
 
@@ -325,6 +323,10 @@ xyz.melodysky.toolchain.symbols
 - CHA 单测覆盖 final class、final method、interface call、多实现类、missing external type。
 - RTA 单测覆盖未实例化 subtype 不进入目标集合、反射/unknown allocation 触发保守回退。
 - Devirtualization 单测覆盖单目标、多目标、外部未知目标。
+
+当前主线由`ProgramCallGraphAnalysisCoordinator`冻结CHA/RTA与devirtualization结果，
+`ProgramIrProtectionCoordinator`只消费该plan决定direct-call protection facts，backend不再
+从target数量临时重建dispatch决策。
 
 ### Phase 5：栈式 Bytecode -> 三地址 SSA IR
 
@@ -424,7 +426,7 @@ xyz.melodysky.toolchain.symbols
 - 通用 generated-C sensitive literal 已改为真实 use-site 惰性解码：同一 C function 内同明文共享一个 activation-local slot并在单次 activation 最多解码一次，不跨 function 共享明文 cache/encoding；函数内聚合 scratch 由统一 cleanup hook 覆盖所有退出。translation unit可共享metadata-free `noinline` zeroizer/cleanup callback以减少重复骨架，但该callback不接收ciphertext/codec/JVM metadata，不恢复global decoder、plaintext cache或集中text directory。
 - `LLVM_NATIVE_PATH` local ABI改为bounded profile：传递`JNIEnv*`或owner `jclass`的JVM/JNI semantic-surface binding强制使用branched参数重排；pure-native scalar binding继续从direct/单层/双层/branched四种build-diverse shape中选择。branched bridge使用`noinline,used`而非`optnone`，既保留有界route边界，也允许正常size optimization。2026-07-31 v2双随机build的Windows x64 Ghidra分类由旧样本35 direct / 26 multiple-callee / 10 unresolved变为4 / 59 / 8和3 / 58 / 10；71个wrapper跨build相同RVA为0，双方可解析的60个binding仅3个resolution fingerprint相同。动态probe仍能完整观察71个registration binding，因此这只是静态分析成本证据。
 - LLVM `LlvmBlockLayoutPerturbationPass`、`LlvmOpaquePredicatePass` 和 `LlvmGlobalLayoutPass` 已接入 validated module model。当前分别只改变 non-entry block emission order、给 conditional branch 加 defined-integer 恒真 gate、重排 module-local global slots；Windows real-Zig host E2E 已断言三项 `RAN`、parity、LLVM marker/global retention 和 export baseline，六目标专项已验证共享 transformed LLVM 进入每个 target graph并完成六库 privacy/export。optimizer/linker 仍可折叠或重新布局，不能宣称 final machine-code shape 稳定保留。
-- LLVM name obfuscation 已改为共享 `LlvmNameMangler`，planner、LLVM module lowering、Zig workspace `.ll` 和 JNI wrapper C 使用同一 deterministic `j2ll_f_<sha256>` symbol；symbol audit 仍只允许 loader/bootstrap exports。
+- LLVM name obfuscation 已改为共享 `LlvmNameMangler`，planner、LLVM module lowering、Zig workspace `.ll` 和 JNI wrapper C 使用同一 deterministic `j2ll_f_<sha256>` symbol；symbol audit 只允许 `JNI_OnLoad` 与平台必需runtime exports。
 - LLVM `visibilityHardening` 已从 Config/schema 删除；Java implementation/protection symbol 的 hidden/internal linkage 和最终 export allowlist audit 仍是不可关闭基线。
 - `reports/protection-report.json` 已记录上述 pass 的 `RAN` / `SKIPPED` / `FAILED` 与 hash-only seed identity；`field-internalization-report.json` 和 packaging method-table evidence 已进入 report index/readiness。单 method/module 不适用只记录稳定 reason，不改变 lowering status。
 

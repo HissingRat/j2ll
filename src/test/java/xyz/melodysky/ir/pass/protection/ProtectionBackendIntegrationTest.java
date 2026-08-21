@@ -42,7 +42,7 @@ class ProtectionBackendIntegrationTest {
         ProtectionConfig config = new ProtectionConfig(true, 17, false, false, false, true, true, false);
 
         ProtectionPipelineResult protectedResult = pipeline.runDetailed(method, config);
-        String llvm = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
+        String llvm = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer()
                 .lowerClass(new IrClass(method.owner(), List.of(protectedResult.method()))));
 
         assertTrue(protectedResult.diagnostics().isEmpty(), protectedResult.diagnostics().toString());
@@ -85,7 +85,7 @@ class ProtectionBackendIntegrationTest {
         ProtectionConfig config = new ProtectionConfig(true, 17, false, false, false, true, false, false);
 
         ProtectionPipelineResult protectedResult = pipeline.runDetailed(method, config);
-        String llvm = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
+        String llvm = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer()
                 .lowerClass(new IrClass(method.owner(), List.of(protectedResult.method()))));
 
         assertTrue(protectedResult.diagnostics().isEmpty(), protectedResult.diagnostics().toString());
@@ -147,7 +147,7 @@ class ProtectionBackendIntegrationTest {
                 new ProtectionConfig(true, 17, true, false, false, false, false, false);
 
         ProtectionPipelineResult protectedResult = pipeline.runDetailed(method, config);
-        String llvm = new LlvmTextEmitter().emit(new LlvmModuleLowerer()
+        String llvm = new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer()
                 .lowerClass(new IrClass(method.owner(), List.of(protectedResult.method()))));
 
         assertTrue(protectedResult.diagnostics().stream()

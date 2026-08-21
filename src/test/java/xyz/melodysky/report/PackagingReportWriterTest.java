@@ -39,7 +39,7 @@ class PackagingReportWriterTest {
                 .parse(new ClassFileEntry("pkg/Mathy.class", AsmFixtureBuilder.classWithAddMethod("pkg/Mathy"), "fixture"))
                 .artifact()
                 .orElseThrow();
-        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass).stream()
+        MethodRewriteDecision decision = new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("add"))
                 .findFirst()
                 .orElseThrow();

@@ -178,7 +178,7 @@ class LlvmLocalReferenceLoweringTest {
             IrMethod method,
             NativeLocalReferencePlan plan) {
         return new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass(method.owner(), List.of(method)),
                         LlvmLinkage.EXTERNAL,
                         LlvmVisibility.HIDDEN,

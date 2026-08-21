@@ -62,8 +62,6 @@ class DualBuildFingerprintAuditTest {
                 ProtectionSeedMode.REPRODUCIBLE,
                 first,
                 changed);
-        String json = new DualBuildFingerprintReportWriter().json(passed);
-
         assertTrue(passed.passed());
         assertFalse(passed.combinedChanged());
         assertEquals(
@@ -82,11 +80,6 @@ class DualBuildFingerprintAuditTest {
         assertEquals(
                 DualBuildFingerprintAudit.REPRODUCIBLE_NATIVE_CHANGED,
                 nativeTimestampDifference.reasonCode());
-        assertTrue(json.contains("\"seedMode\": \"reproducible\""));
-        assertTrue(json.contains("\"artifactSizeEvidence\""));
-        assertTrue(json.contains("\"nativeSizeDeltaBytes\": 0"));
-        assertTrue(json.contains("\"passed\": true"));
-        assertFalse(json.contains(first.combinedSha256()));
     }
 
     private BuildArtifactFingerprint fingerprint(

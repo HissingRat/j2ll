@@ -86,7 +86,12 @@ class MethodSplittingPassTest {
         OutlinedMethodHelper helper = result.helper().orElseThrow();
         LlvmNameMangler nameMangler = LlvmNameMangler.obfuscating(43L);
 
-        var module = new LlvmModuleLowerer(nameMangler).lowerClass(
+        var module = new LlvmModuleLowerer(
+                nameMangler,
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .businessStringSymbols(),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .runtimeTokens()).lowerClass(
                 new IrClass(result.caller().owner(), List.of(result.caller(), helper.body())),
                 LlvmLinkage.INTERNAL,
                 LlvmVisibility.HIDDEN,

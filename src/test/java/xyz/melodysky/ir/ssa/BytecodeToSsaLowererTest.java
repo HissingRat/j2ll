@@ -75,7 +75,7 @@ class BytecodeToSsaLowererTest {
                 "choose");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -91,7 +91,7 @@ class BytecodeToSsaLowererTest {
                 "merged");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -356,7 +356,7 @@ class BytecodeToSsaLowererTest {
         String sameLlvm = llvm(same);
         assertEquals(
                 new LlvmFunctionAbi(true, false),
-                new LlvmModuleLowerer().inferFunctionAbi(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         same,
                         Set.of(),
                         Set.of()));
@@ -381,7 +381,7 @@ class BytecodeToSsaLowererTest {
         String isNullLlvm = llvm(isNull);
         assertEquals(
                 new LlvmFunctionAbi(false, false),
-                new LlvmModuleLowerer().inferFunctionAbi(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         isNull,
                         Set.of(),
                         Set.of()));
@@ -394,7 +394,7 @@ class BytecodeToSsaLowererTest {
         String isNonNullLlvm = llvm(isNonNull);
         assertEquals(
                 new LlvmFunctionAbi(false, false),
-                new LlvmModuleLowerer().inferFunctionAbi(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         isNonNull,
                         Set.of(),
                         Set.of()));
@@ -506,7 +506,7 @@ class BytecodeToSsaLowererTest {
                 "badFinally");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -521,7 +521,7 @@ class BytecodeToSsaLowererTest {
                 "badMonitorFinally");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -537,7 +537,7 @@ class BytecodeToSsaLowererTest {
                 "badNestedFinally");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         var method = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -792,7 +792,7 @@ class BytecodeToSsaLowererTest {
                 "waitNotify");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
@@ -864,7 +864,7 @@ class BytecodeToSsaLowererTest {
                 "substring");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
@@ -900,7 +900,9 @@ class BytecodeToSsaLowererTest {
                 .flatMap(instruction -> xyz.melodysky.ir.model.BusinessStringConstantRef
                         .fromInstruction(instruction)
                         .stream())
-                .map(xyz.melodysky.ir.model.BusinessStringConstantRef::helperSymbol)
+                .map(constant -> constant.helperSymbol(
+                        xyz.melodysky.testsupport.TestProtectionMaterials
+                                .businessStringSymbols()))
                 .findFirst()
                 .orElseThrow();
         assertTrue(llvm.contains("@" + localizedHelper + "(ptr %j2ll_env)"));
@@ -927,7 +929,7 @@ class BytecodeToSsaLowererTest {
                 "concatUnsupported");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertEquals(DiagnosticCode.JVM_HELPER_UNSUPPORTED, result.diagnostics().get(0).code());
@@ -968,7 +970,7 @@ class BytecodeToSsaLowererTest {
                 "alt");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertEquals(DiagnosticCode.ALT_METAFACTORY_UNSUPPORTED, result.diagnostics().get(0).code());
@@ -986,7 +988,7 @@ class BytecodeToSsaLowererTest {
                 "altCapture");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
@@ -1125,7 +1127,9 @@ class BytecodeToSsaLowererTest {
         String localizedHelper = xyz.melodysky.ir.model.BusinessStringConstantRef
                 .fromInstruction(stringInstruction)
                 .orElseThrow()
-                .helperSymbol();
+                .helperSymbol(
+                        xyz.melodysky.testsupport.TestProtectionMaterials
+                                .businessStringSymbols());
         assertTrue(llvm(stringConst).contains(
                 "call ptr @" + localizedHelper + "(ptr %j2ll_env)"));
         assertFalse(llvm(stringConst).contains(
@@ -1489,7 +1493,7 @@ class BytecodeToSsaLowererTest {
                 "dynamicForName");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
@@ -1503,7 +1507,7 @@ class BytecodeToSsaLowererTest {
                 "declaredMethods");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
@@ -1533,7 +1537,7 @@ class BytecodeToSsaLowererTest {
 
         ParsedMethod parsedMethod = parseMethod(classBytes, "dynamic");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         assertEquals(LoweringStatus.NATIVE_LOWERED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().isEmpty());
         var dynamic = result.artifact().orElseThrow().irMethod().orElseThrow();
@@ -1569,7 +1573,7 @@ class BytecodeToSsaLowererTest {
 
         ParsedMethod parsedMethod = parseMethod(classBytes, "unsupported");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.diagnostics().get(0).message().contains("unsupported ConstantDynamic bootstrap"));
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
@@ -1604,7 +1608,7 @@ class BytecodeToSsaLowererTest {
                 "unsupported");
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertEquals(DiagnosticCode.UNSAFE_RAW_MEMORY_UNSUPPORTED, result.diagnostics().get(0).code());
@@ -1646,7 +1650,7 @@ class BytecodeToSsaLowererTest {
     private SsaMethodResult lower(byte[] classBytes, String methodName) {
         ParsedMethod parsedMethod = parseMethod(classBytes, methodName);
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
         assertFalse(result.hasErrors());
         SsaMethodResult artifact = result.artifact().orElseThrow();
         artifact.irMethod().ifPresent(method -> assertTrue(new IrMethodValidator().validate(method).isEmpty()));
@@ -1766,7 +1770,7 @@ class BytecodeToSsaLowererTest {
         ParsedMethod parsedMethod = parseMethod(classBytes, methodName);
         MethodCfgResult cfg = new MethodCfgBuilder().build(parsedMethod).artifact().orElseThrow();
 
-        var result = new BytecodeToSsaLowerer().lower(cfg);
+        var result = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(cfg);
 
         assertEquals(LoweringStatus.SKIPPED, result.artifact().orElseThrow().status());
         assertTrue(result.artifact().orElseThrow().irMethod().isEmpty());
@@ -1823,7 +1827,7 @@ class BytecodeToSsaLowererTest {
     }
 
     private String llvm(xyz.melodysky.ir.model.IrMethod method) {
-        return new LlvmTextEmitter().emit(new LlvmModuleLowerer().lowerClass(new IrClass(method.owner(), java.util.List.of(method))));
+        return new LlvmTextEmitter().emit(xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(method.owner(), java.util.List.of(method))));
     }
 
     private String localizedHelper(
@@ -1831,7 +1835,7 @@ class BytecodeToSsaLowererTest {
             IrOpcode opcode,
             RuntimeTokenDomain domain,
             String operation) {
-        return RuntimeTokenMapper.compatibility()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens()
                 .helperSymbol(
                         domain,
                         operation,
@@ -1855,7 +1859,7 @@ class BytecodeToSsaLowererTest {
             String identity,
             List<String> logicalArguments) {
         RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
-                RuntimeTokenMapper.compatibility(),
+                xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens(),
                 domain,
                 operation,
                 identity,
@@ -1873,7 +1877,7 @@ class BytecodeToSsaLowererTest {
             String identity,
             List<String> logicalArgumentPrefixes) {
         RuntimeLocalAbiPlan plan = new RuntimeLocalAbiPlanner().plan(
-                RuntimeTokenMapper.compatibility(),
+                xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens(),
                 domain,
                 operation,
                 identity,
@@ -1912,7 +1916,7 @@ class BytecodeToSsaLowererTest {
                 && !(identity.startsWith("L") && identity.endsWith(";"))) {
             identity = "L" + identity + ";";
         }
-        return RuntimeTokenMapper.compatibility().helperSymbol(
+        return xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_OBJECT,
                 "class_object",
                 identity);

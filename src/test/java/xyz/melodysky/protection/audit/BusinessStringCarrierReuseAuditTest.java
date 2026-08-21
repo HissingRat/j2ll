@@ -55,9 +55,6 @@ class BusinessStringCarrierReuseAuditTest {
                 ProtectionSeedMode.RANDOMIZED,
                 first,
                 scan(declaration(NAME_C, 22)));
-        String json =
-                new BusinessStringCarrierReuseReportWriter().json(passed);
-
         assertTrue(passed.passed());
         assertEquals(0, passed.commonNameCount());
         assertEquals(0, passed.commonNumericTokenCount());
@@ -72,11 +69,6 @@ class BusinessStringCarrierReuseAuditTest {
                 reusedName.reasonCode());
         assertFalse(reusedToken.passed());
         assertEquals(1, reusedToken.commonNumericTokenCount());
-        assertTrue(json.contains("\"firstCarrierCount\": 2"));
-        assertTrue(json.contains("\"reuseRateBasisPoints\": 0"));
-        assertTrue(json.contains("\"passed\": true"));
-        assertFalse(json.contains(NAME_A));
-        assertFalse(json.contains("\"11\""));
     }
 
     @Test

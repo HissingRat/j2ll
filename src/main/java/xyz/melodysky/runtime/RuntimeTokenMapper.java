@@ -24,10 +24,6 @@ public final class RuntimeTokenMapper {
             "j2ll-runtime-token-v2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] LAYOUT_DOMAIN =
             "j2ll-runtime-layout-v2".getBytes(StandardCharsets.US_ASCII);
-    private static final RuntimeTokenMapper COMPATIBILITY = fromBytes(
-            "j2ll-runtime-token-compatibility-v2"
-                    .getBytes(StandardCharsets.UTF_8));
-
     private final byte[] buildKey;
     private final TokenDeriver tokenDeriver;
     private final Map<RuntimeTokenDomain, Map<Long, String>> identitiesByToken =
@@ -48,10 +44,6 @@ public final class RuntimeTokenMapper {
 
     public static RuntimeTokenMapper fromBytes(byte[] buildKey) {
         return new RuntimeTokenMapper(buildKey);
-    }
-
-    public static RuntimeTokenMapper compatibility() {
-        return COMPATIBILITY;
     }
 
     public synchronized long token(

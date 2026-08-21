@@ -25,7 +25,9 @@ final class HostNativeRegistrationSourceTest {
     void hiddenModeBuildsOnlyATransientStraightLineOwnerTable() {
         String source = new HostNativeRegistrationSource().emit(
                 registrations,
-                new MethodTableHidingPlanner().plan(registrations, true, 77L));
+                new MethodTableHidingPlanner().plan(registrations, true, 77L),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .nativeTextBuildKey());
 
         assertFalse(source.contains("static const uint64_t j2ll_hmt_"));
         assertFalse(source.contains("j2ll_hidden_method_function"));
@@ -73,7 +75,9 @@ final class HostNativeRegistrationSourceTest {
     void disabledModeAlsoBuildsAndScrubsAnOwnerLocalTemporaryTable() {
         String source = new HostNativeRegistrationSource().emit(
                 registrations,
-                new MethodTableHidingPlanner().plan(registrations, false, 77L));
+                new MethodTableHidingPlanner().plan(registrations, false, 77L),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .nativeTextBuildKey());
 
         assertFalse(source.contains("static JNINativeMethod j2ll_natives_"));
         assertFalse(source.contains("j2ll_hidden_method_metadata"));
@@ -262,7 +266,9 @@ final class HostNativeRegistrationSourceTest {
                 new MethodTableHidingPlanner().plan(
                         largePlan,
                         false,
-                        77L));
+                        77L),
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .nativeTextBuildKey());
 
         assertTrue(source.contains(
                 "methods = (JNINativeMethod*)calloc"));
@@ -316,7 +322,7 @@ final class HostNativeRegistrationSourceTest {
     }
 
     @Test
-    void explicitBuildKeyDiversifiesRegistrationCiphertextWhileOldOverloadIsStable() {
+    void explicitBuildKeyDiversifiesRegistrationCiphertextAndIsStable() {
         var hiding = new MethodTableHidingPlanner().plan(registrations, true, 77L);
         HostNativeRegistrationSource emitter = new HostNativeRegistrationSource();
 
@@ -330,9 +336,11 @@ final class HostNativeRegistrationSourceTest {
                 NativeTextBuildKey.fromUtf8("registration-build-two"));
 
         assertNotEquals(first, second);
+        NativeTextBuildKey stableKey = NativeTextBuildKey.fromUtf8(
+                "registration-build-stable");
         assertEquals(
-                emitter.emit(registrations, hiding),
-                emitter.emit(registrations, hiding));
+                emitter.emit(registrations, hiding, stableKey),
+                emitter.emit(registrations, hiding, stableKey));
         assertRegistrationPlaintextAbsent(first);
         assertRegistrationPlaintextAbsent(second);
     }

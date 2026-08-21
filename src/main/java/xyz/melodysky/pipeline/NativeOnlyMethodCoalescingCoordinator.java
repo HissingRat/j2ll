@@ -37,7 +37,9 @@ public final class NativeOnlyMethodCoalescingCoordinator {
             Map<String, IrMethod> inputMethods,
             NativeMethodInternalizationPlan internalizationPlan,
             NativeImplementationPlan implementationPlan,
-            long seed) {
+            long seed,
+            LlvmModuleLowerer llvmLowerer) {
+        java.util.Objects.requireNonNull(llvmLowerer, "llvmLowerer");
         LinkedHashMap<String, IrMethod> methods =
                 new LinkedHashMap<>(inputMethods);
         LinkedHashMap<String, NativeMethodImplementation> implementations =
@@ -80,7 +82,8 @@ public final class NativeOnlyMethodCoalescingCoordinator {
                             inlining.decisions(),
                             rewrittenMethods,
                             implementations,
-                            decisionsByCallee));
+                            decisionsByCallee,
+                            llvmLowerer));
             methods = rewrittenMethods;
             currentImplementationPlan = new NativeImplementationPlan(
                     List.copyOf(implementations.values()),
@@ -116,7 +119,8 @@ public final class NativeOnlyMethodCoalescingCoordinator {
             LinkedHashMap<String, IrMethod> methods,
             Map<String, NativeMethodImplementation> implementations,
             Map<String, NativeOnlyMethodCoalescingDecision>
-                    decisionsByCallee) {
+                    decisionsByCallee,
+            LlvmModuleLowerer llvmLowerer) {
         List<MethodInliningDecision> edgeDecisions = inliningDecisions.stream()
                 .filter(decision -> decision.callerMethodKey().equals(callerKey)
                         && decision.calleeMethodKey().equals(calleeKey))
@@ -161,7 +165,7 @@ public final class NativeOnlyMethodCoalescingCoordinator {
         List<String> remainingStaticCalls = caller.staticCallKeys().stream()
                 .filter(target -> !target.equals(calleeKey))
                 .toList();
-        var updatedAbi = new LlvmModuleLowerer().inferFunctionAbi(
+        var updatedAbi = llvmLowerer.inferFunctionAbi(
                 callerBody,
                 Set.copyOf(remainingDirectTargets),
                 Set.copyOf(remainingStaticCalls));

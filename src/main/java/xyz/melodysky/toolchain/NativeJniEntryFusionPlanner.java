@@ -12,22 +12,10 @@ import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
  * retaining their semantic LLVM body and bounded local-ABI topology.
  */
 public final class NativeJniEntryFusionPlanner {
-    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
-            NativeTextBuildKey.fromUtf8(
-                    "j2ll-llvm-jni-proxy-compatibility-v1");
     private final NativeJniEntryEligibility eligibility =
             new NativeJniEntryEligibility();
     private final NativeJniEntryFusionValidator validator =
             new NativeJniEntryFusionValidator();
-
-    public NativeImplementationPlan plan(
-            NativeImplementationPlan implementationPlan,
-            Map<String, IrMethod> irMethods) {
-        return plan(
-                implementationPlan,
-                irMethods,
-                COMPATIBILITY_BUILD_KEY);
-    }
 
     public NativeImplementationPlan plan(
             NativeImplementationPlan implementationPlan,

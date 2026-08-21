@@ -34,8 +34,9 @@ class SemanticJniProxySourceTest {
     void cRegistersOnlyProxyExternsAndLlvmKeepsSemanticBodiesSeparate()
             throws Exception {
         var fixture = fixture();
-        String generatedC = new HostJniCSourceGenerator().generate(
-                fixture.implementationPlan());
+        String generatedC =
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .hostJniSource(fixture.implementationPlan());
         NativeLlvmCompilation compilation =
                 DirectJniEntryTestFixture.compileModel(fixture);
         LlvmModule module = compilation.modulesByOwner()

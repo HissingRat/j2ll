@@ -25,17 +25,7 @@ import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
  * metadata-free native zeroizer shared by the translation unit.</p>
  */
 final class HostJniStringConstantRuntimeSource {
-    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
-            NativeTextBuildKey.fromUtf8(
-                    "j2ll-business-string-symbol-compatibility-v1");
-
     private HostJniStringConstantRuntimeSource() {}
-
-    static void append(
-            StringBuilder builder,
-            List<HostJniCSourceGenerator.Binding> bindings) {
-        append(builder, bindings, COMPATIBILITY_BUILD_KEY);
-    }
 
     static void append(
             StringBuilder builder,

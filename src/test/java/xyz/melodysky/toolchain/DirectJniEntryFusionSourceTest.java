@@ -27,8 +27,9 @@ class DirectJniEntryFusionSourceTest {
         DirectJniEntryTestFixture.Fixture fixture =
                 DirectJniEntryTestFixture.fixture(parsedClass, methods);
 
-        String generatedC = new HostJniCSourceGenerator().generate(
-                fixture.implementationPlan());
+        String generatedC =
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .hostJniSource(fixture.implementationPlan());
         String llvm = DirectJniEntryTestFixture.compile(fixture);
 
         for (String methodName : methods) {
@@ -124,8 +125,9 @@ class DirectJniEntryFusionSourceTest {
         DirectJniEntryTestFixture.Fixture fixture =
                 DirectJniEntryTestFixture.fixture(parsedClass, methods);
 
-        String generatedC = new HostJniCSourceGenerator().generate(
-                fixture.implementationPlan());
+        String generatedC =
+                xyz.melodysky.testsupport.TestProtectionMaterials
+                        .hostJniSource(fixture.implementationPlan());
         String llvm = DirectJniEntryTestFixture.compile(fixture);
 
         for (String methodName : methods) {

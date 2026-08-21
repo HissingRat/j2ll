@@ -7,22 +7,12 @@ import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.ir.pass.protection.ProtectionRandom;
 
 public final class MethodRewritePlanner {
-    private static final long COMPATIBILITY_SEED = 0L;
-
-    public List<MethodRewriteDecision> planClass(ParsedClass parsedClass) {
-        return planClass(parsedClass, COMPATIBILITY_SEED);
-    }
-
     public List<MethodRewriteDecision> planClass(
             ParsedClass parsedClass,
             long buildScopedSeed) {
         return parsedClass.methods().stream()
                 .map(method -> planMethod(parsedClass, method, buildScopedSeed))
                 .toList();
-    }
-
-    public MethodRewriteDecision planMethod(ParsedClass parsedClass, ParsedMethod method) {
-        return planMethod(parsedClass, method, COMPATIBILITY_SEED);
     }
 
     public MethodRewriteDecision planMethod(

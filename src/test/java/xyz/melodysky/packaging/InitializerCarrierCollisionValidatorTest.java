@@ -87,7 +87,7 @@ class InitializerCarrierCollisionValidatorTest implements Opcodes {
     private MethodRewriteDecision constructorDecision(
             MethodRewritePlanner planner,
             ParsedClass parsedClass) {
-        return planner.planClass(parsedClass).stream()
+        return planner.planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(decision -> decision.method().name().equals("<init>"))
                 .findFirst()
                 .orElseThrow();
@@ -99,13 +99,13 @@ class InitializerCarrierCollisionValidatorTest implements Opcodes {
                 .build(decision.method())
                 .artifact()
                 .orElseThrow();
-        var ir = new BytecodeToSsaLowerer()
+        var ir = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(cfg)
                 .artifact()
                 .orElseThrow()
                 .irMethod()
                 .orElseThrow();
-        return new InitializerImplementationPlanner()
+        return xyz.melodysky.testsupport.TestProtectionMaterials.initializerPlanner()
                 .plan(decision, ir)
                 .orElseThrow();
     }

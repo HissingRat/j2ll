@@ -12,10 +12,6 @@ public final class BusinessStringSymbolMapper {
     private static final byte[] DOMAIN =
             "j2ll-business-string-helper-v2"
                     .getBytes(StandardCharsets.US_ASCII);
-    private static final BusinessStringSymbolMapper COMPATIBILITY =
-            fromBytes("j2ll-business-string-symbol-compatibility-v1"
-                    .getBytes(StandardCharsets.UTF_8));
-
     private final byte[] buildKey;
 
     private BusinessStringSymbolMapper(byte[] buildKey) {
@@ -29,10 +25,6 @@ public final class BusinessStringSymbolMapper {
     public static BusinessStringSymbolMapper fromBytes(byte[] buildKey) {
         return new BusinessStringSymbolMapper(
                 Objects.requireNonNull(buildKey, "buildKey"));
-    }
-
-    public static BusinessStringSymbolMapper compatibility() {
-        return COMPATIBILITY;
     }
 
     public String symbolFor(BusinessStringConstantRef constant) {

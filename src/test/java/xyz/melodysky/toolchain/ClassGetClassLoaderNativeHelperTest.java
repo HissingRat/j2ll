@@ -79,7 +79,7 @@ class ClassGetClassLoaderNativeHelperTest implements Opcodes {
 
         NativeRegistrationPlan registrationPlan =
                 new NativeRegistrationPlanner().plan(List.of(decision));
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registrationPlan,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), irMethod));
@@ -91,7 +91,7 @@ class ClassGetClassLoaderNativeHelperTest implements Opcodes {
         assertTrue(implementation.passesJniEnv());
 
         String llvm = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(
                         new IrClass("pkg/ClassLoaderHelpers", List.of(irMethod))));
         assertTrue(llvm.contains(
                 "declare ptr @j2ll_rt_class_get_class_loader(ptr, ptr) ; classGetClassLoader"));
@@ -130,7 +130,7 @@ class ClassGetClassLoaderNativeHelperTest implements Opcodes {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals("loaderOf"))
                 .findFirst()
                 .orElseThrow();
@@ -141,7 +141,7 @@ class ClassGetClassLoaderNativeHelperTest implements Opcodes {
                 .filter(candidate -> candidate.name().equals("loaderOf"))
                 .findFirst()
                 .orElseThrow();
-        var stage = new BytecodeToSsaLowerer()
+        var stage = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer()
                 .lower(new MethodCfgBuilder().build(method).artifact().orElseThrow());
         assertFalse(stage.hasErrors(), stage.diagnostics().toString());
         var lowered = stage.artifact().orElseThrow();

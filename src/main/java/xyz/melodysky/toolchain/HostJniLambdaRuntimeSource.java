@@ -12,10 +12,6 @@ import xyz.melodysky.runtime.RuntimeTokenMapper;
 final class HostJniLambdaRuntimeSource {
     private HostJniLambdaRuntimeSource() {}
 
-    static void append(StringBuilder builder, List<HostJniCSourceGenerator.Binding> bindings) {
-        append(builder, bindings, RuntimeTokenMapper.compatibility());
-    }
-
     static void append(
             StringBuilder builder,
             List<HostJniCSourceGenerator.Binding> bindings,

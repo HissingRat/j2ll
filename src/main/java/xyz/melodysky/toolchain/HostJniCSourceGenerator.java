@@ -41,40 +41,21 @@ import xyz.melodysky.toolchain.nativetext.NativeTextEncoder;
 import xyz.melodysky.toolchain.nativetext.NativeTextPurpose;
 
 public final class HostJniCSourceGenerator implements Opcodes {
-    private static final NativeTextBuildKey COMPATIBILITY_BUILD_KEY =
-            NativeTextBuildKey.fromUtf8(
-                    "j2ll-business-string-symbol-compatibility-v1");
-    private static final NativeTextBuildKey
-            COMPATIBILITY_REGISTRATION_BUILD_KEY =
-                    NativeTextBuildKey.fromUtf8(
-                            "j2ll-registration-text-compatibility-v1");
     private final JniTypeMapper typeMapper = new JniTypeMapper();
-    public String generate(NativeImplementationPlan implementationPlan) {
+
+    public String generate(
+            NativeImplementationPlan implementationPlan,
+            NativeTextBuildKey buildKey) {
         List<Binding> bindings = bindings(implementationPlan);
         return generate(
                 implementationPlan,
                 RuntimeLoaderPlan.create(
                         "native0",
-                        HostNativeReferenceFieldStorageSource.requiredSidecarSize(bindings)));
-    }
-
-    public String generate(
-            NativeImplementationPlan implementationPlan,
-            RuntimeLoaderPlan runtimeLoaderPlan) {
-        return generate(implementationPlan, runtimeLoaderPlan, false, 0L);
-    }
-
-    public String generate(
-            NativeImplementationPlan implementationPlan,
-            RuntimeLoaderPlan runtimeLoaderPlan,
-            boolean methodTableHidingEnabled,
-            long protectionSeed) {
-        return generate(
-                implementationPlan,
-                runtimeLoaderPlan,
-                methodTableHidingEnabled,
-                protectionSeed,
-                COMPATIBILITY_BUILD_KEY);
+                        HostNativeReferenceFieldStorageSource
+                                .requiredSidecarSize(bindings)),
+                false,
+                0L,
+                buildKey);
     }
 
     public String generate(
@@ -92,19 +73,6 @@ public final class HostJniCSourceGenerator implements Opcodes {
                         methodTableHidingEnabled,
                         protectionSeed),
                 buildKey);
-    }
-
-    public String generate(
-            NativeImplementationPlan implementationPlan,
-            RuntimeLoaderPlan runtimeLoaderPlan,
-            MethodTableHidingPlan methodTablePlan) {
-        return generate(
-                implementationPlan,
-                runtimeLoaderPlan,
-                methodTablePlan,
-                COMPATIBILITY_BUILD_KEY,
-                COMPATIBILITY_BUILD_KEY,
-                COMPATIBILITY_REGISTRATION_BUILD_KEY);
     }
 
     public String generate(

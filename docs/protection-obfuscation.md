@@ -25,7 +25,7 @@ SSA IR protection passes
   不是plaintext、export、语义或final-binary审计的替代品。
 - 每个 pass 声明输入 IR 形态、输出 IR 形态、是否保持 SSA、是否改变 CFG、是否需要 runtime helper。
 - 不做脆弱的 LLVM `.ll` 文本后处理。LLVM IR 混淆必须基于 LLVM module model。
-- 对外只导出 loader/bootstrap 需要的 JNI / C ABI wrapper；Java method 对应的 LLVM function 在跨 object link 时可使用 `external hidden`，但不得进入 dynamic export list。
+- 对外只导出 `JNI_OnLoad` 与平台必需runtime symbol；Java method 对应的 LLVM function 在跨 object link 时可使用 `external hidden`，但不得进入 dynamic export list。
 
 ## Layer 1: SSA IR Protection
 
@@ -555,8 +555,7 @@ xyz.melodysky.backend.llvm.protection
 ```text
 IrProgram
   -> LlvmModuleModel
-  -> LlvmModulePassPipeline
-  -> LlvmTextEmitter
+  -> NativeLlvmCompiler (ordered model passes + LlvmTextEmitter)
 ```
 
 ### LLVM module model
@@ -614,8 +613,6 @@ canonical module，`LlvmModuleEmissionPlan`把proof与该model绑定。Retained 
 推荐类：
 
 - `LlvmModulePass`
-- `LlvmModulePassPipeline`
-- `LlvmProtectionPipeline`
 - `LlvmNameObfuscationPass`
 - `LlvmOpaquePredicatePass`
 - `LlvmBlockLayoutPerturbationPass`
@@ -700,8 +697,6 @@ xyz.melodysky.toolchain.symbols
 - `SymbolVisibilityPlan`
 - `SymbolVisibilityPlanner`
 - `SymbolAudit`
-- `StripPlan`
-- `StripCommandPlanner`
 - `PlatformSymbolPolicy`
 - `ElfSymbolPolicy`
 - `MachOSymbolPolicy`

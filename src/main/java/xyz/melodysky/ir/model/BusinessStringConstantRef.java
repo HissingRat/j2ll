@@ -125,11 +125,6 @@ public record BusinessStringConstantRef(
         return mapper.symbolFor(this);
     }
 
-    /** Fixed-key compatibility mapping for focused fixtures. */
-    public String helperSymbol() {
-        return helperSymbol(BusinessStringSymbolMapper.compatibility());
-    }
-
     /**
      * JNI {@code NewStringUTF} consumes modified UTF-8, not standard UTF-8.
      */

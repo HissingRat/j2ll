@@ -95,7 +95,7 @@ class ClassResourceStreamJvmBridgeTest implements Opcodes {
         NativeRegistrationPlan registration =
                 new NativeRegistrationPlanner().plan(List.of(decision));
 
-        NativeImplementationPlan plan = new NativeImplementationPlanner().plan(
+        NativeImplementationPlan plan = xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner().plan(
                 registration,
                 List.of(decision),
                 Map.of(decision.method().methodKey(), method));
@@ -108,12 +108,12 @@ class ClassResourceStreamJvmBridgeTest implements Opcodes {
         assertTrue(implementation.passesJniEnv());
 
         String llvm = new LlvmTextEmitter().emit(
-                new LlvmModuleLowerer().lowerClass(new IrClass(OWNER, List.of(method))));
-        String bridgeHelper = RuntimeTokenMapper.compatibility().helperSymbol(
+                xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().lowerClass(new IrClass(OWNER, List.of(method))));
+        String bridgeHelper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.DISPATCH_METHOD,
                 "virtual_dispatch_ref",
                 TARGET);
-        String catchHelper = RuntimeTokenMapper.compatibility().helperSymbol(
+        String catchHelper = xyz.melodysky.testsupport.TestProtectionMaterials.runtimeTokens().helperSymbol(
                 RuntimeTokenDomain.CLASS_RUNTIME,
                 "instanceof",
                 "instanceof:java/lang/NullPointerException");
@@ -144,7 +144,7 @@ class ClassResourceStreamJvmBridgeTest implements Opcodes {
     }
 
     private MethodRewriteDecision decision(ParsedClass parsedClass, String methodName) {
-        return new MethodRewritePlanner().planClass(parsedClass).stream()
+        return new MethodRewritePlanner().planClass(parsedClass, 0x6a326c6cL).stream()
                 .filter(item -> item.method().name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
@@ -155,7 +155,7 @@ class ClassResourceStreamJvmBridgeTest implements Opcodes {
                 .filter(candidate -> candidate.name().equals(methodName))
                 .findFirst()
                 .orElseThrow();
-        var stage = new BytecodeToSsaLowerer().lower(
+        var stage = xyz.melodysky.testsupport.TestProtectionMaterials.ssaLowerer().lower(
                 new MethodCfgBuilder().build(method).artifact().orElseThrow());
         assertFalse(stage.hasErrors(), stage.diagnostics().toString());
         var lowered = stage.artifact().orElseThrow();

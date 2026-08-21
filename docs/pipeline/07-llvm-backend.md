@@ -14,7 +14,7 @@
 - per-class LLVM module model
 - per-class retained LLVM text，以及proof允许时的target-selectable no-unwind text
 - Zig toolchain LLVM input manifest
-- runtime stub C sources
+- generated JNI/runtime helper C sources
 - final native implementation/registration/retention plans
 - LLVM module model dumps
 
@@ -47,18 +47,17 @@ xyz.melodysky.backend.llvm.protection
 - `LlvmNativeUnwindProof`
 - `LlvmModuleEmissionPlan`
 - `LlvmUnwindEmissionMode`
-- `LlvmModulePassPipeline`
-- `LlvmProtectionPipeline`
+- `NativeLlvmCompiler`
 
 ## Recommended flow
 
 ```text
 IrProgram
-  -> PerClassIrPartitioner
-  -> LlvmModuleLowerer
-  -> LlvmModulePassPipeline
-  -> LlvmModuleEmissionPlan / native-unwind proof
-  -> LlvmTextEmitter (retained + optional proven no-unwind variant)
+  -> NativeLlvmCompiler
+     -> PerClassIrPartitioner / LlvmModuleLowerer
+     -> ordered LlvmModulePass stages
+     -> LlvmModuleEmissionPlan / native-unwind proof
+     -> LlvmTextEmitter (retained + optional proven no-unwind variant)
   -> ZigToolchain native build
 ```
 
@@ -66,7 +65,7 @@ IrProgram
 
 ## Zig Toolchain Contract
 
-LLVM backend 的正式 native build handoff 面向 managed Zig toolchain。Schema version 1 固定 Zig `0.15.2`，不提供 toolchain config。当前 `HostNativeLibraryBuilder` 只保留为兼容 facade；它必须委托 generated `build.zig` / managed `zig build` path，不能直接消费 `.ll` 并调用 host compiler：
+LLVM backend 的正式 native build handoff 只面向 `ZigNativeLibraryBuilder` 管理的 Zig toolchain。Schema version 1 固定 Zig `0.15.2`，不提供 toolchain config，也不再保留 host-only builder facade：
 
 - 每个原始 class 仍生成 class-aligned `.ll`，不先合成 monolithic LLVM file。
 - `NativeLlvmCompiler` 是 final LLVM compilation 的唯一生产者：它只接收 final `LLVM_NATIVE_PATH` implementation 与其可达 compiler-internal helper，并把同一组 module/pass result 同时交给 protection report、intermediate dump 和 Zig source writer。`TEMPLATE_JNI_PATH` 与 `skipped` method 不得另行 lower 后制造虚假 `RAN` 或只存在于报告中的 symbol。
@@ -74,7 +73,7 @@ LLVM backend 的正式 native build handoff 面向 managed Zig toolchain。Schem
 - `ZigToolchain` 从可执行 `j2ll.jar` 同级目录解析 `<j2ll-home>/zig/zig(.exe)`；缺失或版本不匹配时，先查找同目录官方 Zig `0.15.2` archive，没有再下载，并将官方 archive 根目录内容规范化到 `<j2ll-home>/zig`。
 - backend 可以输出 object-ready metadata，但不能直接调用 host `cc`、platform linker、`clang`、`zig cc` 或 `llc` 作为公开契约。
 - 如果 Zig 当前 target 不支持某种 `.ll` / `.o` 输入能力，必须在 preflight 阶段给出明确 diagnostic，不能静默退回其他 linker。
-- Java method 对应 LLVM function 默认 `internal` / hidden；需要被 C wrapper 跨 object 调用的 native build artifact 可使用 `external hidden`，但 symbol audit 仍必须证明它不进入 dynamic export list。JNI wrapper 和 bootstrap symbols 才能进入 export allowlist。
+- Java method 对应 LLVM function 默认 `internal` / hidden；需要被 C wrapper 跨 object 调用的 native build artifact 可使用 `external hidden`，但 symbol audit 仍必须证明它不进入 dynamic export list。Export allowlist 只包含 `JNI_OnLoad` 与平台必需runtime symbol。
 
 ### Generated-C Target Policy
 

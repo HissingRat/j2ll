@@ -33,7 +33,7 @@ class FinalNativeCoverageResolverTest implements Opcodes {
     private static final String OWNER = "pkg/Coverage";
 
     private final NativeImplementationPlanner implementationPlanner =
-            new NativeImplementationPlanner();
+            xyz.melodysky.testsupport.TestProtectionMaterials.implementationPlanner();
     private final FinalNativeCoverageResolver resolver =
             new FinalNativeCoverageResolver();
 

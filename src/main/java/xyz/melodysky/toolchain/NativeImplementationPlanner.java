@@ -28,8 +28,8 @@ import xyz.melodysky.packaging.NativeRegistrationEntry;
 import xyz.melodysky.packaging.NativeRegistrationPlan;
 import xyz.melodysky.runtime.jni.JniTypeMapper;
 import xyz.melodysky.runtime.PureNativeJdkRuntimeHelpers;
+import xyz.melodysky.runtime.RuntimeTokenMapper;
 import xyz.melodysky.toolchain.initializer.InitializerImplementationPlan;
-import xyz.melodysky.toolchain.initializer.InitializerImplementationPlanner;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlan;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanner;
 import xyz.melodysky.toolchain.localref.NativeLocalReferencePlanningResult;
@@ -50,24 +50,24 @@ public final class NativeImplementationPlanner {
                     new NativeImplementationUnavailableReasonClassifier();
     private final JvmExceptionInstructionSemantics exceptionSemantics =
             new JvmExceptionInstructionSemantics();
-    private final InitializerImplementationPlanner initializerPlanner =
-            new InitializerImplementationPlanner();
-
-    public NativeImplementationPlanner() {
-        this(
-                new LlvmNameMangler(),
-                BusinessStringSymbolMapper.compatibility());
-    }
-
-    public NativeImplementationPlanner(LlvmNameMangler llvmNameMangler) {
-        this(llvmNameMangler, BusinessStringSymbolMapper.compatibility());
-    }
+    private final NativeImplementationBodyPlanner bodyPlanner;
+    private final NativeDirectCallTargetResolver directCallTargetResolver =
+            new NativeDirectCallTargetResolver();
+    private final NativeImplementationReasonClassifier reasonClassifier =
+            new NativeImplementationReasonClassifier();
 
     public NativeImplementationPlanner(
             LlvmNameMangler llvmNameMangler,
-            BusinessStringSymbolMapper businessStringSymbols) {
-        this.llvmNameMangler = llvmNameMangler;
-        this.businessStringSymbols = businessStringSymbols;
+            BusinessStringSymbolMapper businessStringSymbols,
+            RuntimeTokenMapper runtimeTokens) {
+        this.llvmNameMangler = java.util.Objects.requireNonNull(
+                llvmNameMangler,
+                "llvmNameMangler");
+        this.businessStringSymbols = java.util.Objects.requireNonNull(
+                businessStringSymbols,
+                "businessStringSymbols");
+        this.bodyPlanner = new NativeImplementationBodyPlanner(
+                java.util.Objects.requireNonNull(runtimeTokens, "runtimeTokens"));
     }
 
     public NativeImplementationPlan plan(
@@ -133,7 +133,7 @@ public final class NativeImplementationPlanner {
             decisionsByMethod.put(decision.method().methodKey(), decision);
         }
         Map<String, InitializerImplementationPlan> initializerPlans = new LinkedHashMap<>();
-        Map<String, IrMethod> nativeBodies = nativeBodies(
+        Map<String, IrMethod> nativeBodies = bodyPlanner.nativeBodies(
                 decisionsByMethod,
                 irMethods,
                 initializerPlans,
@@ -201,7 +201,7 @@ public final class NativeImplementationPlanner {
             if (maybeIr.isPresent() && supportedLlvmMethods.contains(decision.method().methodKey())) {
                 IrMethod irMethod = maybeIr.orElseThrow();
                 List<String> fieldKeys = fieldKeys(irMethod);
-                List<String> directCallTargets = directCallTargets(
+                List<String> directCallTargets = directCallTargetResolver.directTargets(
                         irMethod,
                         supportedLlvmMethods,
                         analysisBodies,
@@ -239,30 +239,30 @@ public final class NativeImplementationPlanner {
                         decision,
                         NativeImplementationPath.LLVM_NATIVE_PATH,
                         Optional.of(llvmNameMangler.functionName(irMethod)),
-                        initializerReasonCode(decision).orElseGet(() -> reasonCode(
-                                fieldKeys,
-                                directCallTargets,
-                                allocationKeys,
-                                typeCheckKeys,
-                                constructorCallKeys,
-                                staticCallKeys,
-                                dispatchKeys,
-                                stringHelperSymbols,
-                                jdkScalarHelper,
-                                allocationHelper,
-                                typeHelper,
-                                constructorCallHelper,
-                                arithmeticExceptionHelper,
-                                jvmNumericHelper,
-                                arrayHelper,
-                                arraycopyHelper,
-                                varHandleHelper,
-                                lambdaHelper,
-                                unsafeHelper,
-                                monitorHelper,
-                                exceptionHelper,
-                                runtimeMetadataHelper,
-                                decision.method().accessFlags().isSynchronized())),
+                        initializerReasonCode(decision).orElseGet(() ->
+                                reasonClassifier.classify(
+                                        new NativeImplementationReasonClassifier.Facts(
+                                                fieldKeys,
+                                                directCallTargets,
+                                                staticCallKeys,
+                                                dispatchKeys,
+                                                stringHelperSymbols,
+                                                jdkScalarHelper,
+                                                allocationHelper,
+                                                typeHelper,
+                                                constructorCallHelper,
+                                                arithmeticExceptionHelper,
+                                                jvmNumericHelper,
+                                                arrayHelper,
+                                                arraycopyHelper,
+                                                varHandleHelper,
+                                                lambdaHelper,
+                                                unsafeHelper,
+                                                monitorHelper,
+                                                exceptionHelper,
+                                                runtimeMetadataHelper,
+                                                decision.method().accessFlags()
+                                                        .isSynchronized()))),
                         passesJniEnv,
                         passesOwnerClass,
                         fieldKeys,
@@ -324,7 +324,7 @@ public final class NativeImplementationPlanner {
                 if (irMethod != null && supportsLlvmNativeBody(
                         entry.getValue(),
                         irMethod,
-                        sameOwnerDirectCallTargets(
+                        directCallTargetResolver.sameOwnerTargets(
                                 irMethod,
                                 supportedLlvmMethods,
                                 nativeBodies,
@@ -336,37 +336,6 @@ public final class NativeImplementationPlanner {
             }
         } while (changed);
         return supportedLlvmMethods;
-    }
-
-    private Map<String, IrMethod> nativeBodies(
-            Map<String, MethodRewriteDecision> decisions,
-            Map<String, IrMethod> irMethods,
-            Map<String, InitializerImplementationPlan> initializerPlans,
-            Map<String, InitializerImplementationPlan> preparedInitializerPlans) {
-        LinkedHashMap<String, IrMethod> bodies = new LinkedHashMap<>();
-        decisions.forEach((methodKey, decision) -> {
-            IrMethod source = irMethods.get(methodKey);
-            if (source == null) {
-                return;
-            }
-            if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
-                    || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-                InitializerImplementationPlan prepared = preparedInitializerPlans.get(methodKey);
-                if (prepared != null) {
-                    InitializerImplementationPlan current = prepared.withNativeBody(source);
-                    initializerPlans.put(methodKey, current);
-                    bodies.put(methodKey, source);
-                    return;
-                }
-                initializerPlanner.plan(decision, source).ifPresent(plan -> {
-                    initializerPlans.put(methodKey, plan);
-                    bodies.put(methodKey, plan.nativeBody());
-                });
-                return;
-            }
-            bodies.put(methodKey, source);
-        });
-        return java.util.Collections.unmodifiableMap(bodies);
     }
 
     private Optional<String> initializerReasonCode(MethodRewriteDecision decision) {
@@ -382,7 +351,7 @@ public final class NativeImplementationPlanner {
     public boolean supportsLlvmNativePath(MethodRewriteDecision decision, IrMethod method) {
         if (decision.strategy() == MethodRewriteStrategy.CONSTRUCTOR_STUB
                 || decision.strategy() == MethodRewriteStrategy.CLASS_INITIALIZER_STUB) {
-            return initializerPlanner.plan(decision, method)
+            return bodyPlanner.initializerPlan(decision, method)
                     .map(InitializerImplementationPlan::nativeBody)
                     .map(body -> supportsLlvmNativeBody(decision, body, Set.of(), Set.of()))
                     .orElse(false);
@@ -1626,49 +1595,6 @@ public final class NativeImplementationPlanner {
                 .toList();
     }
 
-    private List<String> directCallTargets(
-            IrMethod method,
-            Set<String> supportedLlvmMethods,
-            Map<String, IrMethod> nativeBodies,
-            Set<String> compilerInternalMethodKeys) {
-        return sameOwnerDirectCallTargets(
-                        method,
-                        supportedLlvmMethods,
-                        nativeBodies,
-                        compilerInternalMethodKeys)
-                .stream()
-                .sorted()
-                .toList();
-    }
-
-    private Set<String> sameOwnerDirectCallTargets(
-            IrMethod method,
-            Set<String> supportedLlvmMethods,
-            Map<String, IrMethod> nativeBodies,
-            Set<String> compilerInternalMethodKeys) {
-        return method.blocks().stream()
-                .flatMap(block -> block.instructions().stream())
-                .filter(instruction -> instruction.opcode() == IrOpcode.CALL_STATIC
-                        || isDirectSpecialCallInstruction(instruction))
-                .map(instruction -> instruction.symbol().orElseThrow())
-                .filter(supportedLlvmMethods::contains)
-                .filter(target -> target.startsWith(method.owner() + "#"))
-                .filter(target -> {
-                    IrMethod body = nativeBodies.get(target);
-                    if (compilerInternalMethodKeys.contains(target)) {
-                        return body != null
-                                && body.returnType() != IrType.REFERENCE
-                                && !localReferenceSafety
-                                        .createsOwnedLocalReference(body);
-                    }
-                    return body == null
-                            || (body.returnType() != IrType.REFERENCE
-                                    && !localReferenceSafety
-                                            .createsOwnedLocalReference(body));
-                })
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    }
-
     private List<String> allocationKeys(IrMethod method) {
         return method.blocks().stream()
                 .flatMap(block -> block.instructions().stream())
@@ -1967,100 +1893,6 @@ public final class NativeImplementationPlanner {
         return owner.equals("java/lang/Throwable")
                 || owner.endsWith("Exception")
                 || owner.endsWith("Error");
-    }
-
-    private String reasonCode(
-            List<String> fieldKeys,
-            List<String> directCallTargets,
-            List<String> allocationKeys,
-            List<String> typeCheckKeys,
-            List<String> constructorCallKeys,
-            List<String> staticCallKeys,
-            List<String> dispatchKeys,
-            List<String> stringHelperSymbols,
-            boolean jdkScalarHelper,
-            boolean allocationHelper,
-            boolean typeHelper,
-            boolean constructorCallHelper,
-            boolean arithmeticExceptionHelper,
-            boolean jvmNumericHelper,
-            boolean arrayHelper,
-            boolean arraycopyHelper,
-            boolean varHandleHelper,
-            boolean lambdaHelper,
-            boolean unsafeHelper,
-            boolean monitorHelper,
-            boolean exceptionHelper,
-            boolean runtimeMetadataHelper,
-            boolean synchronizedMethod) {
-        if (synchronizedMethod && monitorHelper) {
-            return "LLVM_SYNCHRONIZED_METHOD_HELPER_IR";
-        }
-        if (!directCallTargets.isEmpty()) {
-            return "LLVM_DIRECT_CALL_IR";
-        }
-        if (!staticCallKeys.isEmpty()) {
-            return "LLVM_STATIC_CALL_HELPER_IR";
-        }
-        if (!dispatchKeys.isEmpty()) {
-            return "LLVM_DISPATCH_HELPER_IR";
-        }
-        if (!stringHelperSymbols.isEmpty()) {
-            if (stringHelperSymbols.stream().anyMatch(
-                    symbol -> symbol.startsWith("j2ll_rt_string_constant_"))) {
-                return "LLVM_STRING_CONCAT_CONSTANTS_HELPER_IR";
-            }
-            if (stringHelperSymbols.stream().allMatch(symbol -> symbol.startsWith("j2ll_rt_string_builder_"))) {
-                return "LLVM_STRING_BUILDER_HELPER_IR";
-            }
-            return "LLVM_STRING_HELPER_IR";
-        }
-        if (runtimeMetadataHelper) {
-            return "LLVM_REFLECTION_HELPER_IR";
-        }
-        if (jdkScalarHelper) {
-            return "LLVM_JDK_INTRINSIC_HELPER_IR";
-        }
-        if (varHandleHelper) {
-            return "LLVM_VARHANDLE_HELPER_IR";
-        }
-        if (lambdaHelper) {
-            return "LLVM_LAMBDA_METAFACTORY_HELPER_IR";
-        }
-        if (unsafeHelper) {
-            return "LLVM_UNSAFE_HELPER_IR";
-        }
-        if (constructorCallHelper) {
-            return "LLVM_CONSTRUCTOR_CALL_HELPER_IR";
-        }
-        if (allocationHelper) {
-            return "LLVM_ALLOCATION_HELPER_IR";
-        }
-        if (typeHelper) {
-            return "LLVM_TYPE_HELPER_IR";
-        }
-        if (arrayHelper) {
-            return "LLVM_ARRAY_HELPER_IR";
-        }
-        if (arraycopyHelper) {
-            return "LLVM_ARRAYCOPY_HELPER_IR";
-        }
-        if (arithmeticExceptionHelper) {
-            return "LLVM_DIV_REM_EXCEPTION_HELPER_IR";
-        }
-        if (jvmNumericHelper) {
-            return "LLVM_JVM_NUMERIC_HELPER_IR";
-        }
-        if (monitorHelper) {
-            return "LLVM_MONITOR_HELPER_IR";
-        }
-        if (exceptionHelper) {
-            return "LLVM_EXCEPTION_HELPER_IR";
-        }
-        if (!fieldKeys.isEmpty()) {
-            return "LLVM_FIELD_HELPER_IR";
-        }
-        return "LLVM_PRIMITIVE_SCALAR_IR";
     }
 
     private String constructorDescriptor(String methodKey) {
