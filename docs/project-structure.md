@@ -173,6 +173,8 @@ xyz.melodysky.toolchain.symbols
 - `FinalNativeImplementationPlan`：在 Zig 前冻结每个 selected method 的最终 body/registration 或 skipped reason。
 - `NativeBuildApprovalGate`：让 CLI 注入 skipped-method confirmation；pipeline 本身不直接读取 `System.in`。
 - `ProgramIrProtectionCoordinator`：在 preliminary native plan 后调度 method inlining、IR call indirection 和 method splitting，并把 Java methods 与 compiler-internal outlined helpers 分开交付。
+- `SelectedMethodLoweringCoordinator`：对冻结的selected method顺序统一执行CFG、plan-aware SSA、initializer body split、普通optimization/JDK intrinsic与active-use carrier fusion，返回immutable CFG/raw/optimized/initializer artifacts及diagnostics；`MainlinePipeline`不再内嵌opcode/initializer lowering循环。
+- `NativeLlvmProtectionEvidenceCoordinator`：只消费final `NativeLlvmCompilation`中的typed pass结果，统一形成LLVM protection reports和validation diagnostics；不修改module、不重新运行pass。
 - `FieldInternalizationPreparationCoordinator` / `FieldInternalizationPipeline` / `FieldInternalizationFinalPlanValidator`：preparation coordinator先以optimized IR建立只用于path classification的implementation probe，再在普通IR protection前连接field-use analysis与slot/ConstantValue rewrite；final validator随后消费重建后的final `LLVM_NATIVE_PATH`证据。它们不负责FieldNode removal或C storage emission。
 - `MethodInternalizationPipeline` / `MethodInternalizationFinalizer` / `MethodInternalizationFinalPlanValidator`：在final implementation plan后形成method-use/observer决策，把批准项改成`internalNativeOnly`并验证LLVM caller/registration closure；不负责ASM removal或generated-C ABI细节。
 

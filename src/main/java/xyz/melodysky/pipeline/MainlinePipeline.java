@@ -31,18 +31,12 @@ import xyz.melodysky.analysis.world.WholeProgramAnalysisScope;
 import xyz.melodysky.backend.llvm.LlvmModuleLowerer;
 import xyz.melodysky.backend.llvm.LlvmNameMangler;
 import xyz.melodysky.backend.llvm.model.LlvmTextEmitter;
-import xyz.melodysky.backend.llvm.protection.LlvmBlockLayoutPerturbationResult;
-import xyz.melodysky.backend.llvm.protection.LlvmCallIndirectionResult;
-import xyz.melodysky.backend.llvm.protection.LlvmGlobalLayoutResult;
-import xyz.melodysky.backend.llvm.protection.LlvmIrCallIndirectionResult;
-import xyz.melodysky.backend.llvm.protection.LlvmOpaquePredicateResult;
 import xyz.melodysky.config.ResolvedConfig;
 import xyz.melodysky.config.SelectorMatchResult;
 import xyz.melodysky.config.SelectorMatcher;
 import xyz.melodysky.diagnostic.Diagnostic;
 import xyz.melodysky.diagnostic.DiagnosticBag;
 import xyz.melodysky.diagnostic.DiagnosticStage;
-import xyz.melodysky.frontend.cfg.MethodCfgBuilder;
 import xyz.melodysky.frontend.cfg.MethodCfgResult;
 import xyz.melodysky.frontend.classfile.AsmClassParser;
 import xyz.melodysky.frontend.classfile.ClassParseResult;
@@ -53,10 +47,6 @@ import xyz.melodysky.frontend.classfile.ParsedMethod;
 import xyz.melodysky.frontend.classfile.ParsedProgram;
 import xyz.melodysky.ir.model.BusinessStringSymbolMapper;
 import xyz.melodysky.ir.model.IrMethod;
-import xyz.melodysky.ir.pass.ActiveUseCarrierFusionPass;
-import xyz.melodysky.ir.pass.JdkPureNativeIntrinsicPipeline;
-import xyz.melodysky.ir.pass.OptimizationPipeline;
-import xyz.melodysky.ir.pass.PassContext;
 import xyz.melodysky.ir.pass.protection.ProtectionPipeline;
 import xyz.melodysky.ir.pass.protection.ProtectionAvailabilityReporter;
 import xyz.melodysky.ir.pass.protection.StringEncryptionPass;
@@ -137,7 +127,6 @@ import xyz.melodysky.toolchain.NativeLibraryArtifact;
 import xyz.melodysky.toolchain.NativeLibraryName;
 import xyz.melodysky.toolchain.NativeLlvmCompilation;
 import xyz.melodysky.toolchain.NativeLlvmCompiler;
-import xyz.melodysky.toolchain.NativeLlvmModuleCompilation;
 import xyz.melodysky.toolchain.ZigNativeBuildResult;
 import xyz.melodysky.toolchain.ZigNativeLibraryBuilder;
 import xyz.melodysky.toolchain.nativetext.NativeTextBuildKey;
@@ -151,10 +140,6 @@ import xyz.melodysky.toolchain.symbols.SymbolVisibilityPlanner;
 public final class MainlinePipeline {
     private final AsmClassParser parser = new AsmClassParser();
     private final SelectorMatcher selectorMatcher = new SelectorMatcher();
-    private final MethodCfgBuilder cfgBuilder = new MethodCfgBuilder();
-    private final OptimizationPipeline optimizationPipeline = OptimizationPipeline.defaultPipeline();
-    private final JdkPureNativeIntrinsicPipeline jdkPureNativeIntrinsicPipeline =
-            new JdkPureNativeIntrinsicPipeline();
     private final ProtectionPipeline protectionPipeline = ProtectionPipeline.defaultPipeline();
     private final LlvmTextEmitter llvmEmitter = new LlvmTextEmitter();
     private final MethodRewritePlanner rewritePlanner = new MethodRewritePlanner();
@@ -348,19 +333,7 @@ public final class MainlinePipeline {
                 callAnalysis.devirtualizationPlan();
 
         int requestedMethodCount = selection.requestedMethods().size();
-        buildProgress.methodLowering(requestedMethodCount);
-        Map<String, MethodCfgResult> cfgByMethod = new LinkedHashMap<>();
-        ArrayList<SsaMethodResult> ssaResults = new ArrayList<>();
-        Map<String, IrMethod> rawIr = new LinkedHashMap<>();
-        Map<String, IrMethod> optimizedIr = new LinkedHashMap<>();
         Map<String, IrMethod> protectedIr = new LinkedHashMap<>();
-        Map<String, InitializerImplementationPlan> initializerPlans = new LinkedHashMap<>();
-        Map<String, ParsedClass> classesByName = program.classes().stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        ParsedClass::internalName,
-                        parsedClass -> parsedClass,
-                        (left, right) -> left,
-                        LinkedHashMap::new));
         ArrayList<ProtectionPassReport> protectionReports = new ArrayList<>();
         BuildProtectionIdentity buildProtectionIdentity =
                 BuildProtectionIdentity.from(config.protection());
@@ -422,91 +395,26 @@ public final class MainlinePipeline {
                         llvmBlockLayoutPerturbationEnabled,
                         llvmCallIndirectionEnabled,
                         llvmGlobalLayoutEnabled);
-        int methodIndex = 0;
-        for (ParsedMethod method : selection.requestedMethods()) {
-            methodIndex++;
-            buildProgress.methodLoweringProgress(methodIndex, requestedMethodCount, method.methodKey());
-            if (versionedClassNames.contains(method.owner())) {
-                String reason = "base class has a META-INF/versions counterpart; "
-                        + "preserving the original method avoids registering a native "
-                        + "binding against a runtime-selected versioned class";
-                ssaResults.add(SsaMethodResult.skipped(
-                        method,
-                        DiagnosticStage.LOWERING,
-                        "MULTI_RELEASE_VERSIONED_CLASS",
-                        reason));
-                diagnostics.add(Diagnostic.warning(
-                                DiagnosticStage.LOWERING,
-                                xyz.melodysky.diagnostic.DiagnosticCode.of(
-                                        "MULTI_RELEASE_VERSIONED_CLASS"),
-                                reason)
-                        .at(xyz.melodysky.diagnostic.DiagnosticLocation
-                                .methodLocation(
-                                        method.owner(),
-                                        method.name(),
-                                        method.descriptor()))
-                        .withDecision(LoweringStatus.SKIPPED.wireName()));
-                continue;
-            }
-            var cfgResult = cfgBuilder.build(method);
-            diagnostics.addAll(cfgResult.diagnostics());
-            cfgResult.artifact().ifPresent(result -> cfgByMethod.put(method.methodKey(), result));
-            if (cfgResult.artifact().isEmpty()) {
-                continue;
-            }
-            var ssaResult = ssaLowerer.lower(cfgResult.artifact().orElseThrow());
-            diagnostics.addAll(ssaResult.diagnostics());
-            SsaMethodResult ssa = ssaResult.artifact().orElseThrow();
-            ssaResults.add(ssa);
-            if (ssa.irMethod().isEmpty()) {
-                continue;
-            }
-            IrMethod raw = ssa.irMethod().orElseThrow();
-            rawIr.put(method.methodKey(), raw);
-            IrMethod optimizationInput = raw;
-            if (method.name().equals("<init>") || method.name().equals("<clinit>")) {
-                ParsedClass ownerClass = classesByName.get(method.owner());
-                if (ownerClass != null) {
-                    MethodRewriteDecision initializerDecision =
-                            rewritePlanner.planMethod(
-                                    ownerClass,
-                                    method,
-                                    wrapperSymbolSeed);
-                    Optional<InitializerImplementationPlan> initializerPlan =
-                            initializerPlanner.plan(initializerDecision, raw);
-                    if (initializerPlan.isPresent()) {
-                        initializerPlans.put(method.methodKey(), initializerPlan.orElseThrow());
-                        optimizationInput = initializerPlan.orElseThrow().nativeBody();
-                    }
-                }
-            }
-            var optimizedResult = optimizationPipeline.run(optimizationInput, PassContext.empty());
-            diagnostics.addAll(optimizedResult.diagnostics());
-            IrMethod optimized = optimizedResult.artifact().orElse(optimizationInput);
-            var intrinsicResult = jdkPureNativeIntrinsicPipeline.run(optimized);
-            diagnostics.addAll(intrinsicResult.diagnostics());
-            optimized = intrinsicResult.artifact().orElse(optimized);
-            optimizedIr.put(method.methodKey(), optimized);
-        }
-        Set<String> possibleDirectNativeCalls = Set.copyOf(optimizedIr.keySet());
-        OptimizationPipeline activeUseCarrierFusionPipeline =
-                new OptimizationPipeline(List.of(
-                        new ActiveUseCarrierFusionPass(possibleDirectNativeCalls)));
-        LinkedHashMap<String, IrMethod> fusedActiveUses = new LinkedHashMap<>();
-        optimizedIr.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> {
-                    var fusionResult = activeUseCarrierFusionPipeline.run(
-                            entry.getValue(),
-                            PassContext.empty());
-                    diagnostics.addAll(fusionResult.diagnostics());
-                    fusedActiveUses.put(
-                            entry.getKey(),
-                            fusionResult.artifact().orElse(entry.getValue()));
-                });
-        optimizedIr.clear();
-        optimizedIr.putAll(fusedActiveUses);
-        buildProgress.methodLoweringComplete(requestedMethodCount);
+        SelectedMethodLoweringCoordinator.Result selectedLowering =
+                new SelectedMethodLoweringCoordinator(rewritePlanner).run(
+                        program,
+                        selection.requestedMethods(),
+                        versionedClassNames,
+                        ssaLowerer,
+                        initializerPlanner,
+                        wrapperSymbolSeed,
+                        buildProgress);
+        diagnostics.addAll(selectedLowering.diagnostics());
+        Map<String, MethodCfgResult> cfgByMethod =
+                new LinkedHashMap<>(selectedLowering.cfgByMethod());
+        ArrayList<SsaMethodResult> ssaResults =
+                new ArrayList<>(selectedLowering.ssaResults());
+        Map<String, IrMethod> rawIr =
+                new LinkedHashMap<>(selectedLowering.rawIr());
+        Map<String, IrMethod> optimizedIr =
+                new LinkedHashMap<>(selectedLowering.optimizedIr());
+        Map<String, InitializerImplementationPlan> initializerPlans =
+                new LinkedHashMap<>(selectedLowering.initializerPlans());
 
         List<MethodRewriteDecision> rewriteDecisions = rewriteDecisions(
                 program,
@@ -697,87 +605,25 @@ public final class MainlinePipeline {
                         methodCoalescingPlan,
                         implementationPlan,
                         llvmCompilation));
-        for (NativeLlvmModuleCompilation compiledModule : llvmCompilation.modules()) {
-            List<IrMethod> reportMethods =
-                    compiledModule.userMethods();
-            LlvmBlockLayoutPerturbationResult blockLayoutResult =
-                    compiledModule.blockLayout();
-            protectionReports.add(protectionEvidenceAssembler.llvmModel(
-                    "LLVM_BLOCK_LAYOUT_PERTURBATION",
-                    llvmBlockLayoutPerturbationEnabled,
-                    "LLVM_BLOCK_LAYOUT_PERTURBATION",
-                    "LLVM_BLOCK_LAYOUT_NO_CANDIDATE",
-                    reportMethods,
-                    blockLayoutResult.affectedFunctions(),
-                    blockLayoutResult.validationIssues(),
-                    llvmNameMangler,
-                    llvmProtectionSeed));
-            protectionEvidenceAssembler.reportLlvmValidationFailure(
-                    diagnostics,
-                    "LLVM_BLOCK_LAYOUT_PERTURBATION",
-                    blockLayoutResult.validationIssues());
-
-            LlvmOpaquePredicateResult opaquePredicateResult =
-                    compiledModule.opaquePredicates();
-            protectionReports.add(protectionEvidenceAssembler.llvmModel(
-                    "LLVM_OPAQUE_PREDICATES",
-                    llvmOpaquePredicatesEnabled,
-                    "LLVM_OPAQUE_PREDICATES",
-                    "LLVM_OPAQUE_PREDICATES_NO_CANDIDATE",
-                    reportMethods,
-                    opaquePredicateResult.affectedFunctions(),
-                    opaquePredicateResult.validationIssues(),
-                    llvmNameMangler,
-                    llvmProtectionSeed));
-            protectionEvidenceAssembler.reportLlvmValidationFailure(
-                    diagnostics,
-                    "LLVM_OPAQUE_PREDICATES",
-                    opaquePredicateResult.validationIssues());
-
-            LlvmIrCallIndirectionResult irCallBackendResult =
-                    compiledModule.irCallIndirection();
-            if (config.protection().enabled()
-                    && config.protection().ir().enabled()
-                    && config.protection().ir().callIndirection()) {
-                protectionReports.add(protectionEvidenceAssembler.irCallIndirectionBackend(
-                        reportMethods,
-                        irCallBackendResult,
-                        llvmNameMangler,
-                        llvmProtectionSeed));
-            }
-            protectionEvidenceAssembler.reportLlvmValidationFailure(
-                    diagnostics,
-                    "IR_CALL_INDIRECTION_BACKEND",
-                    irCallBackendResult.validationIssues());
-
-            LlvmCallIndirectionResult callIndirectionResult =
-                    compiledModule.llvmCallIndirection();
-            protectionReports.add(protectionEvidenceAssembler.llvmCallIndirection(
-                    llvmCallIndirectionEnabled,
-                    reportMethods,
-                    callIndirectionResult,
-                    llvmNameMangler,
-                    llvmProtectionSeed));
-            LlvmGlobalLayoutResult globalLayoutResult =
-                    compiledModule.globalLayout();
-            protectionReports.add(protectionEvidenceAssembler.llvmGlobalLayout(
-                    llvmGlobalLayoutEnabled,
-                    reportMethods,
-                    globalLayoutResult,
-                    llvmProtectionSeed));
-            protectionEvidenceAssembler.reportLlvmValidationFailure(
-                    diagnostics,
-                    "LLVM_GLOBAL_LAYOUT",
-                    globalLayoutResult.validationIssues());
-            protectionReports.add(
-                    protectionEvidenceAssembler.llvmNameObfuscation(
-                            llvmNameObfuscationEnabled,
-                            reportMethods,
-                            compiledModule.module().functions().stream()
-                                    .map(function -> function.name())
-                                    .toList(),
-                            llvmNameSeed));
-        }
+        NativeLlvmProtectionEvidenceCoordinator.Result llvmEvidence =
+                new NativeLlvmProtectionEvidenceCoordinator(
+                                protectionEvidenceAssembler)
+                        .assemble(
+                                llvmCompilation,
+                                new NativeLlvmProtectionEvidenceCoordinator.Settings(
+                                        llvmNameObfuscationEnabled,
+                                        llvmCallIndirectionEnabled,
+                                        llvmBlockLayoutPerturbationEnabled,
+                                        llvmOpaquePredicatesEnabled,
+                                        llvmGlobalLayoutEnabled,
+                                        config.protection().enabled()
+                                                && config.protection().ir().enabled()
+                                                && config.protection().ir().callIndirection(),
+                                        llvmNameSeed),
+                                llvmNameMangler,
+                                llvmProtectionSeed);
+        diagnostics.addAll(llvmEvidence.diagnostics());
+        protectionReports.addAll(llvmEvidence.reports());
         Map<String, String> llvmTextByClass = llvmCompilation.textByOwner();
 
         Map<String, LoweringStatus> statuses = methodStatuses(ssaResults);
