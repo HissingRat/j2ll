@@ -10,11 +10,10 @@ public record LlvmFunctionAbi(
         Objects.requireNonNull(purpose, "purpose");
     }
 
-    /** Compatibility constructor for the canonical wrapper/internal ABI. */
-    public LlvmFunctionAbi(
+    public static LlvmFunctionAbi semanticInternal(
             boolean passesJniEnv,
             boolean passesOwnerClass) {
-        this(
+        return new LlvmFunctionAbi(
                 passesJniEnv,
                 passesOwnerClass,
                 Purpose.SEMANTIC_INTERNAL);

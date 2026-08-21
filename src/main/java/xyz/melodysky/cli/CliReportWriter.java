@@ -193,7 +193,7 @@ final class CliReportWriter {
         Files.writeString(
                 reports.resolve("field-internalization-report.json"),
                 new FieldInternalizationReportWriter().json(
-                        new NativeFieldInternalizationPlan(List.of()),
+                        NativeFieldInternalizationPlan.empty(),
                         enabled,
                         false,
                         new xyz.melodysky.toolchain.NativeImplementationPlan(List.of()),
@@ -226,7 +226,7 @@ final class CliReportWriter {
         Files.writeString(
                 reports.resolve("field-internalization-report.json"),
                 new FieldInternalizationReportWriter().json(
-                        new NativeFieldInternalizationPlan(List.of()),
+                        NativeFieldInternalizationPlan.empty(),
                         false,
                         false));
         Files.writeString(reports.resolve("symbol-audit.json"), new SymbolAuditReportWriter().json(List.of()));

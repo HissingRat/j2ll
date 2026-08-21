@@ -2,6 +2,8 @@ package xyz.melodysky.packaging;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.nativeStored;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,9 +25,6 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import xyz.melodysky.analysis.field.FieldId;
 import xyz.melodysky.analysis.field.ConstantDynamicFieldReferenceResolver;
-import xyz.melodysky.analysis.field.FieldInternalizationReason;
-import xyz.melodysky.analysis.field.FieldInternalizationStatus;
-import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 
 class InternalizedFieldArtifactVerifierTest implements Opcodes {
@@ -301,11 +300,9 @@ class InternalizedFieldArtifactVerifierTest implements Opcodes {
     }
 
     private NativeFieldInternalizationPlan approvedPlan() {
-        return new NativeFieldInternalizationPlan(List.of(new NativeFieldInternalizationDecision(
+        return plan(List.of(nativeStored(
                 APPROVED,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of("j2ll_nfs_00112233445566778899aabbccddeeff"),
-                List.of(),
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+                "j2ll_nfs_00112233445566778899aabbccddeeff",
+                List.of())));
     }
 }

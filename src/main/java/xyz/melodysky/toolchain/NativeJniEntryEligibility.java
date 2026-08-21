@@ -119,7 +119,7 @@ final class NativeJniEntryEligibility {
         private static Decision rejected(String reasonCode) {
             return new Decision(
                     false,
-                    new LlvmFunctionAbi(false, false),
+                    LlvmFunctionAbi.semanticInternal(false, false),
                     Optional.empty(),
                     NativeLocalAbiProfile.COMPACT_DIVERSE,
                     reasonCode);

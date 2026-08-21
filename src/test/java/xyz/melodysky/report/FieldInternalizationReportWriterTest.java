@@ -3,15 +3,14 @@ package xyz.melodysky.report;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.nativeStored;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import com.google.gson.JsonParser;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import xyz.melodysky.analysis.field.FieldId;
-import xyz.melodysky.analysis.field.FieldInternalizationReason;
-import xyz.melodysky.analysis.field.FieldInternalizationStatus;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
 import xyz.melodysky.analysis.hierarchy.AnalysisWorld;
@@ -26,7 +25,7 @@ class FieldInternalizationReportWriterTest {
                 "pkg/State",
                 "distinctiveReferenceState",
                 "Ljava/lang/Object;");
-        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(List.of(
+        NativeFieldInternalizationPlan plan = plan(List.of(
                 approved(primitive, "j2ll_nfs_primitive"),
                 approved(reference, "j2ll_nfs_reference")));
 
@@ -68,7 +67,7 @@ class FieldInternalizationReportWriterTest {
     @Test
     void reportsCurrentJarOnlyAuthorizationWithoutClaimingClosedWorld() {
         String json = new FieldInternalizationReportWriter().json(
-                new NativeFieldInternalizationPlan(List.of()),
+                NativeFieldInternalizationPlan.empty(),
                 true,
                 true,
                 new NativeImplementationPlan(List.of()),
@@ -129,11 +128,6 @@ class FieldInternalizationReportWriterTest {
     }
 
     private NativeFieldInternalizationDecision approved(FieldId field, String slot) {
-        return new NativeFieldInternalizationDecision(
-                field,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of(slot),
-                List.of(),
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE));
+        return nativeStored(field, slot, List.of());
     }
 }

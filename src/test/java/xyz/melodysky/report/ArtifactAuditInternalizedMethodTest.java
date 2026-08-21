@@ -128,7 +128,7 @@ class ArtifactAuditInternalizedMethodTest implements Opcodes {
     }
 
     private NativeFieldInternalizationPlan emptyFieldPlan() {
-        return new NativeFieldInternalizationPlan(List.of());
+        return NativeFieldInternalizationPlan.empty();
     }
 
     private NativeMethodInternalizationPlan approvedMethodPlan() {

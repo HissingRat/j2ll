@@ -1,6 +1,5 @@
 package xyz.melodysky.analysis.field;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -14,15 +13,8 @@ import java.util.TreeSet;
 public record NativeFieldInternalizationPlan(
         List<NativeFieldInternalizationDecision> decisions,
         Map<String, Map<FieldId, Integer>> referenceIndicesByOwner) {
-    /**
-     * Compatibility constructor for focused fixtures.
-     *
-     * <p>Production planning supplies an explicit diversified mapping through
-     * the canonical constructor.</p>
-     */
-    public NativeFieldInternalizationPlan(
-            List<NativeFieldInternalizationDecision> decisions) {
-        this(decisions, canonicalReferenceIndices(decisions));
+    public static NativeFieldInternalizationPlan empty() {
+        return new NativeFieldInternalizationPlan(List.of(), Map.of());
     }
 
     public NativeFieldInternalizationPlan {
@@ -125,30 +117,6 @@ public record NativeFieldInternalizationPlan(
             throw new IllegalArgumentException(
                     "field internalization plan contains duplicate native slots");
         }
-    }
-
-    private static Map<String, Map<FieldId, Integer>> canonicalReferenceIndices(
-            List<NativeFieldInternalizationDecision> decisions) {
-        Objects.requireNonNull(decisions, "decisions");
-        TreeMap<String, ArrayList<FieldId>> fieldsByOwner = new TreeMap<>();
-        decisions.stream()
-                .filter(Objects::nonNull)
-                .filter(NativeFieldInternalizationDecision::nativeStored)
-                .map(NativeFieldInternalizationDecision::field)
-                .filter(NativeFieldInternalizationPlan::isReference)
-                .sorted()
-                .forEach(field -> fieldsByOwner
-                        .computeIfAbsent(field.owner(), ignored -> new ArrayList<>())
-                        .add(field));
-        LinkedHashMap<String, Map<FieldId, Integer>> result = new LinkedHashMap<>();
-        fieldsByOwner.forEach((owner, fields) -> {
-            LinkedHashMap<FieldId, Integer> indices = new LinkedHashMap<>();
-            for (int index = 0; index < fields.size(); index++) {
-                indices.put(fields.get(index), index);
-            }
-            result.put(owner, indices);
-        });
-        return result;
     }
 
     private static Map<String, Map<FieldId, Integer>> immutableReferenceIndices(

@@ -254,7 +254,7 @@ class LlvmModuleLowererTest {
                         Map.of(),
                         Map.of(
                                 method.methodKey(),
-                                new LlvmFunctionAbi(false, false))));
+                                LlvmFunctionAbi.semanticInternal(false, false))));
 
         assertTrue(failure.getMessage().contains(method.methodKey()));
         assertTrue(failure.getMessage().contains("planned="));

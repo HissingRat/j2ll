@@ -1089,7 +1089,7 @@ public final class MainlinePipeline {
         Files.writeString(
                 workspaceRoot.resolve("reports/field-internalization-report.json"),
                 new FieldInternalizationReportWriter().json(
-                        new NativeFieldInternalizationPlan(List.of()),
+                        NativeFieldInternalizationPlan.empty(),
                         fieldInternalizationEnabled,
                         false,
                         new NativeImplementationPlan(List.of()),

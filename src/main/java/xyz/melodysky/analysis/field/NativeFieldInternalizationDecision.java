@@ -12,25 +12,6 @@ public record NativeFieldInternalizationDecision(
         Optional<NativeFieldConstant> constant,
         List<FieldAccessSite> accesses,
         List<FieldInternalizationReason> reasons) implements Comparable<NativeFieldInternalizationDecision> {
-    /** Compatibility constructor for mutable-slot and kept-field fixtures. */
-    public NativeFieldInternalizationDecision(
-            FieldId field,
-            FieldInternalizationStatus status,
-            Optional<String> nativeSlotId,
-            List<FieldAccessSite> accesses,
-            List<FieldInternalizationReason> reasons) {
-        this(
-                field,
-                status,
-                status == FieldInternalizationStatus.INTERNALIZED
-                        ? NativeFieldInternalizationStorage.NATIVE_SLOT
-                        : NativeFieldInternalizationStorage.JVM_FIELD,
-                nativeSlotId,
-                Optional.empty(),
-                accesses,
-                reasons);
-    }
-
     public NativeFieldInternalizationDecision {
         Objects.requireNonNull(field, "field");
         Objects.requireNonNull(status, "status");

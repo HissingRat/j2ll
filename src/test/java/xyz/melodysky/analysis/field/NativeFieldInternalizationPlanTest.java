@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 final class NativeFieldInternalizationPlanTest {
@@ -21,14 +20,17 @@ final class NativeFieldInternalizationPlanTest {
             new FieldId(OWNER_A, "count", "I");
 
     @Test
-    void compatibilityConstructorUsesCanonicalDensePerOwnerIndices() {
+    void explicitCanonicalMappingUsesDensePerOwnerIndices() {
         NativeFieldInternalizationDecision primitive = internalized(PRIMITIVE, "slot-p");
         NativeFieldInternalizationDecision second = internalized(A_SECOND, "slot-2");
         NativeFieldInternalizationDecision only = internalized(B_ONLY, "slot-b");
         NativeFieldInternalizationDecision first = internalized(A_FIRST, "slot-1");
 
-        NativeFieldInternalizationPlan plan =
-                new NativeFieldInternalizationPlan(List.of(second, primitive, only, first));
+        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+                List.of(second, primitive, only, first),
+                Map.of(
+                        OWNER_A, Map.of(A_FIRST, 0, A_SECOND, 1),
+                        OWNER_B, Map.of(B_ONLY, 0)));
 
         assertEquals(0, plan.referenceIndex(first));
         assertEquals(1, plan.referenceIndex(second));
@@ -94,7 +96,9 @@ final class NativeFieldInternalizationPlanTest {
         return new NativeFieldInternalizationDecision(
                 field,
                 FieldInternalizationStatus.INTERNALIZED,
-                Optional.of(slot),
+                NativeFieldInternalizationStorage.NATIVE_SLOT,
+                java.util.Optional.of(slot),
+                java.util.Optional.empty(),
                 List.of(),
                 List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE));
     }

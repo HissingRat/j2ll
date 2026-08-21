@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.nativeStored;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import java.util.List;
 import java.util.Map;
@@ -12,8 +14,6 @@ import org.junit.jupiter.api.Test;
 import xyz.melodysky.analysis.field.FieldAccessSite;
 import xyz.melodysky.analysis.field.FieldCodeOrigin;
 import xyz.melodysky.analysis.field.FieldId;
-import xyz.melodysky.analysis.field.FieldInternalizationReason;
-import xyz.melodysky.analysis.field.FieldInternalizationStatus;
 import xyz.melodysky.analysis.field.FieldReferenceKind;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
@@ -147,7 +147,7 @@ class NativeFieldIrRewriterTest {
 
         NativeFieldIrRewriteResult result = rewriter.rewrite(
                 Map.of(input.methodKey(), input),
-                new NativeFieldInternalizationPlan(List.of()));
+                NativeFieldInternalizationPlan.empty());
 
         assertFalse(result.changed());
         assertSame(input, result.methods().get(input.methodKey()));
@@ -332,12 +332,7 @@ class NativeFieldIrRewriterTest {
         if (secondMethodKey != null) {
             addSites(sites, secondMethodKey, secondAccesses);
         }
-        return new NativeFieldInternalizationPlan(List.of(new NativeFieldInternalizationDecision(
-                APPROVED,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of(SLOT),
-                sites,
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+        return plan(List.of(nativeStored(APPROVED, SLOT, sites)));
     }
 
     private NativeFieldInternalizationDecision referenceDecision(
@@ -345,10 +340,9 @@ class NativeFieldIrRewriterTest {
             String slot,
             String methodKey,
             int bytecodeOffset) {
-        return new NativeFieldInternalizationDecision(
+        return nativeStored(
                 field,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of(slot),
+                slot,
                 List.of(new FieldAccessSite(
                         field,
                         methodKey,
@@ -359,8 +353,7 @@ class NativeFieldIrRewriterTest {
                         FieldReferenceKind.BYTECODE_STATIC_READ,
                         field.owner(),
                         bytecodeOffset,
-                        false)),
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE));
+                        false)));
     }
 
     private void addSites(

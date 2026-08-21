@@ -242,7 +242,7 @@ public final class LlvmModuleLowerer {
         java.util.Objects.requireNonNull(
                 staticCallMethodKeys,
                 "staticCallMethodKeys");
-        return new LlvmFunctionAbi(
+        return LlvmFunctionAbi.semanticInternal(
                 methodNeedsJniEnv(
                         method,
                         directCallMethodKeys,

@@ -355,7 +355,7 @@ class BytecodeToSsaLowererTest {
         assertEquals(IrOpcode.CMP_EQ_REF, same.blocks().get(0).instructions().get(0).opcode());
         String sameLlvm = llvm(same);
         assertEquals(
-                new LlvmFunctionAbi(true, false),
+                LlvmFunctionAbi.semanticInternal(true, false),
                 xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         same,
                         Set.of(),
@@ -380,7 +380,7 @@ class BytecodeToSsaLowererTest {
         assertEquals(IrOpcode.CMP_EQ_REF, isNull.blocks().get(0).instructions().get(1).opcode());
         String isNullLlvm = llvm(isNull);
         assertEquals(
-                new LlvmFunctionAbi(false, false),
+                LlvmFunctionAbi.semanticInternal(false, false),
                 xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         isNull,
                         Set.of(),
@@ -393,7 +393,7 @@ class BytecodeToSsaLowererTest {
         assertEquals(IrOpcode.CMP_NE_REF, isNonNull.blocks().get(0).instructions().get(1).opcode());
         String isNonNullLlvm = llvm(isNonNull);
         assertEquals(
-                new LlvmFunctionAbi(false, false),
+                LlvmFunctionAbi.semanticInternal(false, false),
                 xyz.melodysky.testsupport.TestProtectionMaterials.llvmLowerer().inferFunctionAbi(
                         isNonNull,
                         Set.of(),

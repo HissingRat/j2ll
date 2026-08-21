@@ -191,7 +191,9 @@ public record NativeMethodImplementation(
     }
 
     public LlvmFunctionAbi llvmFunctionAbi() {
-        return new LlvmFunctionAbi(passesJniEnv, passesOwnerClass);
+        return LlvmFunctionAbi.semanticInternal(
+                passesJniEnv,
+                passesOwnerClass);
     }
 
     public NativeMethodImplementation withDecision(

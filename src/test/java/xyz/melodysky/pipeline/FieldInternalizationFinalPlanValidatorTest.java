@@ -2,6 +2,8 @@ package xyz.melodysky.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.nativeStored;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import java.util.List;
 import java.util.Optional;
@@ -162,12 +164,7 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
                 field.owner(),
                 0,
                 false);
-        return new NativeFieldInternalizationPlan(List.of(new NativeFieldInternalizationDecision(
-                field,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of(slot),
-                List.of(access),
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+        return plan(List.of(nativeStored(field, slot, List.of(access))));
     }
 
     private NativeFieldInternalizationPlan constantFieldPlan() {
@@ -182,7 +179,7 @@ class FieldInternalizationFinalPlanValidatorTest implements Opcodes {
                 FIELD.owner(),
                 0,
                 false);
-        return new NativeFieldInternalizationPlan(List.of(
+        return plan(List.of(
                 new NativeFieldInternalizationDecision(
                         FIELD,
                         FieldInternalizationStatus.INTERNALIZED,

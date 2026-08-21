@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import java.util.List;
 import java.util.Map;
@@ -189,7 +190,7 @@ class NativeConstantFieldIrFolderTest {
                 field.owner(),
                 0,
                 false);
-        return new NativeFieldInternalizationPlan(List.of(
+        return plan(List.of(
                 new NativeFieldInternalizationDecision(
                         field,
                         FieldInternalizationStatus.INTERNALIZED,

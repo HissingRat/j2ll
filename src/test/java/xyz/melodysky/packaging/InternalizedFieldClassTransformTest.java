@@ -4,9 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.nativeStored;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
@@ -17,10 +17,8 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.TypeReference;
 import org.objectweb.asm.tree.ClassNode;
 import xyz.melodysky.analysis.field.FieldId;
-import xyz.melodysky.analysis.field.FieldInternalizationReason;
-import xyz.melodysky.analysis.field.FieldInternalizationStatus;
-import xyz.melodysky.analysis.field.NativeFieldInternalizationDecision;
 import xyz.melodysky.analysis.field.NativeFieldInternalizationPlan;
+import xyz.melodysky.testsupport.NativeFieldInternalizationFixtures;
 
 class InternalizedFieldClassTransformTest implements Opcodes {
     private static final String OWNER = "pkg/State";
@@ -65,14 +63,12 @@ class InternalizedFieldClassTransformTest implements Opcodes {
                         null)
                 .visitEnd());
         writer.visitEnd();
-        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+        NativeFieldInternalizationPlan plan = NativeFieldInternalizationFixtures.plan(
                 java.util.stream.IntStream.range(0, fields.size())
-                        .mapToObj(index -> new NativeFieldInternalizationDecision(
+                        .mapToObj(index -> nativeStored(
                                 fields.get(index),
-                                FieldInternalizationStatus.INTERNALIZED,
-                                Optional.of("j2ll_nfs_slot_" + index),
-                                List.of(),
-                                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE)))
+                                "j2ll_nfs_slot_" + index,
+                                List.of()))
                         .toList());
 
         InternalizedFieldTransformResult result =
@@ -250,12 +246,10 @@ class InternalizedFieldClassTransformTest implements Opcodes {
     }
 
     private NativeFieldInternalizationPlan plan(FieldId field) {
-        return new NativeFieldInternalizationPlan(List.of(new NativeFieldInternalizationDecision(
+        return NativeFieldInternalizationFixtures.plan(List.of(nativeStored(
                 field,
-                FieldInternalizationStatus.INTERNALIZED,
-                Optional.of("j2ll_nfs_00112233445566778899aabbccddeeff"),
-                List.of(),
-                List.of(FieldInternalizationReason.FIELD_INTERNALIZATION_ELIGIBLE))));
+                "j2ll_nfs_00112233445566778899aabbccddeeff",
+                List.of())));
     }
 
     private static final class ByteArrayClassLoader extends ClassLoader {

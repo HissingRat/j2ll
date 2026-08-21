@@ -149,10 +149,10 @@ class NativeImplementationPlannerTest implements Opcodes {
         assertTrue(sameImplementation.passesJniEnv());
         assertFalse(nullImplementation.passesJniEnv());
         assertEquals(
-                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false),
+                xyz.melodysky.backend.llvm.LlvmFunctionAbi.semanticInternal(true, false),
                 sameImplementation.llvmFunctionAbi());
         assertEquals(
-                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(false, false),
+                xyz.melodysky.backend.llvm.LlvmFunctionAbi.semanticInternal(false, false),
                 nullImplementation.llvmFunctionAbi());
     }
 
@@ -201,10 +201,10 @@ class NativeImplementationPlannerTest implements Opcodes {
                 instanceImplementation.classObjectKeys());
         assertEquals(
                 staticImplementation.llvmFunctionAbi(),
-                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false));
+                xyz.melodysky.backend.llvm.LlvmFunctionAbi.semanticInternal(true, false));
         assertEquals(
                 instanceImplementation.llvmFunctionAbi(),
-                new xyz.melodysky.backend.llvm.LlvmFunctionAbi(true, false));
+                xyz.melodysky.backend.llvm.LlvmFunctionAbi.semanticInternal(true, false));
     }
 
     @Test

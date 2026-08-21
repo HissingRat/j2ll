@@ -67,9 +67,9 @@ public final class FieldInternalizationPipeline {
                 && config.protection().ir().fieldInternalization();
         if (!enabled) {
             return new FieldInternalizationPipelineResult(
-                    new NativeFieldInternalizationPlan(List.of()),
+                    NativeFieldInternalizationPlan.empty(),
                     methods,
-                    report(false, new NativeFieldInternalizationPlan(List.of()), seed),
+                    report(false, NativeFieldInternalizationPlan.empty(), seed),
                     List.of(),
                     WholeProgramAnalysisScope.NOT_REQUIRED,
                     false);

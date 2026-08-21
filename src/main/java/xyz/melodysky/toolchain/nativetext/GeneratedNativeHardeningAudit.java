@@ -74,20 +74,6 @@ public final class GeneratedNativeHardeningAudit {
             "CALL_LOCAL_TEXT_SCRATCH";
     public static final String EVIDENCE_CALL_LOCAL_TEXT_CLEANUP =
             "CALL_LOCAL_TEXT_EXIT_CLEANUP";
-    /**
-     * Compatibility name retained for focused callers; generic lazy decoding
-     * is no longer accepted as positive hardening evidence.
-     */
-    @Deprecated
-    public static final String EVIDENCE_SCOPE_LOCAL_DECODER =
-            "SCOPE_LOCAL_TEXT_DECODER";
-    /**
-     * Compatibility name retained for focused callers; process-lifetime
-     * decoding is not accepted as positive hardening evidence.
-     */
-    @Deprecated
-    public static final String EVIDENCE_THREAD_SAFE_ONCE =
-            "THREAD_SAFE_TEXT_DECODE_ONCE";
     public static final String EVIDENCE_SCRATCH_ZEROIZER =
             "NATIVE_TEXT_ZEROIZER_PRESENT";
     public static final String EVIDENCE_ONLY_JNI_ONLOAD_EXPORTED =

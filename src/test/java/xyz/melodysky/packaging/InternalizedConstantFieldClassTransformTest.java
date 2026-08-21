@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import java.util.List;
 import java.util.Optional;
@@ -52,7 +53,7 @@ class InternalizedConstantFieldClassTransformTest implements Opcodes {
                 .visitEnd();
         writer.visitEnd();
 
-        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+        NativeFieldInternalizationPlan plan = plan(
                 List.of(
                         decision(number, Integer.valueOf(42)),
                         decision(text, "secret-value")));
@@ -92,7 +93,7 @@ class InternalizedConstantFieldClassTransformTest implements Opcodes {
                 new InternalizedFieldClassTransform().apply(
                         input,
                         OWNER,
-                        new NativeFieldInternalizationPlan(List.of(
+                        plan(List.of(
                                 decision(number, Integer.valueOf(42)))));
 
         assertArrayEquals(input, result.classBytes());

@@ -3,6 +3,7 @@ package xyz.melodysky.report;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static xyz.melodysky.testsupport.NativeFieldInternalizationFixtures.plan;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -24,7 +25,7 @@ class FieldInternalizationConstantReportTest {
                 "fixture/Constants",
                 "SECRET_TEXT",
                 "Ljava/lang/String;");
-        NativeFieldInternalizationPlan plan = new NativeFieldInternalizationPlan(
+        NativeFieldInternalizationPlan plan = plan(
                 List.of(new NativeFieldInternalizationDecision(
                         field,
                         FieldInternalizationStatus.INTERNALIZED,
