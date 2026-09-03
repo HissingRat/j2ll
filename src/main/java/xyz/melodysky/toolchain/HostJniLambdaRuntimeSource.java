@@ -69,7 +69,16 @@ final class HostJniLambdaRuntimeSource {
                     if (descriptor_string == NULL) {
                         return NULL;
                     }
-                    return (*env)->CallStaticObjectMethod(env, method_type_class, from_descriptor, descriptor_string, loader);
+                    jobject method_type = (*env)->CallStaticObjectMethod(
+                            env,
+                            method_type_class,
+                            from_descriptor,
+                            descriptor_string,
+                            loader);
+                    if ((*env)->ExceptionCheck(env)) {
+                        return NULL;
+                    }
+                    return method_type;
                 }
 
                 static jobject j2ll_lambda_impl_handle(
@@ -198,14 +207,19 @@ final class HostJniLambdaRuntimeSource {
                         return NULL;
                     }
                     jobject invoked_type = j2ll_method_type_from_descriptor(env, entry->invoked_desc, loader);
+                    if (invoked_type == NULL) {
+                        return NULL;
+                    }
                     jobject sam_type = j2ll_method_type_from_descriptor(env, entry->sam_desc, loader);
+                    if (sam_type == NULL) {
+                        return NULL;
+                    }
                     jobject impl_type = j2ll_method_type_from_descriptor(env, entry->impl_desc, loader);
+                    if (impl_type == NULL) {
+                        return NULL;
+                    }
                     jobject instantiated_type = j2ll_method_type_from_descriptor(env, entry->instantiated_desc, loader);
-                    if ((*env)->ExceptionCheck(env)
-                            || invoked_type == NULL
-                            || sam_type == NULL
-                            || impl_type == NULL
-                            || instantiated_type == NULL) {
+                    if (instantiated_type == NULL) {
                         return NULL;
                     }
                     jobject impl_handle = j2ll_lambda_impl_handle(env, impl_lookup, owner_class, entry, impl_type);

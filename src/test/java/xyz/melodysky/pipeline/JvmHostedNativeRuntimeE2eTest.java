@@ -1403,10 +1403,17 @@ class JvmHostedNativeRuntimeE2eTest implements Opcodes {
         DifferentialResult differential = new DifferentialHarness().compareOriginalToOutputJar(
                 inputJar,
                 pipeline.outputJar(),
-                "pkg.LambdaMain");
+                "pkg.LambdaMain",
+                List.of("-Xcheck:jni"));
 
         assertTrue(pipeline.successful(), pipeline.diagnostics().toString());
         assertEquals(0, differential.outputRun().exitCode(), differential.outputRun().stderr());
+        assertFalse(
+                differential.outputRun().stderr().contains("WARNING in native method"),
+                differential.outputRun().stderr());
+        assertFalse(
+                differential.outputRun().stderr().contains("JNI DETECTED ERROR"),
+                differential.outputRun().stderr());
         assertEquals(differential.originalRun().stdout(), differential.outputRun().stdout());
         assertEquals("""
                 ran

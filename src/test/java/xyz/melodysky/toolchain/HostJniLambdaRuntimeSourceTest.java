@@ -102,6 +102,36 @@ final class HostJniLambdaRuntimeSourceTest {
         assertFalse(generated.contains("int64_t token;"));
         assertFalse(symbol.contains("lambda"));
         assertTrue(symbol.matches("j2ll_h_[0-9a-f]{16}"));
+        assertTrue(generated.contains("""
+                    jobject method_type = (*env)->CallStaticObjectMethod(
+                            env,
+                            method_type_class,
+                            from_descriptor,
+                            descriptor_string,
+                            loader);
+                    if ((*env)->ExceptionCheck(env)) {
+                        return NULL;
+                    }
+                    return method_type;
+                """));
+        assertTrue(generated.contains("""
+                    jobject invoked_type = j2ll_method_type_from_descriptor(env, entry->invoked_desc, loader);
+                    if (invoked_type == NULL) {
+                        return NULL;
+                    }
+                    jobject sam_type = j2ll_method_type_from_descriptor(env, entry->sam_desc, loader);
+                    if (sam_type == NULL) {
+                        return NULL;
+                    }
+                    jobject impl_type = j2ll_method_type_from_descriptor(env, entry->impl_desc, loader);
+                    if (impl_type == NULL) {
+                        return NULL;
+                    }
+                    jobject instantiated_type = j2ll_method_type_from_descriptor(env, entry->instantiated_desc, loader);
+                    if (instantiated_type == NULL) {
+                        return NULL;
+                    }
+                """));
 
         String hardened = new GeneratedCFragmentTextObfuscator().obfuscate(
                 NativeTextBuildKey.fromUtf8("lambda-build"),
